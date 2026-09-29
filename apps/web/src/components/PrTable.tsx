@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { PrTimings } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatDate, formatDuration, formatNumber } from "../lib/format";
 import { usePrinting } from "../lib/print";
+import { filterByAuthor, prAuthors } from "../lib/prs";
 
 type SortKey = "number" | "title" | "author" | "createdAt" | "mergedAt" | "openToMergeHours" | "firstReviewHours" | "size";
 
@@ -28,18 +29,25 @@ function compareValues(a: string | number | null, b: string | number | null): nu
 export function PrTable({ prs }: { prs: readonly PrTimings[] }) {
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({ key: "createdAt", direction: "desc" });
   const [page, setPage] = useState(0);
+  const [author, setAuthor] = useState<string | null>(null);
+  const authorId = useId();
   // The printed report carries every pull request, not just the page on screen.
   const printing = usePrinting();
 
+  const authors = useMemo(() => prAuthors(prs), [prs]);
+  // A chosen author who has no pull requests in a new range falls back to everyone.
+  const activeAuthor = author && authors.some((option) => option.login === author) ? author : null;
+  const filtered = useMemo(() => filterByAuthor(prs, activeAuthor), [prs, activeAuthor]);
+
   const sorted = useMemo(() => {
-    const present = prs.filter((pr) => pr[sort.key] !== null);
-    const missing = prs.filter((pr) => pr[sort.key] === null);
+    const present = filtered.filter((pr) => pr[sort.key] !== null);
+    const missing = filtered.filter((pr) => pr[sort.key] === null);
     present.sort((a, b) => {
       const result = compareValues(a[sort.key], b[sort.key]);
       return sort.direction === "asc" ? result : -result;
     });
     return [...present, ...missing];
-  }, [prs, sort]);
+  }, [filtered, sort]);
 
   const pages = Math.max(1, Math.ceil(sorted.length / PR_PAGE_SIZE));
   const current = Math.min(page, pages - 1);
@@ -58,6 +66,34 @@ export function PrTable({ prs }: { prs: readonly PrTimings[] }) {
 
   return (
     <>
+      {authors.length > 1 && (
+        <div className="table-toolbar">
+          <label htmlFor={authorId} className="field-inline table-filter">
+            <span>{copy.prTable.filterAuthor}</span>
+            <select
+              id={authorId}
+              className="input"
+              value={activeAuthor ?? ""}
+              onChange={(event) => {
+                setAuthor(event.target.value || null);
+                setPage(0);
+              }}
+            >
+              <option value="">{copy.prTable.allAuthors(authors.length)}</option>
+              {authors.map((option) => (
+                <option key={option.login} value={option.login}>
+                  {copy.prTable.authorOption(option.login, option.count)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {activeAuthor && (
+            <p className="table-filter-summary" aria-live="polite">
+              {copy.prTable.showingAuthor(filtered.length, prs.length, activeAuthor)}
+            </p>
+          )}
+        </div>
+      )}
       <div className="table-scroll">
         <table className="data-table pr-table">
           <caption className="visually-hidden">{copy.prTable.title}</caption>

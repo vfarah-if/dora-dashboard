@@ -246,6 +246,11 @@ export const copy = {
     pageOf: (page: number, pages: number) => `Page ${page} of ${pages}`,
     empty: "No pull requests were opened in this range.",
     sortBy: (column: string) => `Sort by ${column}`,
+    filterAuthor: "Author",
+    allAuthors: (count: number) => `All authors (${count})`,
+    authorOption: (login: string, count: number) => `${login} (${count})`,
+    showingAuthor: (shown: number, total: number, login: string) =>
+      `Showing ${shown} of ${total} pull requests, opened by ${login}.`,
   },
 
   report: {

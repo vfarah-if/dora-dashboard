@@ -83,6 +83,30 @@ describe("RepoPage", () => {
     expect(within(table).getByRole("columnheader", { name: copy.prTable.author })).toHaveAttribute("aria-sort", "ascending");
   });
 
+  it("filters the pull request table by author and returns to the first page", async () => {
+    const user = userEvent.setup();
+    const prs = manyPrs.map((pr) => ({ ...pr, author: pr.number % 5 === 0 ? "ade" : "bea" }));
+    mockFetch({ "GET /api/repos/1/report": { body: report({ prs }) }, "GET /api/repos": { body: [] } });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const table = await screen.findByRole("table", { name: copy.prTable.title });
+    const filter = screen.getByRole("combobox", { name: copy.prTable.filterAuthor });
+    expect(
+      within(filter)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual([copy.prTable.allAuthors(2), copy.prTable.authorOption("bea", 20), copy.prTable.authorOption("ade", 5)]);
+
+    await user.click(screen.getByRole("button", { name: copy.prTable.next }));
+    await user.selectOptions(filter, "ade");
+    expect(within(table).getAllByRole("row")).toHaveLength(6);
+    expect(screen.getByText(copy.prTable.showingAuthor(5, 25, "ade"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.prTable.next })).not.toBeInTheDocument();
+
+    await user.selectOptions(filter, "");
+    expect(within(table).getAllByRole("row")).toHaveLength(21);
+    expect(screen.getByText(copy.prTable.pageOf(1, 2))).toBeInTheDocument();
+  });
+
   it("prints every pull request rather than the page on screen, then returns to paging", async () => {
     mockFetch({ "GET /api/repos/1/report": { body: report({ prs: manyPrs }) }, "GET /api/repos": { body: [] } });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
