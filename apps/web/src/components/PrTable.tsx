@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { PrTimings } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatDate, formatDuration, formatNumber } from "../lib/format";
+import { usePrinting } from "../lib/print";
 
 type SortKey = "number" | "title" | "author" | "createdAt" | "mergedAt" | "openToMergeHours" | "firstReviewHours" | "size";
 
@@ -27,6 +28,8 @@ function compareValues(a: string | number | null, b: string | number | null): nu
 export function PrTable({ prs }: { prs: readonly PrTimings[] }) {
   const [sort, setSort] = useState<{ key: SortKey; direction: "asc" | "desc" }>({ key: "createdAt", direction: "desc" });
   const [page, setPage] = useState(0);
+  // The printed report carries every pull request, not just the page on screen.
+  const printing = usePrinting();
 
   const sorted = useMemo(() => {
     const present = prs.filter((pr) => pr[sort.key] !== null);
@@ -40,7 +43,7 @@ export function PrTable({ prs }: { prs: readonly PrTimings[] }) {
 
   const pages = Math.max(1, Math.ceil(sorted.length / PR_PAGE_SIZE));
   const current = Math.min(page, pages - 1);
-  const visible = sorted.slice(current * PR_PAGE_SIZE, (current + 1) * PR_PAGE_SIZE);
+  const visible = printing ? sorted : sorted.slice(current * PR_PAGE_SIZE, (current + 1) * PR_PAGE_SIZE);
 
   const sortBy = (key: SortKey) => {
     setSort((previous) =>
@@ -103,7 +106,7 @@ export function PrTable({ prs }: { prs: readonly PrTimings[] }) {
           </tbody>
         </table>
       </div>
-      {pages > 1 && (
+      {pages > 1 && !printing && (
         <nav className="pager" aria-label={copy.prTable.title}>
           <button type="button" className="button button-secondary" disabled={current === 0} onClick={() => setPage(current - 1)}>
             {copy.prTable.previous}

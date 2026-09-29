@@ -1407,12 +1407,42 @@ a:hover {
     box-shadow: none;
   }
 
-  .card,
+  /* Cards holding a long table are left free to break, or they would jump to a fresh page. */
   .tile,
   .chart-card,
   .fair-panel,
   .data-table tr {
     break-inside: avoid;
+  }
+
+  .table-scroll {
+    overflow: visible;
+  }
+
+  .data-table {
+    font-size: 8.5pt;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 5px 6px;
+  }
+
+  .data-table thead th {
+    font-size: 7.5pt;
+    letter-spacing: 0;
+  }
+
+  .data-table thead {
+    display: table-header-group;
+  }
+
+  .data-table tbody tr:hover {
+    background: none;
+  }
+
+  .pr-title {
+    min-width: 0;
   }
 
   .section-title,

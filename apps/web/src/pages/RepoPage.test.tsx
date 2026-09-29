@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
 import { mockFetch, renderRoute } from "../test/render";
@@ -81,6 +81,21 @@ describe("RepoPage", () => {
     expect(screen.getByText(copy.prTable.pageOf(1, 2))).toBeInTheDocument();
     await user.click(within(table).getByRole("button", { name: copy.prTable.author }));
     expect(within(table).getByRole("columnheader", { name: copy.prTable.author })).toHaveAttribute("aria-sort", "ascending");
+  });
+
+  it("prints every pull request rather than the page on screen, then returns to paging", async () => {
+    mockFetch({ "GET /api/repos/1/report": { body: report({ prs: manyPrs }) }, "GET /api/repos": { body: [] } });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const table = await screen.findByRole("table", { name: copy.prTable.title });
+    expect(within(table).getAllByRole("row")).toHaveLength(21);
+
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    expect(within(table).getAllByRole("row")).toHaveLength(26);
+    expect(screen.queryByText(copy.prTable.pageOf(1, 2))).not.toBeInTheDocument();
+
+    act(() => void window.dispatchEvent(new Event("afterprint")));
+    expect(within(table).getAllByRole("row")).toHaveLength(21);
+    expect(screen.getByText(copy.prTable.pageOf(1, 2))).toBeInTheDocument();
   });
 
   it("applies a date preset", async () => {
