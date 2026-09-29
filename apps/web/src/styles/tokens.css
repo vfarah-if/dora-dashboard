@@ -1,0 +1,163 @@
+/*
+ * Every colour in the application is defined here, once for the light theme and once for the dark theme.
+ * Components read these custom properties and never state a colour of their own.
+ *
+ * Series colours are a fixed categorical order chosen to stay distinguishable under the common forms of
+ * colour vision deficiency (blue, orange, teal, magenta, with lightness spread between them). Band colours
+ * are status colours and are never used for a series. Stage colours are an ordered neutral ramp so a
+ * stacked stage bar never borrows a repository's colour.
+ */
+
+:root {
+  color-scheme: light;
+
+  --font-sans: "Inter Tight", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --radius: 10px;
+  --radius-small: 6px;
+  --gutter: 16px;
+  --content-max: 1440px;
+
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-sunken: #eef0f3;
+  --border: #d9dde3;
+  --border-strong: #b7bec8;
+  --grid: #e7eaee;
+  --axis: #9aa3af;
+
+  --text: #151a21;
+  --text-muted: #4f5866;
+  --text-subtle: #6b7482;
+  --text-on-accent: #ffffff;
+
+  --accent: #2253c8;
+  --accent-hover: #1a44a8;
+  --accent-soft: #e6ecfa;
+  --focus: #2253c8;
+
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --warning: #8a5300;
+  --warning-soft: #fdf3e2;
+  --info-soft: #eaf1fb;
+
+  --skeleton: #e6e9ed;
+  --skeleton-shine: #f3f5f7;
+  --shadow: 0 1px 2px rgba(20, 26, 33, 0.06), 0 1px 1px rgba(20, 26, 33, 0.04);
+
+  --series-1: #2160c4;
+  --series-2: #c96a00;
+  --series-3: #0f8a7c;
+  --series-4: #a52a86;
+
+  --band-elite: #137a43;
+  --band-high: #4f7a12;
+  --band-medium: #9a5a00;
+  --band-low: #b42318;
+  --band-inactive: #d3d8df;
+
+  --stage-1: #1f3a5f;
+  --stage-2: #4c6e96;
+  --stage-3: #86a2c2;
+  --stage-4: #c3d2e3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #0f1318;
+    --surface: #171c23;
+    --surface-sunken: #11161c;
+    --border: #2a323d;
+    --border-strong: #3d4756;
+    --grid: #232a33;
+    --axis: #6b7584;
+
+    --text: #e8ebef;
+    --text-muted: #aab2bd;
+    --text-subtle: #8a93a0;
+    --text-on-accent: #0f1318;
+
+    --accent: #7aa7ff;
+    --accent-hover: #9dbdff;
+    --accent-soft: #1c2a44;
+    --focus: #9dbdff;
+
+    --danger: #ff8a7d;
+    --danger-soft: #3a1c1a;
+    --warning: #f2b659;
+    --warning-soft: #33270f;
+    --info-soft: #182434;
+
+    --skeleton: #212833;
+    --skeleton-shine: #2a3240;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+    --series-1: #6ea3ff;
+    --series-2: #f5a04a;
+    --series-3: #3cc7b3;
+    --series-4: #e27ac7;
+
+    --band-elite: #4cc38a;
+    --band-high: #a8cf5a;
+    --band-medium: #f0b24a;
+    --band-low: #ff7a6b;
+    --band-inactive: #333c48;
+
+    --stage-1: #c9d8ea;
+    --stage-2: #8fabcc;
+    --stage-3: #587aa3;
+    --stage-4: #334d6e;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0f1318;
+  --surface: #171c23;
+  --surface-sunken: #11161c;
+  --border: #2a323d;
+  --border-strong: #3d4756;
+  --grid: #232a33;
+  --axis: #6b7584;
+
+  --text: #e8ebef;
+  --text-muted: #aab2bd;
+  --text-subtle: #8a93a0;
+  --text-on-accent: #0f1318;
+
+  --accent: #7aa7ff;
+  --accent-hover: #9dbdff;
+  --accent-soft: #1c2a44;
+  --focus: #9dbdff;
+
+  --danger: #ff8a7d;
+  --danger-soft: #3a1c1a;
+  --warning: #f2b659;
+  --warning-soft: #33270f;
+  --info-soft: #182434;
+
+  --skeleton: #212833;
+  --skeleton-shine: #2a3240;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+
+  --series-1: #6ea3ff;
+  --series-2: #f5a04a;
+  --series-3: #3cc7b3;
+  --series-4: #e27ac7;
+
+  --band-elite: #4cc38a;
+  --band-high: #a8cf5a;
+  --band-medium: #f0b24a;
+  --band-low: #ff7a6b;
+  --band-inactive: #333c48;
+
+  --stage-1: #c9d8ea;
+  --stage-2: #8fabcc;
+  --stage-3: #587aa3;
+  --stage-4: #334d6e;
+}

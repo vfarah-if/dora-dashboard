@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+*.sqlite
+*.sqlite-*
+data/
+screenshots/
+.DS_Store
+.turbo/
+coverage/
+repos.local.json
+.private-names
+.run/

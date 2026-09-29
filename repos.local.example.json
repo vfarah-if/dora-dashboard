@@ -1,0 +1,4 @@
+[
+  { "repo": "your-org/your-repo", "workflows": ["deploy.yml"], "branch": "main" },
+  { "repo": "https://github.com/your-org/another-repo", "workflows": ["release.yml"], "branch": "main" }
+]

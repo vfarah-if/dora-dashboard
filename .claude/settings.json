@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit(apps/**)",
+      "Edit(packages/**)",
+      "Edit(docs/**)",
+      "Edit(scripts/**)",
+      "Edit(.claude/**)",
+      "Edit(Makefile)",
+      "Edit(README.md)",
+      "Edit(CLAUDE.md)",
+      "Edit(package.json)",
+      "Edit(turbo.json)",
+      "Write(apps/**)",
+      "Write(packages/**)",
+      "Write(docs/**)",
+      "Write(.claude/**)",
+      "Bash(make:*)",
+      "Bash(npm run:*)",
+      "Bash(npm test:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx --no -- vitest:*)",
+      "Bash(npx --no -- tsc:*)",
+      "Bash(node scripts/:*)",
+      "Bash(curl -s http://127.0.0.1:8787/:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh api repos/:*)",
+      "Bash(gh run list:*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(**/.env)",
+      "Read(.private-names)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(rm -rf data:*)"
+    ]
+  }
+}
