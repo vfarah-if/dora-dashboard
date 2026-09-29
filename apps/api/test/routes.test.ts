@@ -62,6 +62,16 @@ describe("repository and report routes (gh-cli mode)", () => {
     expect(report.json()).toMatchObject({ totals: { merged: 2 }, dora: { deploymentFrequency: { total: 1 } } });
   });
 
+  it("leaves the authors named in excludeAuthors out of a report", async () => {
+    const { id } = (await add("acme/widgets")).json<{ id: number }>();
+    await settled(() => crawler.isCrawling(id));
+
+    const res = await app.inject(`/api/repos/${id}/report?to=2026-09-30&excludeAuthors=${encodeURIComponent(" alice ,,alice")}`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ totals: { opened: 0, merged: 0 }, authorChoices: [{ author: "alice", excluded: true }] });
+    expect((await app.inject(`/api/repos/${id}/report?excludeAuthors=${"a".repeat(4001)}`)).statusCode).toBe(400);
+  });
+
   it("compares two repositories", async () => {
     const a = (await add("acme/widgets")).json<{ id: number }>().id;
     const b = (await add("acme/gadgets")).json<{ id: number }>().id;

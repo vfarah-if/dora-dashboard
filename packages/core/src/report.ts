@@ -7,6 +7,15 @@ export interface ReportOptions {
   from?: string;
   to?: string;
   includeBots?: boolean;
+  /** Logins whose pull requests are left out of every figure (ADR 0012). A PR with no author is excluded as `unknown`. */
+  excludeAuthors?: readonly string[];
+}
+
+/** An author who opened pull requests in the range, whether or not they are excluded, so a filter can offer them. */
+export interface AuthorChoice {
+  author: string;
+  opened: number;
+  excluded: boolean;
 }
 
 export interface WeekRow {
@@ -72,17 +81,31 @@ export interface RepoReport {
   weekly: WeekRow[];
   distribution: ReturnType<typeof mergeDistribution>;
   authors: AuthorRow[];
+  /** Everyone who opened a pull request in the range before any author was excluded, most active first. */
+  authorChoices: AuthorChoice[];
   prs: PrTimings[];
 }
 
 const within = (iso: string | null, from: string, to: string) => iso !== null && iso >= from && iso <= to;
+const authorOf = (pr: Pick<PullRequest, "author">) => pr.author ?? "unknown";
 
 export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[], options: ReportOptions = {}): RepoReport {
-  const prs = options.includeBots ? allPrs : allPrs.filter((p) => !isBot(p));
-  const projectStart = prs.map((p) => p.createdAt).sort()[0] ?? null;
+  const humansOrAll = options.includeBots ? allPrs : allPrs.filter((p) => !isBot(p));
+  // The project start ignores excluded authors, so leaving someone out never moves the range or the week alignment.
+  const projectStart = humansOrAll.map((p) => p.createdAt).sort()[0] ?? null;
   const now = new Date().toISOString();
   const from = options.from ?? projectStart ?? now;
   const to = options.to ? `${options.to.slice(0, 10)}T23:59:59Z` : now;
+
+  const excluded = new Set(options.excludeAuthors ?? []);
+  const openedCounts = new Map<string, number>();
+  for (const p of humansOrAll) {
+    if (within(p.createdAt, from, to)) openedCounts.set(authorOf(p), (openedCounts.get(authorOf(p)) ?? 0) + 1);
+  }
+  const authorChoices: AuthorChoice[] = [...openedCounts]
+    .map(([author, opened]) => ({ author, opened, excluded: excluded.has(author) }))
+    .sort((a, b) => b.opened - a.opened || a.author.localeCompare(b.author));
+  const prs = excluded.size ? humansOrAll.filter((p) => !excluded.has(authorOf(p))) : humansOrAll;
 
   const opened = prs.filter((p) => within(p.createdAt, from, to));
   const merged = prs.filter((p) => within(p.mergedAt, from, to));
@@ -126,7 +149,7 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     };
   });
 
-  const authorNames = new Set(opened.map((p) => p.author ?? "unknown"));
+  const authorNames = new Set(opened.map(authorOf));
   const reviewsGiven = new Map<string, number>();
   for (const pr of prs) {
     for (const r of pr.reviews) {
@@ -137,10 +160,10 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
   }
   const authors: AuthorRow[] = [...authorNames]
     .map((author) => {
-      const theirs = mergedTimings.filter((t) => (t.author ?? "unknown") === author);
+      const theirs = mergedTimings.filter((t) => authorOf(t) === author);
       return {
         author,
-        opened: opened.filter((p) => (p.author ?? "unknown") === author).length,
+        opened: opened.filter((p) => authorOf(p) === author).length,
         merged: theirs.length,
         medianOpenToMergeHours: median(theirs.map((t) => t.openToMergeHours!)),
         medianCodingHours: median(theirs.map((t) => t.codingHours).filter((h) => h !== null)),
@@ -191,6 +214,7 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     weekly,
     distribution: mergeDistribution(mergedTimings.map((t) => t.openToMergeHours!)),
     authors,
+    authorChoices,
     prs: [...opened.map((p) => timingsByNumber.get(p.number)!)].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   };
 }

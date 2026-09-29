@@ -1,7 +1,10 @@
 import type { DeployRun } from "@dora-dashboard/core";
 import { NotFoundError } from "../core/errors.js";
+import type { Logger } from "../interfaces/logger.js";
+import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
+import type { CodeHealthService } from "./code-health-service.js";
 
 /**
  * Reads a repository's pull requests and deploy runs from its code host into the store.
@@ -17,10 +20,23 @@ export class CrawlService {
   constructor(
     private readonly store: RepoStore,
     private readonly provider: SourceProvider,
+    private readonly codeHealth?: CodeHealthService,
+    private readonly log: Logger = noopLogger,
   ) {}
 
   isCrawling(repoId: number): boolean {
     return this.running.has(repoId);
+  }
+
+  /** Code health is a bonus: whatever goes wrong here is recorded on the snapshot and never fails the crawl. */
+  private async analyseCode(token: string, repoId: number, full: boolean): Promise<void> {
+    if (!this.codeHealth) return;
+    try {
+      this.store.setCrawlState(repoId, "crawling", "Analysing code");
+      await this.codeHealth.analyse(token, repoId, full);
+    } catch (err) {
+      this.log.warn({ err, repoId }, "code health step failed");
+    }
   }
 
   async crawl(token: string, repoId: number, full = false): Promise<void> {
@@ -53,6 +69,7 @@ export class CrawlService {
         runs.push(...(await this.provider.fetchDeployRuns(token, repo.owner, repo.name, workflow)));
       }
       this.store.replaceDeployRuns(repoId, runs);
+      await this.analyseCode(token, repoId, full);
       this.store.finishCrawl(repoId, newest);
     } catch (error) {
       this.store.setCrawlState(repoId, "failed", null, error instanceof Error ? error.message : String(error));

@@ -246,11 +246,17 @@ export const copy = {
     pageOf: (page: number, pages: number) => `Page ${page} of ${pages}`,
     empty: "No pull requests were opened in this range.",
     sortBy: (column: string) => `Sort by ${column}`,
-    filterAuthor: "Author",
-    allAuthors: (count: number) => `All authors (${count})`,
-    authorOption: (login: string, count: number) => `${login} (${count})`,
-    showingAuthor: (shown: number, total: number, login: string) =>
-      `Showing ${shown} of ${total} pull requests, opened by ${login}.`,
+  },
+
+  authorFilter: {
+    summary: (included: number, total: number) =>
+      included === total ? `All authors (${total})` : included === 0 ? "No authors" : `${included} of ${total} authors`,
+    hint: "Untick an author to leave their pull requests out of every figure on this page. Deploys, failure rate and restore time come from workflow runs, so of the DORA measures only lead time changes.",
+    all: "All authors",
+    none: "No authors",
+    legend: "Authors to include",
+    opened: (count: number) => (count === 1 ? "1 PR" : `${count} PRs`),
+    noneChosen: "Every author is left out, so there is nothing to measure. Choose at least one author from the authors menu.",
   },
 
   report: {
@@ -260,10 +266,59 @@ export const copy = {
     compareSubject: (names: readonly string[]) => names.join(" vs "),
   },
 
+  codeHealth: {
+    title: "Code health",
+    lede: "How complex the functions in the default branch are, measured on the most recent crawl. This describes the code as it stands and does not follow the date range above.",
+    analysedAt: (sha: string, when: string) => `Analysed commit ${sha} on ${when}`,
+    loading: "Loading code health",
+    medianCcn: "Median complexity",
+    medianCcnHint: "The complexity of the middle function. Half the functions are simpler.",
+    p75Ccn: "75th percentile complexity",
+    p75CcnHint: (max: string) => `Three quarters of functions are at or below this. The most complex function scores ${max}.`,
+    shareAbove: (limit: number) => `Functions above ${limit}`,
+    shareAboveHint: (high: string, limit: number) => `The share worth a closer look. ${high} are above ${limit}.`,
+    nloc: "Lines of code",
+    nlocHint: "Lines inside functions, leaving out blank lines and comments.",
+    functions: "Functions analysed",
+    functionsHint: "Every function the analyser found across all supported languages.",
+    staleTitle: "The latest analysis failed",
+    stale: (commitDate: string, attemptDate: string, message: string) =>
+      `These figures are from the commit dated ${commitDate}. The latest attempt on ${attemptDate} failed with the message "${message}".`,
+    explainerTitle: "What cyclomatic complexity means",
+    explainer:
+      "Cyclomatic complexity counts the independent paths through a function, so each branch, loop or condition adds one. A low score is easy to read and to test. Scores above 10 are worth reviewing and scores above 20 are hard to change safely.",
+    chart: {
+      title: "Complexity distribution",
+      subtitle: "How many functions fall into each complexity band, where a higher score means more paths to test.",
+      x: "Cyclomatic complexity",
+      series: "Functions",
+    },
+    hotspots: {
+      title: "Most complex functions",
+      subtitle: "The functions with the highest complexity, which are the best candidates to simplify first.",
+      function: "Function",
+      location: "File and line",
+      ccn: "Complexity",
+      nloc: "Lines",
+      empty: "No functions were found.",
+    },
+    none: {
+      title: "Code health has not been measured yet",
+      body: "Crawl this repository to clone the default branch and analyse its functions.",
+    },
+    error: {
+      title: "Code health could not be measured",
+      install: "To enable it, install lizard with pipx install lizard and crawl the repository again.",
+      when: (when: string) => `The last attempt was on ${when}.`,
+    },
+  },
+
   repo: {
     loadingTitle: "Loading repository",
     lastCrawled: (when: string) => `Last crawled ${when}`,
     rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
+    excludingAuthors: (logins: readonly string[]) =>
+      `Leaving out pull requests by ${new Intl.ListFormat("en-GB", { type: "conjunction" }).format(logins)}.`,
     crawlInProgress: "A crawl is in progress, so these figures may still change.",
     notFound: "This repository could not be found.",
   },

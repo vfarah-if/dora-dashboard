@@ -17,6 +17,16 @@ make dev                                  # API on :8787, open http://localhost:
 
 Or add repositories from the web app by pasting `owner/name` or a GitHub URL.
 
+### Code health (optional)
+
+Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). This needs `git` and [lizard](https://github.com/terryyin/lizard) on the host.
+
+```bash
+pipx install lizard
+```
+
+Without lizard, or if an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
+
 ## Signing in
 
 GitHub no longer accepts passwords over its API, so there is no username and password box. Choose one of two modes in `.env`:
@@ -28,7 +38,7 @@ Tokens are held in memory only and never sent to the browser (ADR 0004).
 
 ## What it measures
 
-See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band.
+See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions.
 
 DORA figures need a deploy workflow. The API guesses one from workflow file names; set it explicitly per repository if the guess is wrong.
 

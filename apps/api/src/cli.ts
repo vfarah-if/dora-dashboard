@@ -5,10 +5,13 @@
 import { parseArgs } from "node:util";
 import { loadConfig } from "./core/config.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
+import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
+import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
+import { CodeHealthService } from "./services/code-health-service.js";
 import { CrawlService } from "./services/crawl-service.js";
-import { parseRepoRef } from "./services/repo-ref.js";
+import { isSafeBranch, parseRepoRef } from "./services/repo-ref.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -22,6 +25,11 @@ const { positionals, values } = parseArgs({
 const ref = parseRepoRef(positionals[0] ?? "");
 if (!ref) {
   console.error("Usage: crawl owner/name [--workflow deploy.yml] [--branch main] [--full]");
+  process.exit(1);
+}
+
+if (values.branch !== undefined && !isSafeBranch(values.branch)) {
+  console.error("That is not a usable branch name");
   process.exit(1);
 }
 
@@ -41,7 +49,8 @@ const timer = setInterval(() => {
   if (progress) console.log(progress);
 }, 2000);
 try {
-  await new CrawlService(store, provider).crawl(token, repo.id, values.full);
+  const codeHealth = config.codeAnalysis ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser()) : undefined;
+  await new CrawlService(store, provider, codeHealth).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));
 } finally {
   clearInterval(timer);

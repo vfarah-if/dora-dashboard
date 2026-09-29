@@ -258,6 +258,56 @@ describe("buildReport", () => {
     expect(report.authors.find((a) => a.author === "alice")?.reviewsGiven).toBe(1);
     expect(buildReport(repo, prs, [], { to: "2026-09-13", includeBots: true }).totals.opened).toBe(4);
   });
+
+  it("leaves excluded authors out of every figure but still offers them as choices", () => {
+    const prs = [
+      pr({ number: 1, author: "alice", createdAt: "2026-09-01T10:00:00Z", mergedAt: "2026-09-01T14:00:00Z" }),
+      pr({
+        number: 2,
+        author: "bob",
+        mergedBy: "bob",
+        createdAt: "2026-08-25T10:00:00Z",
+        mergedAt: "2026-09-02T10:00:00Z",
+        reviews: [{ author: "alice", state: "APPROVED", submittedAt: "2026-09-01T12:00:00Z" }],
+      }),
+      pr({ number: 3, author: "bob", createdAt: "2026-09-08T10:00:00Z", mergedAt: "2026-09-08T11:00:00Z" }),
+      pr({ number: 4, author: null, createdAt: "2026-09-09T10:00:00Z", mergedAt: "2026-09-09T12:00:00Z" }),
+    ];
+    const everyone = buildReport(repo, prs, [], { to: "2026-09-13" });
+    const withoutBob = buildReport(repo, prs, [], { to: "2026-09-13", excludeAuthors: ["bob", "unknown"] });
+
+    // Bob opened first, but leaving him out keeps the range and week alignment from his first PR.
+    expect(withoutBob.projectStart).toBe(everyone.projectStart);
+    expect(withoutBob.range).toEqual(everyone.range);
+    expect(withoutBob.weekly.map((w) => w.weekIndex)).toEqual([0, 1, 2]);
+    // Only alice's PR 1 remains: opened and merged in the week of 31 August after 4 hours.
+    expect(withoutBob.totals).toMatchObject({ opened: 1, merged: 1, authors: 1, reviewedShare: 0, authorWeeks: 1 });
+    expect(withoutBob.summary.openToMergeHours.median).toBe(4);
+    expect(withoutBob.weekly.map((w) => w.merged)).toEqual([0, 1, 0]);
+    expect(withoutBob.authors.map((a) => a.author)).toEqual(["alice"]);
+    expect(withoutBob.prs.map((p) => p.number)).toEqual([1]);
+    expect(withoutBob.authorChoices).toEqual([
+      { author: "bob", opened: 2, excluded: true },
+      { author: "alice", opened: 1, excluded: false },
+      { author: "unknown", opened: 1, excluded: true },
+    ]);
+    expect(everyone.authorChoices.every((c) => !c.excluded)).toBe(true);
+    expect(everyone.totals.opened).toBe(4);
+  });
+
+  it("offers only authors who opened a PR in the range, and no bots unless they are included", () => {
+    const prs = [
+      pr({ number: 1, author: "alice", createdAt: "2026-08-01T10:00:00Z", mergedAt: "2026-08-01T12:00:00Z" }),
+      pr({ number: 2, author: "bob", createdAt: "2026-09-02T10:00:00Z", mergedAt: "2026-09-02T12:00:00Z" }),
+      pr({ number: 3, author: "renovate", createdAt: "2026-09-03T10:00:00Z", mergedAt: "2026-09-03T12:00:00Z" }),
+    ];
+    const range = { from: "2026-09-01", to: "2026-09-06" };
+    expect(buildReport(repo, prs, [], range).authorChoices.map((c) => c.author)).toEqual(["bob"]);
+    expect(buildReport(repo, prs, [], { ...range, includeBots: true }).authorChoices.map((c) => c.author)).toEqual([
+      "bob",
+      "renovate",
+    ]);
+  });
 });
 
 describe("DORA bands", () => {

@@ -2,7 +2,7 @@ import type { Repo } from "@dora-dashboard/core";
 import { ConflictError, NotFoundError, ValidationError } from "../core/errors.js";
 import type { RepoCounts, RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
-import { parseRepoRef } from "./repo-ref.js";
+import { isSafeBranch, parseRepoRef } from "./repo-ref.js";
 
 /** Workflow file names that usually ship to production, offered when none is configured. */
 const DEPLOY_HINT = /deploy|release|publish/i;
@@ -65,4 +65,7 @@ export class RepoService {
 }
 
 const cleanList = (values: string[] | undefined) => (values ?? []).map((v) => v.trim()).filter(Boolean);
-const cleanBranch = (branch: string | undefined) => branch?.trim() || "main";
+const cleanBranch = (branch: string | undefined) => {
+  if (branch !== undefined && !isSafeBranch(branch.trim())) throw new ValidationError("That is not a usable branch name");
+  return branch?.trim() || "main";
+};

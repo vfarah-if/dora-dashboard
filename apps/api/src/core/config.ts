@@ -13,6 +13,8 @@ export interface Config {
   port: number;
   databasePath: string;
   webOrigin: string;
+  /** Clone and analyse each repository's code during a crawl. `CODE_ANALYSIS=off` disables it. */
+  codeAnalysis: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -28,6 +30,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: Number(env.PORT || 8787),
     databasePath: env.DATABASE_PATH || DEFAULT_DATABASE,
     webOrigin: env.WEB_ORIGIN || "http://localhost:5181",
+    codeAnalysis: (env.CODE_ANALYSIS || "on").toLowerCase() !== "off",
   };
   if (authMode === "oauth" && (!config.githubClientId || !config.githubClientSecret)) {
     throw new Error("AUTH_MODE=oauth needs GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET; see .env.example");

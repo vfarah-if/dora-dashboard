@@ -2,7 +2,9 @@ import { Link, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
 import { useRepos, useReport } from "../api/hooks";
 import { copy } from "../copy";
+import { AuthorFilter } from "../components/AuthorFilter";
 import { AuthorsTable } from "../components/AuthorsTable";
+import { CodeHealthSection } from "../components/CodeHealthSection";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DoraTile } from "../components/DoraTile";
 import { DownloadReportButton } from "../components/DownloadReportButton";
@@ -10,10 +12,11 @@ import { PrTable } from "../components/PrTable";
 import { RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
+import { excludedInRange } from "../lib/authorFilter";
 import { doraFigures } from "../lib/dora";
 import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent } from "../lib/format";
 import { repoName } from "../lib/series";
-import { useRangeParams } from "../lib/urlState";
+import { useListParam, useRangeParams } from "../lib/urlState";
 
 function FlowTiles({ report }: { report: RepoReport }) {
   const { totals, summary } = report;
@@ -46,10 +49,13 @@ export function RepoPage() {
   const params = useParams();
   const id = Number(params.id);
   const [range, setRange] = useRangeParams();
-  const report = useReport(id, range);
+  const [excluded, setExcluded] = useListParam("exclude");
+  const report = useReport(id, range, excluded);
   const repos = useRepos();
   const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
   const data = report.data;
+  const leftOut = data ? excludedInRange(data.authorChoices, excluded) : [];
+  const nobodyChosen = data !== undefined && data.authorChoices.length > 0 && leftOut.length === data.authorChoices.length;
 
   return (
     <div className="page">
@@ -65,13 +71,23 @@ export function RepoPage() {
               {data.repo.lastCrawledAt && ` · ${copy.repo.lastCrawled(formatDateTime(data.repo.lastCrawledAt))}`}
             </p>
           )}
+          {leftOut.length > 0 && <p className="lede">{copy.repo.excludingAuthors(leftOut)}</p>}
         </div>
         {data && <DownloadReportButton subject={repoName(data.repo)} />}
       </header>
 
       <div className="controls-bar">
         <DateRangeControls value={range} onChange={setRange} />
+        {data && data.authorChoices.length > 0 && (
+          <AuthorFilter choices={data.authorChoices} excluded={excluded} onChange={setExcluded} />
+        )}
       </div>
+
+      {nobodyChosen && (
+        <p className="notice notice-info" role="status">
+          {copy.authorFilter.noneChosen}
+        </p>
+      )}
 
       {crawling && (
         <p className="notice notice-info" role="status">
@@ -100,6 +116,8 @@ export function RepoPage() {
               ))}
             </div>
           </section>
+
+          <CodeHealthSection repoId={id} />
 
           <section aria-labelledby="flow-title" className="section">
             <h2 id="flow-title" className="section-title">

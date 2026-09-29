@@ -93,6 +93,10 @@ export function report(
       { author: "ada", opened: 4, merged: 4, medianOpenToMergeHours: 4, medianCodingHours: 1, reviewsGiven: 2 },
       { author: "grace", opened: 2, merged: 2, medianOpenToMergeHours: 6, medianCodingHours: 2, reviewsGiven: 3 },
     ],
+    authorChoices: [
+      { author: "ada", opened: 4, excluded: false },
+      { author: "grace", opened: 2, excluded: false },
+    ],
     prs: [
       {
         number: 7,

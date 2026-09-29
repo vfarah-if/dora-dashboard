@@ -1,5 +1,6 @@
+import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Repo, RepoReport } from "@dora-dashboard/core";
+import type { CodeHealthResponse, Repo, RepoReport } from "@dora-dashboard/core";
 import { apiRequest } from "./client";
 
 export interface AuthUser {
@@ -36,7 +37,8 @@ export const queryKeys = {
   me: ["auth", "me"] as const,
   repos: ["repos"] as const,
   workflows: (id: number) => ["repos", id, "workflows"] as const,
-  report: (id: number, range: ReportRange) => ["report", id, range] as const,
+  report: (id: number, range: ReportRange, excludeAuthors: readonly string[]) => ["report", id, range, excludeAuthors] as const,
+  codeHealth: (id: number) => ["code-health", id] as const,
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
 };
 
@@ -117,10 +119,15 @@ export function useWorkflows(id: number, enabled: boolean) {
   });
 }
 
-export function useReport(id: number, range: ReportRange) {
+/** One repository's report. Excluded authors' pull requests are left out of every figure by the API. */
+export function useReport(id: number, range: ReportRange, excludeAuthors: readonly string[] = []) {
   return useQuery({
-    queryKey: queryKeys.report(id, range),
-    queryFn: ({ signal }) => apiRequest<RepoReport>(withQuery(`/api/repos/${id}/report`, rangeQuery(range)), { signal }),
+    queryKey: queryKeys.report(id, range, excludeAuthors),
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams(rangeQuery(range));
+      if (excludeAuthors.length) params.set("excludeAuthors", excludeAuthors.join(","));
+      return apiRequest<RepoReport>(withQuery(`/api/repos/${id}/report`, params.toString()), { signal });
+    },
     enabled: Number.isFinite(id),
     placeholderData: keepPreviousData,
   });
@@ -136,5 +143,22 @@ export function useCompare(ids: readonly number[], range: ReportRange) {
     },
     enabled: ids.length >= 2,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The latest code health for a repository. It refetches when a crawl of that repository finishes. */
+export function useCodeHealth(id: number) {
+  const client = useQueryClient();
+  const repos = useRepos();
+  const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
+  const wasCrawling = useRef(false);
+  useEffect(() => {
+    if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: queryKeys.codeHealth(id) });
+    wasCrawling.current = crawling;
+  }, [client, crawling, id]);
+  return useQuery({
+    queryKey: queryKeys.codeHealth(id),
+    queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(`/api/repos/${id}/code-health`, { signal }),
+    enabled: Number.isFinite(id),
   });
 }

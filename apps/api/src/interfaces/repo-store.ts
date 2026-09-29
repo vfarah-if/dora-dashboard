@@ -1,4 +1,4 @@
-import type { DeployRun, PullRequest, Repo } from "@dora-dashboard/core";
+import type { CodeSnapshot, DeployRun, PullRequest, Repo } from "@dora-dashboard/core";
 
 export interface RepoCounts {
   pullRequests: number;
@@ -25,4 +25,11 @@ export interface RepoStore {
   pullRequests(repoId: number): PullRequest[];
   deployRuns(repoId: number): DeployRun[];
   counts(repoId: number): RepoCounts;
+
+  /** The last 10 snapshots are kept (plus the newest successful one), so a trend can be drawn later. */
+  saveCodeSnapshot(repoId: number, snapshot: CodeSnapshot): void;
+  /** The newest snapshot of any kind, including a failed attempt. */
+  latestCodeSnapshot(repoId: number): CodeSnapshot | null;
+  /** The newest snapshot that carries no error. */
+  latestSuccessfulCodeSnapshot(repoId: number): CodeSnapshot | null;
 }

@@ -1,8 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { DeployRun, PullRequest, Repo } from "@dora-dashboard/core";
+import type { CodeSnapshot, DeployRun, PullRequest, Repo } from "@dora-dashboard/core";
 import type { RepoCounts, RepoStore } from "../../interfaces/repo-store.js";
+
+const SNAPSHOTS_KEPT = 10;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS repos (
@@ -31,6 +33,13 @@ CREATE TABLE IF NOT EXISTS deploy_runs (
   run_id INTEGER NOT NULL,
   data TEXT NOT NULL,
   PRIMARY KEY (repo_id, run_id)
+);
+CREATE TABLE IF NOT EXISTS code_snapshots (
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  commit_sha TEXT NOT NULL,
+  analysed_at TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (repo_id, analysed_at)
 );
 `;
 
@@ -179,5 +188,34 @@ export class SqliteRepoStore implements RepoStore {
     const pr = this.db.prepare("SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?").get(repoId) as { n: number };
     const dr = this.db.prepare("SELECT count(*) AS n FROM deploy_runs WHERE repo_id = ?").get(repoId) as { n: number };
     return { pullRequests: pr.n, deployRuns: dr.n };
+  }
+
+  saveCodeSnapshot(repoId: number, snapshot: CodeSnapshot): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO code_snapshots (repo_id, commit_sha, analysed_at, data) VALUES (?, ?, ?, ?)")
+      .run(repoId, snapshot.commitSha, snapshot.analysedAt, JSON.stringify(snapshot));
+    // Keep the newest few, and always the newest good one so a run of failures cannot erase the last real figures.
+    this.db
+      .prepare(
+        `DELETE FROM code_snapshots WHERE repo_id = ?
+           AND analysed_at NOT IN (SELECT analysed_at FROM code_snapshots WHERE repo_id = ? ORDER BY analysed_at DESC LIMIT ${SNAPSHOTS_KEPT})
+           AND analysed_at NOT IN (SELECT analysed_at FROM code_snapshots WHERE repo_id = ? AND json_extract(data, '$.error') IS NULL ORDER BY analysed_at DESC LIMIT 1)`,
+      )
+      .run(repoId, repoId, repoId);
+  }
+
+  latestCodeSnapshot(repoId: number): CodeSnapshot | null {
+    return this.snapshotWhere(repoId, "");
+  }
+
+  latestSuccessfulCodeSnapshot(repoId: number): CodeSnapshot | null {
+    return this.snapshotWhere(repoId, "AND json_extract(data, '$.error') IS NULL");
+  }
+
+  private snapshotWhere(repoId: number, condition: string): CodeSnapshot | null {
+    const row = this.db
+      .prepare(`SELECT data FROM code_snapshots WHERE repo_id = ? ${condition} ORDER BY analysed_at DESC LIMIT 1`)
+      .get(repoId) as unknown as { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as CodeSnapshot) : null;
   }
 }

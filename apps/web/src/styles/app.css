@@ -789,6 +789,93 @@ a:hover {
   gap: 10px;
 }
 
+.author-filter {
+  position: relative;
+  align-self: flex-start;
+}
+
+.author-filter-summary {
+  list-style: none;
+}
+
+.author-filter-summary::-webkit-details-marker {
+  display: none;
+}
+
+.author-filter-summary::after {
+  content: "";
+  width: 0.45em;
+  height: 0.45em;
+  margin-left: 4px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.author-filter[open] .author-filter-summary::after {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+.author-filter-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(340px, calc(100vw - 2 * var(--gutter)));
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.author-filter-hint {
+  margin: 0 0 8px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.author-filter-actions {
+  display: flex;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.author-filter-list {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.author-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.author-filter-option:hover {
+  background: var(--surface-sunken);
+}
+
+.author-filter-option .mono {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.author-filter-count {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
 .segmented {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1248,24 +1335,6 @@ a:hover {
   color: var(--accent);
 }
 
-.table-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  margin: 12px 0;
-}
-
-.table-filter .input {
-  max-width: 100%;
-}
-
-.table-filter-summary {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--text-muted);
-}
-
 .pager {
   display: flex;
   align-items: center;
@@ -1401,7 +1470,7 @@ a:hover {
   .toggle-row,
   .chart-toolbar .toggle,
   .table-disclosure,
-  .table-filter,
+  .author-filter,
   .pager,
   .sort-indicator,
   .recharts-tooltip-wrapper {

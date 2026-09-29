@@ -54,6 +54,28 @@ export function useFlagParam(name: string): [boolean, (next: boolean) => void] {
   return [value, setValue];
 }
 
+/** A list of names held in the address as `name=a,b`, without blanks or duplicates. An empty list removes it. */
+export function useListParam(name: string): [string[], (next: readonly string[]) => void] {
+  const [params, setParams] = useSearchParams();
+  const raw = params.get(name);
+  const value = useMemo(() => [...new Set((raw ?? "").split(",").map((part) => part.trim()))].filter(Boolean), [raw]);
+  const setValue = useCallback(
+    (next: readonly string[]) => {
+      setParams(
+        (current) => {
+          const updated = new URLSearchParams(current);
+          if (next.length) updated.set(name, next.join(","));
+          else updated.delete(name);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [name, setParams],
+  );
+  return [value, setValue];
+}
+
 /** Repository ids from `ids=1,2`, in the order given and without duplicates. */
 export function parseIds(raw: string | null): number[] {
   if (!raw) return [];

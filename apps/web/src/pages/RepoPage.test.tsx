@@ -6,6 +6,8 @@ import { mockFetch, renderRoute } from "../test/render";
 import { repo, report } from "../test/fixtures";
 import { copy } from "../copy";
 
+const noHealth = { body: { status: "none" } };
+
 const manyPrs = Array.from({ length: 25 }, (_, i) => ({
   ...report().prs[0]!,
   number: i + 1,
@@ -20,7 +22,11 @@ describe("RepoPage", () => {
     vi.spyOn(window, "print").mockImplementation(() => {
       printedAs = document.title;
     });
-    mockFetch({ "GET /api/repos/1/report": { body: report() }, "GET /api/repos": { body: [repo()] } });
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     await user.click(await screen.findByRole("button", { name: copy.report.download }));
     await waitFor(() => expect(printedAs).not.toBe(""));
@@ -30,6 +36,7 @@ describe("RepoPage", () => {
   it("shows the DORA tiles, flow tiles and charts for a repository", async () => {
     const fetchMock = mockFetch({
       "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
       "GET /api/repos": { body: [repo({ crawlStatus: "crawling" })] },
     });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1?from=2026-01-01&bots=1" });
@@ -55,6 +62,7 @@ describe("RepoPage", () => {
           dora: { deploymentFrequency: null, leadTime: null, changeFailure: null, timeToRestore: null },
         },
       },
+      "GET /api/repos/1/code-health": noHealth,
       "GET /api/repos": { body: [repo()] },
     });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
@@ -64,7 +72,11 @@ describe("RepoPage", () => {
 
   it("sorts and pages the pull request table", async () => {
     const user = userEvent.setup();
-    mockFetch({ "GET /api/repos/1/report": { body: report({ prs: manyPrs }) }, "GET /api/repos": { body: [] } });
+    mockFetch({
+      "GET /api/repos/1/report": { body: report({ prs: manyPrs }) },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     const table = await screen.findByRole("table", { name: copy.prTable.title });
     expect(screen.getByText(copy.prTable.pageOf(1, 2))).toBeInTheDocument();
@@ -83,32 +95,97 @@ describe("RepoPage", () => {
     expect(within(table).getByRole("columnheader", { name: copy.prTable.author })).toHaveAttribute("aria-sort", "ascending");
   });
 
-  it("filters the pull request table by author and returns to the first page", async () => {
+  it("leaves unticked authors out of the whole report, and offers everyone or no one", async () => {
     const user = userEvent.setup();
     const prs = manyPrs.map((pr) => ({ ...pr, author: pr.number % 5 === 0 ? "ade" : "bea" }));
-    mockFetch({ "GET /api/repos/1/report": { body: report({ prs }) }, "GET /api/repos": { body: [] } });
+    const choices = [
+      { author: "bea", opened: 20 },
+      { author: "ade", opened: 5 },
+    ];
+    // Stands in for the API: it drops the excluded authors and marks them in the choices.
+    const fetchMock = mockFetch({
+      "GET /api/repos/1/report": (url) => {
+        const excluded = (url.searchParams.get("excludeAuthors") ?? "").split(",");
+        return {
+          body: report({
+            prs: prs.filter((pr) => !excluded.includes(pr.author!)),
+            authorChoices: choices.map((c) => ({ ...c, excluded: excluded.includes(c.author) })),
+          }),
+        };
+      },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
+    const lastReportUrl = () =>
+      new URL(
+        String(
+          fetchMock.mock.calls
+            .map((c) => c[0])
+            .filter((u) => String(u).includes("/report"))
+            .at(-1),
+        ),
+        "http://localhost",
+      );
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     const table = await screen.findByRole("table", { name: copy.prTable.title });
-    const filter = screen.getByRole("combobox", { name: copy.prTable.filterAuthor });
-    expect(
-      within(filter)
-        .getAllByRole("option")
-        .map((o) => o.textContent),
-    ).toEqual([copy.prTable.allAuthors(2), copy.prTable.authorOption("bea", 20), copy.prTable.authorOption("ade", 5)]);
-
-    await user.click(screen.getByRole("button", { name: copy.prTable.next }));
-    await user.selectOptions(filter, "ade");
-    expect(within(table).getAllByRole("row")).toHaveLength(6);
-    expect(screen.getByText(copy.prTable.showingAuthor(5, 25, "ade"))).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: copy.prTable.next })).not.toBeInTheDocument();
-
-    await user.selectOptions(filter, "");
     expect(within(table).getAllByRole("row")).toHaveLength(21);
-    expect(screen.getByText(copy.prTable.pageOf(1, 2))).toBeInTheDocument();
+
+    const menu = screen.getByText(copy.authorFilter.summary(2, 2));
+    await user.click(menu);
+    const list = screen.getByRole("group", { name: copy.authorFilter.legend });
+    expect(
+      within(list)
+        .getAllByRole("checkbox")
+        .map((box) => box.closest("label")?.textContent),
+    ).toEqual([`bea${copy.authorFilter.opened(20)}`, `ade${copy.authorFilter.opened(5)}`]);
+
+    await user.click(within(list).getByRole("checkbox", { name: /^bea/ }));
+    expect(await screen.findByText(copy.repo.excludingAuthors(["bea"]))).toBeInTheDocument();
+    expect(lastReportUrl().searchParams.get("excludeAuthors")).toBe("bea");
+    expect(screen.getByText(copy.authorFilter.summary(1, 2))).toBeInTheDocument();
+    await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(6));
+
+    await user.click(screen.getByRole("button", { name: copy.authorFilter.none }));
+    expect(await screen.findByText(copy.authorFilter.noneChosen)).toBeInTheDocument();
+    expect(lastReportUrl().searchParams.get("excludeAuthors")).toBe("bea,ade");
+    expect(screen.getByRole("button", { name: copy.authorFilter.none })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: copy.authorFilter.all }));
+    await waitFor(() => expect(screen.queryByText(copy.authorFilter.noneChosen)).not.toBeInTheDocument());
+    expect(lastReportUrl().searchParams.has("excludeAuthors")).toBe(false);
+    expect(screen.queryByText(copy.repo.excludingAuthors(["bea"]))).not.toBeInTheDocument();
+  });
+
+  it("closes the authors menu on Escape and on a click elsewhere", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1?exclude=grace" });
+    const summary = await screen.findByText(copy.authorFilter.summary(1, 2));
+    const menu = summary.closest("details")!;
+    expect(screen.getByText(copy.repo.excludingAuthors(["grace"]))).toBeInTheDocument();
+
+    await user.click(summary);
+    expect(menu.open).toBe(true);
+    expect(screen.getByRole("checkbox", { name: /^grace/ })).not.toBeChecked();
+    await user.keyboard("{Escape}");
+    expect(menu.open).toBe(false);
+    expect(summary).toHaveFocus();
+
+    await user.click(summary);
+    await user.click(screen.getByRole("heading", { level: 1 }));
+    expect(menu.open).toBe(false);
   });
 
   it("prints every pull request rather than the page on screen, then returns to paging", async () => {
-    mockFetch({ "GET /api/repos/1/report": { body: report({ prs: manyPrs }) }, "GET /api/repos": { body: [] } });
+    mockFetch({
+      "GET /api/repos/1/report": { body: report({ prs: manyPrs }) },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     const table = await screen.findByRole("table", { name: copy.prTable.title });
     expect(within(table).getAllByRole("row")).toHaveLength(21);
@@ -124,7 +201,11 @@ describe("RepoPage", () => {
 
   it("applies a date preset", async () => {
     const user = userEvent.setup();
-    const fetchMock = mockFetch({ "GET /api/repos/1/report": { body: report() }, "GET /api/repos": { body: [] } });
+    const fetchMock = mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
     await user.click(screen.getByRole("button", { name: copy.range.last30 }));
@@ -135,6 +216,7 @@ describe("RepoPage", () => {
   it("shows the API error message", async () => {
     mockFetch({
       "GET /api/repos/1/report": { status: 404, body: { error: "Unknown repository" } },
+      "GET /api/repos/1/code-health": noHealth,
       "GET /api/repos": { body: [] },
     });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });

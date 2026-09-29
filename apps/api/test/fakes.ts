@@ -1,6 +1,8 @@
-import type { DeployRun, PullRequest } from "@dora-dashboard/core";
+import type { DeployRun, FunctionMetrics, PullRequest } from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
+import type { CodeAnalyser } from "../src/interfaces/code-analyser.js";
+import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
 import type { PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
 
@@ -93,6 +95,59 @@ export class FakeCli implements CliTokenSource {
   }
 }
 
+export function fn(overrides: Partial<FunctionMetrics> = {}): FunctionMetrics {
+  return { file: "src/index.ts", language: "TypeScript", name: "main", startLine: 1, ccn: 3, nloc: 12, params: 1, ...overrides };
+}
+
+/** Hands out fake checkouts and records what was asked for and which were disposed. */
+export class FakeSourceCheckout implements SourceCheckout {
+  failWith: Error | null = null;
+  headFailWith: Error | null = null;
+  disposeFailWith: Error | null = null;
+  head = "abc1234";
+  headChecks = 0;
+  readonly requests: { token: string; owner: string; name: string; branch: string }[] = [];
+  readonly disposed: string[] = [];
+  private count = 0;
+
+  async headSha(): Promise<string> {
+    this.headChecks++;
+    if (this.headFailWith) throw this.headFailWith;
+    return this.head;
+  }
+
+  async checkout(token: string, owner: string, name: string, branch: string): Promise<Checkout> {
+    if (this.failWith) throw this.failWith;
+    this.requests.push({ token, owner, name, branch });
+    const dir = `/fake/checkout-${++this.count}`;
+    return {
+      dir,
+      commitSha: this.head,
+      dispose: async () => {
+        if (this.disposeFailWith) throw this.disposeFailWith;
+        this.disposed.push(dir);
+      },
+    };
+  }
+}
+
+export class FakeCodeAnalyser implements CodeAnalyser {
+  isAvailable = true;
+  failWith: Error | null = null;
+  functions: FunctionMetrics[] = [fn()];
+  readonly analysed: string[] = [];
+
+  async available(): Promise<boolean> {
+    return this.isAvailable;
+  }
+
+  async analyse(dir: string): Promise<FunctionMetrics[]> {
+    this.analysed.push(dir);
+    if (this.failWith) throw this.failWith;
+    return this.functions;
+  }
+}
+
 export function config(overrides: Partial<Config> = {}): Config {
   return {
     authMode: "gh-cli",
@@ -102,6 +157,7 @@ export function config(overrides: Partial<Config> = {}): Config {
     port: 0,
     databasePath: ":memory:",
     webOrigin: "http://localhost:5181",
+    codeAnalysis: true,
     ...overrides,
   };
 }
