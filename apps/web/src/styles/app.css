@@ -207,6 +207,23 @@ a:hover {
   gap: 6px;
 }
 
+.page-header-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.page-header-row > .page-header {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.print-only {
+  display: none;
+}
+
 .lede,
 .section-lede {
   color: var(--text-muted);
@@ -1321,5 +1338,94 @@ a:hover {
   .fair-panel {
     position: static;
     order: -1;
+  }
+}
+
+/* Print, used by "Download PDF report". The button adds .is-printing and waits before opening the print
+ * dialog, so the page takes the A4 content width on screen first and every chart redraws at the width it
+ * will print at. Recharts cannot resize itself once printing has begun. The button forces the light theme. */
+
+:root.is-printing .app-main {
+  max-width: 186mm;
+  padding: 0;
+}
+
+:root.is-printing .chart-grid,
+:root.is-printing .compare-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+:root.is-printing .fair-panel {
+  position: static;
+  order: -1;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm;
+  }
+
+  :root {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  body {
+    background: var(--surface);
+  }
+
+  .app-header,
+  .skip-link,
+  .back-link,
+  .report-download,
+  .range-controls,
+  .toggle-row,
+  .chart-toolbar .toggle,
+  .table-disclosure,
+  .pager,
+  .sort-indicator,
+  .recharts-tooltip-wrapper {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+  }
+
+  .controls-bar {
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .card,
+  .controls-bar,
+  .notice {
+    box-shadow: none;
+  }
+
+  .card,
+  .tile,
+  .chart-card,
+  .fair-panel,
+  .data-table tr {
+    break-inside: avoid;
+  }
+
+  .section-title,
+  .chart-title {
+    break-after: avoid;
+  }
+
+  .is-refreshing {
+    opacity: 1;
+  }
+
+  a {
+    color: var(--text);
+    text-decoration: none;
   }
 }

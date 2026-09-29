@@ -9,6 +9,7 @@ import { BandLabel } from "../components/BandLabel";
 import { ChartCard, type TableData } from "../components/ChartCard";
 import { CompareLineChart } from "../components/CompareLineChart";
 import { DateRangeControls } from "../components/DateRangeControls";
+import { DownloadReportButton } from "../components/DownloadReportButton";
 import { SeriesLegend, type LegendItem } from "../components/SeriesLegend";
 import { EmptyState, ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { Toggle } from "../components/Toggle";
@@ -271,9 +272,12 @@ export function ComparePage() {
       <Link to="/" className="back-link">
         {copy.common.backToRepos}
       </Link>
-      <header className="page-header">
-        <h1>{copy.compare.title}</h1>
-        <p className="lede">{copy.compare.lede}</p>
+      <header className="page-header page-header-row">
+        <div className="page-header">
+          <h1>{copy.compare.title}</h1>
+          <p className="lede">{copy.compare.lede}</p>
+        </div>
+        {reports.length > 0 && <DownloadReportButton subject={copy.report.compareSubject(series.map((s) => s.label))} />}
       </header>
     </>
   );

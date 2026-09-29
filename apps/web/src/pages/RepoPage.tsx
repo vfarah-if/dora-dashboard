@@ -5,6 +5,7 @@ import { copy } from "../copy";
 import { AuthorsTable } from "../components/AuthorsTable";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DoraTile } from "../components/DoraTile";
+import { DownloadReportButton } from "../components/DownloadReportButton";
 import { PrTable } from "../components/PrTable";
 import { RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
@@ -55,14 +56,17 @@ export function RepoPage() {
       <Link to="/" className="back-link">
         {copy.common.backToRepos}
       </Link>
-      <header className="page-header">
-        <h1>{data ? repoName(data.repo) : copy.repo.loadingTitle}</h1>
-        {data && (
-          <p className="lede">
-            {copy.repo.rangeSummary(formatDate(data.range.from), formatDate(data.range.to))}
-            {data.repo.lastCrawledAt && ` · ${copy.repo.lastCrawled(formatDateTime(data.repo.lastCrawledAt))}`}
-          </p>
-        )}
+      <header className="page-header page-header-row">
+        <div className="page-header">
+          <h1>{data ? repoName(data.repo) : copy.repo.loadingTitle}</h1>
+          {data && (
+            <p className="lede">
+              {copy.repo.rangeSummary(formatDate(data.range.from), formatDate(data.range.to))}
+              {data.repo.lastCrawledAt && ` · ${copy.repo.lastCrawled(formatDateTime(data.repo.lastCrawledAt))}`}
+            </p>
+          )}
+        </div>
+        {data && <DownloadReportButton subject={repoName(data.repo)} />}
       </header>
 
       <div className="controls-bar">

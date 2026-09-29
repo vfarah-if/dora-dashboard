@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ComparePage } from "./ComparePage";
 import { mockFetch, renderRoute } from "../test/render";
@@ -18,6 +18,18 @@ function renderCompare(route = "/compare?ids=1,2") {
 }
 
 describe("ComparePage", () => {
+  it("offers a PDF report named after every compared repository", async () => {
+    const user = userEvent.setup();
+    let printedAs = "";
+    vi.spyOn(window, "print").mockImplementation(() => {
+      printedAs = document.title;
+    });
+    renderCompare();
+    await user.click(await screen.findByRole("button", { name: copy.report.download }));
+    await waitFor(() => expect(printedAs).not.toBe(""));
+    expect(printedAs).toMatch(/^acme-widgets-vs-acme-gadgets-delivery-report-\d{4}-\d{2}-\d{2}$/);
+  });
+
   it("renders one headline column per repository with DORA band labels", async () => {
     const { fetchMock } = renderCompare();
     const table = await screen.findByRole("table", { name: copy.compare.headline.title });

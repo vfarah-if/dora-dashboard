@@ -248,6 +248,13 @@ export const copy = {
     sortBy: (column: string) => `Sort by ${column}`,
   },
 
+  report: {
+    download: "Download PDF report",
+    hint: "Opens your browser's print dialog. Choose Save as PDF as the destination.",
+    prepared: (day: string) => `Report prepared on ${day}`,
+    compareSubject: (names: readonly string[]) => names.join(" vs "),
+  },
+
   repo: {
     loadingTitle: "Loading repository",
     lastCrawled: (when: string) => `Last crawled ${when}`,

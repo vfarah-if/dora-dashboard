@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
 import { mockFetch, renderRoute } from "../test/render";
@@ -14,6 +14,19 @@ const manyPrs = Array.from({ length: 25 }, (_, i) => ({
 }));
 
 describe("RepoPage", () => {
+  it("offers a PDF report named after the repository once the report has loaded", async () => {
+    const user = userEvent.setup();
+    let printedAs = "";
+    vi.spyOn(window, "print").mockImplementation(() => {
+      printedAs = document.title;
+    });
+    mockFetch({ "GET /api/repos/1/report": { body: report() }, "GET /api/repos": { body: [repo()] } });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    await user.click(await screen.findByRole("button", { name: copy.report.download }));
+    await waitFor(() => expect(printedAs).not.toBe(""));
+    expect(printedAs).toMatch(/^acme-widgets-delivery-report-\d{4}-\d{2}-\d{2}$/);
+  });
+
   it("shows the DORA tiles, flow tiles and charts for a repository", async () => {
     const fetchMock = mockFetch({
       "GET /api/repos/1/report": { body: report() },
