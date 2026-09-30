@@ -2559,18 +2559,20 @@ a:hover {
   color: var(--text-muted);
 }
 
+/* The lanes share the page width, so every lane is in view on a laptop or wider. Below five lanes of 220px
+   the board scrolls sideways inside itself rather than squeezing the cards. */
 .queue-board {
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
   align-items: stretch;
-  gap: 16px;
+  gap: 12px;
   overflow-x: auto;
   padding-bottom: 8px;
   max-width: 100%;
 }
 
 .queue-lane {
-  flex: 0 0 290px;
-  width: 290px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2650,6 +2652,7 @@ a:hover {
 .pr-card-title {
   font-weight: 600;
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .pr-card-label {
