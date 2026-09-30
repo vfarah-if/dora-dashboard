@@ -43,3 +43,8 @@ export const crawlQuery = {
   type: "object",
   properties: { full: { type: "string", enum: ["0", "1"] } },
 } as const;
+
+export const codeHealthQuery = {
+  type: "object",
+  properties: { from: date, to: date },
+} as const;

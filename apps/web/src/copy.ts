@@ -268,31 +268,162 @@ export const copy = {
 
   codeHealth: {
     title: "Code health",
-    lede: "How complex the functions in the default branch are, measured on the most recent crawl. This describes the code as it stands and does not follow the date range above.",
+    lede: "A verdict on the default branch as it stands after the most recent crawl, with what is good, what to improve and the figures behind it. The grade does not follow the date range, which only decides which merged pull requests count towards the testing figure.",
     analysedAt: (sha: string, when: string) => `Analysed commit ${sha} on ${when}`,
     loading: "Loading code health",
-    medianCcn: "Median complexity",
-    medianCcnHint: "The complexity of the middle function. Half the functions are simpler.",
-    p75Ccn: "75th percentile complexity",
-    p75CcnHint: (max: string) => `Three quarters of functions are at or below this. The most complex function scores ${max}.`,
-    shareAbove: (limit: number) => `Functions above ${limit}`,
-    shareAboveHint: (high: string, limit: number) => `The share worth a closer look. ${high} are above ${limit}.`,
-    nloc: "Lines of code",
-    nlocHint: "Lines inside functions, leaving out blank lines and comments.",
-    functions: "Functions analysed",
-    functionsHint: "Every function the analyser found across all supported languages.",
     staleTitle: "The latest analysis failed",
     stale: (commitDate: string, attemptDate: string, message: string) =>
       `These figures are from the commit dated ${commitDate}. The latest attempt on ${attemptDate} failed with the message "${message}".`,
+    yes: "Yes",
+    no: "No",
+    unknown: "Not known",
+
+    verdict: {
+      title: "Overall grade",
+      definition: "The lowest of the three parts below, because code is only as healthy as its weakest area.",
+      lowestPart: (part: string, sentence: string) => `${part} is the lowest part. ${sentence}.`,
+      allPass: "All checks pass in every part.",
+      bandName: (band: string) => `${band} code health`,
+      missingTitle: "No grade yet",
+      missing:
+        "The grade needs the repository's tooling files as well as its functions, so it has not been produced for this analysis. The next crawl will produce it.",
+    },
+
+    parts: {
+      title: "Grade by part",
+      maintainability: "Maintainability",
+      testing: "Testing",
+      hygiene: "Hygiene",
+      maintainabilityDefinition: "How much of the code sits in complex, long or wide functions.",
+      testingDefinition: "How much test code there is, and whether pull requests and CI keep it up.",
+      hygieneDefinition: "Whether a linter and a formatter are set up and enforced in CI.",
+      limitedBy: (sentence: string) => `${sentence}.`,
+      nothingLimits: "All checks in this part pass.",
+    },
+
+    lists: {
+      goodTitle: "Good",
+      goodEmpty: "Nothing stands out as a strength yet.",
+      improveTitle: "To improve",
+      improveEmpty: "Nothing needs improving.",
+      improveHint: "Listed with the most serious first.",
+    },
+
+    findings: {
+      linesAboveWarn: (good: boolean, share: string) =>
+        `${good ? "Only " : ""}${share} of source lines are in functions above complexity 10`,
+      linesAboveHigh: (good: boolean, share: string) =>
+        `${good ? "Only " : ""}${share} of source lines are in functions above complexity 20`,
+      longFunctions: (
+        good: boolean,
+        share: string,
+        count: number | undefined,
+        longest: { name: string; nloc: number } | null,
+      ) => {
+        if (good) return `Only ${share} of functions are longer than 60 lines`;
+        if (count === undefined) return `${share} of functions are longer than 60 lines`;
+        const lead = `${count} ${count === 1 ? "function is" : "functions are"} longer than 60 lines`;
+        return longest ? `${lead}, the longest being ${longest.name} at ${longest.nloc} lines` : lead;
+      },
+      manyParams: (good: boolean, share: string, count: number | undefined) => {
+        if (good) return `Only ${share} of functions take more than 5 parameters`;
+        if (count === undefined) return `${share} of functions take more than 5 parameters`;
+        return `${count} ${count === 1 ? "function takes" : "functions take"} more than 5 parameters`;
+      },
+      testRatio: (good: boolean, poor: boolean, ratio: string) =>
+        ratio === "0.00"
+          ? "No test code was found"
+          : `Test code is ${good || !poor ? "" : "only "}${ratio} of the size of source code`,
+      prsWithTests: (good: boolean, poor: boolean, share: string, withTests: number, total: number) =>
+        good || !poor
+          ? `${share} of merged pull requests that changed source also changed tests (${withTests} of ${total})`
+          : `Only ${share} of merged pull requests changed tests alongside code (${withTests} of ${total})`,
+      ciRunsTests: (good: boolean) => (good ? "CI runs the tests" : "CI does not run the tests"),
+      coverageFloor: (floor: number | null, good: boolean) =>
+        floor === null
+          ? "No coverage floor is set"
+          : good
+            ? `A coverage floor of ${floor}% is configured`
+            : `A coverage floor of ${floor}% is configured but below the 60% needed for elite`,
+      linter: (tools: readonly string[]) =>
+        tools.length > 0 ? `A linter is configured (${tools.join(", ")})` : "No linter is configured",
+      formatter: (tools: readonly string[], onlyEditorconfig: boolean) =>
+        tools.length > 0
+          ? `A formatter is configured (${tools.join(", ")})`
+          : onlyEditorconfig
+            ? "No formatter is configured, because an editorconfig file only guides editors"
+            : "No formatter is configured",
+      ciLinter: (tools: readonly string[]) =>
+        tools.length > 0 ? `The linter runs in CI (${tools.join(", ")})` : "CI does not run a linter",
+      ciFormat: (tools: readonly string[]) =>
+        tools.length > 0 ? `Formatting is checked in CI with ${tools.join(", ")}` : "CI does not check formatting",
+    },
+
+    detail: {
+      title: "Detail",
+      above: (limit: number) => `Functions above ${limit}`,
+      aboveValue: (count: string, share: string) => `${count} (${share})`,
+      aboveHint: (limit: number) => `Source functions with a complexity above ${limit}, and their share of all source functions.`,
+      mostComplex: "Most complex function",
+      mostComplexValue: (ccn: string) => `Complexity ${ccn}`,
+      mostComplexNone: "No functions",
+      mostComplexHint: (name: string, location: string) => `${name} at ${location}`,
+      nloc: "Source lines",
+      nlocHint: "Lines of code inside source functions, leaving out blank lines and comments.",
+      functions: "Source functions",
+      functionsHint: (tests: string) => `${tests} test functions are counted separately, and only feed the test ratio.`,
+    },
+
     explainerTitle: "What cyclomatic complexity means",
     explainer:
       "Cyclomatic complexity counts the independent paths through a function, so each branch, loop or condition adds one. A low score is easy to read and to test. Scores above 10 are worth reviewing and scores above 20 are hard to change safely.",
+
     chart: {
       title: "Complexity distribution",
-      subtitle: "How many functions fall into each complexity band, where a higher score means more paths to test.",
+      subtitle: "How many source functions fall into each complexity range, where a higher score means more paths to test.",
       x: "Cyclomatic complexity",
       series: "Functions",
+      keyTitle: "What the ranges mean",
+      key: [
+        { range: "1 to 10", meaning: "Simple" },
+        { range: "11 to 20", meaning: "Moderate" },
+        { range: "21 to 50", meaning: "Complex" },
+        { range: "Over 50", meaning: "Very hard to test" },
+      ],
     },
+
+    testing: {
+      title: "Testing checks",
+      subtitle: "Signals read from the repository's files and its merged pull requests.",
+      ratio: "Test ratio",
+      ratioValue: (ratio: string) => `${ratio} lines inside test functions per line inside source functions`,
+      prs: "Pull requests that changed tests",
+      prsValue: (share: string, withTests: number, total: number) => `${share} (${withTests} of ${total} that changed source)`,
+      prsNeedsCrawl: "Needs a full crawl, because file names have not been collected for these pull requests",
+      prsNone: "No merged pull requests in this range changed source code",
+      floor: "Coverage floor",
+      floorNone: "None set",
+      floorValue: (floor: number) => `${floor}% of lines, configured`,
+      floorBelow: (floor: number) => `${floor}% of lines, configured but below the 60% needed for elite`,
+      ci: "CI runs tests",
+      unavailable: "The repository's files were not read for this analysis, so the tooling checks are not known yet.",
+    },
+
+    hygiene: {
+      title: "Hygiene checks",
+      subtitle: "Each tool found in the repository, and whether CI runs it.",
+      tool: "Tool",
+      kind: "Kind",
+      configured: "Configured",
+      enforced: "Runs in CI",
+      linter: "Linter",
+      formatter: "Formatter",
+      weak: "Editor settings only",
+      weakNote: "Weak, because it guides editors but does not check or change code.",
+      notApplicable: "Not applicable",
+      none: "No linter or formatter was found.",
+    },
+
     hotspots: {
       title: "Most complex functions",
       subtitle: "The functions with the highest complexity, which are the best candidates to simplify first.",
@@ -302,13 +433,13 @@ export const copy = {
       nloc: "Lines",
       empty: "No functions were found.",
     },
+
     none: {
       title: "Code health has not been measured yet",
       body: "Crawl this repository to clone the default branch and analyse its functions.",
     },
     error: {
       title: "Code health could not be measured",
-      install: "To enable it, install lizard with pipx install lizard and crawl the repository again.",
       when: (when: string) => `The last attempt was on ${when}.`,
     },
   },

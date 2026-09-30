@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./core/config.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
+import type { WorkspaceReader } from "./interfaces/workspace-reader.js";
 import type { SourceCheckout } from "./interfaces/source-checkout.js";
 import type { SourceProvider } from "./interfaces/source-provider.js";
 import type { CliTokenSource, SessionStore } from "./interfaces/token-source.js";
@@ -24,6 +25,8 @@ export interface AppDeps {
   /** Both are needed for code analysis; leave either out, or set `config.codeAnalysis` false, to skip it. */
   checkout?: SourceCheckout;
   analyser?: CodeAnalyser;
+  /** Reads tooling files from the clone so the report can grade testing and hygiene. Optional. */
+  reader?: WorkspaceReader;
   logger?: boolean;
 }
 
@@ -41,7 +44,14 @@ export async function buildApp(deps: AppDeps): Promise<{ app: FastifyInstance; c
     cli: deps.cli,
     exchangeCode: deps.exchangeCode,
   };
-  const codeHealth = new CodeHealthService(deps.store, deps.checkout ?? null, deps.analyser ?? null, undefined, app.log);
+  const codeHealth = new CodeHealthService(
+    deps.store,
+    deps.checkout ?? null,
+    deps.analyser ?? null,
+    undefined,
+    app.log,
+    deps.reader ?? null,
+  );
   // With analysis off the crawl never clones, but earlier snapshots can still be read back.
   const crawler = new CrawlService(
     deps.store,

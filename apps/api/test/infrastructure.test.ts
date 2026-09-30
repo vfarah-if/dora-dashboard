@@ -55,6 +55,90 @@ describe("GitHubProvider", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer t");
   });
 
+  it("records the changed file paths, and leaves files absent when GitHub sent none", async () => {
+    const page = (node: object) =>
+      vi.fn(async () =>
+        json({
+          data: {
+            repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: "x" }, totalCount: 1, nodes: [node] } },
+          },
+        }),
+      );
+    const withFiles = await new GitHubProvider(
+      page({ ...gqlNode, files: { nodes: [{ path: "src/a.ts" }, { path: "src/a.test.ts" }] } }),
+    ).fetchPullRequestPage("t", "acme", "widgets", null);
+    const without = await new GitHubProvider(page(gqlNode)).fetchPullRequestPage("t", "acme", "widgets", null);
+
+    expect(withFiles.pullRequests[0]!.files).toEqual(["src/a.ts", "src/a.test.ts"]);
+    expect("files" in without.pullRequests[0]!).toBe(false);
+  });
+
+  it("marks a pull request that changed more than 100 files as truncated, and only then", async () => {
+    const page = (node: object) =>
+      vi.fn(async () =>
+        json({
+          data: {
+            repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: "x" }, totalCount: 1, nodes: [node] } },
+          },
+        }),
+      );
+    const fetchOne = async (files: object) =>
+      (await new GitHubProvider(page({ ...gqlNode, files })).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+    const paths = Array.from({ length: 100 }, (_, i) => ({ path: `src/f${i}.ts` }));
+
+    const over = await fetchOne({ totalCount: 101, nodes: paths });
+    const exactly = await fetchOne({ totalCount: 100, nodes: paths });
+
+    expect(over.filesTruncated).toBe(true);
+    expect(over.files).toHaveLength(100);
+    expect("filesTruncated" in exactly).toBe(false);
+  });
+
+  it("retries once with a page of 25 after a 502 or 504, and only then", async () => {
+    const ok = json({
+      data: {
+        repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [gqlNode] } },
+      },
+    });
+    for (const status of [502, 504]) {
+      const http = vi.fn().mockResolvedValueOnce(new Response("bad gateway", { status })).mockResolvedValueOnce(ok.clone());
+      const result = await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", "c1");
+
+      expect(result.pullRequests).toHaveLength(1);
+      const sizes = http.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).variables);
+      expect(sizes).toEqual([
+        { owner: "acme", name: "widgets", cursor: "c1", first: 50 },
+        { owner: "acme", name: "widgets", cursor: "c1", first: 25 },
+      ]);
+    }
+  });
+
+  it("gives up after the smaller retry fails too, and does not retry other errors", async () => {
+    const twice = vi.fn(async () => new Response("bad gateway", { status: 502 }));
+    await expect(new GitHubProvider(twice).fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toMatchObject({
+      status: 502,
+    });
+    expect(twice).toHaveBeenCalledTimes(2);
+
+    const rejected = vi.fn(async () => new Response("no", { status: 403 }));
+    await expect(new GitHubProvider(rejected).fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(rejected).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks GitHub for the first 100 changed files of each pull request", async () => {
+    const http = vi.fn(async () =>
+      json({
+        data: { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 0, nodes: [] } } },
+      }),
+    );
+    await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null);
+
+    const [, init] = http.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).query).toContain("files(first: 100) { totalCount nodes { path } }");
+  });
+
   it("returns a null cursor on the last page and tolerates a PR with no commits", async () => {
     const http = vi.fn(async () =>
       json({

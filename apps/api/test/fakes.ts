@@ -1,6 +1,7 @@
 import type { DeployRun, FunctionMetrics, PullRequest } from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
+import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import type { CodeAnalyser } from "../src/interfaces/code-analyser.js";
 import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
 import type { PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
@@ -49,6 +50,8 @@ export class FakeProvider implements SourceProvider {
   pageSize = 2;
   pagesServed = 0;
   failWith: Error | null = null;
+  /** Serve this many pages, then fail the next one with `failWith`. */
+  failAfterPages: number | null = null;
   readonly repos = new Map<string, { prs: PullRequest[]; runs: DeployRun[]; workflows: string[] }>();
 
   seed(fullName: string, data: Partial<{ prs: PullRequest[]; runs: DeployRun[]; workflows: string[] }>): void {
@@ -62,7 +65,7 @@ export class FakeProvider implements SourceProvider {
   }
 
   async fetchPullRequestPage(_token: string, owner: string, name: string, cursor: string | null): Promise<PullRequestPage> {
-    if (this.failWith) throw this.failWith;
+    if (this.failWith && (this.failAfterPages === null || this.pagesServed >= this.failAfterPages)) throw this.failWith;
     this.pagesServed++;
     const sorted = [...this.repo(owner, name).prs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const start = cursor ? Number(cursor) : 0;
@@ -145,6 +148,23 @@ export class FakeCodeAnalyser implements CodeAnalyser {
     this.analysed.push(dir);
     if (this.failWith) throw this.failWith;
     return this.functions;
+  }
+}
+
+/** Serves files from a map instead of a disk, and records what was read. */
+export class FakeWorkspaceReader implements WorkspaceReader {
+  files = new Map<string, string>();
+  listFailWith: Error | null = null;
+  readonly reads: string[] = [];
+
+  async list(): Promise<string[]> {
+    if (this.listFailWith) throw this.listFailWith;
+    return [...this.files.keys()];
+  }
+
+  async read(_dir: string, path: string): Promise<string | null> {
+    this.reads.push(path);
+    return this.files.get(path) ?? null;
   }
 }
 

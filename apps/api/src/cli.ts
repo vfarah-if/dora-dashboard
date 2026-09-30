@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "./core/config.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
+import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
 import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
@@ -49,7 +50,9 @@ const timer = setInterval(() => {
   if (progress) console.log(progress);
 }, 2000);
 try {
-  const codeHealth = config.codeAnalysis ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser()) : undefined;
+  const codeHealth = config.codeAnalysis
+    ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser(), undefined, undefined, new FsWorkspaceReader())
+    : undefined;
   await new CrawlService(store, provider, codeHealth).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));
 } finally {

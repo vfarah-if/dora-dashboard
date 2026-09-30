@@ -16,6 +16,12 @@ export interface AuthState {
 
 export type RepoWithCounts = Repo & { pullRequests: number; deployRuns: number };
 
+/** The part of the page range that decides which merged pull requests count towards the testing figure. */
+export interface CodeHealthRange {
+  from: string | null;
+  to: string | null;
+}
+
 export interface ReportRange {
   from: string | null;
   to: string | null;
@@ -38,7 +44,8 @@ export const queryKeys = {
   repos: ["repos"] as const,
   workflows: (id: number) => ["repos", id, "workflows"] as const,
   report: (id: number, range: ReportRange, excludeAuthors: readonly string[]) => ["report", id, range, excludeAuthors] as const,
-  codeHealth: (id: number) => ["code-health", id] as const,
+  codeHealth: (id: number, range?: CodeHealthRange) =>
+    range ? (["code-health", id, range] as const) : (["code-health", id] as const),
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
 };
 
@@ -146,8 +153,11 @@ export function useCompare(ids: readonly number[], range: ReportRange) {
   });
 }
 
-/** The latest code health for a repository. It refetches when a crawl of that repository finishes. */
-export function useCodeHealth(id: number) {
+/**
+ * The latest code health for a repository. `range` only decides which merged pull requests count towards the
+ * testing figure. It refetches when a crawl of that repository finishes.
+ */
+export function useCodeHealth(id: number, range: CodeHealthRange = { from: null, to: null }) {
   const client = useQueryClient();
   const repos = useRepos();
   const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
@@ -156,9 +166,14 @@ export function useCodeHealth(id: number) {
     if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: queryKeys.codeHealth(id) });
     wasCrawling.current = crawling;
   }, [client, crawling, id]);
+  const params = new URLSearchParams();
+  if (range.from) params.set("from", range.from);
+  if (range.to) params.set("to", range.to);
+  const query = params.toString();
   return useQuery({
-    queryKey: queryKeys.codeHealth(id),
-    queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(`/api/repos/${id}/code-health`, { signal }),
+    queryKey: queryKeys.codeHealth(id, { from: range.from, to: range.to }),
+    queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(withQuery(`/api/repos/${id}/code-health`, query), { signal }),
     enabled: Number.isFinite(id),
+    placeholderData: keepPreviousData,
   });
 }

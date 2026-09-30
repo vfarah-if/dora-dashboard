@@ -117,7 +117,7 @@ export function RepoPage() {
             </div>
           </section>
 
-          <CodeHealthSection repoId={id} />
+          <CodeHealthSection repoId={id} range={range} />
 
           <section aria-labelledby="flow-title" className="section">
             <h2 id="flow-title" className="section-title">

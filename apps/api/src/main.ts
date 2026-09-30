@@ -4,6 +4,7 @@ import { loadConfig } from "./core/config.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { MemorySessionStore } from "./infrastructure/auth/memory-session-store.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
+import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
 import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
@@ -23,6 +24,7 @@ const { app } = await buildApp({
   exchangeCode: githubCodeExchange(config),
   checkout,
   analyser: new LizardAnalyser(),
+  reader: new FsWorkspaceReader(),
   logger: true,
 });
 

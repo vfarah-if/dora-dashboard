@@ -3,7 +3,15 @@ import type { CodeHealthService } from "../services/code-health-service.js";
 import type { CrawlService } from "../services/crawl-service.js";
 import type { AddRepoInput, RepoService } from "../services/repo-service.js";
 import type { ReportService } from "../services/report-service.js";
-import { addRepoBody, compareQuery, configureRepoBody, crawlQuery, idParams, reportQuery } from "../schemas/requests.js";
+import {
+  addRepoBody,
+  codeHealthQuery,
+  compareQuery,
+  configureRepoBody,
+  crawlQuery,
+  idParams,
+  reportQuery,
+} from "../schemas/requests.js";
 
 export interface RepoRouteDeps {
   guard: preHandlerAsyncHookHandler;
@@ -89,10 +97,10 @@ export function registerRepoRoutes(app: FastifyInstance, deps: RepoRouteDeps): v
       }),
   );
 
-  app.get<{ Params: { id: number } }>(
+  app.get<{ Params: { id: number }; Querystring: { from?: string; to?: string } }>(
     "/api/repos/:id/code-health",
-    { preHandler: guard, schema: { params: idParams } },
-    async (request) => codeHealth.report(request.params.id),
+    { preHandler: guard, schema: { params: idParams, querystring: codeHealthQuery } },
+    async (request) => codeHealth.report(request.params.id, request.query),
   );
 
   app.get<{ Querystring: RangeQuery & { ids: string } }>(

@@ -38,7 +38,7 @@ Tokens are held in memory only and never sent to the browser (ADR 0004).
 
 ## What it measures
 
-See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions.
+See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions, and an overall grade for maintainability, testing and hygiene worked out from the repository's files and pull requests without running any of its code (ADR 0013). Run a full crawl once after upgrading so that pull request file lists are fetched for the testing check.
 
 DORA figures need a deploy workflow. The API guesses one from workflow file names; set it explicitly per repository if the guess is wrong.
 

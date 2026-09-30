@@ -69,6 +69,16 @@ describe("CrawlService", () => {
     expect(crawler.isCrawling(repoId)).toBe(false);
   });
 
+  it("keeps the pages it already stored when a later page fails", async () => {
+    provider.failWith = new UpstreamError("bad gateway", 502);
+    provider.failAfterPages = 1;
+
+    await expect(crawler.crawl("token", repoId)).rejects.toThrow("bad gateway");
+
+    expect(store.counts(repoId).pullRequests).toBe(2); // the first page of two
+    expect(store.getRepo(repoId)).toMatchObject({ crawlStatus: "failed", crawlError: "bad gateway" });
+  });
+
   it("ignores a second crawl of the same repository while one is running", async () => {
     const first = crawler.crawl("token", repoId);
     await crawler.crawl("token", repoId);

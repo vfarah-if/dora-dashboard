@@ -27,9 +27,9 @@ async function request<T>(http: Fetch, token: string, url: string, init: Request
 }
 
 const PULL_REQUESTS_QUERY = `
-query ($owner: String!, $name: String!, $cursor: String) {
+query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(first: 50, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
+    pullRequests(first: $first, after: $cursor, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       totalCount
       nodes {
@@ -39,6 +39,7 @@ query ($owner: String!, $name: String!, $cursor: String) {
         mergedBy { login }
         commits(first: 1) { nodes { commit { authoredDate committedDate } } }
         reviews(first: 100) { nodes { author { login } state submittedAt } }
+        files(first: 100) { totalCount nodes { path } }
       }
     }
   }
@@ -60,6 +61,7 @@ interface GqlPullRequest {
   author: { login: string; __typename: string } | null;
   mergedBy: { login: string } | null;
   commits: { nodes: { commit: { authoredDate: string; committedDate: string } }[] };
+  files?: { totalCount?: number; nodes: { path: string }[] } | null;
   reviews: { nodes: { author: { login: string } | null; state: Review["state"]; submittedAt: string | null }[] };
 }
 
@@ -70,6 +72,15 @@ interface GqlPage {
     } | null;
   };
   errors?: { message: string }[];
+}
+
+const FILES_RECORDED = 100;
+
+/** The changed paths, and a flag when GitHub reported more files than the 100 we asked for. */
+function filesOf(node: GqlPullRequest): Pick<PullRequest, "files" | "filesTruncated"> {
+  if (!node.files) return {};
+  const files = node.files.nodes.flatMap((f) => (f?.path ? [f.path] : []));
+  return (node.files.totalCount ?? 0) > FILES_RECORDED ? { files, filesTruncated: true } : { files };
 }
 
 function toPullRequest(node: GqlPullRequest): PullRequest {
@@ -93,8 +104,13 @@ function toPullRequest(node: GqlPullRequest): PullRequest {
     firstCommitAt,
     baseRef: node.baseRefName,
     reviews: node.reviews.nodes.map((r) => ({ author: r.author?.login ?? null, state: r.state, submittedAt: r.submittedAt })),
+    ...filesOf(node),
   };
 }
+
+const PAGE_SIZE = 50;
+const RETRY_PAGE_SIZE = 25;
+const RETRYABLE = new Set([502, 504]);
 
 /** GitHub over its GraphQL API for pull requests and its REST API for Actions runs. */
 export class GitHubProvider implements SourceProvider {
@@ -106,10 +122,14 @@ export class GitHubProvider implements SourceProvider {
   ) {}
 
   async fetchPullRequestPage(token: string, owner: string, name: string, cursor: string | null): Promise<PullRequestPage> {
-    const page = await request<GqlPage>(this.http, token, `${API}/graphql`, {
-      method: "POST",
-      body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor } }),
-    });
+    let page: GqlPage;
+    try {
+      page = await this.pullRequestPage(token, owner, name, cursor, PAGE_SIZE);
+    } catch (error) {
+      // A page of 50 pull requests, each with reviews and files, can time out at the gateway. A smaller page usually fits.
+      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
+      page = await this.pullRequestPage(token, owner, name, cursor, RETRY_PAGE_SIZE);
+    }
     const connection = page.data?.repository?.pullRequests;
     if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
     if (page.errors?.length) throw new UpstreamError(page.errors.map((e) => e.message).join("; "), 200);
@@ -118,6 +138,13 @@ export class GitHubProvider implements SourceProvider {
       totalCount: connection.totalCount,
       nextCursor: connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null,
     };
+  }
+
+  private pullRequestPage(token: string, owner: string, name: string, cursor: string | null, first: number) {
+    return request<GqlPage>(this.http, token, `${API}/graphql`, {
+      method: "POST",
+      body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
+    });
   }
 
   async fetchDeployRuns(token: string, owner: string, name: string, workflow: string): Promise<DeployRun[]> {
