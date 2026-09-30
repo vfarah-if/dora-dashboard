@@ -7,6 +7,8 @@ import {
   flagFor,
   formatWait,
   groupByLane,
+  initialsOf,
+  metaParts,
   lanesLine,
   reviewerNames,
   summaryText,
@@ -186,5 +188,42 @@ describe("tilesFor", () => {
     expect(tiles.idle.count).toBe(1);
     expect(isIdle({ idleDays: 13 })).toBe(false);
     expect(isIdle({ idleDays: 14 })).toBe(true);
+  });
+});
+
+describe("initialsOf", () => {
+  it("takes two letters from a login", () => {
+    expect(initialsOf("ada-lovelace")).toBe("AL");
+    expect(initialsOf("casey")).toBe("CA");
+    expect(initialsOf("---")).toBe("?");
+  });
+});
+
+describe("metaParts", () => {
+  it("states the wait only when there is no flag, and adds idle days only when idle", () => {
+    const fresh = queueEntry({
+      lane: "awaiting_review",
+      band: "fresh",
+      waitHours: 3,
+      requestedReviewers: [],
+      requestedReviewerCount: 0,
+      additions: 5,
+      deletions: 2,
+      changedFiles: 1,
+      checks: "passing",
+      idleDays: 1,
+    });
+    expect(metaParts(fresh, false)).toEqual(["Waiting 3h", "+5 -2", "1 file", "checks passing"]);
+    const stale = queueEntry({
+      lane: "no_reviewer",
+      band: "stale",
+      waitHours: 288,
+      requestedReviewers: [],
+      requestedReviewerCount: 0,
+      idleDays: 20,
+    });
+    const parts = metaParts(stale, false);
+    expect(parts.some((p) => p.startsWith("Waiting"))).toBe(false);
+    expect(parts.at(-1)).toBe("Idle 20 days");
   });
 });

@@ -353,6 +353,12 @@ describe("buildReviewQueue", () => {
     expect(q.tiles.pastDay).toEqual({ count: 0, longestHours: null });
   });
 
+  it("marks a bot by its login when the host did not flag it", () => {
+    const dependabot = open({ number: 9, author: "dependabot", authorIsBot: false });
+    const q = buildReviewQueue([{ repo: widgets, pullRequests: [dependabot] }], { now });
+    expect(q.entries[0]?.authorIsBot).toBe(true);
+  });
+
   it("is empty and fetched now with no repositories", () => {
     expect(buildReviewQueue([], { now })).toMatchObject({ fetchedAt: now, repos: [], features: [] });
   });

@@ -184,15 +184,17 @@ export function ReviewQueuePage() {
             {visible.length === 0 ? (
               <EmptyState title={text.noMatches} />
             ) : (
-              <div className="queue-lanes">
+              <div className="queue-board" role="region" aria-label={text.lanes.boardLabel} tabIndex={0}>
                 {lanes.map((lane) => (
                   <section key={lane} className="queue-lane" aria-labelledby={`lane-${lane}`}>
-                    <h3 id={`lane-${lane}`} className="queue-lane-title">
-                      {text.lanes[lane].title} <span className="queue-lane-count">{grouped[lane].length}</span>
-                    </h3>
-                    <p className="chart-subtitle">{text.lanes[lane].hint}</p>
+                    <div className="queue-lane-head">
+                      <h3 id={`lane-${lane}`} className="queue-lane-title">
+                        {text.lanes[lane].title} <span className="queue-lane-count">{grouped[lane].length}</span>
+                      </h3>
+                      <p className="queue-lane-hint">{text.lanes[lane].hint}</p>
+                    </div>
                     {grouped[lane].length === 0 ? (
-                      <p className="chart-subtitle">{text.lanes.empty}</p>
+                      <p className="queue-lane-empty">{text.lanes.empty}</p>
                     ) : (
                       <ul className="pr-list">
                         {grouped[lane].map((entry) => (

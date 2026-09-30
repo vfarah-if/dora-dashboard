@@ -22,6 +22,7 @@
   --bg: #f4f5f7;
   --surface: #ffffff;
   --surface-sunken: #eef0f3;
+  --lane-bg: #e8ebf0;
   --border: #d9dde3;
   --border-strong: #b7bec8;
   --grid: #e7eaee;
@@ -73,6 +74,7 @@
     --bg: #0f1318;
     --surface: #171c23;
     --surface-sunken: #11161c;
+    --lane-bg: #131920;
     --border: #2a323d;
     --border-strong: #3d4756;
     --grid: #232a33;
@@ -124,6 +126,7 @@
   --bg: #0f1318;
   --surface: #171c23;
   --surface-sunken: #11161c;
+  --lane-bg: #131920;
   --border: #2a323d;
   --border-strong: #3d4756;
   --grid: #232a33;

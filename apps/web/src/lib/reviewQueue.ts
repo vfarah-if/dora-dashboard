@@ -36,6 +36,31 @@ export function formatWait(hours: number): string {
   return text.wait.hours(Math.floor(hours));
 }
 
+/** Up to two capital letters from a login, split on dots, dashes, underscores and spaces. "ada-lovelace" gives "AL". */
+export function initialsOf(login: string): string {
+  const words = login.split(/[\s._-]+/).filter(Boolean);
+  const letters = words.length > 1 ? words.slice(0, 2).map((w) => w[0]!) : [...(words[0] ?? "")].slice(0, 2);
+  return letters.join("").toUpperCase() || "?";
+}
+
+/** The parts of a card's single meta line, in order. The wait is left out when a flag pill already states it. */
+export function metaParts(entry: QueueEntry, showNames: boolean): string[] {
+  const reviewers = entry.requestedReviewers;
+  const parts: string[] = [];
+  if (!flagFor(entry)) parts.push(text.card.waitingSince(formatWait(entry.waitHours)));
+  if (entry.requestedReviewerCount > 0) {
+    parts.push(
+      showNames && reviewers.length
+        ? text.card.waitingOn(reviewers.map((r) => r.name).join(", "))
+        : text.card.reviewersRequested(entry.requestedReviewerCount),
+    );
+  }
+  parts.push(text.card.lines(entry.additions, entry.deletions), text.card.files(entry.changedFiles));
+  parts.push(text.card.checks[entry.checks].toLowerCase());
+  if (isIdle(entry)) parts.push(text.card.idle(entry.idleDays));
+  return parts;
+}
+
 export interface Flag {
   band: "stale" | "overdue";
   /** For example "Stale, 12 weekdays, no reviewer". */

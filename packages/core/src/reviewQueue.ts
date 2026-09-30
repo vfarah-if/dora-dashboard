@@ -106,7 +106,7 @@ function entryOf(repo: ReviewQueueInput["repo"], pr: OpenPullRequest, now: strin
     title: pr.title,
     url: pr.url,
     author: pr.author,
-    authorIsBot: pr.authorIsBot,
+    authorIsBot: isBot(pr),
     lane: reviewLane(pr),
     band: waitBand(waitHours),
     waitHours,

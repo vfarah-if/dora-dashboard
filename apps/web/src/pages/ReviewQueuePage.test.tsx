@@ -50,6 +50,40 @@ describe("ReviewQueuePage", () => {
     expect(screen.getAllByText(/Waiting on robin/).length).toBeGreaterThan(0);
   });
 
+  it("shows the author avatar only with Show names, and states the wait once", async () => {
+    const user = userEvent.setup();
+    renderQueue();
+    await screen.findByText(text.tiles.waiting);
+    const card = () => screen.getByRole("link", { name: /^Fix retry/ }).closest("li")!;
+    expect(card().querySelector(".pr-avatar")).toBeNull();
+    await user.click(screen.getByRole("switch", { name: text.controls.names }));
+    const avatar = await waitFor(() => {
+      const found = card().querySelector(".pr-avatar");
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(avatar).toHaveTextContent(/casey/);
+    expect(avatar.querySelector("[aria-hidden='true']")).not.toBeNull();
+    expect(card()).toHaveTextContent(/\+\d+ -\d+ · \d+ files? · checks failing/);
+    const flagged = screen.getByRole("link", { name: /^Rework billing/ }).closest("li")!;
+    expect(flagged).toHaveTextContent("Stale, 12 weekdays, no reviewer");
+    expect(flagged).not.toHaveTextContent(/Waiting \d+ weekdays/);
+  });
+
+  it("makes the board a focusable region and shows a dashed placeholder in an empty lane", async () => {
+    renderQueue(
+      reviewQueue({
+        entries: reviewQueue().entries.filter((e) => e.lane !== "approved"),
+      }),
+    );
+    await screen.findByText(text.tiles.waiting);
+    const board = screen.getByRole("region", { name: text.lanes.boardLabel });
+    expect(board).toHaveAttribute("tabindex", "0");
+    const lane = screen.getByRole("heading", { name: /^Approved 0$/ }).closest("section")!;
+    expect(within(lane).getByText(text.lanes.empty)).toHaveClass("queue-lane-empty");
+    expect(within(lane).queryByRole("list")).not.toBeInTheDocument();
+  });
+
   it("adds the held column and bot pull requests when their toggles are on", async () => {
     const user = userEvent.setup();
     renderQueue();
@@ -139,7 +173,7 @@ describe("ReviewQueuePage", () => {
   it("shows the reviewer count when names are hidden", async () => {
     renderQueue();
     await screen.findByText(text.tiles.waiting);
-    expect(screen.getAllByText(text.card.reviewersRequested(1)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(new RegExp(text.card.reviewersRequested(1))).length).toBeGreaterThan(0);
   });
 
   it("recomputes the tiles from the filtered pull requests", async () => {

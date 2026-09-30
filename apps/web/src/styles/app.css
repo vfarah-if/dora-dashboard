@@ -2559,53 +2559,134 @@ a:hover {
   color: var(--text-muted);
 }
 
-.queue-lanes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+.queue-board {
+  display: flex;
+  align-items: stretch;
   gap: 16px;
-  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  max-width: 100%;
 }
 
 .queue-lane {
+  flex: 0 0 290px;
+  width: 290px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  padding: 12px;
+  background: var(--lane-bg);
+  border-radius: var(--radius);
   min-width: 0;
 }
 
+.queue-lane-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .queue-lane-title {
-  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9375rem;
 }
 
 .queue-lane-count {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
   color: var(--text-muted);
-  font-weight: 500;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.queue-lane-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.queue-lane-empty {
+  margin: 0;
+  padding: 20px 12px;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-small);
 }
 
 .pr-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 .pr-card {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 4px;
-  padding: 12px;
+  padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-small);
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+.pr-card-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 .pr-card-title {
   font-weight: 600;
+  line-height: 1.3;
+}
+
+.pr-card-label {
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.pr-card-ref {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pr-avatar {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 0.6875rem;
+  font-weight: 650;
 }
 
 .pr-card-meta {
+  margin: 0;
   font-size: 0.8125rem;
   color: var(--text-muted);
 }

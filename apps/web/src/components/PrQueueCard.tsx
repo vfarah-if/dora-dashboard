@@ -1,39 +1,36 @@
 import type { QueueEntry } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { formatWait, isIdle } from "../lib/reviewQueue";
+import { initialsOf, metaParts } from "../lib/reviewQueue";
 import { ReviewFlag } from "./ReviewFlag";
 
 const text = copy.reviewQueue;
 
 export function PrQueueCard({ entry, showNames }: { entry: QueueEntry; showNames: boolean }) {
-  const reviewers = entry.requestedReviewers;
-  const reviewerCount = entry.requestedReviewerCount;
-  const people = [
-    showNames && entry.author ? text.card.by(entry.author) : null,
-    reviewerCount > 0
-      ? showNames && reviewers.length
-        ? text.card.waitingOn(reviewers.map((r) => r.name).join(", "))
-        : text.card.reviewersRequested(reviewerCount)
-      : null,
-  ].filter((part): part is string => part !== null);
+  const label = entry.isDraft ? text.card.draft : entry.lane === "held" ? text.card.onHold : null;
+  const author = showNames ? entry.author : null;
 
   return (
     <li className="pr-card">
-      <ReviewFlag entry={entry} />
-      <a className="pr-card-title" href={entry.url} target="_blank" rel="noreferrer">
-        {entry.title}
-        <span className="visually-hidden"> {text.card.opensInNewTab}</span>
-      </a>
-      <p className="pr-card-meta">
-        {entry.repo}#{entry.number}
-        {entry.isDraft ? `, ${text.card.draft}` : ""}
-      </p>
-      <p className="pr-card-meta">{text.card.waitingSince(formatWait(entry.waitHours))}</p>
-      {people.length > 0 && <p className="pr-card-meta">{people.join(", ")}</p>}
-      <p className="pr-card-meta">
-        {text.card.lines(entry.additions, entry.deletions, entry.changedFiles)}, {text.card.checks[entry.checks].toLowerCase()}
-      </p>
-      {isIdle(entry) && <p className="pr-card-meta">{text.card.idle(entry.idleDays)}</p>}
+      <div className="pr-card-head">
+        <ReviewFlag entry={entry} />
+        {label && <span className="pr-card-label">{label}</span>}
+        <a className="pr-card-title" href={entry.url} target="_blank" rel="noreferrer">
+          {entry.title}
+          <span className="visually-hidden"> {text.card.opensInNewTab}</span>
+        </a>
+      </div>
+      <div className="pr-card-ref">
+        <span className="pr-card-meta">
+          {entry.repo}#{entry.number}
+        </span>
+        {author && (
+          <span className="pr-avatar" title={text.card.authorAvatar(author)}>
+            <span aria-hidden="true">{initialsOf(author)}</span>
+            <span className="visually-hidden">{text.card.by(author)}</span>
+          </span>
+        )}
+      </div>
+      <p className="pr-card-meta">{metaParts(entry, showNames).join(" · ")}</p>
     </li>
   );
 }

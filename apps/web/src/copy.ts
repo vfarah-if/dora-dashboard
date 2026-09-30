@@ -973,6 +973,7 @@ export const copy = {
       approved: { title: "Approved", hint: "Ready to merge." },
       held: { title: "Drafts and on hold", hint: "Not ready for review." },
       empty: "Nothing here",
+      boardLabel: "Review queue lanes",
     },
 
     card: {
@@ -981,8 +982,8 @@ export const copy = {
       waitingSince: (wait: string) => `Waiting ${wait}`,
       waitingOn: (names: string) => `Waiting on ${names}`,
       reviewersRequested: (n: number) => `${n} ${n === 1 ? "reviewer" : "reviewers"} requested`,
-      lines: (additions: number, deletions: number, files: number) =>
-        `+${additions} -${deletions} in ${files} ${files === 1 ? "file" : "files"}`,
+      lines: (additions: number, deletions: number) => `+${additions} -${deletions}`,
+      files: (files: number) => `${files} ${files === 1 ? "file" : "files"}`,
       checks: {
         passing: "Checks passing",
         failing: "Checks failing",
@@ -990,7 +991,9 @@ export const copy = {
         none: "No checks",
       },
       draft: "Draft",
-      idle: (days: number) => `Idle for ${days} days`,
+      onHold: "On hold",
+      idle: (days: number) => `Idle ${days} days`,
+      authorAvatar: (login: string) => login,
     },
 
     summary: {
