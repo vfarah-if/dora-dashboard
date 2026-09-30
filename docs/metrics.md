@@ -22,16 +22,58 @@ On a repository's page you can also leave chosen authors out. Their pull request
 
 A **deployment** is a completed run, succeeded or failed, of the workflow files you configured for a repository, on its deploy branch. Cancelled and skipped runs are ignored.
 
-| Measure               | Rule                                                                                     | Elite         | High         | Medium            | Low    |
-| --------------------- | ---------------------------------------------------------------------------------------- | ------------- | ------------ | ----------------- | ------ |
-| Deployment frequency  | Successful deploys per week over the range                                               | 7 or more     | 1 or more    | 1 a month or more | less   |
-| Lead time for changes | First commit to the end of the first successful deploy starting after the merge (median) | under a day   | under a week | under a month     | longer |
-| Change failure rate   | Failed deploys over all counted deploys                                                  | 5% or less    | 10% or less  | 15% or less       | more   |
-| Time to restore       | First failure in a streak to the next success (median)                                   | under an hour | under a day  | under a week      | longer |
+| Measure               | Rule                                                                                     | Elite         | High         | Medium        | Low    |
+| --------------------- | ---------------------------------------------------------------------------------------- | ------------- | ------------ | ------------- | ------ |
+| Deployment frequency  | Successful deploys per week over the range                                               | 7 or more     | 1 or more    | 0.25 or more  | less   |
+| Lead time for changes | First commit to the end of the first successful deploy starting after the merge (median) | under a day   | under a week | under a month | longer |
+| Change failure rate   | Failed deploys over all counted deploys                                                  | 5% or less    | 10% or less  | 15% or less   | more   |
+| Time to restore       | First failure in a streak to the next success (median)                                   | under an hour | under a day  | under a week  | longer |
 
 Lead time only counts PRs merged after the first deploy run the crawl has seen (ADR 0007). Without that rule, a repository whose pipeline is younger than its history reports months of lead time that never happened.
 
-PRs titled `revert` or `hotfix` are counted beside the change failure rate rather than inside it.
+PRs titled `revert` or `hotfix` are counted beside the change failure rate rather than inside it. A title matches when it starts with either word, in any letter case, and the word stands alone, so `Revert "add login"` matches and `Reverting` does not.
+
+### Grading profile
+
+Bands are graded against a named profile, and every report says which one it used. The only profile today has the id `dora-2023` and the name "DORA 2023". It takes its thresholds from the [2023 Accelerate State of DevOps Report](https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf), with three simplifications so that a published cluster becomes a single threshold.
+
+- "On demand" deployment becomes 7 or more successful deploys a week.
+- A range becomes its edge, so a medium deployment frequency of between once a week and once a month becomes 0.25 a week or more, which means 1 or more every four weeks.
+- A cluster's failure rate becomes "or less", so the high band is 10% or less.
+
+The band table above shows these values. Durations are compared strictly, so a median lead time of exactly 24 hours is high and not elite, whereas frequency and failure rate include their limit.
+
+The report and compare endpoints accept a `profile` query parameter naming a profile id, and an unknown id is refused with a 400 response. A comparison grades every repository against the one profile, so that the bands can be read side by side (ADR 0008). The interface has no profile selector until a second, cited profile exists. The reasoning is in ADR 0016.
+
+### Rework rate
+
+Rework rate is the share of successful deploys that shipped at least one revert or hotfix PR. It is shown beside the change failure rate and has no band, because DORA publishes none for it.
+
+- A PR is a revert or hotfix when its title matches the rule above.
+- A PR ships with the first successful deploy run created at or after its merge. This is the pairing that lead time uses, so it only considers PRs merged into the deploy branch after the first deploy run the crawl has seen (ADR 0007).
+- The rate is the number of successful deploys that shipped one or more such PRs, divided by all successful deploys in the range. A deploy counts once however many revert or hotfix PRs it shipped.
+- A revert or hotfix PR that has not yet been shipped by a successful deploy is not counted.
+- With no successful deploys the figure is null and nothing is shown.
+
+It differs from the revert PR count beside the change failure rate, which counts every merged PR with such a title whether or not it has shipped.
+
+It is a proxy for DORA's rework rate, which counts unplanned deployments made to fix a user-facing problem. The deploy counted is the one that shipped the fix, not the one that caused the problem. Only PRs merged inside the range are paired, while the denominator is every successful deploy in the range, so a deploy early in the range that shipped a fix merged just before it is not counted.
+
+### AI-assisted work
+
+Pull requests are split into assisted and unassisted cohorts, so that a team can see whether faster delivery is arriving with more rework instead of assuming it. A pull request is assisted when the first of these holds, taken in this order.
+
+1. It carries the default label `ai-assisted`, compared without regard to letter case. A bare `ai` label is not counted, because repositories that build AI features use it as a product area.
+2. Any of its commits has a `Co-Authored-By` trailer whose whole name is one an assistant signs with, compared without regard to letter case. The defaults cover Claude (alone or followed by a model name such as Opus or Sonnet, or by Code), Copilot and GitHub Copilot, Cursor and Cursor Agent, Codex and OpenAI Codex, Devin and Devin AI, and Gemini and Gemini Code Assist. A person who merely shares a first name, such as Claude Martin, is not matched.
+3. It was opened by a bot account whose login matches one of those patterns, such as `copilot-swe-agent[bot]`.
+
+Otherwise it is unassisted. A pull request whose labels and co-authors were both never recorded is **unknown**, which is the case for pull requests crawled before this feature existed, and it stays unknown until a full crawl fetches them again. Unknown pull requests are counted and shown but belong to neither cohort.
+
+Only the name part of a trailer is stored. The email address and the commit message are discarded when the crawl reads them. The crawl reads the messages of the last 100 commits of each pull request, so a pull request with more commits may miss earlier trailers.
+
+For each cohort the report gives the number of pull requests, the median and 75th percentile of cycle time, the median size, the share that was reviewed by someone other than the author, and the share whose title marks a revert or hotfix. Cycle time here runs from the first commit to the merge and not to the deploy, so it is not the lead time used in the DORA table.
+
+Deploy measures are not split by cohort, because a single deploy ships a mixture of both kinds of work. Labels rely on team discipline, and AI use that is not marked by a label, a trailer or a bot author counts as unassisted, so the assisted cohort is a floor and not a total. The default patterns are a convention, so an assistant that signs with another name is missed until the patterns are extended. The decision is recorded in ADR 0016.
 
 ## Code health
 

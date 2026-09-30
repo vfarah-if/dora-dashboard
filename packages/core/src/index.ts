@@ -2,6 +2,8 @@ export * from "./types.js";
 export * from "./stats.js";
 export * from "./pullRequests.js";
 export * from "./dora.js";
+export * from "./doraProfiles.js";
+export * from "./aiAssisted.js";
 export * from "./report.js";
 export * from "./codeHealth.js";
 export * from "./codeTooling.js";

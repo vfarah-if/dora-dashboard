@@ -986,6 +986,12 @@ a:hover {
   gap: 12px;
 }
 
+.profile-line {
+  margin-bottom: 12px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
 .tile-grid-flow {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr));
 }

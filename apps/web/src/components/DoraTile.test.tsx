@@ -20,6 +20,22 @@ describe("DoraTile", () => {
     expect(screen.getByText(copy.dora.leadTimeDefinition)).toBeInTheDocument();
   });
 
+  it("explains the missing band instead of showing one", () => {
+    render(
+      <DoraTile
+        title={copy.dora.rework}
+        definition={copy.dora.reworkDefinition}
+        value="33%"
+        band={null}
+        detail={copy.dora.reworkCount(1, 3)}
+        noBandNote={copy.dora.reworkNoBand}
+      />,
+    );
+    expect(screen.getByText("33%")).toBeInTheDocument();
+    expect(screen.getByText(copy.dora.reworkNoBand)).toBeInTheDocument();
+    expect(screen.getByText("1 of 3 deploys shipped a revert or hotfix")).toBeInTheDocument();
+  });
+
   it("says Not measured with the reason when the figure is missing", () => {
     render(
       <DoraTile

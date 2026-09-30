@@ -11,9 +11,11 @@ export interface DoraTileProps {
   detail?: string;
   /** Why the measure is missing, shown when `value` is null. */
   reason?: string;
+  /** Says why there is no band, shown in its place when the measure has none. */
+  noBandNote?: string;
 }
 
-export function DoraTile({ title, definition, value, band, detail, reason }: DoraTileProps) {
+export function DoraTile({ title, definition, value, band, detail, reason, noBandNote }: DoraTileProps) {
   const measured = value !== null;
   return (
     <article className={`tile dora-tile${measured ? "" : " is-unmeasured"}`}>
@@ -21,7 +23,7 @@ export function DoraTile({ title, definition, value, band, detail, reason }: Dor
       {measured ? (
         <>
           <p className="tile-value">{value}</p>
-          {band && <BandLabel band={band} />}
+          {band ? <BandLabel band={band} /> : noBandNote && <p className="tile-detail">{noBandNote}</p>}
           {detail && <p className="tile-detail">{detail}</p>}
         </>
       ) : (

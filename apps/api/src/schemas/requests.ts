@@ -1,3 +1,5 @@
+import { DORA_PROFILE_IDS } from "@dora-dashboard/core";
+
 /** JSON schemas Fastify validates request bodies and query strings against before a handler runs. */
 
 const workflowList = { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 10 } as const;
@@ -25,7 +27,12 @@ export const configureRepoBody = {
   properties: { deployWorkflows: workflowList, deployBranch: branch },
 } as const;
 
-const rangeProperties = { from: date, to: date, includeBots: { type: "string", enum: ["0", "1"] } } as const;
+const rangeProperties = {
+  from: date,
+  to: date,
+  includeBots: { type: "string", enum: ["0", "1"] },
+  profile: { type: "string", enum: [...DORA_PROFILE_IDS] },
+} as const;
 
 /** One repository's report. `excludeAuthors` is a comma-separated list of logins; only this route takes it. */
 export const reportQuery = {

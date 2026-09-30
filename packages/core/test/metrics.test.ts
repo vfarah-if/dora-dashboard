@@ -8,6 +8,8 @@ import {
   restoreBand,
   restoreTimes,
 } from "../src/dora.js";
+import { aiAssistance, aiCohorts, DEFAULT_AI_SIGNALS, type AiAssistance } from "../src/aiAssisted.js";
+import { DEFAULT_DORA_PROFILE, DORA_PROFILE_IDS, doraProfile, type DoraProfile } from "../src/doraProfiles.js";
 import { isBot, mergeDistribution, prTimings } from "../src/pullRequests.js";
 import { buildReport } from "../src/report.js";
 import { hoursBetween, median, percentile, weekRange, weekStart } from "../src/stats.js";
@@ -353,5 +355,238 @@ describe("buildReport edges", () => {
   it("files a PR with no author under unknown", () => {
     const report = buildReport(repo, [pr({ number: 1, author: null })], [], { to: "2026-09-06" });
     expect(report.authors[0]?.author).toBe("unknown");
+  });
+});
+
+const widgets: Repo = { ...repo, owner: "acme", name: "widgets" };
+
+describe("DORA profiles", () => {
+  it("ships the 2023 report as the default and only profile", () => {
+    expect(DEFAULT_DORA_PROFILE).toBe("dora-2023");
+    expect(DORA_PROFILE_IDS).toEqual(["dora-2023"]);
+    const profile = doraProfile("dora-2023");
+    expect(profile.name).toBe("DORA 2023");
+    expect(profile.source).toEqual({
+      title: "2023 Accelerate State of DevOps Report",
+      year: 2023,
+      url: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf",
+    });
+    expect(profile.deployFrequency).toEqual([7, 1, 0.25]);
+    expect(profile.leadTimeHours).toEqual([24, 168, 720]);
+    expect(profile.changeFailure).toEqual([0.05, 0.1, 0.15]);
+    expect(profile.restoreHours).toEqual([1, 24, 168]);
+  });
+
+  it("throws for an unknown profile rather than grading against a default", () => {
+    expect(() => doraProfile("nope")).toThrow('Unknown DORA profile "nope"');
+  });
+
+  it.each([
+    [24, "high"],
+    [168, "medium"],
+    [720, "low"],
+  ] as const)("puts a lead time of exactly %s hours in the lower band", (hours, band) => {
+    expect(leadTimeBand(hours)).toBe(band);
+    expect(leadTimeBand(hours - 0.01)).not.toBe(band);
+  });
+
+  it.each([
+    [1, "high"],
+    [24, "medium"],
+    [168, "low"],
+  ] as const)("puts a restore time of exactly %s hours in the lower band", (hours, band) => {
+    expect(restoreBand(hours)).toBe(band);
+    expect(restoreBand(hours - 0.01)).not.toBe(band);
+  });
+
+  it("keeps the inclusive edges for frequency and failure rate", () => {
+    expect(deployFrequencyBand(0.25)).toBe("medium");
+    expect(deployFrequencyBand(0.24)).toBe("low");
+    expect(changeFailureBand(0.15)).toBe("medium");
+    expect(changeFailureBand(0.16)).toBe("low");
+  });
+
+  it("grades against a profile passed in", () => {
+    const strict: DoraProfile = {
+      ...doraProfile("dora-2023"),
+      id: "test-strict",
+      name: "Test strict",
+      deployFrequency: [14, 7, 1],
+      leadTimeHours: [4, 24, 168],
+      changeFailure: [0.01, 0.02, 0.03],
+      restoreHours: [0.5, 1, 24],
+    };
+    expect(deployFrequencyBand(7)).toBe("elite");
+    expect(deployFrequencyBand(7, strict)).toBe("high");
+    expect(leadTimeBand(10)).toBe("elite");
+    expect(leadTimeBand(10, strict)).toBe("high");
+    expect(changeFailureBand(0.05)).toBe("elite");
+    expect(changeFailureBand(0.05, strict)).toBe("low");
+    expect(restoreBand(0.75)).toBe("elite");
+    expect(restoreBand(0.75, strict)).toBe("high");
+
+    // One success in one week is 1 a week: high by default, medium against the strict profile.
+    const summary = doraSummary([], [run({ runId: 1, createdAt: "2026-09-01T12:00:00Z" })], "main", 1, strict);
+    expect(summary.deploymentFrequency?.band).toBe("medium");
+    expect(summary.profile.id).toBe("test-strict");
+  });
+
+  it("names the profile in every summary, even one with nothing to grade", () => {
+    const summary = doraSummary([], [], "main", 4);
+    expect(summary.profile).toEqual({
+      id: "dora-2023",
+      name: "DORA 2023",
+      source: doraProfile("dora-2023").source,
+    });
+    expect(Object.keys(summary.profile).sort()).toEqual(["id", "name", "source"]);
+  });
+});
+
+describe("rework rate", () => {
+  // A failed run opens the observed window at 12:00, then three successful deploys follow.
+  const runs = [
+    run({ runId: 10, createdAt: "2026-09-01T12:00:00Z", conclusion: "failure" }),
+    run({ runId: 11, createdAt: "2026-09-01T15:00:00Z" }),
+    run({ runId: 12, createdAt: "2026-09-02T15:00:00Z" }),
+    run({ runId: 13, createdAt: "2026-09-03T15:00:00Z" }),
+  ];
+
+  it("counts successful deploys that shipped a revert or hotfix, once per deploy", () => {
+    const prs = [
+      pr({ number: 1, mergedAt: "2026-09-01T14:00:00Z" }), // ships in run 11
+      pr({ number: 2, title: "Hotfix: broken login", mergedAt: "2026-09-02T10:00:00Z" }), // ships in run 12
+      pr({ number: 3, title: "Revert PR 2", mergedAt: "2026-09-02T11:00:00Z" }), // also run 12
+      pr({ number: 4, mergedAt: "2026-09-03T10:00:00Z" }), // ships in run 13
+    ];
+    const failure = doraSummary(prs, runs, "main", 1).changeFailure;
+    // Runs 11, 12 and 13 succeeded; only run 12 shipped rework, so 1 of 3.
+    expect(failure?.rework).toEqual({ rate: 1 / 3, deploys: 1, total: 3 });
+    // The existing figures are unchanged: 1 failure in 4 runs, and two revert PRs.
+    expect(failure?.rate).toBe(0.25);
+    expect(failure?.revertPrs).toBe(2);
+  });
+
+  it("ignores a hotfix that has not shipped yet", () => {
+    const prs = [pr({ number: 1, title: "hotfix typo", mergedAt: "2026-09-04T10:00:00Z" })];
+    expect(doraSummary(prs, runs, "main", 1).changeFailure?.rework).toEqual({ rate: 0, deploys: 0, total: 3 });
+  });
+
+  it("is null when there were no successful deploys, and absent with no deploys at all", () => {
+    const onlyFailures = [run({ runId: 1, createdAt: "2026-09-01T12:00:00Z", conclusion: "failure" })];
+    expect(doraSummary([], onlyFailures, "main", 1).changeFailure?.rework).toBeNull();
+    expect(doraSummary([], [], "main", 1).changeFailure).toBeNull();
+  });
+});
+
+describe("aiAssistance", () => {
+  it.each<[string, Partial<PullRequest>, AiAssistance]>([
+    ["a matching label", { labels: ["ai-assisted"] }, "assisted"],
+    ["a label in another case", { labels: ["AI-Assisted"] }, "assisted"],
+    ["a bare ai label, which is a product area", { labels: ["ai"] }, "unassisted"],
+    ["a matching co-author", { labels: [], coAuthors: ["Claude"] }, "assisted"],
+    ["a co-author naming a model", { labels: [], coAuthors: ["Claude Opus 5.5"] }, "assisted"],
+    ["a co-author with only trailers recorded", { coAuthors: ["GitHub Copilot"] }, "assisted"],
+    ["a co-author signing as an agent", { coAuthors: ["Cursor Agent"] }, "assisted"],
+    ["a person who shares a first name", { labels: [], coAuthors: ["Claude Martin", "Devin Patel"] }, "unassisted"],
+    ["neither signal", { labels: ["bug"], coAuthors: ["Bob"] }, "unassisted"],
+    ["empty lists", { labels: [], coAuthors: null }, "unassisted"],
+    ["both fields absent", {}, "unknown"],
+    ["both fields null", { labels: null, coAuthors: null }, "unknown"],
+  ])("classes a PR with %s", (_, fields, expected) => {
+    expect(aiAssistance(pr({ number: 1, ...fields }))).toBe(expected);
+  });
+
+  it("classes a bot author whose login matches a co-author pattern as assisted", () => {
+    expect(aiAssistance(pr({ number: 1, author: "copilot-swe-agent[bot]", authorIsBot: true }))).toBe("assisted");
+    // A matching login on a human account is not the bot rule.
+    expect(aiAssistance(pr({ number: 2, author: "copilot-fan" }))).toBe("unknown");
+    // A bot that matches no pattern falls through to the recorded fields.
+    expect(aiAssistance(pr({ number: 3, author: "dependabot[bot]", authorIsBot: true }))).toBe("unknown");
+    expect(aiAssistance(pr({ number: 4, author: "dependabot[bot]", authorIsBot: true, labels: [] }))).toBe("unassisted");
+  });
+
+  it("uses the signals passed in", () => {
+    const signals = { labels: ["robot"], coAuthors: [/tabnine/i] };
+    expect(aiAssistance(pr({ number: 1, labels: ["Robot"] }), signals)).toBe("assisted");
+    expect(aiAssistance(pr({ number: 2, coAuthors: ["Tabnine"] }), signals)).toBe("assisted");
+    expect(aiAssistance(pr({ number: 3, labels: ["ai"], coAuthors: ["Claude"] }), signals)).toBe("unassisted");
+    expect(DEFAULT_AI_SIGNALS.labels).toEqual(["ai-assisted"]);
+  });
+});
+
+describe("aiCohorts", () => {
+  const approvedByBob = [{ author: "bob", state: "APPROVED" as const, submittedAt: "2026-09-01T12:00:00Z" }];
+  // Every PR opens at 10:00 and merges at 14:00; cycle time runs from the first commit (default 08:00) to merge.
+  const prs = [
+    pr({
+      number: 1,
+      labels: ["ai-assisted"],
+      firstCommitAt: "2026-09-01T04:00:00Z",
+      additions: 100,
+      deletions: 0,
+      reviews: approvedByBob,
+    }), // 10h, 100
+    pr({ number: 2, title: "Revert PR 5", coAuthors: ["GitHub Copilot"] }), // 6h, 15
+    pr({ number: 3, labels: ["ai-assisted"], firstCommitAt: "2026-09-01T10:00:00Z", additions: 20, deletions: 10 }), // 4h, 30
+    pr({ number: 4, labels: [], coAuthors: [] }), // 6h, 15
+    pr({ number: 5, labels: ["bug"], firstCommitAt: "2026-09-01T00:00:00Z", reviews: approvedByBob }), // 14h, 15
+    pr({ number: 6 }), // unknown
+  ];
+
+  it("summarises each cohort", () => {
+    const cohorts = aiCohorts(prs);
+    // Assisted cycles [4, 6, 10]: median 6; p75 rank 1.5 gives 6 + 0.5 * 4 = 8. Sizes [15, 30, 100]: median 30.
+    expect(cohorts.assisted).toEqual({
+      prs: 3,
+      medianCycleHours: 6,
+      p75CycleHours: 8,
+      medianSize: 30,
+      reviewedShare: 1 / 3,
+      revertShare: 1 / 3,
+    });
+    // Unassisted cycles [6, 14]: median 10; p75 rank 0.75 gives 6 + 0.75 * 8 = 12.
+    expect(cohorts.unassisted).toEqual({
+      prs: 2,
+      medianCycleHours: 10,
+      p75CycleHours: 12,
+      medianSize: 15,
+      reviewedShare: 0.5,
+      revertShare: 0,
+    });
+    expect(cohorts.unknown).toBe(1);
+  });
+
+  it("returns empty cohorts with nulls rather than zeros", () => {
+    const empty = {
+      prs: 0,
+      medianCycleHours: null,
+      p75CycleHours: null,
+      medianSize: null,
+      reviewedShare: null,
+      revertShare: null,
+    };
+    expect(aiCohorts([])).toEqual({ assisted: empty, unassisted: empty, unknown: 0 });
+  });
+});
+
+describe("buildReport with profiles and cohorts", () => {
+  const prs = [
+    pr({ number: 1, labels: ["ai-assisted"] }),
+    pr({ number: 2, labels: [] }),
+    pr({ number: 3 }),
+    pr({ number: 4, labels: ["ai-assisted"], state: "OPEN", mergedAt: null, closedAt: null }), // opened, not merged: not counted
+  ];
+
+  it("grades against the default profile and splits merged PRs into cohorts", () => {
+    const report = buildReport(widgets, prs, [], { to: "2026-09-13" });
+    expect(report.dora.profile.id).toBe("dora-2023");
+    expect(report.aiCohorts.assisted.prs).toBe(1);
+    expect(report.aiCohorts.unassisted.prs).toBe(1);
+    expect(report.aiCohorts.unknown).toBe(1);
+  });
+
+  it("accepts a known profile id and throws for an unknown one", () => {
+    expect(buildReport(widgets, prs, [], { to: "2026-09-13", profile: "dora-2023" }).dora.profile.name).toBe("DORA 2023");
+    expect(() => buildReport(widgets, prs, [], { to: "2026-09-13", profile: "nope" })).toThrow('Unknown DORA profile "nope"');
   });
 });

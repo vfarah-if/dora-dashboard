@@ -74,10 +74,24 @@ export function report(
       size: summary(40),
     },
     dora: {
+      profile: {
+        id: "dora-2023",
+        name: "DORA 2023",
+        source: {
+          title: "2023 Accelerate State of DevOps Report",
+          year: 2023,
+          url: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf",
+        },
+      },
       deploymentFrequency: { perWeek: 1, total: 3, weeks: 3, band: "high" },
       leadTime: { medianHours: 30, count: 4, band: "high" },
-      changeFailure: { rate: 0.25, failed: 1, total: 4, band: "low", revertPrs: 0 },
+      changeFailure: { rate: 0.25, failed: 1, total: 4, band: "low", revertPrs: 0, rework: { rate: 0.25, deploys: 1, total: 4 } },
       timeToRestore: { medianHours: 2, count: 1, band: "high" },
+    },
+    aiCohorts: {
+      assisted: { prs: 2, medianCycleHours: 4, p75CycleHours: 6, medianSize: 30, reviewedShare: 1, revertShare: 0 },
+      unassisted: { prs: 4, medianCycleHours: 10, p75CycleHours: 20, medianSize: 50, reviewedShare: 0.5, revertShare: 0.25 },
+      unknown: 3,
     },
     weekly: [
       week({ week: "2026-01-05", weekIndex: 0 }),

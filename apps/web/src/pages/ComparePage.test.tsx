@@ -39,6 +39,23 @@ describe("ComparePage", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("ids=1%2C2");
   });
 
+  it("states the profile once above the headline when every repository shares it", async () => {
+    renderCompare();
+    const link = await screen.findByRole("link", { name: /DORA 2023/ });
+    expect(link).toHaveAttribute("href", report().dora.profile.source.url);
+    expect(screen.getAllByRole("link", { name: /DORA 2023/ })).toHaveLength(1);
+    expect(screen.queryByText(copy.dora.profileMismatch)).not.toBeInTheDocument();
+  });
+
+  it("warns when the repositories were graded against different profiles", async () => {
+    const other = report({ id: 2, name: "gadgets" });
+    other.dora = { ...other.dora, profile: { ...other.dora.profile, id: "other", name: "Other" } };
+    mockFetch({ "GET /api/compare": { body: [reports[0], other] } });
+    renderRoute(<ComparePage />, { path: "/compare", route: "/compare?ids=1,2" });
+    expect(await screen.findByText(copy.dora.profileMismatch)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /DORA 2023/ })).not.toBeInTheDocument();
+  });
+
   it("keeps Show people off by default and reveals the authors tables when switched on", async () => {
     const user = userEvent.setup();
     renderCompare();

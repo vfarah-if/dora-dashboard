@@ -1,5 +1,7 @@
 import type { DeployRun, PullRequest, Repo } from "./types.js";
 import { doraSummary, productionRuns, type DoraSummary } from "./dora.js";
+import { DEFAULT_DORA_PROFILE, doraProfile } from "./doraProfiles.js";
+import { aiCohorts, type AiCohorts } from "./aiAssisted.js";
 import { isBot, mergeDistribution, prTimings, type PrTimings } from "./pullRequests.js";
 import { mean, median, summarise, weekRange, weekStart, type Summary } from "./stats.js";
 
@@ -9,6 +11,8 @@ export interface ReportOptions {
   includeBots?: boolean;
   /** Logins whose pull requests are left out of every figure (ADR 0012). A PR with no author is excluded as `unknown`. */
   excludeAuthors?: readonly string[];
+  /** Id of the DORA profile to grade against (ADR 0016); the default profile when absent. An unknown id throws. */
+  profile?: string;
 }
 
 /** An author who opened pull requests in the range, whether or not they are excluded, so a filter can offer them. */
@@ -78,6 +82,8 @@ export interface RepoReport {
     size: Summary;
   };
   dora: DoraSummary;
+  /** PRs merged in the range, split by whether they were marked as AI-assisted (ADR 0016). */
+  aiCohorts: AiCohorts;
   weekly: WeekRow[];
   distribution: ReturnType<typeof mergeDistribution>;
   authors: AuthorRow[];
@@ -240,6 +246,7 @@ function summaryOf(mergedTimings: PrTimings[]): RepoReport["summary"] {
 }
 
 export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[], options: ReportOptions = {}): RepoReport {
+  const profile = doraProfile(options.profile ?? DEFAULT_DORA_PROFILE);
   const { humansOrAll, projectStart, from, to } = reportScope(allPrs, options);
   const { authorChoices, prs } = applyAuthorFilter(humansOrAll, options.excludeAuthors ?? [], from, to);
 
@@ -264,7 +271,8 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     projectStart,
     totals: totalsOf(opened, merged, mergedTimings, weekly, authorNames.size),
     summary: summaryOf(mergedTimings),
-    dora: doraSummary(merged, production, repo.deployBranch, weekly.length),
+    dora: doraSummary(merged, production, repo.deployBranch, weekly.length, profile),
+    aiCohorts: aiCohorts(merged),
     weekly,
     distribution: mergeDistribution(mergedTimings.map((t) => t.openToMergeHours!)),
     authors: authorRows(authorNames, opened, mergedTimings, reviewsGivenBy(prs, from, to)),

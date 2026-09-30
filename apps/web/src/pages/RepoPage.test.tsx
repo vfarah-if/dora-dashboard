@@ -59,15 +59,120 @@ describe("RepoPage", () => {
         body: {
           ...base,
           repo: { ...base.repo, deployWorkflows: [] },
-          dora: { deploymentFrequency: null, leadTime: null, changeFailure: null, timeToRestore: null },
+          dora: { ...base.dora, deploymentFrequency: null, leadTime: null, changeFailure: null, timeToRestore: null },
         },
       },
       "GET /api/repos/1/code-health": noHealth,
       "GET /api/repos": { body: [repo()] },
     });
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
-    expect(await screen.findAllByText(copy.dora.notMeasured)).toHaveLength(4);
+    expect(await screen.findAllByText(copy.dora.notMeasured)).toHaveLength(5);
     expect(screen.getAllByText(copy.dora.reasons.noWorkflow)).toHaveLength(4);
+  });
+
+  it("names the profile with a link to its source that opens in a new tab", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const link = await screen.findByRole("link", { name: /DORA 2023/ });
+    expect(link.closest("p")).toHaveTextContent(`${copy.dora.profileLead} DORA 2023`);
+    expect(link).toHaveAttribute("href", report().dora.profile.source.url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("shows the rework rate beside change failure with no band", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const tile = (await screen.findByRole("heading", { name: copy.dora.rework })).closest("article")!;
+    expect(within(tile).getByText("25%")).toBeInTheDocument();
+    expect(within(tile).getByText(copy.dora.reworkCount(1, 4))).toBeInTheDocument();
+    expect(within(tile).getByText(copy.dora.reworkNoBand)).toBeInTheDocument();
+    expect(within(tile).queryByText(/Elite|High|Medium|Low/)).not.toBeInTheDocument();
+  });
+
+  it("says the rework rate is not measured when the report has none", async () => {
+    const base = report();
+    mockFetch({
+      "GET /api/repos/1/report": {
+        body: { ...base, dora: { ...base.dora, changeFailure: { ...base.dora.changeFailure!, rework: null } } },
+      },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const tile = (await screen.findByRole("heading", { name: copy.dora.rework })).closest("article")!;
+    expect(within(tile).getByText(copy.dora.notMeasured)).toBeInTheDocument();
+    expect(within(tile).getByText(copy.dora.reasons.noRework)).toBeInTheDocument();
+  });
+
+  it("compares AI-assisted with unassisted work and states the rule, the floor and the unknown count", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const table = await screen.findByRole("table", { name: copy.aiCohorts.caption });
+    expect(within(table).getByRole("columnheader", { name: copy.aiCohorts.assisted })).toBeInTheDocument();
+    expect(within(table).getByRole("columnheader", { name: copy.aiCohorts.unassisted })).toBeInTheDocument();
+    const median = within(table).getByRole("row", { name: new RegExp(copy.aiCohorts.medianCycle) });
+    expect(
+      within(median)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["4.0 h", "10.0 h"]);
+    const reviewed = within(table).getByRole("row", { name: new RegExp(copy.aiCohorts.reviewed) });
+    expect(
+      within(reviewed)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["100%", "50%"]);
+    expect(screen.getByText(copy.aiCohorts.rule)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(copy.aiCohorts.unknownHint))).toHaveTextContent(copy.aiCohorts.unknown(3));
+  });
+
+  it("shows No data for cohort figures that could not be taken and hides the unknown note at zero", async () => {
+    const base = report();
+    const empty = {
+      prs: 0,
+      medianCycleHours: null,
+      p75CycleHours: null,
+      medianSize: null,
+      reviewedShare: null,
+      revertShare: null,
+    };
+    mockFetch({
+      "GET /api/repos/1/report": {
+        body: { ...base, aiCohorts: { assisted: empty, unassisted: base.aiCohorts.unassisted, unknown: 0 } },
+      },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const table = await screen.findByRole("table", { name: copy.aiCohorts.caption });
+    const median = within(table).getByRole("row", { name: new RegExp(copy.aiCohorts.medianCycle) });
+    expect(within(median).getAllByRole("cell")[0]).toHaveTextContent(copy.common.notAvailable);
+    expect(screen.queryByText(new RegExp(copy.aiCohorts.unknownHint))).not.toBeInTheDocument();
+  });
+
+  it("sends the profile from the address to the API", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1?profile=dora-2023" });
+    await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
+    const reportUrl = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/report"));
+    expect(reportUrl).toContain("profile=dora-2023");
   });
 
   it("sorts and pages the pull request table", async () => {

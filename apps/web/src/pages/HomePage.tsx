@@ -136,6 +136,9 @@ function Bands() {
         {home.bandsTitle}
       </h2>
       <p className="home-section-lede">{home.bandsLede}</p>
+      <p className="home-section-lede">
+        {home.bandsProfile} <ExternalLink href={home.bandsSourceHref}>{home.bandsSource}</ExternalLink>
+      </p>
       <div className="table-scroll">
         <table className="data-table band-table">
           <caption className="visually-hidden">{home.bandsCaption}</caption>

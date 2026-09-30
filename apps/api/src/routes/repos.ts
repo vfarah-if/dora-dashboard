@@ -25,13 +25,14 @@ interface RangeQuery {
   from?: string;
   to?: string;
   includeBots?: "0" | "1";
+  profile?: string;
 }
 
 interface ReportQuery extends RangeQuery {
   excludeAuthors?: string;
 }
 
-const toOptions = (q: RangeQuery) => ({ from: q.from, to: q.to, includeBots: q.includeBots === "1" });
+const toOptions = (q: RangeQuery) => ({ from: q.from, to: q.to, includeBots: q.includeBots === "1", profile: q.profile });
 
 /** `a,b` into distinct, trimmed logins. */
 const authorList = (raw: string | undefined) => [...new Set((raw ?? "").split(",").map((login) => login.trim()))].filter(Boolean);

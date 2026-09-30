@@ -26,6 +26,8 @@ export interface ReportRange {
   from: string | null;
   to: string | null;
   includeBots: boolean;
+  /** The id of the DORA profile to grade against. The server default applies when absent. */
+  profile?: string | null;
 }
 
 export interface AddRepoBody {
@@ -54,6 +56,7 @@ export function rangeQuery(range: ReportRange): string {
   if (range.from) params.set("from", range.from);
   if (range.to) params.set("to", range.to);
   if (range.includeBots) params.set("includeBots", "1");
+  if (range.profile) params.set("profile", range.profile);
   return params.toString();
 }
 

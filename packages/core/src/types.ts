@@ -44,6 +44,13 @@ export interface PullRequest {
   files?: string[] | null;
   /** True when the pull request changed more files than were recorded, so `files` is only the first part. */
   filesTruncated?: boolean;
+  /** Label names on the pull request. Absent on pull requests crawled before this was recorded. */
+  labels?: string[] | null;
+  /**
+   * Names from `Co-Authored-By` trailers on the PR's commits, with emails dropped (ADR 0016). Absent on pull
+   * requests crawled before this was recorded.
+   */
+  coAuthors?: string[] | null;
 }
 
 export interface DeployRun {

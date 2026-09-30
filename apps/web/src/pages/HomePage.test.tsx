@@ -25,6 +25,18 @@ describe("HomePage", () => {
     expect(within(row).getByText("5% or less")).toBeInTheDocument();
   });
 
+  it("names the profile and cites the 2023 report, with the corrected deployment frequency row", () => {
+    renderRoute(<HomePage />);
+    expect(screen.getByRole("table", { name: /DORA 2023 profile/ })).toBeInTheDocument();
+    const source = screen.getByRole("link", { name: new RegExp(copy.home.bandsSource) });
+    expect(source).toHaveAttribute("href", copy.home.bandsSourceHref);
+    expect(source).toHaveAttribute("target", "_blank");
+    const table = screen.getByRole("table", { name: copy.home.bandsCaption });
+    const row = within(table).getByRole("row", { name: /Deployment frequency/ });
+    expect(within(row).getByText("1 or more every four weeks")).toBeInTheDocument();
+    expect(within(row).queryByText("1 or more a month")).not.toBeInTheDocument();
+  });
+
   it("lists Beck's four rules in priority order and links to the source in a new tab", () => {
     renderRoute(<HomePage />);
     const section = screen.getByRole("region", { name: copy.home.beckTitle });

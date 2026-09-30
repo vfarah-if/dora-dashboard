@@ -10,6 +10,7 @@ import { ChartCard, type TableData } from "../components/ChartCard";
 import { CompareLineChart } from "../components/CompareLineChart";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DownloadReportButton } from "../components/DownloadReportButton";
+import { ProfileLine } from "../components/ProfileLine";
 import { SeriesLegend, type LegendItem } from "../components/SeriesLegend";
 import { EmptyState, ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { Toggle } from "../components/Toggle";
@@ -119,6 +120,13 @@ function HeadlineTable({ reports, series }: { reports: readonly RepoReport[]; se
         {copy.compare.headline.title}
       </h2>
       <p className="chart-subtitle">{copy.compare.headline.subtitle}</p>
+      {new Set(reports.map((r) => r.dora.profile.id)).size > 1 ? (
+        <p className="notice notice-warning" role="alert">
+          {copy.dora.profileMismatch}
+        </p>
+      ) : (
+        reports[0] && <ProfileLine profile={reports[0].dora.profile} />
+      )}
       <div className="table-scroll">
         <table className="data-table headline-table">
           <caption className="visually-hidden">{copy.compare.headline.title}</caption>

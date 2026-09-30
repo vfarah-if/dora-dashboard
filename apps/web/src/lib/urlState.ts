@@ -5,13 +5,14 @@ import type { ReportRange } from "../api/hooks";
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const validDate = (value: string | null) => (value && DATE.test(value) ? value : null);
 
-/** The date range and bots flag held in the address, so a view can be shared as a link. */
+/** The date range, bots flag and DORA profile held in the address, so a view can be shared as a link. */
 export function useRangeParams(): [ReportRange, (next: ReportRange) => void] {
   const [params, setParams] = useSearchParams();
   const from = validDate(params.get("from"));
   const to = validDate(params.get("to"));
   const includeBots = params.get("bots") === "1";
-  const range = useMemo(() => ({ from, to, includeBots }), [from, to, includeBots]);
+  const profile = params.get("profile") || null;
+  const range = useMemo(() => ({ from, to, includeBots, profile }), [from, to, includeBots, profile]);
 
   const setRange = useCallback(
     (next: ReportRange) => {
@@ -22,6 +23,7 @@ export function useRangeParams(): [ReportRange, (next: ReportRange) => void] {
           assign("from", next.from);
           assign("to", next.to);
           assign("bots", next.includeBots ? "1" : null);
+          assign("profile", next.profile ?? null);
           return updated;
         },
         { replace: true },

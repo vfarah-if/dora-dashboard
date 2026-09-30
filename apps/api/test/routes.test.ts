@@ -81,6 +81,33 @@ describe("repository and report routes (gh-cli mode)", () => {
     expect(res.json<{ repo: { name: string } }[]>().map((r) => r.repo.name)).toEqual(["widgets", "gadgets"]);
   });
 
+  it("grades against the default profile and reports the AI cohorts", async () => {
+    const { id } = (await add("acme/widgets")).json<{ id: number }>();
+    await settled(() => crawler.isCrawling(id));
+
+    const report = (await app.inject(`/api/repos/${id}/report?to=2026-09-30`)).json();
+    expect(report.dora.profile.id).toBe("dora-2023");
+    expect(report.aiCohorts).toMatchObject({ assisted: { prs: expect.any(Number) }, unassisted: { prs: expect.any(Number) } });
+    expect(report.aiCohorts.unknown).toEqual(expect.any(Number));
+  });
+
+  it("rejects an unknown profile on a report and on a comparison, and accepts a known one on both", async () => {
+    const a = (await add("acme/widgets")).json<{ id: number }>().id;
+    const b = (await add("acme/gadgets")).json<{ id: number }>().id;
+    await settled(() => crawler.isCrawling(a) || crawler.isCrawling(b));
+
+    expect((await app.inject(`/api/repos/${a}/report?profile=nope`)).statusCode).toBe(400);
+    expect((await app.inject(`/api/compare?ids=${a},${b}&profile=nope`)).statusCode).toBe(400);
+
+    expect((await app.inject(`/api/repos/${a}/report?profile=dora-2023`)).json().dora.profile.id).toBe("dora-2023");
+    const compared = await app.inject(`/api/compare?ids=${a},${b}&profile=dora-2023&to=2026-09-30`);
+    expect(compared.statusCode).toBe(200);
+    expect(compared.json<{ dora: { profile: { id: string } } }[]>().map((r) => r.dora.profile.id)).toEqual([
+      "dora-2023",
+      "dora-2023",
+    ]);
+  });
+
   it("maps service errors onto statuses with a readable body", async () => {
     expect((await add("nonsense")).statusCode).toBe(400);
     expect((await add("acme/missing")).json()).toEqual({ error: "acme/missing was not found" });

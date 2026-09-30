@@ -35,3 +35,4 @@ Delivery metrics are easy to compute and easy to compute misleadingly. Every def
 ## Revision History
 
 - 2026-09-29: Each `WeekRow` now carries `partial`, true for a week that had not ended by the end of the range. Weekly rate charts leave it off, because a current week only two days old read as a collapse in throughput and deploys on the first comparison drawn. Cumulative charts keep it.
+- 2026-09-30: The bands no longer use inline thresholds. They are graded against a named, cited profile, and rework rate and AI-assisted cohorts are added. See ADR 0016.

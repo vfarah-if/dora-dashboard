@@ -137,7 +137,14 @@ export const copy = {
     changeFailureDefinition: "Share of production deploys that failed.",
     timeToRestore: "Time to restore",
     timeToRestoreDefinition: "Median time from a failed deploy to the next successful one.",
+    profileLead: "Graded against",
+    profileMismatch: "These repositories were graded against different DORA profiles, so their bands are not comparable.",
+    rework: "Rework rate",
+    reworkDefinition: "Share of successful deploys that shipped at least one revert or hotfix pull request.",
+    reworkNoBand: "DORA publishes no band for this measure, so none is shown.",
+    reworkCount: (deploys: number, total: number) => `${deploys} of ${total} deploys shipped a revert or hotfix`,
     reasons: {
+      noRework: "No successful deploys in this range, so there was nothing to check for reverts or hotfixes.",
       noWorkflow: "No deploy workflow is configured for this repository.",
       noRuns: (branch: string) => `No completed deploy runs on ${branch} in this range.`,
       noShipped: "No merged pull request was shipped by an observed deploy in this range.",
@@ -148,6 +155,26 @@ export const copy = {
     leadCount: (count: number) => `Across ${count} shipped pull requests`,
     failureCount: (failed: number, total: number) => `${failed} of ${total} deploys failed`,
     restoreCount: (count: number) => `Across ${count} recoveries`,
+  },
+
+  aiCohorts: {
+    title: "AI-assisted work",
+    lede: "Merged pull requests marked as AI-assisted set beside those that are not, so the two can be compared rather than guessed at.",
+    caption: "Merged pull requests, AI-assisted against unassisted",
+    measure: "Measure",
+    assisted: "AI-assisted",
+    unassisted: "Unassisted",
+    prs: "Pull requests",
+    medianCycle: "Median cycle time",
+    p75Cycle: "75th percentile cycle time",
+    medianSize: "Median size (lines)",
+    reviewed: "Reviewed by someone else",
+    reverts: "Revert or hotfix share",
+    cycleNote: "Cycle time runs from the first commit to the merge, not to the deploy.",
+    rule: "A pull request counts as AI-assisted when it carries the label ai-assisted, or when one of its commits has a Co-Authored-By trailer naming an assistant such as Claude or Copilot. Use of an assistant that leaves no label or trailer counts as unassisted, so the AI-assisted figures are a floor rather than a total.",
+    unknown: (count: number) =>
+      `${count} merged ${count === 1 ? "pull request" : "pull requests"} could not be classified because labels and trailers were not recorded when they were crawled.`,
+    unknownHint: "Run a full crawl of this repository to record them.",
   },
 
   flow: {
@@ -711,14 +738,18 @@ export const copy = {
     bandsTitle: "Reading the bands",
     bandsLede:
       "Each measure is placed in one of four bands so a figure can be read at a glance. A band is always shown with its name as well as its colour, and it describes a team's system of work, never an individual.",
-    bandsCaption: "The thresholds this dashboard uses for each DORA band.",
+    bandsCaption: "The thresholds this dashboard uses for each DORA band, taken from the DORA 2023 profile.",
+    bandsProfile:
+      "These bands come from the DORA 2023 profile, which follows the clusters in the 2023 Accelerate State of DevOps Report. Every grade in the dashboard names the profile it used.",
+    bandsSource: "Read the 2023 Accelerate State of DevOps Report",
+    bandsSourceHref: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf",
     bandsMeasure: "Measure",
     bandRows: [
       {
         name: "Deployment frequency",
         elite: "7 or more a week",
         high: "1 or more a week",
-        medium: "1 or more a month",
+        medium: "1 or more every four weeks",
         low: "Less often",
       },
       { name: "Lead time for changes", elite: "Under a day", high: "Under a week", medium: "Under a month", low: "Longer" },

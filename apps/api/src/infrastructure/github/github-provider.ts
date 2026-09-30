@@ -40,6 +40,8 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
         commits(first: 1) { nodes { commit { authoredDate committedDate } } }
         reviews(first: 100) { nodes { author { login } state submittedAt } }
         files(first: 100) { totalCount nodes { path } }
+        labels(first: 20) { nodes { name } }
+        trailers: commits(last: 100) { nodes { commit { message } } }
       }
     }
   }
@@ -61,6 +63,8 @@ interface GqlPullRequest {
   author: { login: string; __typename: string } | null;
   mergedBy: { login: string } | null;
   commits: { nodes: { commit: { authoredDate: string; committedDate: string } }[] };
+  labels?: { nodes: ({ name: string } | null)[] } | null;
+  trailers?: { nodes: ({ commit: { message: string } } | null)[] } | null;
   files?: { totalCount?: number; nodes: { path: string }[] } | null;
   reviews: { nodes: { author: { login: string } | null; state: Review["state"]; submittedAt: string | null }[] };
 }
@@ -81,6 +85,29 @@ function filesOf(node: GqlPullRequest): Pick<PullRequest, "files" | "filesTrunca
   if (!node.files) return {};
   const files = node.files.nodes.flatMap((f) => (f?.path ? [f.path] : []));
   return (node.files.totalCount ?? 0) > FILES_RECORDED ? { files, filesTruncated: true } : { files };
+}
+
+const CO_AUTHOR_LINE = /^co-authored-by:\s*(.+?)\s*(<[^>]*>)?\s*$/i;
+
+/**
+ * The distinct names on `Co-Authored-By:` trailers in a commit message. Only the name is kept: the email is dropped
+ * here and the message is never stored (ADR 0016).
+ */
+export function parseCoAuthors(message: string): string[] {
+  const names = message.split(/\r?\n/).flatMap((line) => {
+    const name = CO_AUTHOR_LINE.exec(line.trim())?.[1]?.trim();
+    return name ? [name] : [];
+  });
+  return [...new Set(names)];
+}
+
+function signalsOf(node: GqlPullRequest): Pick<PullRequest, "labels" | "coAuthors"> {
+  const out: Pick<PullRequest, "labels" | "coAuthors"> = {};
+  if (node.labels) out.labels = node.labels.nodes.flatMap((l) => (l?.name ? [l.name] : []));
+  if (node.trailers) {
+    out.coAuthors = [...new Set(node.trailers.nodes.flatMap((n) => (n?.commit ? parseCoAuthors(n.commit.message) : [])))];
+  }
+  return out;
 }
 
 function toPullRequest(node: GqlPullRequest): PullRequest {
@@ -105,11 +132,13 @@ function toPullRequest(node: GqlPullRequest): PullRequest {
     baseRef: node.baseRefName,
     reviews: node.reviews.nodes.map((r) => ({ author: r.author?.login ?? null, state: r.state, submittedAt: r.submittedAt })),
     ...filesOf(node),
+    ...signalsOf(node),
   };
 }
 
-const PAGE_SIZE = 50;
-const RETRY_PAGE_SIZE = 25;
+// Each PR also carries up to 100 commit messages for trailers, so pages stay small to keep responses fast.
+const PAGE_SIZE = 25;
+const RETRY_PAGE_SIZE = 10;
 const RETRYABLE = new Set([502, 504]);
 
 /** GitHub over its GraphQL API for pull requests and its REST API for Actions runs. */

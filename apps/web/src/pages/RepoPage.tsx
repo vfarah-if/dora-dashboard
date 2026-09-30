@@ -3,6 +3,7 @@ import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useRepos, useReport, type ReportRange } from "../api/hooks";
 import { copy } from "../copy";
+import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
 import { AuthorsTable } from "../components/AuthorsTable";
 import { CodeHealthSection } from "../components/CodeHealthSection";
@@ -10,11 +11,12 @@ import { DateRangeControls } from "../components/DateRangeControls";
 import { DoraTile } from "../components/DoraTile";
 import { DownloadReportButton } from "../components/DownloadReportButton";
 import { PrTable } from "../components/PrTable";
+import { ProfileLine } from "../components/ProfileLine";
 import { RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { everyoneLeftOut, excludedInRange } from "../lib/authorFilter";
-import { doraFigures } from "../lib/dora";
+import { doraFigures, reworkFigure } from "../lib/dora";
 import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent } from "../lib/format";
 import { repoName } from "../lib/series";
 import { useListParam, useRangeParams } from "../lib/urlState";
@@ -78,8 +80,9 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
           {copy.dora.title}
         </h2>
         <p className="section-lede">{copy.dora.lede}</p>
+        <ProfileLine profile={report.dora.profile} />
         <div className="tile-grid">
-          {doraFigures(report).map((figure) => (
+          {[...doraFigures(report), reworkFigure(report)].map((figure) => (
             <DoraTile
               key={figure.id}
               title={figure.title}
@@ -88,10 +91,13 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
               band={figure.band}
               detail={figure.detail}
               reason={figure.reason}
+              noBandNote={figure.noBandNote}
             />
           ))}
         </div>
       </section>
+
+      <AiCohorts cohorts={report.aiCohorts} />
 
       <CodeHealthSection repoId={repoId} range={range} />
 

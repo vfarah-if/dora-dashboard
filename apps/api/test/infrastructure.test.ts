@@ -6,7 +6,7 @@ import { loadConfig } from "../src/core/config.js";
 import { NotFoundError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { GhCliTokenSource } from "../src/infrastructure/auth/gh-cli-token-source.js";
 import { MemorySessionStore } from "../src/infrastructure/auth/memory-session-store.js";
-import { GitHubProvider } from "../src/infrastructure/github/github-provider.js";
+import { GitHubProvider, parseCoAuthors } from "../src/infrastructure/github/github-provider.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { FakeProvider, pr, run } from "./fakes.js";
 
@@ -31,7 +31,69 @@ const gqlNode = {
   reviews: { nodes: [{ author: null, state: "APPROVED", submittedAt: "2026-09-01T10:30:00Z" }] },
 };
 
+describe("parseCoAuthors", () => {
+  it("returns every trailer name, matching the key in any case", () => {
+    const message =
+      "Add widgets\n\nBody text\n\nCo-Authored-By: Claude <noreply@example.com>\nco-authored-by: Sam Lee <sam@example.com>\nCO-AUTHORED-BY: Pat";
+    expect(parseCoAuthors(message)).toEqual(["Claude", "Sam Lee", "Pat"]);
+  });
+
+  it("keeps a name given without an email and strips the email otherwise", () => {
+    expect(parseCoAuthors("x\n\nCo-Authored-By:   Copilot  ")).toEqual(["Copilot"]);
+    const names = parseCoAuthors("Co-Authored-By: Claude <secret@example.com>\r\nCo-authored-by: Sam <>");
+    expect(names).toEqual(["Claude", "Sam"]);
+    expect(names.join(" ")).not.toMatch(/@|</);
+  });
+
+  it("removes duplicates and ignores messages without trailers", () => {
+    expect(parseCoAuthors("Co-Authored-By: Claude <a@example.com>\nCo-Authored-By: Claude <b@example.com>")).toEqual(["Claude"]);
+    expect(parseCoAuthors("Fix widgets\n\nMentions co-authored-by: in prose")).toEqual([]);
+    expect(parseCoAuthors("")).toEqual([]);
+  });
+});
+
 describe("GitHubProvider", () => {
+  it("records labels and co-author names only, never an email or a commit message", async () => {
+    const node = {
+      ...gqlNode,
+      labels: { nodes: [{ name: "ai-assisted" }, { name: "bug" }] },
+      trailers: {
+        nodes: [
+          { commit: { message: "One\n\nCo-Authored-By: Claude <private@example.com>" } },
+          { commit: { message: "Two\n\nCo-authored-by: Claude <private@example.com>\nCo-authored-by: Sam Lee" } },
+          { commit: { message: "Three, no trailer" } },
+        ],
+      },
+    };
+    const http = vi.fn(async () =>
+      json({
+        data: {
+          repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [node] } },
+        },
+      }),
+    );
+    const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+    expect(mapped.labels).toEqual(["ai-assisted", "bug"]);
+    expect(mapped.coAuthors).toEqual(["Claude", "Sam Lee"]);
+    const serialised = JSON.stringify(mapped);
+    expect(serialised).not.toContain("private@example.com");
+    expect(serialised).not.toContain("no trailer");
+  });
+
+  it("leaves labels and coAuthors absent when GitHub sent neither", async () => {
+    const http = vi.fn(async () =>
+      json({
+        data: {
+          repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [gqlNode] } },
+        },
+      }),
+    );
+    const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+    expect("labels" in mapped).toBe(false);
+    expect("coAuthors" in mapped).toBe(false);
+  });
+
   it("maps a GraphQL page onto the domain, taking the earlier of the first commit's two dates", async () => {
     const http = vi.fn(async () =>
       json({
@@ -94,7 +156,7 @@ describe("GitHubProvider", () => {
     expect("filesTruncated" in exactly).toBe(false);
   });
 
-  it("retries once with a page of 25 after a 502 or 504, and only then", async () => {
+  it("retries once with a page of 10 after a 502 or 504, and only then", async () => {
     const ok = json({
       data: {
         repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [gqlNode] } },
@@ -107,8 +169,8 @@ describe("GitHubProvider", () => {
       expect(result.pullRequests).toHaveLength(1);
       const sizes = http.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string).variables);
       expect(sizes).toEqual([
-        { owner: "acme", name: "widgets", cursor: "c1", first: 50 },
         { owner: "acme", name: "widgets", cursor: "c1", first: 25 },
+        { owner: "acme", name: "widgets", cursor: "c1", first: 10 },
       ]);
     }
   });

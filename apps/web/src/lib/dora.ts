@@ -2,14 +2,32 @@ import type { Band, RepoReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatDuration, formatNumber, formatPercent } from "./format";
 
+type BandedId = "deploymentFrequency" | "leadTime" | "changeFailure" | "timeToRestore";
+
 export interface DoraFigure {
-  id: "deploymentFrequency" | "leadTime" | "changeFailure" | "timeToRestore";
+  id: BandedId | "reworkRate";
   title: string;
   definition: string;
   value: string | null;
   band: Band | null;
   detail?: string;
   reason?: string;
+  /** Why the figure has no band, for a measure DORA publishes none for. */
+  noBandNote?: string;
+}
+
+/** The rework rate as a figure with no band, because DORA publishes none (ADR 0016). */
+export function reworkFigure(report: RepoReport): DoraFigure {
+  const rework = report.dora.changeFailure?.rework ?? null;
+  const base = {
+    id: "reworkRate" as const,
+    title: copy.dora.rework,
+    definition: copy.dora.reworkDefinition,
+    band: null,
+    noBandNote: copy.dora.reworkNoBand,
+  };
+  if (!rework) return { ...base, value: null, reason: copy.dora.reasons.noRework };
+  return { ...base, value: formatPercent(rework.rate), detail: copy.dora.reworkCount(rework.deploys, rework.total) };
 }
 
 interface FigureParts {
@@ -19,7 +37,7 @@ interface FigureParts {
 
 /** A figure for a measure that may be missing. Everything derived from the measure is null or absent together. */
 function figure<M extends { band: Band }>(
-  id: DoraFigure["id"],
+  id: BandedId,
   measure: M | null | undefined,
   parts: (m: M) => FigureParts,
   reason: string,
