@@ -1,6 +1,7 @@
 import type { QueueEntry } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { initialsOf, metaParts } from "../lib/reviewQueue";
+import { ChecksStatus } from "./ChecksStatus";
 import { ReviewFlag } from "./ReviewFlag";
 
 const text = copy.reviewQueue;
@@ -31,6 +32,7 @@ export function PrQueueCard({ entry, showNames }: { entry: QueueEntry; showNames
         )}
       </div>
       <p className="pr-card-meta">{metaParts(entry, showNames).join(" · ")}</p>
+      <ChecksStatus checks={entry.checks} />
     </li>
   );
 }

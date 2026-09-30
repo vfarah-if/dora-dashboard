@@ -64,7 +64,8 @@ describe("ReviewQueuePage", () => {
     });
     expect(avatar).toHaveTextContent(/casey/);
     expect(avatar.querySelector("[aria-hidden='true']")).not.toBeNull();
-    expect(card()).toHaveTextContent(/\+\d+ -\d+ · \d+ files? · checks failing/);
+    expect(card()).toHaveTextContent(/\+\d+ -\d+ · \d+ files?/);
+    expect(within(card()).getByText(text.card.checks.failing).closest(".checks-status")).toHaveClass("checks-failing");
     const flagged = screen.getByRole("link", { name: /^Rework billing/ }).closest("li")!;
     expect(flagged).toHaveTextContent("Stale, 12 weekdays, no reviewer");
     expect(flagged).not.toHaveTextContent(/Waiting \d+ weekdays/);

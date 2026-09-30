@@ -56,7 +56,6 @@ export function metaParts(entry: QueueEntry, showNames: boolean): string[] {
     );
   }
   parts.push(text.card.lines(entry.additions, entry.deletions), text.card.files(entry.changedFiles));
-  parts.push(text.card.checks[entry.checks].toLowerCase());
   if (isIdle(entry)) parts.push(text.card.idle(entry.idleDays));
   return parts;
 }

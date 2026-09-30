@@ -213,7 +213,7 @@ describe("metaParts", () => {
       checks: "passing",
       idleDays: 1,
     });
-    expect(metaParts(fresh, false)).toEqual(["Waiting 3h", "+5 -2", "1 file", "checks passing"]);
+    expect(metaParts(fresh, false)).toEqual(["Waiting 3h", "+5 -2", "1 file"]);
     const stale = queueEntry({
       lane: "no_reviewer",
       band: "stale",

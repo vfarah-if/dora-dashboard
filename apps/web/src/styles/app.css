@@ -2694,6 +2694,42 @@ a:hover {
   color: var(--text-muted);
 }
 
+/* Checks carry an icon and a word as well as a colour, so the state reads without colour. */
+.checks-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.checks-status svg {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.checks-passing {
+  color: var(--band-elite);
+}
+
+.checks-failing {
+  color: var(--danger);
+}
+
+.checks-pending {
+  color: var(--warning);
+}
+
+.checks-none svg {
+  stroke-dasharray: 3 3;
+}
+
 /* Review queue on paper. The board cannot scroll sideways, so each lane takes the full width in turn and
    its cards sit two to a row. The filters, buttons and copy status have no use in a printed copy. */
 @media print {
