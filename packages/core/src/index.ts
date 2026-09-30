@@ -9,3 +9,5 @@ export * from "./codeHealth.js";
 export * from "./codeTooling.js";
 export * from "./codeGrade.js";
 export * from "./codeAdvice.js";
+export * from "./reviewQueue.js";
+export * from "./features.js";

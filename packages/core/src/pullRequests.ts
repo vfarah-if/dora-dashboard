@@ -41,7 +41,7 @@ function earliest(values: (string | null)[]): string | null {
 }
 
 /** A review the author leaves on their own PR is a comment, not a review; pending reviews are not submitted. */
-function externalReviews(pr: PullRequest) {
+export function externalReviews(pr: PullRequest) {
   return pr.reviews.filter((r) => r.submittedAt !== null && r.author !== null && r.author !== pr.author && r.state !== "PENDING");
 }
 

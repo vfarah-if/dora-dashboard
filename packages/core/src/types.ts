@@ -18,6 +18,8 @@ export interface Review {
   author: string | null;
   state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
   submittedAt: string | null;
+  /** True when the reviewer is a bot account. Absent when the host did not say; the login is then checked instead. */
+  authorIsBot?: boolean;
 }
 
 export interface PullRequest {
@@ -62,4 +64,141 @@ export interface DeployRun {
   createdAt: string;
   /** Completion time; GitHub's updated_at on a completed run. */
   completedAt: string;
+}
+
+/** Someone, or a team, asked to review a pull request and yet to do so. */
+export interface RequestedReviewer {
+  /** A user's login, or a team's name. */
+  name: string;
+  isTeam: boolean;
+}
+
+/** An open pull request, read live from the code host for the review queue. */
+export interface OpenPullRequest extends PullRequest {
+  isDraft: boolean;
+  requestedReviewers: RequestedReviewer[];
+  /** The branch the pull request was opened from. */
+  headRef: string;
+  /** State of the newest commit's checks: "none" when the repository reports no checks. */
+  checks: "passing" | "failing" | "pending" | "none";
+  /** Issues the pull request is set to close, as `#12`. */
+  linkedIssues: string[];
+  /** Number of files changed, as reported by the host. */
+  changedFiles: number;
+  /** The description, used only to find `Related:` lines. It is never sent to the browser. */
+  body?: string;
+}
+
+/** Who has to act next on an open pull request. */
+export type ReviewLane = "held" | "with_author" | "approved" | "awaiting_review" | "no_reviewer";
+
+/** How long a pull request has waited, in weekday hours: fresh under 4, ageing 4 to 24, overdue over 24, stale from 120. */
+export type WaitBand = "fresh" | "ageing" | "overdue" | "stale";
+
+export interface QueueEntry {
+  /** `repoId#number`, unique across repositories. */
+  key: string;
+  repoId: number;
+  /** `owner/name` */
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  /** Null unless names were asked for. */
+  author: string | null;
+  authorIsBot: boolean;
+  lane: ReviewLane;
+  band: WaitBand;
+  /** Weekday hours (Monday to Friday, UTC) since `waitingSince`. */
+  waitHours: number;
+  /** The later of the time the pull request was published and the last review by someone else. */
+  waitingSince: string;
+  /** Empty unless names were asked for; use `requestedReviewerCount` for the number. */
+  requestedReviewers: RequestedReviewer[];
+  /** How many people or teams are asked to review; present whether or not names are. */
+  requestedReviewerCount: number;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  checks: OpenPullRequest["checks"];
+  isDraft: boolean;
+  labels: string[];
+  ticketKeys: string[];
+  /** Blank unless names were asked for, because branch names often carry a login. */
+  headRef: string;
+  updatedAt: string;
+  /** Whole days since the pull request was last updated, by the wall clock. */
+  idleDays: number;
+}
+
+export interface ReviewQueueTiles {
+  /** Pull requests in the awaiting_review and no_reviewer lanes. */
+  waiting: { count: number; repos: number; heldForRedChecks: number };
+  /** Waiting pull requests over 24 weekday hours. */
+  pastDay: { count: number; longestHours: number | null };
+  noReviewer: { count: number; oldestHours: number | null };
+  /** Waiting pull requests at 120 weekday hours (5 weekdays) or more. */
+  stale: { count: number; longestHours: number | null };
+  /** Waiting pull requests under 400 changed lines and under 10 files. */
+  fastLane: { count: number };
+  /** Open pull requests, in any lane, not updated for 14 days or more. */
+  idle: { count: number };
+}
+
+export interface RepoQueueSummary {
+  repoId: number;
+  repo: string;
+  open: number;
+  /** Band counts over the waiting pull requests only. */
+  bands: Record<WaitBand, number>;
+  /** Lane counts over every open pull request. */
+  lanes: Record<ReviewLane, number>;
+}
+
+export interface FeatureMember {
+  key: string;
+  repoId: number;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  lane: ReviewLane;
+  waitHours: number;
+}
+
+/** Open pull requests that look like parts of one piece of work. */
+export interface FeatureGroup {
+  id: string;
+  /** A ticket key when one is shared, otherwise the title of the longest waiting member. */
+  title: string;
+  /** Why these were joined: ticket, related (a `Related:` line), branch (a shared head branch) or stack. */
+  evidence: ("ticket" | "related" | "branch" | "stack")[];
+  ticketKeys: string[];
+  members: FeatureMember[];
+  lanes: Record<ReviewLane, number>;
+  longestWaitHours: number;
+}
+
+export interface ReviewQueueError {
+  repoId: number;
+  repo: string;
+  message: string;
+}
+
+export interface ReviewQueue {
+  /** The time the waits were worked out at. */
+  now: string;
+  /** The oldest time any repository's pull requests were read from the host. */
+  fetchedAt: string;
+  /** Longest wait first. */
+  entries: QueueEntry[];
+  tiles: ReviewQueueTiles;
+  repos: RepoQueueSummary[];
+  /** Entry keys: stale with no reviewer, stale awaiting review, overdue with no reviewer; longest wait first within each. */
+  needsAttention: string[];
+  features: FeatureGroup[];
+  /** Repositories that could not be read; the rest of the queue is still complete. */
+  errors: ReviewQueueError[];
+  /** Repositories that were read only in part, for example because they have more open pull requests than are fetched. */
+  warnings: ReviewQueueError[];
 }

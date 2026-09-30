@@ -10,10 +10,12 @@ import type { CliTokenSource, SessionStore } from "./interfaces/token-source.js"
 import { registerAuthRoutes, requireSession } from "./routes/auth.js";
 import { registerErrorHandler } from "./routes/errors.js";
 import { registerRepoRoutes } from "./routes/repos.js";
+import { registerReviewQueueRoutes } from "./routes/review-queue.js";
 import { CodeHealthService } from "./services/code-health-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { RepoService } from "./services/repo-service.js";
 import { ReportService } from "./services/report-service.js";
+import { ReviewQueueService } from "./services/review-queue-service.js";
 
 export interface AppDeps {
   config: Config;
@@ -27,6 +29,8 @@ export interface AppDeps {
   analyser?: CodeAnalyser;
   /** Reads tooling files from the clone so the report can grade testing and hygiene. Optional. */
   reader?: WorkspaceReader;
+  /** The time source for review waits and the review queue cache; tests pass a fixed one. */
+  clock?: () => Date;
   logger?: boolean;
 }
 
@@ -60,6 +64,10 @@ function registerRoutes(app: FastifyInstance, deps: AppDeps, crawler: CrawlServi
     crawler,
     reports: new ReportService(deps.store),
     codeHealth,
+  });
+  registerReviewQueueRoutes(app, {
+    guard: requireSession(auth),
+    queue: new ReviewQueueService(deps.store, deps.provider, deps.clock),
   });
   app.get("/api/health", async () => ({ ok: true, authMode: deps.config.authMode, provider: deps.provider.kind }));
 }

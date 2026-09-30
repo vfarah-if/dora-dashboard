@@ -55,3 +55,13 @@ export const codeHealthQuery = {
   type: "object",
   properties: { from: date, to: date },
 } as const;
+
+/** `ids` is optional: leave it out for every repository. */
+export const reviewQueueQuery = {
+  type: "object",
+  properties: {
+    ids: { type: "string", pattern: "^\\d+(,\\d+){0,49}$" },
+    refresh: { type: "string", enum: ["0", "1"] },
+    names: { type: "string", enum: ["0", "1"] },
+  },
+} as const;

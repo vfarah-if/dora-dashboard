@@ -54,6 +54,7 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
               {copy.nav.home}
             </NavLink>
             <NavLink to="/repos">{copy.nav.repositories}</NavLink>
+            <NavLink to="/review-queue">{copy.nav.reviewQueue}</NavLink>
           </nav>
         )}
         <div className="app-header-actions">

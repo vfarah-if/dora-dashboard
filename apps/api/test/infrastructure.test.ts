@@ -389,3 +389,164 @@ describe("loadConfig", () => {
     ).toBe("oauth");
   });
 });
+
+describe("GitHubProvider open pull requests", () => {
+  const openNode = {
+    ...gqlNode,
+    state: "OPEN",
+    mergedAt: null,
+    closedAt: null,
+    author: { login: "alice", __typename: "User" },
+    changedFiles: 7,
+    headRefName: "feature/WID-3-widgets",
+    isDraft: true,
+    body: "Related: #4",
+    latest: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+    reviewRequests: {
+      nodes: [
+        { requestedReviewer: { __typename: "User", login: "bob" } },
+        { requestedReviewer: { __typename: "Team", name: "platform" } },
+        { requestedReviewer: null },
+        null,
+      ],
+    },
+    closingIssuesReferences: { nodes: [{ number: 12 }, null] },
+    labels: { nodes: [{ name: "on hold" }] },
+  };
+  const connection = (nodes: unknown[], next: string | null = null) => ({
+    data: {
+      repository: {
+        pullRequests: { pageInfo: { hasNextPage: next !== null, endCursor: next }, totalCount: nodes.length, nodes },
+      },
+    },
+  });
+  const variablesOf = (http: ReturnType<typeof vi.fn>) =>
+    http.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string) as { query: string; variables: object });
+
+  it("maps drafts, requested reviewers, checks, head branch, linked issues and files", async () => {
+    const http = vi.fn(async () => json(connection([openNode])));
+    const [mapped] = (await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).pullRequests;
+
+    expect(mapped).toMatchObject({
+      number: 12,
+      state: "OPEN",
+      isDraft: true,
+      headRef: "feature/WID-3-widgets",
+      checks: "failing",
+      changedFiles: 7,
+      body: "Related: #4",
+      linkedIssues: ["#12"],
+      labels: ["on hold"],
+      requestedReviewers: [
+        { name: "bob", isTeam: false },
+        { name: "platform", isTeam: true },
+      ],
+    });
+    expect(variablesOf(http)[0]!.query).toContain("states: OPEN");
+  });
+
+  it.each([
+    ["SUCCESS", "passing"],
+    ["PENDING", "pending"],
+    ["EXPECTED", "pending"],
+    ["ERROR", "failing"],
+    ["SOMETHING_NEW", "none"],
+  ])("maps the check rollup %s to %s", async (state, checks) => {
+    const node = { ...openNode, latest: { nodes: [{ commit: { statusCheckRollup: { state } } }] } };
+    const http = vi.fn(async () => json(connection([node])));
+    expect((await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).pullRequests[0]!.checks).toBe(checks);
+  });
+
+  it("copes with a pull request that reports no optional fields", async () => {
+    const http = vi.fn(async () => json(connection([{ ...gqlNode, state: "OPEN" }])));
+    const [mapped] = (await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).pullRequests;
+    expect(mapped).toMatchObject({
+      isDraft: false,
+      headRef: "",
+      checks: "none",
+      changedFiles: 0,
+      requestedReviewers: [],
+      linkedIssues: [],
+    });
+    expect("body" in mapped!).toBe(false);
+  });
+
+  it("pages to the end, passing each cursor on", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(json(connection([openNode], "c1")))
+      .mockResolvedValueOnce(json(connection([{ ...openNode, number: 13 }])));
+    const all = await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets");
+    expect(all.pullRequests.map((p) => p.number)).toEqual([12, 13]);
+    expect(all.truncated).toBe(false);
+    expect(variablesOf(http).map((v) => v.variables)).toEqual([
+      { owner: "acme", name: "widgets", cursor: null, first: 50 },
+      { owner: "acme", name: "widgets", cursor: "c1", first: 50 },
+    ]);
+  });
+
+  it("stops after ten pages rather than reading without end, and says it was cut short", async () => {
+    const http = vi.fn(async () => json(connection([openNode], "more")));
+    const result = await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets");
+    expect(result.pullRequests).toHaveLength(10);
+    expect(result.truncated).toBe(true);
+    expect(http).toHaveBeenCalledTimes(10);
+  });
+
+  it("does not call a read truncated when the last page is exactly the tenth", async () => {
+    const http = vi.fn();
+    for (let i = 0; i < 9; i++) http.mockResolvedValueOnce(json(connection([openNode], "more")));
+    http.mockResolvedValueOnce(json(connection([openNode])));
+    expect((await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).truncated).toBe(false);
+  });
+
+  it("reads the latest 100 reviews and whether each reviewer is a bot", async () => {
+    const node = {
+      ...openNode,
+      reviews: {
+        nodes: [
+          { author: { login: "ci-helper", __typename: "Bot" }, state: "APPROVED", submittedAt: "2026-09-01T10:30:00Z" },
+          { author: { login: "bob", __typename: "User" }, state: "COMMENTED", submittedAt: "2026-09-01T10:40:00Z" },
+          { author: { login: "sam" }, state: "COMMENTED", submittedAt: "2026-09-01T10:50:00Z" },
+        ],
+      },
+    };
+    const http = vi.fn(async () => json(connection([node])));
+    const [mapped] = (await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).pullRequests;
+    expect(variablesOf(http)[0]!.query).toContain("reviews(last: 100) { nodes { author { login __typename }");
+    expect(mapped!.reviews.map((r) => r.authorIsBot)).toEqual([true, false, undefined]);
+    expect("authorIsBot" in mapped!.reviews[2]!).toBe(false);
+  });
+
+  it("retries a gateway timeout with a smaller page, and gives up on other failures", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("slow", { status: 504 }))
+      .mockResolvedValueOnce(json(connection([openNode])));
+    await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets");
+    expect(variablesOf(http).map((v) => (v.variables as { first: number }).first)).toEqual([50, 20]);
+
+    const refused = vi.fn(async () => new Response("no", { status: 403 }));
+    await expect(new GitHubProvider(refused).fetchOpenPullRequests("t", "acme", "widgets")).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(refused).toHaveBeenCalledTimes(1);
+  });
+
+  it("raises NotFoundError for a repository it cannot see and UpstreamError for GraphQL errors", async () => {
+    const missing = new GitHubProvider(vi.fn(async () => json({ data: { repository: null } })));
+    await expect(missing.fetchOpenPullRequests("t", "acme", "nope")).rejects.toBeInstanceOf(NotFoundError);
+    const broken = new GitHubProvider(vi.fn(async () => json({ ...connection([]), errors: [{ message: "boom" }] })));
+    await expect(broken.fetchOpenPullRequests("t", "acme", "widgets")).rejects.toBeInstanceOf(UpstreamError);
+  });
+
+  it("reports a rate limit that arrives with a null repository as an upstream error, not as not found", async () => {
+    const limited = new GitHubProvider(
+      vi.fn(async () => json({ data: { repository: null }, errors: [{ message: "API rate limit exceeded" }] })),
+    );
+    await expect(limited.fetchOpenPullRequests("t", "acme", "widgets")).rejects.toMatchObject({
+      name: "UpstreamError",
+      message: "API rate limit exceeded",
+    });
+  });
+});

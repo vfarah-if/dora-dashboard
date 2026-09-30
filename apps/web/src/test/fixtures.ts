@@ -1,4 +1,4 @@
-import type { RepoReport, WeekRow } from "@dora-dashboard/core";
+import type { QueueEntry, RepoReport, ReviewQueue, WeekRow } from "@dora-dashboard/core";
 import type { RepoWithCounts } from "../api/hooks";
 
 export function week(overrides: Partial<WeekRow> & Pick<WeekRow, "week" | "weekIndex">): WeekRow {
@@ -150,5 +150,150 @@ export function report(
       },
     ],
     ...rest,
+  };
+}
+
+export function queueEntry(overrides: Partial<QueueEntry> = {}): QueueEntry {
+  const number = overrides.number ?? 1;
+  const repoId = overrides.repoId ?? 1;
+  return {
+    key: `${repoId}#${number}`,
+    repoId,
+    repo: "acme/widgets",
+    number,
+    title: `Change ${number}`,
+    url: `https://github.com/acme/widgets/pull/${number}`,
+    author: "casey",
+    authorIsBot: false,
+    lane: "awaiting_review",
+    band: "fresh",
+    waitHours: 2,
+    waitingSince: "2026-03-02T09:00:00Z",
+    requestedReviewers: [{ name: "robin", isTeam: false }],
+    requestedReviewerCount: 1,
+    additions: 20,
+    deletions: 5,
+    changedFiles: 2,
+    checks: "passing",
+    isDraft: false,
+    labels: [],
+    ticketKeys: [],
+    headRef: `feature-${number}`,
+    updatedAt: "2026-03-02T09:00:00Z",
+    idleDays: 0,
+    ...overrides,
+  };
+}
+
+const zeroLanes = { held: 0, with_author: 0, approved: 0, awaiting_review: 0, no_reviewer: 0 };
+
+/** A queue with one stale unreviewed PR, one overdue awaiting review, one approved, one draft and one bot PR. */
+export function reviewQueue(overrides: Partial<ReviewQueue> = {}): ReviewQueue {
+  const entries = [
+    queueEntry({
+      number: 10,
+      title: "Rework billing",
+      lane: "no_reviewer",
+      band: "stale",
+      waitHours: 288,
+      requestedReviewers: [],
+      requestedReviewerCount: 0,
+      ticketKeys: ["ACME-7"],
+    }),
+    queueEntry({
+      number: 11,
+      title: "Add export",
+      lane: "awaiting_review",
+      band: "overdue",
+      waitHours: 40,
+      ticketKeys: ["ACME-7"],
+    }),
+    queueEntry({
+      number: 12,
+      title: "Tidy docs",
+      lane: "approved",
+      band: "fresh",
+      waitHours: 1,
+      requestedReviewers: [],
+      requestedReviewerCount: 0,
+    }),
+    queueEntry({
+      number: 13,
+      title: "Draft spike",
+      lane: "held",
+      isDraft: true,
+      band: "ageing",
+      waitHours: 6,
+      requestedReviewers: [],
+      requestedReviewerCount: 0,
+    }),
+    queueEntry({
+      number: 14,
+      title: "Bump deps",
+      author: "dependabot",
+      authorIsBot: true,
+      lane: "awaiting_review",
+      band: "ageing",
+      waitHours: 5,
+    }),
+    queueEntry({ number: 15, title: "Fix retry", lane: "with_author", band: "fresh", waitHours: 3, checks: "failing" }),
+  ];
+  return {
+    now: "2026-03-09T10:00:00Z",
+    fetchedAt: "2026-03-09T09:58:00Z",
+    entries,
+    tiles: {
+      waiting: { count: 3, repos: 1, heldForRedChecks: 1 },
+      pastDay: { count: 2, longestHours: 288 },
+      noReviewer: { count: 1, oldestHours: 288 },
+      stale: { count: 1, longestHours: 288 },
+      fastLane: { count: 2 },
+      idle: { count: 0 },
+    },
+    repos: [
+      {
+        repoId: 1,
+        repo: "acme/widgets",
+        open: 6,
+        bands: { fresh: 0, ageing: 1, overdue: 1, stale: 1 },
+        lanes: { ...zeroLanes, no_reviewer: 1, awaiting_review: 2, approved: 1, held: 1, with_author: 1 },
+      },
+    ],
+    needsAttention: ["1#10", "1#11"],
+    features: [
+      {
+        id: "ACME-7",
+        title: "ACME-7",
+        evidence: ["ticket"],
+        ticketKeys: ["ACME-7"],
+        members: [
+          {
+            key: "1#10",
+            repoId: 1,
+            repo: "acme/widgets",
+            number: 10,
+            title: "Rework billing",
+            url: "https://github.com/acme/widgets/pull/10",
+            lane: "no_reviewer",
+            waitHours: 288,
+          },
+          {
+            key: "1#11",
+            repoId: 1,
+            repo: "acme/widgets",
+            number: 11,
+            title: "Add export",
+            url: "https://github.com/acme/widgets/pull/11",
+            lane: "awaiting_review",
+            waitHours: 40,
+          },
+        ],
+        lanes: { ...zeroLanes, no_reviewer: 1, awaiting_review: 1 },
+        longestWaitHours: 288,
+      },
+    ],
+    errors: [],
+    warnings: [],
+    ...overrides,
   };
 }

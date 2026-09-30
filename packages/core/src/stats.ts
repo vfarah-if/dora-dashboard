@@ -6,6 +6,25 @@ export function hoursBetween(from: string | null, to: string | null): number | n
   return Number.isFinite(delta) ? delta : null;
 }
 
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * Hours between two instants that fall on a Monday to Friday in UTC. Saturday and Sunday count as nothing, so a
+ * pull request published on Friday afternoon has waited 18 hours by Monday at 10:00. Zero when `to` is not after `from`.
+ */
+export function weekdayHoursBetween(from: string, to: string): number {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  let total = 0;
+  for (let day = Math.floor(start / DAY_MS) * DAY_MS; day < end; day += DAY_MS) {
+    const weekday = new Date(day).getUTCDay();
+    if (weekday === 0 || weekday === 6) continue;
+    total += Math.min(end, day + DAY_MS) - Math.max(start, day);
+  }
+  return total / HOUR_MS;
+}
+
 /** Linear-interpolated percentile, p in [0, 1]. Returns null for an empty list. */
 export function percentile(values: readonly number[], p: number): number | null {
   if (values.length === 0) return null;

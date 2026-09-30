@@ -71,6 +71,8 @@ Tokens are held in memory only and never sent to the browser (ADR 0004).
 
 See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions with advice on where to start simplifying (ADR 0015), and an overall grade for maintainability, testing and hygiene worked out from the repository's files and pull requests without running any of its code (ADR 0013). Run a full crawl once after upgrading so that pull request file lists are fetched for the testing check.
 
+The **Review queue** page (`/review-queue`) shows open pull requests across your repositories as they are now, read live from GitHub and cached for about a minute, with a refresh button to read again. It sorts each one into a lane by who has to act next, bands the review wait in weekday hours (UTC), lists what needs attention first and groups pull requests that belong to one piece of work. Names are hidden until you turn them on, and pull request descriptions never leave the server (ADR 0017).
+
 DORA figures need a deploy workflow. The API guesses one from workflow file names; set it explicitly per repository if the guess is wrong.
 
 ## Layout

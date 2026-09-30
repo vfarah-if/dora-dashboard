@@ -48,6 +48,7 @@ export const copy = {
     label: "Main",
     home: "Why it matters",
     repositories: "Repositories",
+    reviewQueue: "Review queue",
   },
 
   repos: {
@@ -860,6 +861,150 @@ export const copy = {
     ctaTitle: "Put it into practice",
     ctaBody:
       "Add a repository to see its four keys, its flow and its code health side by side, then choose one small change to try this week.",
+  },
+
+  reviewQueue: {
+    title: "Review queue",
+    lede: "Open pull requests across your repositories, grouped by who has to act next. Waiting time counts weekdays only.",
+    updated: (time: string) => `Updated ${time}`,
+    refresh: "Refresh",
+    refreshing: "Refreshing",
+    refreshFailed: "The queue could not be refreshed. The figures shown are the last ones received.",
+    copySummary: "Copy summary",
+    copied: "Summary copied to the clipboard",
+    copyFailed: "The summary could not be copied",
+    loading: "Loading the review queue",
+    empty: "No open pull requests",
+    emptyBody: "Nothing is waiting for review in the repositories being tracked.",
+    noMatches: "No pull requests match these filters",
+    readErrorTitle: (repo: string) => `Could not read ${repo}`,
+    partialTitle: (repo: string) => `Only part of ${repo} was read`,
+    readErrorBody: "Its pull requests are missing from this page. The other repositories are complete.",
+
+    controls: {
+      label: "Filters",
+      repos: "Repositories",
+      waitingOn: "Waiting on",
+      anyone: "Anyone",
+      search: "Search",
+      searchPlaceholder: "Title, repository, number or ticket",
+      drafts: "Show drafts and on hold",
+      draftsHint: "Adds a column for pull requests that are not ready for review.",
+      bots: "Show bot pull requests",
+      botsHint: "Dependency updates and other automated changes.",
+      names: "Show names",
+      namesHint: "Names are hidden by default. Turn this on to see authors and requested reviewers.",
+    },
+
+    tiles: {
+      waiting: "Waiting for review",
+      waitingHint: (repos: number, held: number) =>
+        `Across ${repos} ${repos === 1 ? "repository" : "repositories"}, with ${held} held back by failing checks`,
+      pastDay: "Waiting over 24h",
+      pastDayHint: (longest: string) => `Longest wait ${longest}`,
+      noReviewer: "No reviewer requested",
+      noReviewerHint: (oldest: string) => `Oldest has waited ${oldest}`,
+      stale: "Stale, 5 weekdays or more",
+      staleHint: (longest: string) => `Longest wait ${longest}`,
+      fastLane: "Fast lane",
+      fastLaneHint: "Waiting and under 400 changed lines across fewer than 10 files",
+      idle: "Idle for 14 days or more",
+      idleHint: "Open pull requests nobody has touched for two weeks",
+      none: "None waiting",
+    },
+
+    attention: {
+      title: "Needs attention",
+      subtitle: "Stale pull requests and overdue pull requests with no reviewer, most urgent first.",
+      empty: "Nothing needs urgent attention",
+    },
+
+    flag: {
+      stale: "Stale",
+      overdue: "Over 24h",
+      noReviewer: "no reviewer",
+      awaitingReview: "awaiting review",
+    },
+
+    wait: {
+      underHour: "under 1h",
+      hours: (n: number) => `${n}h`,
+      weekdays: (n: number) => (n === 1 ? "1 weekday" : `${n} weekdays`),
+    },
+
+    features: {
+      title: "Work split across pull requests",
+      subtitle: "Pull requests that appear to belong to one piece of work, joined by a shared ticket, branch or stack.",
+      evidence: {
+        ticket: "Shared ticket",
+        related: "Related line",
+        branch: "Shared branch",
+        stack: "Stacked",
+      },
+      members: (n: number) => `${n} pull requests`,
+      longest: (wait: string) => `Longest wait ${wait}`,
+    },
+
+    repos: {
+      title: "Waiting time by repository",
+      subtitle: "How long each repository's waiting pull requests have been open, split into bands.",
+      legendLabel: "Waiting time bands",
+      weekendNote: "Waiting time leaves out weekends",
+      cardSubtitle: (open: number) => `${open} open`,
+      noWaiting: "Nothing waiting for review",
+      segmentTitle: (band: string, count: number) => `${band}, ${count}`,
+      barLabel: (repo: string) => `Waiting pull requests in ${repo} by waiting time`,
+      tableBand: "Band",
+      tableCount: "Waiting pull requests",
+      lanesLine: (parts: string) => `Open now, ${parts}`,
+    },
+
+    bands: {
+      stale: "Stale, 5 weekdays or more",
+      overdue: "Over 24h",
+      ageing: "4 to 24h",
+      fresh: "Under 4h",
+    },
+
+    lanes: {
+      no_reviewer: { title: "No reviewer", hint: "Nobody has been asked to review yet." },
+      awaiting_review: { title: "Awaiting review", hint: "A reviewer has been asked and has not finished." },
+      with_author: { title: "With the author", hint: "Failing checks or changes requested. The author acts next." },
+      approved: { title: "Approved", hint: "Ready to merge." },
+      held: { title: "Drafts and on hold", hint: "Not ready for review." },
+      empty: "Nothing here",
+    },
+
+    card: {
+      opensInNewTab: "opens in a new tab",
+      by: (author: string) => `by ${author}`,
+      waitingSince: (wait: string) => `Waiting ${wait}`,
+      waitingOn: (names: string) => `Waiting on ${names}`,
+      reviewersRequested: (n: number) => `${n} ${n === 1 ? "reviewer" : "reviewers"} requested`,
+      lines: (additions: number, deletions: number, files: number) =>
+        `+${additions} -${deletions} in ${files} ${files === 1 ? "file" : "files"}`,
+      checks: {
+        passing: "Checks passing",
+        failing: "Checks failing",
+        pending: "Checks running",
+        none: "No checks",
+      },
+      draft: "Draft",
+      idle: (days: number) => `Idle for ${days} days`,
+    },
+
+    summary: {
+      heading: (count: number, repos: number) =>
+        `Review queue, ${count} waiting across ${repos} ${repos === 1 ? "repository" : "repositories"}`,
+      stale: (count: number) => `${count} stale`,
+      pastDay: (count: number) => `${count} over 24h`,
+      noReviewer: (count: number) => `${count} with no reviewer`,
+      attention: "Needs attention",
+      none: "Nothing needs urgent attention.",
+      waitingOn: (names: string) => `waiting on ${names}`,
+      by: (author: string) => `by ${author}`,
+      footer: "Waiting time counts weekdays only.",
+    },
   },
 
   states: {

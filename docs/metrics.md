@@ -75,6 +75,47 @@ For each cohort the report gives the number of pull requests, the median and 75t
 
 Deploy measures are not split by cohort, because a single deploy ships a mixture of both kinds of work. Labels rely on team discipline, and AI use that is not marked by a label, a trailer or a bot author counts as unassisted, so the assisted cohort is a floor and not a total. The default patterns are a convention, so an assistant that signs with another name is missed until the patterns are extended. The decision is recorded in ADR 0016.
 
+## Review queue
+
+The review queue reads open pull requests live from the code host (cached for about a minute) rather than from the last crawl, so it shows the state of the repositories now. Nothing on it is stored. The decision is recorded in ADR 0017.
+
+| Figure      | Rule                                                                                                                                                                                                                                                            |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Review wait | From the later of the moment the pull request left draft and the last review by someone other than the author, to now. Only hours falling Monday to Friday in UTC count, so a pull request published on Friday at 16:00 has waited 18 hours by Monday at 10:00. |
+| Idle        | Whole wall clock days since the pull request was last updated. The idle tile counts 14 days or more, in any lane.                                                                                                                                               |
+| Fast lane   | A waiting pull request under 400 changed lines and under 10 files.                                                                                                                                                                                              |
+
+### Lanes
+
+Every open pull request sits in one lane, the first that matches.
+
+| Lane            | When                                                                                                                                                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Held            | A draft, or labelled `on hold`.                                                                                                                                                                                                     |
+| With author     | Checks are failing, a reviewer's latest review is a request for changes, or someone commented, nobody has been asked to look again and nobody has approved. A reviewer asked to re-review, and a dismissed review, no longer count. |
+| Approved        | At least one reviewer's latest review is an approval, and nothing above applies.                                                                                                                                                    |
+| Awaiting review | At least one person or team has been asked to review.                                                                                                                                                                               |
+| No reviewer     | Nobody has been asked and nobody else has reviewed.                                                                                                                                                                                 |
+
+Reviews by bot accounts (the host's `Bot` type, or a login ending in `[bot]`) are ignored for lanes and for the wait, so an automated approval neither moves a pull request out of no reviewer nor restarts its wait. Asking for a review again does not restart the wait either: it runs from publication or the last human review, whichever is later.
+
+Only pull requests awaiting review or with no reviewer are counted as waiting in the tiles, the bands of each repository and the needs attention list.
+
+### Bands
+
+| Band    | Review wait (weekday hours) |
+| ------- | --------------------------- |
+| Fresh   | under 4                     |
+| Ageing  | 4 up to and including 24    |
+| Overdue | over 24                     |
+| Stale   | 120 or more (5 weekdays)    |
+
+Needs attention lists stale pull requests with no reviewer first, then stale pull requests awaiting review, then overdue pull requests with no reviewer, each with the longest wait first.
+
+### Features
+
+Open pull requests are grouped as one piece of work when they share a ticket key (such as `ABC-123`) in the title, branch or linked issues, name each other on a `Related:` line in the description, share a head branch other than a common trunk name such as `main` or `develop`, or form a stack, where one is based on another's branch. Only groups of two or more are shown. These are heuristics, so a group is a prompt to look, not a fact.
+
 ## Code health
 
 Measured from a shallow clone of each repository's deploy branch, taken at the end of a crawl and analysed with lizard (ADR 0011), together with the file lists of crawled pull requests. It is a snapshot of one commit, shown on the repository page, and is not part of the comparison view. Nothing in the repository is ever executed (ADR 0013), so every figure below comes from reading files, and the thresholds are this project's own convention rather than an industry standard.

@@ -63,3 +63,11 @@ export function isoDaysAgo(days: number, now: Date = new Date()): string {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days));
   return d.toISOString().slice(0, 10);
 }
+
+const timeFormat = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/** A clock time such as 14:05, in the viewer's time zone. */
+export function formatTime(iso: string | null | undefined): string {
+  const date = iso ? parse(iso) : null;
+  return date ? timeFormat.format(date) : copy.common.notAvailable;
+}

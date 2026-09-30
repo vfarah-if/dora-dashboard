@@ -1,10 +1,10 @@
-import type { DeployRun, FunctionMetrics, PullRequest } from "@dora-dashboard/core";
+import type { DeployRun, FunctionMetrics, OpenPullRequest, PullRequest } from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import type { CodeAnalyser, CodeAnalysis } from "../src/interfaces/code-analyser.js";
 import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
-import type { PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
+import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
 
 export function pr(overrides: Partial<PullRequest> & { number: number }): PullRequest {
@@ -25,6 +25,23 @@ export function pr(overrides: Partial<PullRequest> & { number: number }): PullRe
     firstCommitAt: "2026-09-01T09:00:00Z",
     baseRef: "main",
     reviews: [],
+    ...overrides,
+  };
+}
+
+export function openPr(overrides: Partial<OpenPullRequest> & { number: number }): OpenPullRequest {
+  return {
+    ...pr({ number: overrides.number }),
+    state: "OPEN",
+    mergedAt: null,
+    closedAt: null,
+    mergedBy: null,
+    isDraft: false,
+    requestedReviewers: [],
+    headRef: `feature-${overrides.number}`,
+    checks: "passing",
+    linkedIssues: [],
+    changedFiles: 2,
     ...overrides,
   };
 }
@@ -52,10 +69,27 @@ export class FakeProvider implements SourceProvider {
   failWith: Error | null = null;
   /** Serve this many pages, then fail the next one with `failWith`. */
   failAfterPages: number | null = null;
-  readonly repos = new Map<string, { prs: PullRequest[]; runs: DeployRun[]; workflows: string[] }>();
+  /** Open pull request reads served, and the tokens they carried, so a test can see whether a cache was used. */
+  openFetches = 0;
+  readonly openFetchTokens: string[] = [];
+  /** Repositories (`owner/name`) whose open pull request read fails with the given error. */
+  readonly openFailures = new Map<string, Error>();
+  /** Repositories (`owner/name`) whose open pull request read reports that it stopped early. */
+  readonly openTruncated = new Set<string>();
+  /** Tokens allowed to see a repository (`owner/name`); any other token gets NotFoundError. Unlisted repositories are open to all. */
+  readonly openVisibleTo = new Map<string, Set<string>>();
+  readonly repos = new Map<string, { prs: PullRequest[]; runs: DeployRun[]; workflows: string[]; openPrs: OpenPullRequest[] }>();
 
-  seed(fullName: string, data: Partial<{ prs: PullRequest[]; runs: DeployRun[]; workflows: string[] }>): void {
-    this.repos.set(fullName, { prs: data.prs ?? [], runs: data.runs ?? [], workflows: data.workflows ?? [] });
+  seed(
+    fullName: string,
+    data: Partial<{ prs: PullRequest[]; runs: DeployRun[]; workflows: string[]; openPrs: OpenPullRequest[] }>,
+  ): void {
+    this.repos.set(fullName, {
+      prs: data.prs ?? [],
+      runs: data.runs ?? [],
+      workflows: data.workflows ?? [],
+      openPrs: data.openPrs ?? [],
+    });
   }
 
   private repo(owner: string, name: string) {
@@ -75,6 +109,17 @@ export class FakeProvider implements SourceProvider {
       totalCount: sorted.length,
       nextCursor: end < sorted.length ? String(end) : null,
     };
+  }
+
+  async fetchOpenPullRequests(token: string, owner: string, name: string): Promise<OpenPullRequestsResult> {
+    this.openFetches++;
+    this.openFetchTokens.push(token);
+    const full = `${owner}/${name}`;
+    const failure = this.openFailures.get(full);
+    if (failure) throw failure;
+    const visibleTo = this.openVisibleTo.get(full);
+    if (visibleTo && !visibleTo.has(token)) throw new NotFoundError(`${full} was not found, or your credential cannot see it`);
+    return { pullRequests: [...this.repo(owner, name).openPrs], truncated: this.openTruncated.has(full) };
   }
 
   async fetchDeployRuns(_token: string, owner: string, name: string, workflow: string): Promise<DeployRun[]> {

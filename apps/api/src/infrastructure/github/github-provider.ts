@@ -1,6 +1,6 @@
-import type { DeployRun, PullRequest, Review } from "@dora-dashboard/core";
+import type { DeployRun, OpenPullRequest, PullRequest, RequestedReviewer, Review } from "@dora-dashboard/core";
 import { NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
-import type { PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
+import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
 
 const API = "https://api.github.com";
 
@@ -47,6 +47,27 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
   }
 }`;
 
+const OPEN_PULL_REQUESTS_QUERY = `
+query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $first, after: $cursor, states: OPEN, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      totalCount
+      nodes {
+        number title url state createdAt publishedAt mergedAt closedAt updatedAt
+        additions deletions changedFiles baseRefName headRefName isDraft body
+        author { login __typename }
+        commits(first: 1) { nodes { commit { authoredDate committedDate } } }
+        latest: commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        reviews(last: 100) { nodes { author { login __typename } state submittedAt } }
+        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } } }
+        labels(first: 20) { nodes { name } }
+        closingIssuesReferences(first: 5) { nodes { number } }
+      }
+    }
+  }
+}`;
+
 interface GqlPullRequest {
   number: number;
   title: string;
@@ -66,13 +87,27 @@ interface GqlPullRequest {
   labels?: { nodes: ({ name: string } | null)[] } | null;
   trailers?: { nodes: ({ commit: { message: string } } | null)[] } | null;
   files?: { totalCount?: number; nodes: { path: string }[] } | null;
-  reviews: { nodes: { author: { login: string } | null; state: Review["state"]; submittedAt: string | null }[] };
+  reviews: {
+    nodes: { author: { login: string; __typename?: string } | null; state: Review["state"]; submittedAt: string | null }[];
+  };
 }
 
-interface GqlPage {
+interface GqlOpenPullRequest extends GqlPullRequest {
+  changedFiles?: number;
+  headRefName?: string;
+  isDraft?: boolean;
+  body?: string | null;
+  latest?: { nodes: ({ commit: { statusCheckRollup: { state: string } | null } } | null)[] } | null;
+  reviewRequests?: {
+    nodes: ({ requestedReviewer: { __typename?: string; login?: string; name?: string } | null } | null)[];
+  } | null;
+  closingIssuesReferences?: { nodes: ({ number: number } | null)[] } | null;
+}
+
+interface GqlPage<Node = GqlPullRequest> {
   data?: {
     repository: {
-      pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; totalCount: number; nodes: GqlPullRequest[] };
+      pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; totalCount: number; nodes: Node[] };
     } | null;
   };
   errors?: { message: string }[];
@@ -130,9 +165,40 @@ function toPullRequest(node: GqlPullRequest): PullRequest {
     deletions: node.deletions,
     firstCommitAt,
     baseRef: node.baseRefName,
-    reviews: node.reviews.nodes.map((r) => ({ author: r.author?.login ?? null, state: r.state, submittedAt: r.submittedAt })),
+    reviews: node.reviews.nodes.map((r) => ({
+      author: r.author?.login ?? null,
+      state: r.state,
+      submittedAt: r.submittedAt,
+      ...(r.author?.__typename ? { authorIsBot: r.author.__typename === "Bot" } : {}),
+    })),
     ...filesOf(node),
     ...signalsOf(node),
+  };
+}
+
+const CHECKS: Record<string, OpenPullRequest["checks"]> = {
+  SUCCESS: "passing",
+  FAILURE: "failing",
+  ERROR: "failing",
+  PENDING: "pending",
+  EXPECTED: "pending",
+};
+
+function toOpenPullRequest(node: GqlOpenPullRequest): OpenPullRequest {
+  const rollup = node.latest?.nodes[0]?.commit.statusCheckRollup?.state;
+  return {
+    ...toPullRequest(node),
+    isDraft: node.isDraft ?? false,
+    headRef: node.headRefName ?? "",
+    checks: (rollup && CHECKS[rollup]) || "none",
+    changedFiles: node.changedFiles ?? 0,
+    requestedReviewers: (node.reviewRequests?.nodes ?? []).flatMap<RequestedReviewer>((n) => {
+      const who = n?.requestedReviewer;
+      if (who?.login) return [{ name: who.login, isTeam: false }];
+      return who?.name ? [{ name: who.name, isTeam: true }] : [];
+    }),
+    linkedIssues: (node.closingIssuesReferences?.nodes ?? []).flatMap((n) => (n ? [`#${n.number}`] : [])),
+    ...(node.body ? { body: node.body } : {}),
   };
 }
 
@@ -140,6 +206,10 @@ function toPullRequest(node: GqlPullRequest): PullRequest {
 const PAGE_SIZE = 25;
 const RETRY_PAGE_SIZE = 10;
 const RETRYABLE = new Set([502, 504]);
+const OPEN_PAGE_SIZE = 50;
+const OPEN_RETRY_PAGE_SIZE = 20;
+/** A repository with more open pull requests than this is read only as far as this many pages. */
+const MAX_OPEN_PAGES = 10;
 
 /** GitHub over its GraphQL API for pull requests and its REST API for Actions runs. */
 export class GitHubProvider implements SourceProvider {
@@ -174,6 +244,41 @@ export class GitHubProvider implements SourceProvider {
       method: "POST",
       body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
     });
+  }
+
+  async fetchOpenPullRequests(token: string, owner: string, name: string): Promise<OpenPullRequestsResult> {
+    const found: OpenPullRequest[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < MAX_OPEN_PAGES; page++) {
+      const result: GqlPage<GqlOpenPullRequest> = await this.openPage(token, owner, name, cursor);
+      // Errors first: a rate limit arrives with a null repository and must not be reported as not found.
+      if (result.errors?.length) throw new UpstreamError(result.errors.map((e) => e.message).join("; "), 200);
+      const connection = result.data?.repository?.pullRequests;
+      if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+      found.push(...connection.nodes.map(toOpenPullRequest));
+      if (!connection.pageInfo.hasNextPage) return { pullRequests: found, truncated: false };
+      cursor = connection.pageInfo.endCursor;
+    }
+    return { pullRequests: found, truncated: true };
+  }
+
+  private async openPage(
+    token: string,
+    owner: string,
+    name: string,
+    cursor: string | null,
+  ): Promise<GqlPage<GqlOpenPullRequest>> {
+    const ask = (first: number) =>
+      request<GqlPage<GqlOpenPullRequest>>(this.http, token, `${API}/graphql`, {
+        method: "POST",
+        body: JSON.stringify({ query: OPEN_PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
+      });
+    try {
+      return await ask(OPEN_PAGE_SIZE);
+    } catch (error) {
+      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
+      return ask(OPEN_RETRY_PAGE_SIZE);
+    }
   }
 
   async fetchDeployRuns(token: string, owner: string, name: string, workflow: string): Promise<DeployRun[]> {

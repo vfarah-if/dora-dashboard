@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CodeHealthResponse, Repo, RepoReport } from "@dora-dashboard/core";
+import type { CodeHealthResponse, Repo, RepoReport, ReviewQueue } from "@dora-dashboard/core";
 import { apiRequest } from "./client";
 
 export interface AuthUser {
@@ -49,6 +49,7 @@ export const queryKeys = {
   codeHealth: (id: number, range?: CodeHealthRange) =>
     range ? (["code-health", id, range] as const) : (["code-health", id] as const),
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
+  reviewQueue: (ids: readonly number[], names = false) => ["review-queue", ids, names] as const,
 };
 
 export function rangeQuery(range: ReportRange): string {
@@ -179,4 +180,53 @@ export function useCodeHealth(id: number, range: CodeHealthRange = { from: null,
     enabled: Number.isFinite(id),
     placeholderData: keepPreviousData,
   });
+}
+
+export const REVIEW_QUEUE_POLL_MS = 60_000;
+
+export interface ReviewQueueOptions {
+  ids?: readonly number[];
+  /** Ask for author logins and requested reviewer names. Without it the API leaves them out. */
+  names?: boolean;
+}
+
+const queuePath = (ids: readonly number[], names: boolean, refresh: boolean) => {
+  const params = new URLSearchParams();
+  if (ids.length) params.set("ids", ids.join(","));
+  if (names) params.set("names", "1");
+  if (refresh) params.set("refresh", "1");
+  return withQuery("/api/review-queue", params.toString());
+};
+
+/**
+ * The live review queue, polled every minute. `refresh()` asks the API to skip its cache and replaces the
+ * shown data with the answer, while the previous data stays on screen. Names are only requested when asked for.
+ */
+export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions = {}) {
+  const client = useQueryClient();
+  const key = queryKeys.reviewQueue(ids, names);
+  const query = useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => apiRequest<ReviewQueue>(queuePath(ids, names, false), { signal }),
+    refetchInterval: REVIEW_QUEUE_POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+  const refresh = useMutation({
+    // A poll still in flight must not land after, and overwrite, the fresher answer.
+    onMutate: () => client.cancelQueries({ queryKey: key }),
+    mutationFn: () => apiRequest<ReviewQueue>(queuePath(ids, names, true)),
+    onSuccess: (data) => client.setQueryData(key, data),
+  });
+  const { reset } = refresh;
+  const { dataUpdatedAt } = query;
+  // A failed refresh is only news until the next good answer arrives.
+  useEffect(() => {
+    if (dataUpdatedAt) reset();
+  }, [dataUpdatedAt, reset]);
+  return {
+    ...query,
+    refresh: () => refresh.mutate(),
+    refreshing: refresh.isPending,
+    refreshFailed: refresh.isError,
+  };
 }

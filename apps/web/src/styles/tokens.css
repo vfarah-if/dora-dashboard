@@ -57,6 +57,8 @@
   --band-medium: #9a5a00;
   --band-low: #b42318;
   --band-inactive: #d3d8df;
+  --stale: #6b1d8f;
+  --stale-soft: #f3e8f9;
 
   --stage-1: #1f3a5f;
   --stage-2: #4c6e96;
@@ -106,6 +108,8 @@
     --band-medium: #f0b24a;
     --band-low: #ff7a6b;
     --band-inactive: #333c48;
+    --stale: #d9a3ff;
+    --stale-soft: #2c1a38;
 
     --stage-1: #c9d8ea;
     --stage-2: #8fabcc;
@@ -155,6 +159,8 @@
   --band-medium: #f0b24a;
   --band-low: #ff7a6b;
   --band-inactive: #333c48;
+  --stale: #d9a3ff;
+  --stale-soft: #2c1a38;
 
   --stage-1: #c9d8ea;
   --stage-2: #8fabcc;
