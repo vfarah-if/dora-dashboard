@@ -871,6 +871,8 @@ export const copy = {
     refreshing: "Refreshing",
     refreshFailed: "The queue could not be refreshed. The figures shown are the last ones received.",
     copySummary: "Copy summary",
+    /** Joins the title in the suggested PDF file name, as in review-queue-report-2026-09-30. */
+    pdfLabel: "report",
     copied: "Summary copied to the clipboard",
     copyFailed: "The summary could not be copied",
     loading: "Loading the review queue",

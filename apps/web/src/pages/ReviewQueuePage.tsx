@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { ReviewQueue } from "@dora-dashboard/core";
 import { useReviewQueue } from "../api/hooks";
 import { copy } from "../copy";
+import { DownloadReportButton } from "../components/DownloadReportButton";
 import { FeatureCard } from "../components/FeatureCard";
 import { PrQueueCard } from "../components/PrQueueCard";
 import { BandLegend, RepoQueueCard } from "../components/RepoQueueCard";
@@ -227,13 +228,14 @@ export function ReviewQueuePage() {
           <button type="button" className="button button-secondary" disabled={queue.refreshing} onClick={queue.refresh}>
             {queue.refreshing ? text.refreshing : text.refresh}
           </button>
+          {data && <DownloadReportButton subject={text.title} label={text.pdfLabel} />}
           <p role="status" className="queue-status">
             {copied === "done" ? text.copied : copied === "failed" ? text.copyFailed : ""}
           </p>
         </div>
       </header>
 
-      <section className="controls-bar" aria-label={text.controls.label}>
+      <section className="controls-bar queue-controls" aria-label={text.controls.label}>
         {data && data.repos.length > 1 && (
           <fieldset className="queue-repos">
             <legend>{text.controls.repos}</legend>

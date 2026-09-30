@@ -144,6 +144,20 @@ describe("ReviewQueuePage", () => {
     expect(await screen.findByText(text.copied)).toBeInTheDocument();
   });
 
+  it("saves the queue as a PDF under a review queue file name", async () => {
+    const user = userEvent.setup();
+    renderQueue();
+    await screen.findByText(text.tiles.waiting);
+    const titles: string[] = [];
+    vi.spyOn(window, "print").mockImplementation(() => {
+      titles.push(document.title);
+      window.dispatchEvent(new Event("afterprint"));
+    });
+    await user.click(screen.getByRole("button", { name: copy.report.download }));
+    await waitFor(() => expect(titles).toHaveLength(1));
+    expect(titles[0]).toMatch(/^review-queue-report-\d{4}-\d{2}-\d{2}$/);
+  });
+
   it("reports a failed copy", async () => {
     const user = userEvent.setup();
     renderQueue();

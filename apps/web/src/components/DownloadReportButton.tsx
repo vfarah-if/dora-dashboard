@@ -8,6 +8,8 @@ export const PRINT_SETTLE_MS = 300;
 export interface DownloadReportButtonProps {
   /** What the report covers, used in the suggested file name. */
   subject: string;
+  /** The kind of report, used in the suggested file name. Defaults to a delivery report. */
+  label?: string;
   /** Injected so the date can be tested against a fixed day. */
   now?: Date;
 }
@@ -18,7 +20,7 @@ export interface DownloadReportButtonProps {
  * opens the page is narrowed to the A4 width so the charts can redraw to fit, and for the length of the
  * dialog it is forced to the light theme and the document title becomes the suggested file name.
  */
-export function DownloadReportButton({ subject, now }: DownloadReportButtonProps) {
+export function DownloadReportButton({ subject, label, now }: DownloadReportButtonProps) {
   const today = isoDaysAgo(0, now);
 
   const download = () => {
@@ -34,7 +36,7 @@ export function DownloadReportButton({ subject, now }: DownloadReportButtonProps
     window.addEventListener("afterprint", restore, { once: true });
     root.classList.add("is-printing");
     root.dataset.theme = "light";
-    document.title = reportFileName(subject, today);
+    document.title = reportFileName(subject, today, label);
     window.setTimeout(() => window.print(), PRINT_SETTLE_MS);
   };
 

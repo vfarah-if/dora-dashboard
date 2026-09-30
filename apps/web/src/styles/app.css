@@ -2690,3 +2690,40 @@ a:hover {
   font-size: 0.8125rem;
   color: var(--text-muted);
 }
+
+/* Review queue on paper. The board cannot scroll sideways, so each lane takes the full width in turn and
+   its cards sit two to a row. The filters, buttons and copy status have no use in a printed copy. */
+@media print {
+  .queue-controls,
+  .queue-actions .button,
+  .queue-status {
+    display: none !important;
+  }
+
+  .queue-board {
+    display: block;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .queue-lane {
+    width: auto;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+
+  .queue-lane-head {
+    break-after: avoid;
+  }
+
+  .queue-lane .pr-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pr-card,
+  .attention-row,
+  .batch-grid > li {
+    break-inside: avoid;
+  }
+}

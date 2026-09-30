@@ -11,4 +11,8 @@ describe("reportFileName", () => {
       "acme-widgets-vs-acme-gadgets-delivery-report-2026-01-05",
     );
   });
+
+  it("uses the label given for another kind of report", () => {
+    expect(reportFileName("acme", "2026-09-30", "review queue")).toBe("acme-review-queue-2026-09-30");
+  });
 });
