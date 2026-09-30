@@ -1,5 +1,6 @@
 import type { DeployRun, PullRequest } from "./types.js";
 import { hoursBetween, median } from "./stats.js";
+import { workStartedAt } from "./pullRequests.js";
 
 export type Band = "elite" | "high" | "medium" | "low";
 
@@ -52,14 +53,14 @@ export function leadTimes(prs: readonly PullRequest[], runs: readonly DeployRun[
   // A PR merged before the first observed deploy run would be matched to whatever deploy happened to be
   // recorded first, months later, so lead time is only measured inside the window deploys were observed.
   const observedFrom = production[0]?.createdAt;
+  const inWindow = (pr: PullRequest): pr is PullRequest & { mergedAt: string } =>
+    pr.mergedAt !== null && pr.baseRef === branch && observedFrom !== undefined && pr.mergedAt >= observedFrom;
   const result: { number: number; mergedAt: string; deployedAt: string; hours: number }[] = [];
-  for (const pr of prs) {
-    if (!pr.mergedAt || pr.baseRef !== branch || !observedFrom || pr.mergedAt < observedFrom) continue;
-    const shipped = successes.find((r) => r.createdAt >= pr.mergedAt!);
-    if (!shipped) continue;
-    const start = pr.firstCommitAt && pr.firstCommitAt < pr.createdAt ? pr.firstCommitAt : pr.createdAt;
-    const hours = hoursBetween(start, shipped.completedAt);
-    if (hours !== null) result.push({ number: pr.number, mergedAt: pr.mergedAt, deployedAt: shipped.completedAt, hours });
+  for (const pr of prs.filter(inWindow)) {
+    const shipped = successes.find((r) => r.createdAt >= pr.mergedAt);
+    const hours = shipped ? hoursBetween(workStartedAt(pr), shipped.completedAt) : null;
+    if (shipped && hours !== null)
+      result.push({ number: pr.number, mergedAt: pr.mergedAt, deployedAt: shipped.completedAt, hours });
   }
   return result;
 }

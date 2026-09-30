@@ -1,14 +1,11 @@
-import type { CodeHealthReport } from "@dora-dashboard/core";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { CodeHealthReport, CodeHealthResponse } from "@dora-dashboard/core";
 import { useCodeHealth, type CodeHealthRange } from "../api/hooks";
 import { copy } from "../copy";
-import { distributionIsEmpty, distributionRows, locationLabel, shortSha } from "../lib/codeHealth";
+import { locationLabel, shortSha } from "../lib/codeHealth";
 import { checkOf, goodAndImprove, limitingSentence, shareLabel, toolName, verdictSentence } from "../lib/codeVerdict";
 import { formatDate, formatDateTime, formatNumber, formatPercent } from "../lib/format";
-import { seriesColour } from "../lib/series";
-import { ChartCard } from "./ChartCard";
-import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps } from "./chartParts";
 import { GradeTile } from "./GradeTile";
+import { SizeDistributionChart } from "./SizeDistributionChart";
 import { StatTile } from "./StatTile";
 import { EmptyState, ErrorState, SkeletonGrid } from "./States";
 
@@ -280,18 +277,37 @@ function InstallLizard() {
   );
 }
 
+/** Warns that the figures come from an earlier analysis because the latest one failed. */
+function StaleNotice({ report }: { report: CodeHealthReport }) {
+  const c = copy.codeHealth;
+  if (!report.lastError) return null;
+  return (
+    <aside className="notice notice-warning">
+      <p className="notice-title">{c.staleTitle}</p>
+      <p>{c.stale(formatDate(report.analysedAt), formatDate(report.lastError.analysedAt), report.lastError.message)}</p>
+    </aside>
+  );
+}
+
+function HotspotsCard({ report }: { report: CodeHealthReport }) {
+  const c = copy.codeHealth;
+  return (
+    <section aria-labelledby="hotspots-title" className="card">
+      <h3 id="hotspots-title" className="chart-title">
+        {c.hotspots.title}
+      </h3>
+      <p className="chart-subtitle">{c.hotspots.subtitle}</p>
+      <Hotspots report={report} />
+    </section>
+  );
+}
+
 function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
-  const rows = distributionRows(report);
   const c = copy.codeHealth;
   return (
     <>
       <p className="chart-subtitle">{c.analysedAt(shortSha(report.commitSha), formatDateTime(report.analysedAt))}</p>
-      {report.lastError && (
-        <aside className="notice notice-warning">
-          <p className="notice-title">{c.staleTitle}</p>
-          <p>{c.stale(formatDate(report.analysedAt), formatDate(report.lastError.analysedAt), report.lastError.message)}</p>
-        </aside>
-      )}
+      <StaleNotice report={report} />
       {report.lastError?.reason === "analyser-missing" && <InstallLizard />}
 
       <Verdict report={report} />
@@ -301,48 +317,14 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
       <h3 className="section-title">{c.detail.title}</h3>
       <Tiles report={report} />
 
-      <ChartCard
-        title={c.chart.title}
-        subtitle={c.chart.subtitle}
-        empty={distributionIsEmpty(rows)}
-        xLabel={c.chart.x}
-        note={
-          <ul className="range-key" aria-label={c.chart.keyTitle}>
-            {c.chart.key.map((k) => (
-              <li key={k.range}>
-                <strong>{k.range}</strong> {k.meaning}
-              </li>
-            ))}
-          </ul>
-        }
-        table={{ columns: [c.chart.x, c.chart.series], rows: rows.map((r) => [r.label, r.count]) }}
-      >
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-          <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
-            <CartesianGrid {...gridProps} />
-            <XAxis dataKey="label" {...axisProps} />
-            <YAxis {...axisProps} allowDecimals={false} />
-            <Tooltip
-              content={<ChartTooltip formatValue={(value) => formatNumber(value, 0)} />}
-              cursor={{ fill: "var(--surface-sunken)" }}
-            />
-            <Bar dataKey="count" name={c.chart.series} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </ChartCard>
+      <SizeDistributionChart report={report} />
 
       <div className="findings-grid">
         <TestingPanel report={report} />
         <HygienePanel report={report} />
       </div>
 
-      <section aria-labelledby="hotspots-title" className="card">
-        <h3 id="hotspots-title" className="chart-title">
-          {c.hotspots.title}
-        </h3>
-        <p className="chart-subtitle">{c.hotspots.subtitle}</p>
-        <Hotspots report={report} />
-      </section>
+      <HotspotsCard report={report} />
 
       <aside className="notice notice-info">
         <p className="notice-title">{c.explainerTitle}</p>
@@ -352,10 +334,37 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
   );
 }
 
+type FailedAnalysis = Extract<CodeHealthResponse, { status: "error" }>;
+
+function AnalysisFailed({ data }: { data: FailedAnalysis }) {
+  const c = copy.codeHealth;
+  return (
+    <>
+      <div className="notice notice-error" role="alert">
+        <p className="notice-title">{c.error.title}</p>
+        <p>{data.message}</p>
+        <p>{c.error.when(formatDateTime(data.analysedAt))}</p>
+      </div>
+      {data.reason === "analyser-missing" && <InstallLizard />}
+    </>
+  );
+}
+
+/** What the API said about the analysis once it answered: nothing yet, a failure, or a report. */
+function AnalysisOutcome({ data }: { data: CodeHealthResponse }) {
+  const c = copy.codeHealth;
+  if (data.status === "error") return <AnalysisFailed data={data} />;
+  if (data.status === "ok") return <CodeHealthReportView report={data} />;
+  return (
+    <EmptyState title={c.none.title}>
+      <p>{c.none.body}</p>
+    </EmptyState>
+  );
+}
+
 /** The code health section of the repository page, covering loading, empty, error and ok states. */
 export function CodeHealthSection({ repoId, range }: { repoId: number; range?: CodeHealthRange }) {
   const health = useCodeHealth(repoId, range);
-  const data = health.data;
   const c = copy.codeHealth;
   return (
     <section aria-labelledby="code-health-title" className="section">
@@ -365,20 +374,7 @@ export function CodeHealthSection({ repoId, range }: { repoId: number; range?: C
       <p className="section-lede">{c.lede}</p>
       {health.isPending && <SkeletonGrid count={4} height={120} label={c.loading} />}
       {health.isError && <ErrorState error={health.error} onRetry={() => void health.refetch()} />}
-      {data?.status === "none" && (
-        <EmptyState title={c.none.title}>
-          <p>{c.none.body}</p>
-        </EmptyState>
-      )}
-      {data?.status === "error" && (
-        <div className="notice notice-error" role="alert">
-          <p className="notice-title">{c.error.title}</p>
-          <p>{data.message}</p>
-          <p>{c.error.when(formatDateTime(data.analysedAt))}</p>
-        </div>
-      )}
-      {data?.status === "error" && data.reason === "analyser-missing" && <InstallLizard />}
-      {data?.status === "ok" && <CodeHealthReportView report={data} />}
+      {health.data && <AnalysisOutcome data={health.data} />}
     </section>
   );
 }

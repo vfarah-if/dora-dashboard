@@ -15,3 +15,8 @@ export function excludeEveryone(excluded: readonly string[], choices: readonly A
 export function excludedInRange(choices: readonly AuthorChoice[], excluded: readonly string[]): string[] {
   return choices.filter((choice) => excluded.includes(choice.author)).map((choice) => choice.author);
 }
+
+/** True when authors are on offer and every one of them is left out, so the report would show nobody. */
+export function everyoneLeftOut(choices: readonly AuthorChoice[], leftOut: readonly string[]): boolean {
+  return choices.length > 0 && leftOut.length === choices.length;
+}

@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
-import { useRepos, useReport } from "../api/hooks";
+import type { UseQueryResult } from "@tanstack/react-query";
+import { useRepos, useReport, type ReportRange } from "../api/hooks";
 import { copy } from "../copy";
 import { AuthorFilter } from "../components/AuthorFilter";
 import { AuthorsTable } from "../components/AuthorsTable";
@@ -12,7 +13,7 @@ import { PrTable } from "../components/PrTable";
 import { RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
-import { excludedInRange } from "../lib/authorFilter";
+import { everyoneLeftOut, excludedInRange } from "../lib/authorFilter";
 import { doraFigures } from "../lib/dora";
 import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent } from "../lib/format";
 import { repoName } from "../lib/series";
@@ -45,109 +46,152 @@ function FlowTiles({ report }: { report: RepoReport }) {
   );
 }
 
+function RepoHeader({ report, leftOut }: { report: RepoReport | undefined; leftOut: string[] }) {
+  return (
+    <header className="page-header page-header-row">
+      <div className="page-header">
+        <h1>{report ? repoName(report.repo) : copy.repo.loadingTitle}</h1>
+        {report && (
+          <p className="lede">
+            {copy.repo.rangeSummary(formatDate(report.range.from), formatDate(report.range.to))}
+            {report.repo.lastCrawledAt && ` · ${copy.repo.lastCrawled(formatDateTime(report.repo.lastCrawledAt))}`}
+          </p>
+        )}
+        {leftOut.length > 0 && <p className="lede">{copy.repo.excludingAuthors(leftOut)}</p>}
+      </div>
+      {report && <DownloadReportButton subject={repoName(report.repo)} />}
+    </header>
+  );
+}
+
+interface ReportBodyProps {
+  report: RepoReport;
+  repoId: number;
+  range: ReportRange;
+}
+
+function ReportBody({ report, repoId, range }: ReportBodyProps) {
+  return (
+    <>
+      <section aria-labelledby="dora-title" className="section">
+        <h2 id="dora-title" className="section-title">
+          {copy.dora.title}
+        </h2>
+        <p className="section-lede">{copy.dora.lede}</p>
+        <div className="tile-grid">
+          {doraFigures(report).map((figure) => (
+            <DoraTile
+              key={figure.id}
+              title={figure.title}
+              definition={figure.definition}
+              value={figure.value}
+              band={figure.band}
+              detail={figure.detail}
+              reason={figure.reason}
+            />
+          ))}
+        </div>
+      </section>
+
+      <CodeHealthSection repoId={repoId} range={range} />
+
+      <section aria-labelledby="flow-title" className="section">
+        <h2 id="flow-title" className="section-title">
+          {copy.flow.title}
+        </h2>
+        <p className="section-lede">{copy.flow.lede}</p>
+        <FlowTiles report={report} />
+      </section>
+
+      <section className="section">
+        <RepoCharts report={report} />
+      </section>
+
+      <section aria-labelledby="authors-title" className="section card">
+        <h2 id="authors-title" className="section-title">
+          {copy.authors.title}
+        </h2>
+        <p className="chart-subtitle">{copy.authors.subtitle}</p>
+        <AuthorsTable authors={report.authors} caption={copy.authors.title} />
+      </section>
+
+      <section aria-labelledby="prs-title" className="section card">
+        <h2 id="prs-title" className="section-title">
+          {copy.prTable.title}
+        </h2>
+        <p className="chart-subtitle">{copy.prTable.subtitle}</p>
+        <PrTable prs={report.prs} />
+      </section>
+    </>
+  );
+}
+
+function InfoNotice({ text }: { text: string }) {
+  return (
+    <p className="notice notice-info" role="status">
+      {text}
+    </p>
+  );
+}
+
+/** True while the crawler is fetching this repository, from the repository list. */
+function useIsCrawling(id: number): boolean {
+  const repos = useRepos();
+  return repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
+}
+
+interface ReportStateProps {
+  query: UseQueryResult<RepoReport>;
+  repoId: number;
+  range: ReportRange;
+}
+
+/** The report's loading skeleton, error and body. The body stays while a refetch fails, as before. */
+function ReportState({ query, repoId, range }: ReportStateProps) {
+  return (
+    <>
+      {query.isPending && (
+        <>
+          <SkeletonGrid count={4} height={150} />
+          <Skeleton height={320} />
+        </>
+      )}
+      {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
+      {query.data && (
+        <div className={query.isPlaceholderData ? "is-refreshing" : undefined} aria-busy={query.isFetching}>
+          <ReportBody report={query.data} repoId={repoId} range={range} />
+        </div>
+      )}
+    </>
+  );
+}
+
 export function RepoPage() {
   const params = useParams();
   const id = Number(params.id);
   const [range, setRange] = useRangeParams();
   const [excluded, setExcluded] = useListParam("exclude");
   const report = useReport(id, range, excluded);
-  const repos = useRepos();
-  const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
-  const data = report.data;
-  const leftOut = data ? excludedInRange(data.authorChoices, excluded) : [];
-  const nobodyChosen = data !== undefined && data.authorChoices.length > 0 && leftOut.length === data.authorChoices.length;
+  const crawling = useIsCrawling(id);
+  const choices = report.data?.authorChoices ?? [];
+  const leftOut = excludedInRange(choices, excluded);
 
   return (
     <div className="page">
       <Link to="/" className="back-link">
         {copy.common.backToRepos}
       </Link>
-      <header className="page-header page-header-row">
-        <div className="page-header">
-          <h1>{data ? repoName(data.repo) : copy.repo.loadingTitle}</h1>
-          {data && (
-            <p className="lede">
-              {copy.repo.rangeSummary(formatDate(data.range.from), formatDate(data.range.to))}
-              {data.repo.lastCrawledAt && ` · ${copy.repo.lastCrawled(formatDateTime(data.repo.lastCrawledAt))}`}
-            </p>
-          )}
-          {leftOut.length > 0 && <p className="lede">{copy.repo.excludingAuthors(leftOut)}</p>}
-        </div>
-        {data && <DownloadReportButton subject={repoName(data.repo)} />}
-      </header>
+      <RepoHeader report={report.data} leftOut={leftOut} />
 
       <div className="controls-bar">
         <DateRangeControls value={range} onChange={setRange} />
-        {data && data.authorChoices.length > 0 && (
-          <AuthorFilter choices={data.authorChoices} excluded={excluded} onChange={setExcluded} />
-        )}
+        {choices.length > 0 && <AuthorFilter choices={choices} excluded={excluded} onChange={setExcluded} />}
       </div>
 
-      {nobodyChosen && (
-        <p className="notice notice-info" role="status">
-          {copy.authorFilter.noneChosen}
-        </p>
-      )}
+      {everyoneLeftOut(choices, leftOut) && <InfoNotice text={copy.authorFilter.noneChosen} />}
+      {crawling && <InfoNotice text={copy.repo.crawlInProgress} />}
 
-      {crawling && (
-        <p className="notice notice-info" role="status">
-          {copy.repo.crawlInProgress}
-        </p>
-      )}
-
-      {report.isPending && (
-        <>
-          <SkeletonGrid count={4} height={150} />
-          <Skeleton height={320} />
-        </>
-      )}
-      {report.isError && <ErrorState error={report.error} onRetry={() => void report.refetch()} />}
-
-      {data && (
-        <div className={report.isPlaceholderData ? "is-refreshing" : undefined} aria-busy={report.isFetching}>
-          <section aria-labelledby="dora-title" className="section">
-            <h2 id="dora-title" className="section-title">
-              {copy.dora.title}
-            </h2>
-            <p className="section-lede">{copy.dora.lede}</p>
-            <div className="tile-grid">
-              {doraFigures(data).map((figure) => (
-                <DoraTile key={figure.id} {...figure} />
-              ))}
-            </div>
-          </section>
-
-          <CodeHealthSection repoId={id} range={range} />
-
-          <section aria-labelledby="flow-title" className="section">
-            <h2 id="flow-title" className="section-title">
-              {copy.flow.title}
-            </h2>
-            <p className="section-lede">{copy.flow.lede}</p>
-            <FlowTiles report={data} />
-          </section>
-
-          <section className="section">
-            <RepoCharts report={data} />
-          </section>
-
-          <section aria-labelledby="authors-title" className="section card">
-            <h2 id="authors-title" className="section-title">
-              {copy.authors.title}
-            </h2>
-            <p className="chart-subtitle">{copy.authors.subtitle}</p>
-            <AuthorsTable authors={data.authors} caption={copy.authors.title} />
-          </section>
-
-          <section aria-labelledby="prs-title" className="section card">
-            <h2 id="prs-title" className="section-title">
-              {copy.prTable.title}
-            </h2>
-            <p className="chart-subtitle">{copy.prTable.subtitle}</p>
-            <PrTable prs={data.prs} />
-          </section>
-        </div>
-      )}
+      <ReportState query={report} repoId={id} range={range} />
     </div>
   );
 }

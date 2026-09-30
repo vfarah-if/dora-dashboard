@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuthorChoice } from "@dora-dashboard/core";
-import { excludedInRange, excludeEveryone, toggleAuthor } from "./authorFilter";
+import { everyoneLeftOut, excludedInRange, excludeEveryone, toggleAuthor } from "./authorFilter";
 
 const choices: AuthorChoice[] = [
   { author: "bea", opened: 20, excluded: false },
@@ -25,5 +25,13 @@ describe("excludedInRange", () => {
   it("lists only the excluded authors who opened pull requests in this range, in menu order", () => {
     expect(excludedInRange(choices, ["zed", "ade", "bea"])).toEqual(["bea", "ade"]);
     expect(excludedInRange(choices, [])).toEqual([]);
+  });
+});
+
+describe("everyoneLeftOut", () => {
+  it("is true only when authors are on offer and all of them are left out", () => {
+    expect(everyoneLeftOut(choices, ["bea", "ade"])).toBe(true);
+    expect(everyoneLeftOut(choices, ["bea"])).toBe(false);
+    expect(everyoneLeftOut([], [])).toBe(false);
   });
 });

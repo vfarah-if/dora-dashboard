@@ -30,13 +30,22 @@ export interface AppDeps {
   logger?: boolean;
 }
 
-/** Builds the HTTP app from its adapters. `main.ts` passes real ones; tests pass fakes. */
-export async function buildApp(deps: AppDeps): Promise<{ app: FastifyInstance; crawler: CrawlService }> {
+function createApp(deps: AppDeps): FastifyInstance {
   // Fastify's validator strips unknown body fields by default; refusing them surfaces a client bug instead.
-  const app = Fastify({ logger: deps.logger ?? false, ajv: { customOptions: { removeAdditional: false } } });
-  await app.register(cookie, { secret: deps.config.sessionSecret });
-  registerErrorHandler(app);
+  return Fastify({ logger: deps.logger ?? false, ajv: { customOptions: { removeAdditional: false } } });
+}
 
+function createCodeHealth(deps: AppDeps, app: FastifyInstance): CodeHealthService {
+  return new CodeHealthService(deps.store, deps.checkout ?? null, deps.analyser ?? null, undefined, app.log, deps.reader ?? null);
+}
+
+function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHealthService): CrawlService {
+  // With analysis off the crawl never clones, but earlier snapshots can still be read back.
+  const analyseDuringCrawl = deps.config.codeAnalysis && deps.checkout && deps.analyser;
+  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log);
+}
+
+function registerRoutes(app: FastifyInstance, deps: AppDeps, crawler: CrawlService, codeHealth: CodeHealthService) {
   const auth = {
     config: deps.config,
     provider: deps.provider,
@@ -44,21 +53,6 @@ export async function buildApp(deps: AppDeps): Promise<{ app: FastifyInstance; c
     cli: deps.cli,
     exchangeCode: deps.exchangeCode,
   };
-  const codeHealth = new CodeHealthService(
-    deps.store,
-    deps.checkout ?? null,
-    deps.analyser ?? null,
-    undefined,
-    app.log,
-    deps.reader ?? null,
-  );
-  // With analysis off the crawl never clones, but earlier snapshots can still be read back.
-  const crawler = new CrawlService(
-    deps.store,
-    deps.provider,
-    deps.config.codeAnalysis && deps.checkout && deps.analyser ? codeHealth : undefined,
-    app.log,
-  );
   registerAuthRoutes(app, auth);
   registerRepoRoutes(app, {
     guard: requireSession(auth),
@@ -68,5 +62,16 @@ export async function buildApp(deps: AppDeps): Promise<{ app: FastifyInstance; c
     codeHealth,
   });
   app.get("/api/health", async () => ({ ok: true, authMode: deps.config.authMode, provider: deps.provider.kind }));
+}
+
+/** Builds the HTTP app from its adapters. `main.ts` passes real ones; tests pass fakes. */
+export async function buildApp(deps: AppDeps): Promise<{ app: FastifyInstance; crawler: CrawlService }> {
+  const app = createApp(deps);
+  await app.register(cookie, { secret: deps.config.sessionSecret });
+  registerErrorHandler(app);
+
+  const codeHealth = createCodeHealth(deps, app);
+  const crawler = createCrawler(deps, app, codeHealth);
+  registerRoutes(app, deps, crawler, codeHealth);
   return { app, crawler };
 }

@@ -19,55 +19,53 @@ export interface ExtraPreset {
   range: Pick<ReportRange, "from" | "to">;
 }
 
-type Preset = "all" | "90" | "30";
+function standardPresets(now: Date | undefined): ExtraPreset[] {
+  const today = isoDaysAgo(0, now);
+  const lastDays = (days: number) => ({ from: isoDaysAgo(days, now), to: today });
+  return [
+    { key: "all", label: copy.range.allTime, range: { from: null, to: null } },
+    { key: "90", label: copy.range.last90, range: lastDays(90) },
+    { key: "30", label: copy.range.last30, range: lastDays(30) },
+  ];
+}
+
+interface DateFieldProps {
+  label: string;
+  value: string | null;
+  /** Set from the other end of the range, so a range cannot end before it starts. */
+  min?: string | null;
+  max?: string | null;
+  onChange: (next: string | null) => void;
+}
+
+function DateField({ label, value, min, max, onChange }: DateFieldProps) {
+  const id = useId();
+  return (
+    <label htmlFor={id} className="field-inline">
+      <span>{label}</span>
+      <input
+        id={id}
+        type="date"
+        className="input"
+        value={value ?? ""}
+        min={min ?? undefined}
+        max={max ?? undefined}
+        onChange={(event) => onChange(event.target.value || null)}
+      />
+    </label>
+  );
+}
 
 export function DateRangeControls({ value, onChange, now, extraPresets = [] }: DateRangeControlsProps) {
-  const fromId = useId();
-  const toId = useId();
-  const today = isoDaysAgo(0, now);
-
-  const presetRange = (preset: Preset): Pick<ReportRange, "from" | "to"> =>
-    preset === "all" ? { from: null, to: null } : { from: isoDaysAgo(Number(preset), now), to: today };
-
-  const presets: ExtraPreset[] = [
-    ...extraPresets,
-    ...(
-      [
-        { key: "all", label: copy.range.allTime },
-        { key: "90", label: copy.range.last90 },
-        { key: "30", label: copy.range.last30 },
-      ] as const
-    ).map((preset) => ({ ...preset, range: presetRange(preset.key) })),
-  ];
-
+  const presets = [...extraPresets, ...standardPresets(now)];
   const activePreset = presets.find((preset) => preset.range.from === value.from && preset.range.to === value.to)?.key;
 
   return (
     <fieldset className="range-controls">
       <legend className="visually-hidden">{copy.range.legend}</legend>
       <div className="range-dates">
-        <label htmlFor={fromId} className="field-inline">
-          <span>{copy.range.from}</span>
-          <input
-            id={fromId}
-            type="date"
-            className="input"
-            value={value.from ?? ""}
-            max={value.to ?? undefined}
-            onChange={(event) => onChange({ ...value, from: event.target.value || null })}
-          />
-        </label>
-        <label htmlFor={toId} className="field-inline">
-          <span>{copy.range.to}</span>
-          <input
-            id={toId}
-            type="date"
-            className="input"
-            value={value.to ?? ""}
-            min={value.from ?? undefined}
-            onChange={(event) => onChange({ ...value, to: event.target.value || null })}
-          />
-        </label>
+        <DateField label={copy.range.from} value={value.from} max={value.to} onChange={(from) => onChange({ ...value, from })} />
+        <DateField label={copy.range.to} value={value.to} min={value.from} onChange={(to) => onChange({ ...value, to })} />
       </div>
       <div className="segmented" role="group" aria-label={copy.range.presetsLabel}>
         {presets.map((preset) => (

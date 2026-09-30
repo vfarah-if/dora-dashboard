@@ -6,6 +6,8 @@ import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
 import type { CodeHealthService } from "./code-health-service.js";
 
+type CrawledRepo = NonNullable<ReturnType<RepoStore["getRepo"]>>;
+
 /**
  * Reads a repository's pull requests and deploy runs from its code host into the store.
  *
@@ -47,28 +49,8 @@ export class CrawlService {
     this.running.add(repoId);
     try {
       if (full) this.store.resetCrawlCursor(repoId);
-      const stopAt = this.store.crawlCursor(repoId);
-      this.store.setCrawlState(repoId, "crawling", "Reading pull requests");
-
-      let cursor: string | null = null;
-      let newest: string | null = null;
-      let seen = 0;
-      do {
-        const page = await this.provider.fetchPullRequestPage(token, repo.owner, repo.name, cursor);
-        const fresh = stopAt ? page.pullRequests.filter((p) => p.updatedAt > stopAt) : page.pullRequests;
-        newest ??= page.pullRequests[0]?.updatedAt ?? null;
-        this.store.upsertPullRequests(repoId, fresh);
-        seen += page.pullRequests.length;
-        this.store.setCrawlState(repoId, "crawling", `Read ${seen} of ${page.totalCount} pull requests`);
-        cursor = fresh.length < page.pullRequests.length ? null : page.nextCursor;
-      } while (cursor);
-
-      const runs: DeployRun[] = [];
-      for (const workflow of repo.deployWorkflows) {
-        this.store.setCrawlState(repoId, "crawling", `Reading runs of ${workflow}`);
-        runs.push(...(await this.provider.fetchDeployRuns(token, repo.owner, repo.name, workflow)));
-      }
-      this.store.replaceDeployRuns(repoId, runs);
+      const newest = await this.readPullRequests(token, repoId, repo);
+      await this.readDeployRuns(token, repoId, repo);
       await this.analyseCode(token, repoId, full);
       this.store.finishCrawl(repoId, newest);
     } catch (error) {
@@ -77,5 +59,35 @@ export class CrawlService {
     } finally {
       this.running.delete(repoId);
     }
+  }
+
+  /** Pages through pull requests until one is no newer than the last crawl; returns the newest `updatedAt` seen. */
+  private async readPullRequests(token: string, repoId: number, repo: CrawledRepo): Promise<string | null> {
+    const stopAt = this.store.crawlCursor(repoId);
+    this.store.setCrawlState(repoId, "crawling", "Reading pull requests");
+
+    let cursor: string | null = null;
+    let newest: string | null = null;
+    let seen = 0;
+    do {
+      const page = await this.provider.fetchPullRequestPage(token, repo.owner, repo.name, cursor);
+      const fresh = stopAt ? page.pullRequests.filter((p) => p.updatedAt > stopAt) : page.pullRequests;
+      newest ??= page.pullRequests[0]?.updatedAt ?? null;
+      this.store.upsertPullRequests(repoId, fresh);
+      seen += page.pullRequests.length;
+      this.store.setCrawlState(repoId, "crawling", `Read ${seen} of ${page.totalCount} pull requests`);
+      cursor = fresh.length < page.pullRequests.length ? null : page.nextCursor;
+    } while (cursor);
+    return newest;
+  }
+
+  /** Deploy runs are replaced whole, since a run's conclusion can change after the fact. */
+  private async readDeployRuns(token: string, repoId: number, repo: CrawledRepo): Promise<void> {
+    const runs: DeployRun[] = [];
+    for (const workflow of repo.deployWorkflows) {
+      this.store.setCrawlState(repoId, "crawling", `Reading runs of ${workflow}`);
+      runs.push(...(await this.provider.fetchDeployRuns(token, repo.owner, repo.name, workflow)));
+    }
+    this.store.replaceDeployRuns(repoId, runs);
   }
 }

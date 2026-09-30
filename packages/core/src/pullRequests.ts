@@ -40,29 +40,46 @@ function earliest(values: (string | null)[]): string | null {
   return present[0] ?? null;
 }
 
+/** A review the author leaves on their own PR is a comment, not a review; pending reviews are not submitted. */
+function externalReviews(pr: PullRequest) {
+  return pr.reviews.filter((r) => r.submittedAt !== null && r.author !== null && r.author !== pr.author && r.state !== "PENDING");
+}
+
+/** When work on a PR began. A rebased branch can carry a first commit dated after the PR opened; that counts as no coding time. */
+export function workStartedAt(pr: Pick<PullRequest, "firstCommitAt" | "createdAt">): string {
+  return pr.firstCommitAt && pr.firstCommitAt < pr.createdAt ? pr.firstCommitAt : pr.createdAt;
+}
+
+/** Hours from `from` to `at`, clamped at zero, or null when `at` has not happened. */
+const clampedHours = (from: string, at: string | null) => (at ? clamp(hoursBetween(from, at)) : null);
+
+/** `at` when it happened before `mergedAt`, otherwise null. */
+const beforeMerge = (at: string | null, mergedAt: string) => (at && at < mergedAt ? at : null);
+
+function stagesOf(
+  pr: PullRequest,
+  startedAt: string,
+  firstReviewAt: string | null,
+  firstApprovalAt: string | null,
+): PrTimings["stages"] {
+  if (!pr.mergedAt) return null;
+  const reviewStart = beforeMerge(firstReviewAt, pr.mergedAt);
+  const reviewEnd = beforeMerge(firstApprovalAt, pr.mergedAt) ?? reviewStart;
+  return {
+    coding: clamp(hoursBetween(startedAt, pr.createdAt)),
+    waitingForReview: clamp(hoursBetween(pr.createdAt, reviewStart ?? pr.mergedAt)),
+    inReview: reviewStart ? clamp(hoursBetween(reviewStart, reviewEnd)) : 0,
+    toMerge: reviewEnd ? clamp(hoursBetween(reviewEnd, pr.mergedAt)) : 0,
+  };
+}
+
 export function prTimings(pr: PullRequest): PrTimings {
-  // A review the author leaves on their own PR is a comment, not a review.
-  const external = pr.reviews.filter(
-    (r) => r.submittedAt !== null && r.author !== null && r.author !== pr.author && r.state !== "PENDING",
-  );
+  const external = externalReviews(pr);
   const readyAt = pr.publishedAt ?? pr.createdAt;
   const firstReviewAt = earliest(external.map((r) => r.submittedAt));
   const firstApprovalAt = earliest(external.filter((r) => r.state === "APPROVED").map((r) => r.submittedAt));
-
-  // A rebased branch can carry a first commit dated after the PR opened; treat that as no coding time.
-  const firstCommitAt = pr.firstCommitAt && pr.firstCommitAt < pr.createdAt ? pr.firstCommitAt : pr.createdAt;
-
-  let stages: PrTimings["stages"] = null;
-  if (pr.mergedAt) {
-    const reviewStart = firstReviewAt && firstReviewAt < pr.mergedAt ? firstReviewAt : null;
-    const reviewEnd = firstApprovalAt && firstApprovalAt < pr.mergedAt ? firstApprovalAt : reviewStart;
-    stages = {
-      coding: clamp(hoursBetween(firstCommitAt, pr.createdAt)),
-      waitingForReview: clamp(hoursBetween(pr.createdAt, reviewStart ?? pr.mergedAt)),
-      inReview: reviewStart ? clamp(hoursBetween(reviewStart, reviewEnd)) : 0,
-      toMerge: reviewEnd ? clamp(hoursBetween(reviewEnd, pr.mergedAt)) : 0,
-    };
-  }
+  const startedAt = workStartedAt(pr);
+  const reviewed = external.length > 0;
 
   return {
     number: pr.number,
@@ -71,15 +88,15 @@ export function prTimings(pr: PullRequest): PrTimings {
     author: pr.author,
     createdAt: pr.createdAt,
     mergedAt: pr.mergedAt,
-    codingHours: hoursBetween(firstCommitAt, pr.createdAt),
-    firstReviewHours: firstReviewAt ? clamp(hoursBetween(readyAt, firstReviewAt)) : null,
-    approvalHours: firstApprovalAt ? clamp(hoursBetween(readyAt, firstApprovalAt)) : null,
+    codingHours: hoursBetween(startedAt, pr.createdAt),
+    firstReviewHours: clampedHours(readyAt, firstReviewAt),
+    approvalHours: clampedHours(readyAt, firstApprovalAt),
     openToMergeHours: hoursBetween(pr.createdAt, pr.mergedAt),
-    cycleHours: hoursBetween(firstCommitAt, pr.mergedAt),
-    stages,
-    reviewed: external.length > 0,
+    cycleHours: hoursBetween(startedAt, pr.mergedAt),
+    stages: stagesOf(pr, startedAt, firstReviewAt, firstApprovalAt),
+    reviewed,
     reviewerCount: new Set(external.map((r) => r.author)).size,
-    reviewRounds: external.filter((r) => r.state === "CHANGES_REQUESTED").length + (external.length > 0 ? 1 : 0),
+    reviewRounds: external.filter((r) => r.state === "CHANGES_REQUESTED").length + (reviewed ? 1 : 0),
     size: pr.additions + pr.deletions,
   };
 }

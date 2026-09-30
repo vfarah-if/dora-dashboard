@@ -88,77 +88,102 @@ export interface RepoReport {
 
 const within = (iso: string | null, from: string, to: string) => iso !== null && iso >= from && iso <= to;
 const authorOf = (pr: Pick<PullRequest, "author">) => pr.author ?? "unknown";
+/** `part` over `whole`, or null when there is nothing to divide by. */
+const share = (part: number, whole: number) => (whole ? part / whole : null);
+const WEEK_MS = 7 * 86_400_000;
 
-export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[], options: ReportOptions = {}): RepoReport {
+/** The pull requests the report counts before author exclusion, and the range it covers. */
+function reportScope(allPrs: PullRequest[], options: ReportOptions) {
   const humansOrAll = options.includeBots ? allPrs : allPrs.filter((p) => !isBot(p));
   // The project start ignores excluded authors, so leaving someone out never moves the range or the week alignment.
   const projectStart = humansOrAll.map((p) => p.createdAt).sort()[0] ?? null;
   const now = new Date().toISOString();
   const from = options.from ?? projectStart ?? now;
   const to = options.to ? `${options.to.slice(0, 10)}T23:59:59Z` : now;
+  return { humansOrAll, projectStart, from, to };
+}
 
-  const excluded = new Set(options.excludeAuthors ?? []);
+/** Everyone who opened a PR in the range, most active first, and the PRs left once excluded authors are removed. */
+function applyAuthorFilter(humansOrAll: PullRequest[], excludeAuthors: readonly string[], from: string, to: string) {
+  const excluded = new Set(excludeAuthors);
   const openedCounts = new Map<string, number>();
-  for (const p of humansOrAll) {
-    if (within(p.createdAt, from, to)) openedCounts.set(authorOf(p), (openedCounts.get(authorOf(p)) ?? 0) + 1);
+  for (const p of humansOrAll.filter((p) => within(p.createdAt, from, to))) {
+    openedCounts.set(authorOf(p), (openedCounts.get(authorOf(p)) ?? 0) + 1);
   }
   const authorChoices: AuthorChoice[] = [...openedCounts]
     .map(([author, opened]) => ({ author, opened, excluded: excluded.has(author) }))
     .sort((a, b) => b.opened - a.opened || a.author.localeCompare(b.author));
   const prs = excluded.size ? humansOrAll.filter((p) => !excluded.has(authorOf(p))) : humansOrAll;
+  return { authorChoices, prs };
+}
 
-  const opened = prs.filter((p) => within(p.createdAt, from, to));
-  const merged = prs.filter((p) => within(p.mergedAt, from, to));
-  const timingsByNumber = new Map(prs.map((p) => [p.number, prTimings(p)]));
-  const mergedTimings = merged.map((p) => timingsByNumber.get(p.number)!);
-  const production = productionRuns(runs, repo.deployBranch).filter((r) => within(r.createdAt, from, to));
+type Stages = NonNullable<PrTimings["stages"]>;
 
+function stageMeans(stageRows: Stages[]): WeekRow["stages"] {
+  if (!stageRows.length) return null;
+  return {
+    coding: mean(stageRows.map((s) => s.coding))!,
+    waitingForReview: mean(stageRows.map((s) => s.waitingForReview))!,
+    inReview: mean(stageRows.map((s) => s.inReview))!,
+    toMerge: mean(stageRows.map((s) => s.toMerge))!,
+  };
+}
+
+interface WeeklyInputs {
+  from: string;
+  to: string;
+  projectStart: string | null;
+  opened: PullRequest[];
+  merged: PullRequest[];
+  mergedTimings: PrTimings[];
+  production: DeployRun[];
+}
+
+function weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, production }: WeeklyInputs): WeekRow[] {
   const weeks = weekRange(weekStart(from), weekStart(to));
   const projectWeek = projectStart ? weekStart(projectStart) : weeks[0]!;
   const rangeEndMs = Date.parse(to) + 1000; // `to` is the last second of the range
-  const WEEK_MS = 7 * 86_400_000;
-  const weekIndexOf = (week: string) => Math.round((Date.parse(week) - Date.parse(projectWeek)) / WEEK_MS);
 
-  const weekly: WeekRow[] = weeks.map((week) => {
+  return weeks.map((week) => {
     const openedThisWeek = opened.filter((p) => weekStart(p.createdAt) === week);
     const mergedThisWeek = mergedTimings.filter((t) => weekStart(t.mergedAt!) === week);
     const authors = new Set([...openedThisWeek, ...merged.filter((p) => weekStart(p.mergedAt!) === week)].map((p) => p.author));
-    const stageRows = mergedThisWeek.map((t) => t.stages).filter((s) => s !== null);
     const deploysThisWeek = production.filter((r) => weekStart(r.createdAt) === week);
     return {
       week,
-      weekIndex: weekIndexOf(week),
+      weekIndex: Math.round((Date.parse(week) - Date.parse(projectWeek)) / WEEK_MS),
       opened: openedThisWeek.length,
       merged: mergedThisWeek.length,
       activeAuthors: authors.size,
-      mergedPerAuthor: authors.size ? mergedThisWeek.length / authors.size : null,
+      mergedPerAuthor: share(mergedThisWeek.length, authors.size),
       medianOpenToMergeHours: median(mergedThisWeek.map((t) => t.openToMergeHours!)),
       medianCodingHours: median(mergedThisWeek.map((t) => t.codingHours).filter((h) => h !== null)),
-      stages: stageRows.length
-        ? {
-            coding: mean(stageRows.map((s) => s.coding))!,
-            waitingForReview: mean(stageRows.map((s) => s.waitingForReview))!,
-            inReview: mean(stageRows.map((s) => s.inReview))!,
-            toMerge: mean(stageRows.map((s) => s.toMerge))!,
-          }
-        : null,
+      stages: stageMeans(mergedThisWeek.map((t) => t.stages).filter((s) => s !== null)),
       partial: Date.parse(week) + WEEK_MS > rangeEndMs,
       deploys: deploysThisWeek.filter((r) => r.conclusion === "success").length,
       deployFailures: deploysThisWeek.filter((r) => r.conclusion === "failure").length,
       linesMerged: mergedThisWeek.reduce((sum, t) => sum + t.size, 0),
     };
   });
+}
 
-  const authorNames = new Set(opened.map(authorOf));
-  const reviewsGiven = new Map<string, number>();
+/** Reviews each person submitted in the range on pull requests they did not author. */
+function reviewsGivenBy(prs: PullRequest[], from: string, to: string): Map<string, number> {
+  const given = new Map<string, number>();
   for (const pr of prs) {
-    for (const r of pr.reviews) {
-      if (r.author && r.author !== pr.author && within(r.submittedAt, from, to)) {
-        reviewsGiven.set(r.author, (reviewsGiven.get(r.author) ?? 0) + 1);
-      }
-    }
+    const counted = pr.reviews.filter((r) => r.author && r.author !== pr.author && within(r.submittedAt, from, to));
+    for (const r of counted) given.set(r.author!, (given.get(r.author!) ?? 0) + 1);
   }
-  const authors: AuthorRow[] = [...authorNames]
+  return given;
+}
+
+function authorRows(
+  authorNames: Set<string>,
+  opened: PullRequest[],
+  mergedTimings: PrTimings[],
+  reviewsGiven: Map<string, number>,
+): AuthorRow[] {
+  return [...authorNames]
     .map((author) => {
       const theirs = mergedTimings.filter((t) => authorOf(t) === author);
       return {
@@ -171,11 +196,60 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
       };
     })
     .sort((a, b) => b.merged - a.merged || b.opened - a.opened);
+}
 
+function totalsOf(
+  opened: PullRequest[],
+  merged: PullRequest[],
+  mergedTimings: PrTimings[],
+  weekly: WeekRow[],
+  authors: number,
+): RepoReport["totals"] {
   const reviewed = mergedTimings.filter((t) => t.reviewed);
+  const selfMerged = merged.filter((p) => p.mergedBy !== null && p.mergedBy === p.author);
   const authorWeeks = weekly.reduce((sum, w) => sum + w.activeAuthors, 0);
   const linesMerged = mergedTimings.reduce((sum, t) => sum + t.size, 0);
-  const selfMerged = merged.filter((p) => p.mergedBy !== null && p.mergedBy === p.author);
+  return {
+    opened: opened.length,
+    merged: merged.length,
+    stillOpen: opened.filter((p) => p.state === "OPEN").length,
+    closedUnmerged: opened.filter((p) => p.state === "CLOSED").length,
+    authors,
+    reviewedShare: share(reviewed.length, merged.length),
+    selfMergedShare: share(selfMerged.length, merged.length),
+    authorWeeks,
+    mergedPerAuthorWeek: share(merged.length, authorWeeks),
+    linesMerged,
+    linesPerAuthorWeek: share(linesMerged, authorWeeks),
+  };
+}
+
+function summaryOf(mergedTimings: PrTimings[]): RepoReport["summary"] {
+  const hours = (list: PrTimings[], pick: (t: PrTimings) => number | null) => summarise(list.map(pick));
+  const reviewed = mergedTimings.filter((t) => t.reviewed);
+  const unreviewed = mergedTimings.filter((t) => !t.reviewed);
+  return {
+    codingHours: hours(mergedTimings, (t) => t.codingHours),
+    firstReviewHours: hours(mergedTimings, (t) => t.firstReviewHours),
+    openToMergeHours: hours(mergedTimings, (t) => t.openToMergeHours),
+    openToMergeReviewedHours: hours(reviewed, (t) => t.openToMergeHours),
+    openToMergeUnreviewedHours: hours(unreviewed, (t) => t.openToMergeHours),
+    cycleHours: hours(mergedTimings, (t) => t.cycleHours),
+    size: hours(mergedTimings, (t) => t.size),
+  };
+}
+
+export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[], options: ReportOptions = {}): RepoReport {
+  const { humansOrAll, projectStart, from, to } = reportScope(allPrs, options);
+  const { authorChoices, prs } = applyAuthorFilter(humansOrAll, options.excludeAuthors ?? [], from, to);
+
+  const opened = prs.filter((p) => within(p.createdAt, from, to));
+  const merged = prs.filter((p) => within(p.mergedAt, from, to));
+  const timingsByNumber = new Map(prs.map((p) => [p.number, prTimings(p)]));
+  const mergedTimings = merged.map((p) => timingsByNumber.get(p.number)!);
+  const production = productionRuns(runs, repo.deployBranch).filter((r) => within(r.createdAt, from, to));
+  const weekly = weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, production });
+  const authorNames = new Set(opened.map(authorOf));
 
   return {
     repo: {
@@ -188,33 +262,13 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     },
     range: { from, to },
     projectStart,
-    totals: {
-      opened: opened.length,
-      merged: merged.length,
-      stillOpen: opened.filter((p) => p.state === "OPEN").length,
-      closedUnmerged: opened.filter((p) => p.state === "CLOSED").length,
-      authors: authorNames.size,
-      reviewedShare: merged.length ? reviewed.length / merged.length : null,
-      selfMergedShare: merged.length ? selfMerged.length / merged.length : null,
-      authorWeeks,
-      mergedPerAuthorWeek: authorWeeks ? merged.length / authorWeeks : null,
-      linesMerged,
-      linesPerAuthorWeek: authorWeeks ? linesMerged / authorWeeks : null,
-    },
-    summary: {
-      codingHours: summarise(mergedTimings.map((t) => t.codingHours)),
-      firstReviewHours: summarise(mergedTimings.map((t) => t.firstReviewHours)),
-      openToMergeHours: summarise(mergedTimings.map((t) => t.openToMergeHours)),
-      openToMergeReviewedHours: summarise(reviewed.map((t) => t.openToMergeHours)),
-      openToMergeUnreviewedHours: summarise(mergedTimings.filter((t) => !t.reviewed).map((t) => t.openToMergeHours)),
-      cycleHours: summarise(mergedTimings.map((t) => t.cycleHours)),
-      size: summarise(mergedTimings.map((t) => t.size)),
-    },
-    dora: doraSummary(merged, production, repo.deployBranch, weeks.length),
+    totals: totalsOf(opened, merged, mergedTimings, weekly, authorNames.size),
+    summary: summaryOf(mergedTimings),
+    dora: doraSummary(merged, production, repo.deployBranch, weekly.length),
     weekly,
     distribution: mergeDistribution(mergedTimings.map((t) => t.openToMergeHours!)),
-    authors,
+    authors: authorRows(authorNames, opened, mergedTimings, reviewsGivenBy(prs, from, to)),
     authorChoices,
-    prs: [...opened.map((p) => timingsByNumber.get(p.number)!)].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    prs: opened.map((p) => timingsByNumber.get(p.number)!).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   };
 }

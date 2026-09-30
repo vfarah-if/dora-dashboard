@@ -12,56 +12,62 @@ export interface DoraFigure {
   reason?: string;
 }
 
+interface FigureParts {
+  value: string;
+  detail: string;
+}
+
+/** A figure for a measure that may be missing. Everything derived from the measure is null or absent together. */
+function figure<M extends { band: Band }>(
+  id: DoraFigure["id"],
+  measure: M | null | undefined,
+  parts: (m: M) => FigureParts,
+  reason: string,
+): DoraFigure {
+  const title = copy.dora[id];
+  const definition = copy.dora[`${id}Definition`];
+  if (!measure) return { id, title, definition, value: null, band: null, reason };
+  const { value, detail } = parts(measure);
+  return { id, title, definition, value, band: measure.band, detail, reason };
+}
+
+/** Why time to restore is missing: no failures to recover from, no recovery seen, or no deploy runs at all. */
+function restoreReason(report: RepoReport, noRunsReason: string): string {
+  const cf = report.dora.changeFailure;
+  if (!cf) return noRunsReason;
+  return cf.failed === 0 ? copy.dora.reasons.noFailures : copy.dora.reasons.noRecovery;
+}
+
 /** The four DORA measures of a report as display figures, each with the reason it is missing when it is. */
 export function doraFigures(report: RepoReport): DoraFigure[] {
   const { dora, repo } = report;
   const noWorkflow = repo.deployWorkflows.length === 0;
   const noRunsReason = noWorkflow ? copy.dora.reasons.noWorkflow : copy.dora.reasons.noRuns(repo.deployBranch);
 
-  const df = dora.deploymentFrequency;
-  const lt = dora.leadTime;
-  const cf = dora.changeFailure;
-  const tr = dora.timeToRestore;
-
-  let restoreReason = noRunsReason;
-  if (cf) restoreReason = cf.failed === 0 ? copy.dora.reasons.noFailures : copy.dora.reasons.noRecovery;
-
   return [
-    {
-      id: "deploymentFrequency",
-      title: copy.dora.deploymentFrequency,
-      definition: copy.dora.deploymentFrequencyDefinition,
-      value: df ? copy.dora.perWeek(formatNumber(df.perWeek, 1)) : null,
-      band: df?.band ?? null,
-      detail: df ? copy.dora.deploysCount(df.total, df.weeks) : undefined,
-      reason: noRunsReason,
-    },
-    {
-      id: "leadTime",
-      title: copy.dora.leadTime,
-      definition: copy.dora.leadTimeDefinition,
-      value: lt ? formatDuration(lt.medianHours) : null,
-      band: lt?.band ?? null,
-      detail: lt ? copy.dora.leadCount(lt.count) : undefined,
-      reason: df ? copy.dora.reasons.noShipped : noRunsReason,
-    },
-    {
-      id: "changeFailure",
-      title: copy.dora.changeFailure,
-      definition: copy.dora.changeFailureDefinition,
-      value: cf ? formatPercent(cf.rate) : null,
-      band: cf?.band ?? null,
-      detail: cf ? copy.dora.failureCount(cf.failed, cf.total) : undefined,
-      reason: noRunsReason,
-    },
-    {
-      id: "timeToRestore",
-      title: copy.dora.timeToRestore,
-      definition: copy.dora.timeToRestoreDefinition,
-      value: tr ? formatDuration(tr.medianHours) : null,
-      band: tr?.band ?? null,
-      detail: tr ? copy.dora.restoreCount(tr.count) : undefined,
-      reason: restoreReason,
-    },
+    figure(
+      "deploymentFrequency",
+      dora.deploymentFrequency,
+      (m) => ({ value: copy.dora.perWeek(formatNumber(m.perWeek, 1)), detail: copy.dora.deploysCount(m.total, m.weeks) }),
+      noRunsReason,
+    ),
+    figure(
+      "leadTime",
+      dora.leadTime,
+      (m) => ({ value: formatDuration(m.medianHours), detail: copy.dora.leadCount(m.count) }),
+      dora.deploymentFrequency ? copy.dora.reasons.noShipped : noRunsReason,
+    ),
+    figure(
+      "changeFailure",
+      dora.changeFailure,
+      (m) => ({ value: formatPercent(m.rate), detail: copy.dora.failureCount(m.failed, m.total) }),
+      noRunsReason,
+    ),
+    figure(
+      "timeToRestore",
+      dora.timeToRestore,
+      (m) => ({ value: formatDuration(m.medianHours), detail: copy.dora.restoreCount(m.count) }),
+      restoreReason(report, noRunsReason),
+    ),
   ];
 }

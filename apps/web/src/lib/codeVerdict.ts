@@ -49,36 +49,39 @@ export function checkOf(report: CodeHealthReport, check: GradeCheck["check"]): G
   return report.checks.find((c) => c.check === check);
 }
 
+interface SentenceContext {
+  report: CodeHealthReport;
+  c: GradeCheck;
+  good: boolean;
+  /** True when the check's band is medium or low, which changes the wording of some sentences. */
+  poor: boolean;
+  share: number;
+}
+
+const findingCopy = copy.codeHealth.findings;
+
+/** One sentence writer per check. The Record type makes the compiler demand a writer for every check core can send. */
+const SENTENCES: Record<GradeCheck["check"], (ctx: SentenceContext) => string> = {
+  linesAboveWarn: ({ good, share }) => findingCopy.linesAboveWarn(good, percentOne(share)),
+  linesAboveHigh: ({ good, share }) => findingCopy.linesAboveHigh(good, percentOne(share)),
+  longFunctions: ({ good, share, c, report }) =>
+    findingCopy.longFunctions(good, percentOne(share), c.count, report.longestFunction),
+  manyParams: ({ good, share, c }) => findingCopy.manyParams(good, percentOne(share), c.count),
+  testRatio: ({ good, poor, share }) => findingCopy.testRatio(good, poor, share.toFixed(2)),
+  prsWithTests: ({ good, poor, share, c }) =>
+    findingCopy.prsWithTests(good, poor, formatPercent(share), c.count ?? 0, c.total ?? 0),
+  ciRunsTests: ({ good }) => findingCopy.ciRunsTests(good),
+  coverageFloor: ({ good, c }) => findingCopy.coverageFloor(typeof c.value === "number" ? c.value : null, good),
+  linter: ({ c }) => findingCopy.linter(toolNames(c)),
+  formatter: ({ c, report }) => findingCopy.formatter(toolNames(c), report.hygiene?.onlyEditorconfig ?? false),
+  ciLinter: ({ c }) => findingCopy.ciLinter(toolNames(c)),
+  ciFormat: ({ c }) => findingCopy.ciFormat(toolNames(c)),
+};
+
 function sentence(report: CodeHealthReport, c: GradeCheck, good: boolean, band: Band): string {
-  const f = copy.codeHealth.findings;
   const poor = BAND_ORDER[band] <= BAND_ORDER.medium;
   const share = typeof c.value === "number" ? c.value : 0;
-  switch (c.check) {
-    case "linesAboveWarn":
-      return f.linesAboveWarn(good, percentOne(share));
-    case "linesAboveHigh":
-      return f.linesAboveHigh(good, percentOne(share));
-    case "longFunctions":
-      return f.longFunctions(good, percentOne(share), c.count, report.longestFunction);
-    case "manyParams":
-      return f.manyParams(good, percentOne(share), c.count);
-    case "testRatio":
-      return f.testRatio(good, poor, share.toFixed(2));
-    case "prsWithTests":
-      return f.prsWithTests(good, poor, formatPercent(share), c.count ?? 0, c.total ?? 0);
-    case "ciRunsTests":
-      return f.ciRunsTests(good);
-    case "coverageFloor":
-      return f.coverageFloor(typeof c.value === "number" ? c.value : null, good);
-    case "linter":
-      return f.linter(toolNames(c));
-    case "formatter":
-      return f.formatter(toolNames(c), report.hygiene?.onlyEditorconfig ?? false);
-    case "ciLinter":
-      return f.ciLinter(toolNames(c));
-    case "ciFormat":
-      return f.ciFormat(toolNames(c));
-  }
+  return SENTENCES[c.check]({ report, c, good, poor, share });
 }
 
 /** Every check that has a figure, in the order core lists them. A check with neither a figure nor a band is skipped. */
