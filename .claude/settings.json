@@ -46,5 +46,20 @@
       "Bash(gh pr merge:*)",
       "Bash(rm -rf data:*)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-edited-file.sh",
+            "timeout": 60,
+            "statusMessage": "Linting the edited file"
+          }
+        ]
+      }
+    ]
   }
 }

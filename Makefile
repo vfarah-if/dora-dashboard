@@ -11,6 +11,7 @@ SHELL := /bin/bash
 
 TURBO    := node_modules/.bin/turbo
 PRETTIER := node_modules/.bin/prettier
+ESLINT   := node_modules/.bin/eslint
 API_WS   := @dora-dashboard/api
 WEB_WS   := @dora-dashboard/web
 CORE_WS  := @dora-dashboard/core
@@ -27,7 +28,7 @@ YELLOW:= \033[33m
 RESET := \033[0m
 
 .PHONY: help all install build typecheck test test-coverage test-coverage-force quality \
-        fmt fmt-check check-names dev dev-bg dev-stop dev-logs api web crawl crawl-full \
+        fmt fmt-check lint lint-fix check-names dev dev-bg dev-stop dev-logs api web crawl crawl-full \
         crawl-all env clean clean-data
 
 # --- Getting started ----------------------------------------------------------
@@ -75,10 +76,16 @@ fmt: ## Format the repository with prettier
 fmt-check: ## Fail if anything is unformatted
 	$(PRETTIER) --check . --log-level warn
 
+lint: ## Lint every workspace with eslint
+	$(ESLINT) . --max-warnings 0
+
+lint-fix: ## Apply the fixes eslint can make on its own
+	$(ESLINT) . --fix
+
 check-names: ## Fail if a name listed in .private-names appears in a tracked file
 	node scripts/check-private-names.mjs
 
-quality: fmt-check check-names typecheck test-coverage ## Every gate CI runs
+quality: fmt-check lint check-names typecheck test-coverage ## Every gate CI runs
 
 # --- Running ------------------------------------------------------------------
 

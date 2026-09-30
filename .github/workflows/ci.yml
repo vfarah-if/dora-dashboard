@@ -19,4 +19,4 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: node scripts/check-private-names.mjs --self-test
-      - run: make fmt-check typecheck test-coverage
+      - run: make fmt-check lint typecheck test-coverage

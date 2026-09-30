@@ -17,4 +17,5 @@ export function parseRepoRef(input: string): RepoRef | null {
 }
 
 /** A branch name that is safe to hand to git: empty (meaning the default), no leading `-`, no whitespace or control characters. */
+// eslint-disable-next-line no-control-regex -- matching control characters is the point: they are rejected.
 export const isSafeBranch = (branch: string): boolean => /^(?!-)[^\s\u0000-\u001f\u007f]*$/u.test(branch);

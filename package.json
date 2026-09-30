@@ -17,11 +17,18 @@
     "test": "turbo run test",
     "test:coverage": "turbo run test:coverage",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
     "prettier": "^3.6.2",
-    "turbo": "^2.5.8"
+    "turbo": "^2.5.8",
+    "typescript-eslint": "^8.71.0"
   },
   "engines": {
     "node": ">=22.13"

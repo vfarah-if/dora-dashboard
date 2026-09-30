@@ -124,9 +124,9 @@ export class LizardAnalyser implements CodeAnalyser {
     } catch (error) {
       const failure = error as { code?: unknown; killed?: boolean; message?: string };
       if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-        throw new Error("This repository is too large to analyse.");
+        throw new Error("This repository is too large to analyse.", { cause: error });
       }
-      if (failure.killed) throw new Error("Code analysis took longer than 10 minutes and was stopped.");
+      if (failure.killed) throw new Error("Code analysis took longer than 10 minutes and was stopped.", { cause: error });
       throw error;
     }
     return parseLizardCsv(stdout, dir);
