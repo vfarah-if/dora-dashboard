@@ -1155,11 +1155,10 @@ a:hover {
   margin-top: -4px;
 }
 
+/* End labels sit in the right margin, clear of the lines, so they need no halo. */
 .end-label {
   font-weight: 600;
-  paint-order: stroke;
-  stroke: var(--surface);
-  stroke-width: 3px;
+  stroke: none;
 }
 
 .recharts-cartesian-axis-tick-value {

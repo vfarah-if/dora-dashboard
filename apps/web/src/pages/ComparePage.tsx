@@ -407,7 +407,7 @@ export function ComparePage() {
                   series={series}
                   formatX={formatX}
                   formatY={formatDuration}
-                  yLabel={copy.charts.hours}
+                  yLabel={copy.compare.openToMerge.yLabel}
                   log={log}
                 />
               </ChartCard>

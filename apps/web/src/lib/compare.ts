@@ -141,8 +141,9 @@ export function completeWeeks<T extends WeeklySeries>(series: readonly T[]): T[]
 
 /**
  * Vertical pixel offsets for end-of-line labels, so two lines finishing close together do not print their
- * labels on top of each other. Labels are ordered by their final value and pushed apart until at least
- * `gap` pixels separate neighbours, measured on a chart `height` pixels tall.
+ * labels on top of each other. Positions are measured against the tallest value anywhere in the chart, since
+ * that sets the axis, on a plot `height` pixels tall. Labels are ordered by their final value and pushed
+ * apart until at least `gap` pixels separate neighbours; a stack that would run below the axis moves up.
  */
 export function endLabelOffsets(
   rows: readonly ChartRow[],
@@ -158,17 +159,24 @@ export function endLabelOffsets(
     .filter((e): e is { key: string; value: number } => e.value !== null);
   const offsets: Record<string, number> = Object.fromEntries(keys.map((k) => [k, 0]));
   if (ends.length < 2) return offsets;
-  const max = Math.max(...ends.map((e) => e.value), 0);
+  const values = rows.flatMap((row) => keys.map((k) => row[k]).filter((v): v is number => typeof v === "number"));
+  const max = Math.max(...values, 0);
   const scale = max > 0 ? height / max : 0;
   // Highest value first, top of the chart; y grows downwards on screen.
-  const sorted = [...ends].sort((a, b) => b.value - a.value);
+  const placed = [...ends]
+    .sort((a, b) => b.value - a.value)
+    .map((end) => ({ key: end.key, natural: (max - end.value) * scale, y: 0 }));
   let previousY = Number.NEGATIVE_INFINITY;
-  for (const end of sorted) {
-    const naturalY = (max - end.value) * scale;
-    const y = Math.max(naturalY, previousY + gap);
-    offsets[end.key] = y - naturalY;
-    previousY = y;
+  for (const label of placed) {
+    label.y = Math.max(label.natural, previousY + gap);
+    previousY = label.y;
   }
+  let nextY = Number.POSITIVE_INFINITY;
+  for (const label of [...placed].reverse()) {
+    label.y = Math.min(label.y, height, nextY - gap);
+    nextY = label.y;
+  }
+  for (const label of placed) offsets[label.key] = label.y - label.natural;
   return offsets;
 }
 

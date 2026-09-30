@@ -37,5 +37,6 @@ describe("endLabel", () => {
     const texts = container.querySelectorAll("text");
     expect(texts).toHaveLength(1);
     expect(texts[0]).toHaveTextContent("widgets");
+    expect(texts[0]).toHaveAttribute("stroke", "none");
   });
 });

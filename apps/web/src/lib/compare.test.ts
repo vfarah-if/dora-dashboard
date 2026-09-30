@@ -169,6 +169,25 @@ describe("endLabelOffsets", () => {
     expect(endLabelOffsets(rows, ["a", "b", "c"], 200)).toEqual({ a: 0, b: 0, c: 0 });
   });
 
+  it("measures against the tallest value in the chart, not the tallest end", () => {
+    // The axis runs to 100, so ends at 52 and 51 on a 200px chart sit 2px apart and the lower moves 12px.
+    // Measured against the higher end alone the gap would be about 4px and move the label by the wrong amount.
+    const rows = [
+      { x: 1, a: 100, b: 50 },
+      { x: 2, a: 52, b: 51 },
+    ];
+    expect(endLabelOffsets(rows, ["a", "b"], 200)).toEqual({ a: 0, b: 12 });
+  });
+
+  it("moves the stack up rather than pushing a label below the axis", () => {
+    // Both ends are 0 on a 200px chart, so both sit at 200px; the higher-sorted label moves up 14px.
+    const rows = [
+      { x: 1, a: 10, b: 10 },
+      { x: 2, a: 0, b: 0 },
+    ];
+    expect(endLabelOffsets(rows, ["a", "b"], 200)).toEqual({ a: -14, b: 0 });
+  });
+
   it("does nothing for a single series", () => {
     expect(endLabelOffsets([{ x: 1, a: 5 }], ["a"], 200)).toEqual({ a: 0 });
   });

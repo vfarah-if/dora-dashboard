@@ -14,6 +14,9 @@ export interface CompareLineChartProps {
   step?: boolean;
 }
 
+/** Room for the rotated axis title plus a tick as long as "11.7 days", so neither wraps nor overlaps. */
+const Y_AXIS_WIDTH = 84;
+
 /** Right margin wide enough for the longest end label at 12px, roughly 7px a character, capped. */
 function endLabelRoom(series: readonly SeriesMeta[]): number {
   const longest = Math.max(0, ...series.map((s) => s.shortLabel.length));
@@ -46,7 +49,7 @@ export function CompareLineChart({ rows, series, formatX, formatY, yLabel, log =
           domain={log ? ["auto", "auto"] : [0, "auto"]}
           allowDataOverflow={log}
           tickFormatter={formatY}
-          width={64}
+          width={Y_AXIS_WIDTH}
           label={{ value: yLabel, angle: -90, position: "insideLeft", fill: "var(--text-muted)", fontSize: 12, dx: 4, dy: 40 }}
         />
         <Tooltip content={<ChartTooltip formatLabel={formatX} formatValue={formatY} />} cursor={{ stroke: "var(--axis)" }} />

@@ -60,7 +60,7 @@ export function endLabel(text: string, lastIndex: number, dy = 0) {
     const { x, y, index } = props as LabelProps & { index?: number };
     if (index !== lastIndex || typeof x !== "number" || typeof y !== "number") return <g />;
     return (
-      <text x={x + 6} y={y + dy} dy={4} className="end-label" fill="var(--text)" fontSize={12}>
+      <text x={x + 6} y={y + dy} dy={4} className="end-label" fill="var(--text)" stroke="none" fontSize={12}>
         {text}
       </text>
     );

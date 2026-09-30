@@ -584,6 +584,7 @@ export const copy = {
       title: "Median open to merge per week",
       subtitle: "The median hours a pull request merged that week spent open.",
       logNote: "Weeks with a zero median are left out on a log scale.",
+      yLabel: "Time open",
     },
     distribution: {
       title: "Time to merge distribution",
