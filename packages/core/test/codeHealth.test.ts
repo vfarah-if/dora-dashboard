@@ -290,8 +290,8 @@ describe("codeHealth grading", () => {
     expect(weak.hygiene?.formatterConfigured).toBe(false);
   });
 
-  it("is on snapshot version 3", () => {
-    expect(CODE_SNAPSHOT_VERSION).toBe(3);
+  it("is on snapshot version 4", () => {
+    expect(CODE_SNAPSHOT_VERSION).toBe(4);
   });
 });
 

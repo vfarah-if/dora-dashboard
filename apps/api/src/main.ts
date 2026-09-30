@@ -15,6 +15,7 @@ const checkout = new GitCheckout("https://github.com");
 // A crash mid-clone leaves its temporary directory behind.
 await checkout.sweepStale();
 const provider = new GitHubProvider();
+const reader = new FsWorkspaceReader();
 const { app } = await buildApp({
   config,
   store: new SqliteRepoStore(config.databasePath),
@@ -23,8 +24,8 @@ const { app } = await buildApp({
   cli: new GhCliTokenSource(provider),
   exchangeCode: githubCodeExchange(config),
   checkout,
-  analyser: new LizardAnalyser(),
-  reader: new FsWorkspaceReader(),
+  analyser: new LizardAnalyser(reader),
+  reader,
   logger: true,
 });
 

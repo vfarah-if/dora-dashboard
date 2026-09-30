@@ -2,7 +2,7 @@ import type { DeployRun, FunctionMetrics, PullRequest } from "@dora-dashboard/co
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
-import type { CodeAnalyser } from "../src/interfaces/code-analyser.js";
+import type { CodeAnalyser, CodeAnalysis } from "../src/interfaces/code-analyser.js";
 import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
 import type { PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
@@ -138,16 +138,17 @@ export class FakeCodeAnalyser implements CodeAnalyser {
   isAvailable = true;
   failWith: Error | null = null;
   functions: FunctionMetrics[] = [fn()];
+  partlyMeasured: string[] = [];
   readonly analysed: string[] = [];
 
   async available(): Promise<boolean> {
     return this.isAvailable;
   }
 
-  async analyse(dir: string): Promise<FunctionMetrics[]> {
+  async analyse(dir: string): Promise<CodeAnalysis> {
     this.analysed.push(dir);
     if (this.failWith) throw this.failWith;
-    return this.functions;
+    return { functions: this.functions, partlyMeasured: this.partlyMeasured };
   }
 }
 

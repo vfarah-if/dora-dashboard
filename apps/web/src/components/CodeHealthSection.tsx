@@ -1,6 +1,8 @@
+import { Fragment } from "react";
 import type { CodeHealthReport, CodeHealthResponse } from "@dora-dashboard/core";
 import { useCodeHealth, type CodeHealthRange } from "../api/hooks";
 import { copy } from "../copy";
+import { adviceFor, splitPartlyMeasured } from "../lib/codeAdvice";
 import { locationLabel, shortSha } from "../lib/codeHealth";
 import { checkOf, goodAndImprove, limitingSentence, shareLabel, toolName, verdictSentence } from "../lib/codeVerdict";
 import { formatDate, formatDateTime, formatNumber, formatPercent } from "../lib/format";
@@ -13,11 +15,30 @@ const WARN = 10;
 const HIGH = 20;
 const yesNo = (value: boolean) => (value ? copy.codeHealth.yes : copy.codeHealth.no);
 
+/** A path that may wrap after each slash, so a narrow column breaks it at folder boundaries rather than mid-name. */
+function PathText({ path }: { path: string }) {
+  const parts = path.split("/");
+  return (
+    <>
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {part}
+          {i < parts.length - 1 && (
+            <>
+              /<wbr />
+            </>
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 function Hotspots({ report }: { report: CodeHealthReport }) {
   if (report.hotspots.length === 0) return <p className="chart-empty">{copy.codeHealth.hotspots.empty}</p>;
   return (
     <div className="table-scroll">
-      <table className="data-table">
+      <table className="data-table hotspots-table">
         <caption className="visually-hidden">{copy.codeHealth.hotspots.title}</caption>
         <thead>
           <tr>
@@ -29,17 +50,22 @@ function Hotspots({ report }: { report: CodeHealthReport }) {
             <th scope="col" className="numeric">
               {copy.codeHealth.hotspots.nloc}
             </th>
+            <th scope="col">{copy.codeHealth.hotspots.advice}</th>
           </tr>
         </thead>
         <tbody>
           {report.hotspots.map((fn) => (
             <tr key={`${fn.file}:${fn.startLine}:${fn.name}`}>
-              <th scope="row" className="mono">
+              <th scope="row" className="mono wrap-anywhere">
                 {fn.name}
+                {fn.onPath && <span className="start-tag">{copy.codeHealth.hotspots.startHere}</span>}
               </th>
-              <td className="mono">{locationLabel(fn)}</td>
+              <td className="mono wrap-anywhere">
+                <PathText path={locationLabel(fn)} />
+              </td>
               <td className="numeric">{fn.ccn}</td>
               <td className="numeric">{fn.nloc}</td>
+              <td className="advice-cell">{adviceFor(fn.shape)}</td>
             </tr>
           ))}
         </tbody>
@@ -289,6 +315,57 @@ function StaleNotice({ report }: { report: CodeHealthReport }) {
   );
 }
 
+function StartCard({ report }: { report: CodeHealthReport }) {
+  const c = copy.codeHealth.start;
+  const path = report.nextBand;
+  if (report.functions === 0) return null;
+  if (!path) {
+    return report.grade ? (
+      <section aria-labelledby="start-title" className="card start-card">
+        <h3 id="start-title" className="chart-title">
+          {c.title}
+        </h3>
+        <p>{c.elite}</p>
+      </section>
+    ) : null;
+  }
+  return (
+    <section aria-labelledby="start-title" className="card start-card">
+      <h3 id="start-title" className="chart-title">
+        {c.title}
+      </h3>
+      <p>{c.lift(path.functions.length, path.lines, path.from, path.to)}</p>
+      <ul className="start-list">
+        {path.functions.map((fn) => (
+          <li key={`${fn.file}:${fn.startLine}:${fn.name}`} className="mono">
+            {c.functionItem(fn.name, locationLabel(fn), fn.nloc)}
+          </li>
+        ))}
+      </ul>
+      <p className="chart-subtitle">{c.floor}</p>
+    </section>
+  );
+}
+
+function PartlyMeasuredNotice({ report }: { report: CodeHealthReport }) {
+  const c = copy.codeHealth.partly;
+  const files = report.partlyMeasured;
+  if (files.length === 0) return null;
+  const { shown, rest } = splitPartlyMeasured(files);
+  return (
+    <aside className="notice notice-warning">
+      <p className="notice-title">{c.title}</p>
+      <p>{c.body(files.length)}</p>
+      <ul className="partly-list mono">
+        {shown.map((file) => (
+          <li key={file}>{file}</li>
+        ))}
+        {rest > 0 && <li>{c.more(rest)}</li>}
+      </ul>
+    </aside>
+  );
+}
+
 function HotspotsCard({ report }: { report: CodeHealthReport }) {
   const c = copy.codeHealth;
   return (
@@ -324,6 +401,8 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
         <HygienePanel report={report} />
       </div>
 
+      <PartlyMeasuredNotice report={report} />
+      <StartCard report={report} />
       <HotspotsCard report={report} />
 
       <aside className="notice notice-info">

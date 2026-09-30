@@ -38,7 +38,27 @@ const ok: CodeHealthReport = {
     { label: "Over 50", min: 51, max: null, count: 0 },
   ],
   languages: [{ language: "TypeScript", functions: 120, nloc: 4500, meanCcn: 4.2 }],
-  hotspots: [hotspot, { ...hotspot, name: "parse", file: "src/util.ts", startLine: 7, ccn: 22, nloc: 40 }],
+  hotspots: [
+    { ...hotspot, shape: "dense", lineShare: 0.02, onPath: true },
+    {
+      ...hotspot,
+      name: "parse",
+      file: "src/util.ts",
+      startLine: 7,
+      ccn: 22,
+      nloc: 40,
+      shape: "branching",
+      lineShare: 0.01,
+      onPath: false,
+    },
+  ],
+  nextBand: {
+    from: "medium",
+    to: "high",
+    functions: [hotspot, { ...hotspot, name: "parse", file: "src/util.ts", startLine: 7, ccn: 22, nloc: 40 }],
+    lines: 130,
+  },
+  partlyMeasured: [],
   tests: { functions: 35, nloc: 2000 },
   maintainability: { linesAboveWarn: 0.08, linesAboveHigh: 0.04, longFunctions: 0.1, manyParams: 0.01 },
   testing: { testRatio: 0.45, prsWithTests: { share: 0.25, withTests: 9, total: 36 }, ciRunsTests: true, coverageFloor: 40 },
@@ -249,6 +269,101 @@ describe("CodeHealthSection", () => {
     show(ok);
     await screen.findByText(copy.codeHealth.verdict.title);
     expect(screen.queryByText(copy.codeHealth.staleTitle)).not.toBeInTheDocument();
+  });
+
+  it("says which functions to simplify to reach the next band, and that the figure is a floor", async () => {
+    show(ok);
+    const card = (await screen.findByRole("heading", { name: copy.codeHealth.start.title })).closest("section")!;
+    expect(card).toHaveTextContent("Simplifying these 2 functions (130 lines) would lift maintainability from medium to high.");
+    expect(
+      within(card)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["runPipeline at src/pipeline.ts:42 (90 lines)", "parse at src/util.ts:7 (40 lines)"]);
+    expect(card).toHaveTextContent(copy.codeHealth.start.floor);
+  });
+
+  it("uses the singular for a single function", async () => {
+    show({ ...ok, nextBand: { ...ok.nextBand!, functions: [hotspot], lines: 90 } });
+    const card = (await screen.findByRole("heading", { name: copy.codeHealth.start.title })).closest("section")!;
+    expect(card).toHaveTextContent("Simplifying this function (90 lines) would lift");
+  });
+
+  it("says maintainability is already elite when there is nothing to lift", async () => {
+    show({ ...ok, nextBand: null });
+    const card = (await screen.findByRole("heading", { name: copy.codeHealth.start.title })).closest("section")!;
+    expect(card).toHaveTextContent(copy.codeHealth.start.elite);
+    expect(within(card).queryByRole("listitem")).not.toBeInTheDocument();
+  });
+
+  it("shows no where to start card without functions, or without a grade or path", async () => {
+    show({ ...ok, functions: 0, nextBand: null, hotspots: [], mostComplex: null });
+    await screen.findByText(copy.codeHealth.hotspots.empty);
+    expect(screen.queryByRole("heading", { name: copy.codeHealth.start.title })).not.toBeInTheDocument();
+  });
+
+  it("shows no card when there is no grade and no path", async () => {
+    show({ ...ok, grade: null, nextBand: null });
+    await screen.findByText(copy.codeHealth.verdict.missingTitle);
+    expect(screen.queryByRole("heading", { name: copy.codeHealth.start.title })).not.toBeInTheDocument();
+  });
+
+  it("gives advice for each shape in the hotspots table", async () => {
+    const fn = { ...hotspot, lineShare: 0.01, onPath: false };
+    show({
+      ...ok,
+      hotspots: [
+        { ...fn, name: "a", shape: "component" },
+        { ...fn, name: "b", shape: "dense" },
+        { ...fn, name: "c", shape: "long" },
+        { ...fn, name: "d", shape: "branching" },
+        { ...fn, name: "e", shape: null },
+      ],
+    });
+    const table = await screen.findByRole("table", { name: copy.codeHealth.hotspots.title });
+    const advice = copy.codeHealth.hotspots.adviceFor;
+    const expected = { a: advice.component, b: advice.dense, c: advice.long, d: advice.branching, e: advice.within };
+    for (const [name, text] of Object.entries(expected)) {
+      expect(within(table).getByRole("row", { name: new RegExp(`^${name} `) })).toHaveTextContent(text);
+    }
+    expect(within(table).getByRole("columnheader", { name: copy.codeHealth.hotspots.advice })).toBeInTheDocument();
+  });
+
+  it("marks only the functions on the path with a Start here tag", async () => {
+    show(ok);
+    const table = await screen.findByRole("table", { name: copy.codeHealth.hotspots.title });
+    expect(within(table).getByRole("row", { name: /runPipeline/ })).toHaveTextContent("Start here");
+    expect(within(table).getByRole("row", { name: /parse/ })).not.toHaveTextContent("Start here");
+  });
+
+  it("explains that complexity is weighed with length", async () => {
+    show(ok);
+    expect(await screen.findByText(/Complexity is weighed with length/)).toBeInTheDocument();
+  });
+
+  it("warns which files may be partly measured, and shows no notice otherwise", async () => {
+    show({ ...ok, partlyMeasured: ["src/A.tsx", "src/B.tsx"] });
+    const notice = (await screen.findByText(copy.codeHealth.partly.title)).closest("aside")!;
+    expect(notice).toHaveTextContent(copy.codeHealth.partly.body(2));
+    expect(
+      within(notice)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["src/A.tsx", "src/B.tsx"]);
+  });
+
+  it("lists the first ten partly measured files and counts the rest", async () => {
+    show({ ...ok, partlyMeasured: Array.from({ length: 12 }, (_, i) => `src/F${i}.tsx`) });
+    const notice = (await screen.findByText(copy.codeHealth.partly.title)).closest("aside")!;
+    expect(within(notice).getAllByRole("listitem")).toHaveLength(11);
+    expect(notice).toHaveTextContent("and 2 more");
+    expect(notice).not.toHaveTextContent("src/F11.tsx");
+  });
+
+  it("shows no partly measured notice when every file was read in full", async () => {
+    show(ok);
+    await screen.findByText(copy.codeHealth.verdict.title);
+    expect(screen.queryByText(copy.codeHealth.partly.title)).not.toBeInTheDocument();
   });
 
   it("says when there are no functions to list", async () => {

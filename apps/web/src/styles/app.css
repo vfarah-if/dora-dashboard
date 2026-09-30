@@ -1511,6 +1511,40 @@ a:hover {
     font-size: 8.5pt;
   }
 
+  /* A page cannot scroll, so the hotspots table takes fixed shares of the width and its text wraps inside them. */
+  .hotspots-table {
+    table-layout: fixed;
+  }
+
+  .hotspots-table th:nth-child(1) {
+    width: 20%;
+  }
+
+  .hotspots-table th:nth-child(2) {
+    width: 32%;
+  }
+
+  .hotspots-table th:nth-child(3) {
+    width: 12%;
+  }
+
+  .hotspots-table th:nth-child(4) {
+    width: 8%;
+  }
+
+  .hotspots-table th:nth-child(5) {
+    width: 28%;
+  }
+
+  .hotspots-table thead th {
+    white-space: normal;
+  }
+
+  .advice-cell {
+    min-width: 0;
+    font-size: inherit;
+  }
+
   .data-table th,
   .data-table td {
     padding: 5px 6px;
@@ -1684,5 +1718,42 @@ a:hover {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Always on its own line under the function name, so every tagged row reads the same whatever the name's length. */
+.start-tag {
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.start-card {
+  border-left: 4px solid var(--accent);
+}
+
+.start-list,
+.partly-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.advice-cell {
+  min-width: 14rem;
+  font-size: 0.875rem;
+}
+
+/* Long paths and function names break where they must, so they cannot push the table past its card. */
+.wrap-anywhere {
   overflow-wrap: anywhere;
 }

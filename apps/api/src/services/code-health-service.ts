@@ -103,13 +103,14 @@ export class CodeHealthService {
 
       const checkout = await this.checkout.checkout(token, owner, name, branch);
       try {
-        const functions = await this.analyser.analyse(checkout.dir);
+        const { functions, partlyMeasured } = await this.analyser.analyse(checkout.dir);
         const tooling = await this.readTooling(checkout.dir, repoId);
         return {
           snapshot: {
             commitSha: checkout.commitSha,
             analysedAt: this.now().toISOString(),
             functions,
+            partlyMeasured,
             error: null,
             tooling,
             snapshotVersion: CODE_SNAPSHOT_VERSION,

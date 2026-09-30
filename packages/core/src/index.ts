@@ -6,3 +6,4 @@ export * from "./report.js";
 export * from "./codeHealth.js";
 export * from "./codeTooling.js";
 export * from "./codeGrade.js";
+export * from "./codeAdvice.js";

@@ -426,12 +426,40 @@ export const copy = {
 
     hotspots: {
       title: "Most complex functions",
-      subtitle: "The functions with the highest complexity, which are the best candidates to simplify first.",
+      subtitle:
+        "The functions with the highest complexity. Complexity is weighed with length, because the grade counts the lines inside complex functions, so a long complex function costs more than a short one.",
       function: "Function",
       location: "File and line",
       ccn: "Complexity",
       nloc: "Lines",
+      advice: "What would help",
+      startHere: "Start here",
+      adviceFor: {
+        component: "Extracting a subcomponent for each state or section usually makes this component easier to follow.",
+        dense:
+          "This function has many small branches, often defaults or a case per value, so a lookup table or small helpers usually reads better, and part of the score comes from how the analyser counts.",
+        long: "This function is long as well as branching, so splitting it into named steps usually helps most.",
+        branching: "Naming the conditions as small helper functions usually makes this function easier to follow.",
+        within: "This function is within every complexity and length limit, so it needs no change.",
+      },
       empty: "No functions were found.",
+    },
+
+    start: {
+      title: "Where to start",
+      lift: (count: number, lines: number, from: string, to: string) =>
+        `Simplifying ${count === 1 ? "this function" : `these ${count} functions`} (${lines} lines) would lift maintainability from ${from} to ${to}.`,
+      functionItem: (name: string, location: string, lines: number) => `${name} at ${location} (${lines} lines)`,
+      floor:
+        "This is the least that would be needed, because changes that add lines elsewhere, or a function that stays above a limit after simplifying, can call for more. A function listed here may not appear in the table below, which shows only the ten most complex.",
+      elite: "Maintainability is already in the elite band, so no function needs simplifying to lift it.",
+    },
+
+    partly: {
+      title: "Some functions may not have been measured",
+      body: (count: number) =>
+        `The analyser, lizard, may have skipped some functions in ${count === 1 ? "this file" : `these ${count} files`} because of JSX spread attributes such as {...props}, so the figures can read better than the code is.`,
+      more: (count: number) => `and ${count} more`,
     },
 
     none: {

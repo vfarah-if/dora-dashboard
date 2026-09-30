@@ -52,3 +52,7 @@ Left out for now:
 - The bands have a cliff edge. In a small repository a single function can move a share across a limit and change the band, which is why the figure is always shown beside the band and the reason names the check involved.
 - Repositories without pull request file data, or with few merged pull requests in the range, have a weaker pull-request check until a full crawl has run.
 - The thresholds are a convention, so grades are comparable across repositories on this dashboard and not with figures from other tools.
+
+## Revision History
+
+- 2026-09-30: the snapshot version is now 4, which records files the analyser may have read only in part (ADR 0015).

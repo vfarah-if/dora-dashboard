@@ -49,9 +49,10 @@ const timer = setInterval(() => {
   const progress = store.getRepo(repo.id)?.crawlProgress;
   if (progress) console.log(progress);
 }, 2000);
+const reader = new FsWorkspaceReader();
 try {
   const codeHealth = config.codeAnalysis
-    ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser(), undefined, undefined, new FsWorkspaceReader())
+    ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser(reader), undefined, undefined, reader)
     : undefined;
   await new CrawlService(store, provider, codeHealth).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));

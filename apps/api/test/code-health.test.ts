@@ -15,13 +15,25 @@ import {
   languageOf,
   parseLizardCsv,
   type ExecOptions as LizardExecOptions,
+  hasJsxSpread,
 } from "../src/infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { RepoService } from "../src/services/repo-service.js";
 import { isSafeBranch, parseRepoRef } from "../src/services/repo-ref.js";
 import { ANALYSER_MISSING, ANALYSIS_OFF, CodeHealthService } from "../src/services/code-health-service.js";
 import { CrawlService } from "../src/services/crawl-service.js";
-import { config, FakeCli, FakeCodeAnalyser, FakeProvider, FakeSourceCheckout, fn, pr, run, settled } from "./fakes.js";
+import {
+  config,
+  FakeCli,
+  FakeCodeAnalyser,
+  FakeProvider,
+  FakeSourceCheckout,
+  FakeWorkspaceReader,
+  fn,
+  pr,
+  run,
+  settled,
+} from "./fakes.js";
 
 const NOW = new Date("2026-09-29T10:00:00Z");
 
@@ -61,11 +73,21 @@ describe("code health during a crawl", () => {
     expect(store.getRepo(repoId)).toMatchObject({ crawlStatus: "idle", crawlProgress: null });
   });
 
+  it("stores the files the analyser reports as partly measured on the snapshot", async () => {
+    analyser.partlyMeasured = ["src/Tile.tsx"];
+
+    const snapshot = await service.analyse("token", repoId);
+
+    expect(snapshot.partlyMeasured).toEqual(["src/Tile.tsx"]);
+    expect(store.latestCodeSnapshot(repoId)!.partlyMeasured).toEqual(["src/Tile.tsx"]);
+    expect(service.report(repoId)).toMatchObject({ partlyMeasured: ["src/Tile.tsx"] });
+  });
+
   it("shows the progress message while analysing", async () => {
     const seen: (string | null)[] = [];
     analyser.analyse = async () => {
       seen.push(store.getRepo(repoId)!.crawlProgress);
-      return [];
+      return { functions: [], partlyMeasured: [] };
     };
 
     await crawler.crawl("token", repoId);
@@ -192,6 +214,11 @@ describe("code health route", () => {
   let store: SqliteRepoStore;
   let crawler: CrawlService;
   let checkout: FakeSourceCheckout;
+  let analyser: FakeCodeAnalyser;
+
+  beforeEach(() => {
+    analyser = new FakeCodeAnalyser();
+  });
 
   const build = async (codeAnalysis: boolean) => {
     const provider = new FakeProvider();
@@ -206,7 +233,7 @@ describe("code health route", () => {
       cli: new FakeCli(),
       exchangeCode: async () => "unused",
       checkout,
-      analyser: new FakeCodeAnalyser(),
+      analyser,
     }));
   };
 
@@ -222,6 +249,18 @@ describe("code health route", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ status: "ok", functions: 1, nloc: 12, commitSha: "abc1234" });
+  });
+
+  it("includes the partly measured files in the response", async () => {
+    analyser.partlyMeasured = ["src/Tile.tsx"];
+    await build(true);
+    const created = await app.inject({ method: "POST", url: "/api/repos", payload: { repo: "acme/widgets" } });
+    const { id } = created.json<{ id: number }>();
+    await settled(() => crawler.isCrawling(id));
+
+    const res = await app.inject(`/api/repos/${id}/code-health`);
+
+    expect(res.json()).toMatchObject({ status: "ok", partlyMeasured: ["src/Tile.tsx"] });
   });
 
   it("returns none before any analysis", async () => {
@@ -317,15 +356,89 @@ describe("parseLizardCsv", () => {
   });
 });
 
+describe("hasJsxSpread", () => {
+  it("does not flag destructuring after const, let or var", () => {
+    expect(hasJsxSpread("const { ...rest } = props;")).toBe(false);
+    expect(hasJsxSpread("let {...a} = b;")).toBe(false);
+    expect(hasJsxSpread("for (var { ...x } of list) {}")).toBe(false);
+  });
+
+  it("flags a spread in JSX inside a ternary", () => {
+    expect(hasJsxSpread("const el = cond ? <A {...p} /> : null;")).toBe(true);
+  });
+
+  it.each([
+    ["<X {...p} />"],
+    ['<X a="1" {...p}>'],
+    ["<div { ...props }>"],
+    ["<X a={1} {...p} />"],
+    ["<X\n  a={1}\n  {...p}\n/>"],
+    ["export const Tile = (p) => <div {...p}>hi</div>;"],
+  ])("flags %j", (source) => {
+    expect(hasJsxSpread(source)).toBe(true);
+  });
+
+  it.each([
+    ["const a = {...b}"],
+    ["f({...b})"],
+    ["return {...b}"],
+    ["const g = () => ({...b})"],
+    ["const g = () => {...b}"],
+    ["const a = [1, {...b}]"],
+    ["const a = { k: {...b} }"],
+    ["const a = c ? {...b} : {...d}"],
+    ["const a = { x, ...b }"],
+    ["const a = [...b]"],
+    ["const a = c && {...b}"],
+    ["export default {...b}"],
+    ["const s = '<X {...p} />'"],
+    ['const s = "<X {...p} />"'],
+    ["const s = `<X {...p} />`"],
+    ["// <X {...p} />"],
+    ["/* <X\n {...p} /> */"],
+    ["const a = 1"],
+  ])("does not flag %j", (source) => {
+    expect(hasJsxSpread(source)).toBe(false);
+  });
+
+  it("is not thrown off by an apostrophe in JSX text or an unterminated comment", () => {
+    expect(hasJsxSpread("<p>don't</p>;\nconst a = <X {...p} />;")).toBe(true);
+    expect(hasJsxSpread("/* never closed <X {...p} />")).toBe(false);
+    expect(hasJsxSpread("const s = 'a\\'b'; <X {...p} />")).toBe(true);
+  });
+});
+
+describe("LizardAnalyser partly measured files", () => {
+  it("reads only .tsx and .jsx files and lists those with a JSX spread", async () => {
+    const reader = new FakeWorkspaceReader();
+    reader.files.set("src/Tile.tsx", "const T = (p) => <div {...p} />;");
+    reader.files.set("src/Plain.tsx", "const P = () => <div />;");
+    reader.files.set("src/Old.jsx", "const O = (p) => <a {...p} />;");
+    reader.files.set("src/util.ts", "const u = <X {...p} />;");
+    const analyser = new LizardAnalyser(reader, async () => ({ stdout: "" }));
+
+    const result = await analyser.analyse("/work/clone");
+
+    expect(result.partlyMeasured).toEqual(["src/Old.jsx", "src/Tile.tsx"]);
+    expect(reader.reads.sort()).toEqual(["src/Old.jsx", "src/Plain.tsx", "src/Tile.tsx"]);
+  });
+
+  it("finds nothing in a clone with no readable files", async () => {
+    const analyser = new LizardAnalyser(new FakeWorkspaceReader(), async () => ({ stdout: "" }));
+
+    expect(await analyser.analyse("/no/such/clone")).toEqual({ functions: [], partlyMeasured: [] });
+  });
+});
+
 describe("LizardAnalyser", () => {
   it("runs lizard inside the clone with the exclusions and parses its output", async () => {
     const calls: { file: string; args: string[]; cwd?: string }[] = [];
-    const analyser = new LizardAnalyser(async (file, args, options) => {
+    const analyser = new LizardAnalyser(new FakeWorkspaceReader(), async (file, args, options) => {
       calls.push({ file, args, cwd: options.cwd });
       return { stdout: '5,2,30,1,6,"add@1-6@./a.ts","./a.ts","add","add( a )",1,6\n' };
     });
 
-    expect(await analyser.analyse("/work/clone")).toEqual([
+    expect((await analyser.analyse("/work/clone")).functions).toEqual([
       { file: "a.ts", language: "TypeScript", name: "add", startLine: 1, ccn: 2, nloc: 5, params: 1 },
     ]);
     expect(calls[0]).toEqual({
@@ -336,7 +449,7 @@ describe("LizardAnalyser", () => {
   });
 
   it("turns an output overflow into a clear error that does not quote the buffer", async () => {
-    const overflow = new LizardAnalyser(async () => {
+    const overflow = new LizardAnalyser(new FakeWorkspaceReader(), async () => {
       throw Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
     });
 
@@ -345,7 +458,7 @@ describe("LizardAnalyser", () => {
 
   it("stops after ten minutes, with SIGKILL and a 64 MiB buffer, and says so", async () => {
     let options: LizardExecOptions | undefined;
-    const hung = new LizardAnalyser(async (_f, _a, o) => {
+    const hung = new LizardAnalyser(new FakeWorkspaceReader(), async (_f, _a, o) => {
       options = o;
       throw Object.assign(new Error("timed out"), { killed: true });
     });
@@ -355,7 +468,7 @@ describe("LizardAnalyser", () => {
   });
 
   it("passes other failures through", async () => {
-    const broken = new LizardAnalyser(async () => {
+    const broken = new LizardAnalyser(new FakeWorkspaceReader(), async () => {
       throw new Error("lizard exploded");
     });
 
@@ -363,9 +476,9 @@ describe("LizardAnalyser", () => {
   });
 
   it("is available only when `lizard --version` succeeds", async () => {
-    expect(await new LizardAnalyser(async () => ({ stdout: "1.17" })).available()).toBe(true);
+    expect(await new LizardAnalyser(new FakeWorkspaceReader(), async () => ({ stdout: "1.17" })).available()).toBe(true);
     expect(
-      await new LizardAnalyser(async () => {
+      await new LizardAnalyser(new FakeWorkspaceReader(), async () => {
         throw new Error("ENOENT");
       }).available(),
     ).toBe(false);

@@ -13,6 +13,7 @@ import {
   type MaintainabilityCounts,
   type MaintainabilityFigures,
 } from "./codeGrade.js";
+import { describeHotspots, nextBand, type Hotspot, type NextBand } from "./codeAdvice.js";
 import { isBot } from "./pullRequests.js";
 import { mean, median, p75 } from "./stats.js";
 import type { PullRequest } from "./types.js";
@@ -33,9 +34,10 @@ export interface FunctionMetrics {
 /**
  * Bumped whenever a snapshot gains data, so that older snapshots are analysed again even when the branch has
  * not moved. Version 1 (no number stored) had no tooling facts; version 3 read CI and coverage configuration more
- * strictly (comments, `continue-on-error`, installs), so version 2 tooling facts may differ.
+ * strictly (comments, `continue-on-error`, installs), so version 2 tooling facts may differ. Version 4 records
+ * the files the analyser may have read only in part.
  */
-export const CODE_SNAPSHOT_VERSION = 3;
+export const CODE_SNAPSHOT_VERSION = 4;
 
 /** What one analysis of one commit found. `error` is set, with no functions, when the analysis could not run. */
 export interface CodeSnapshot {
@@ -47,6 +49,11 @@ export interface CodeSnapshot {
   tooling?: ToolingFacts | null;
   /** Absent means version 1. */
   snapshotVersion?: number;
+  /**
+   * Files the analyser may have read only in part, so some of their functions can be missing from `functions`.
+   * Absent before version 4.
+   */
+  partlyMeasured?: string[];
 }
 
 export interface CodeHealthThresholds {
@@ -102,7 +109,12 @@ export interface CodeHealthReport {
   mostComplex: FunctionMetrics | null;
   distribution: CcnBucket[];
   languages: LanguageHealth[];
-  hotspots: FunctionMetrics[];
+  /** The ten most complex source functions, each with the kind of change that would help. */
+  hotspots: Hotspot[];
+  /** The fewest functions to simplify for maintainability to reach the next band; null when elite or empty. */
+  nextBand: NextBand | null;
+  /** Source files the analyser may have read only in part, sorted. Empty when none, or before snapshot version 4. */
+  partlyMeasured: string[];
   tests: { functions: number; nloc: number };
   maintainability: MaintainabilityFigures;
   testing: { testRatio: number; prsWithTests: PrsWithTests | null; ciRunsTests: boolean | null; coverageFloor: number | null };
@@ -309,6 +321,7 @@ export function codeHealth(
   const tooling = snapshot.tooling ?? null;
   const withTests = prsWithTests(prs, range);
   const testRatio = ratio(testNloc, nloc);
+  const path = nextBand(fns, maintainability);
 
   return {
     status: "ok",
@@ -324,7 +337,9 @@ export function codeHealth(
     mostComplex: byComplexity[0] ?? null,
     distribution: distributionOf(fns),
     languages: languageBreakdown(fns),
-    hotspots: byComplexity.slice(0, HOTSPOT_COUNT),
+    hotspots: describeHotspots(byComplexity.slice(0, HOTSPOT_COUNT), nloc, path),
+    nextBand: path,
+    partlyMeasured: (snapshot.partlyMeasured ?? []).filter((f) => !isTestPath(f)).sort(),
     tests: { functions: testFns.length, nloc: testNloc },
     maintainability,
     testing: testingFigures(testRatio, withTests, tooling),
