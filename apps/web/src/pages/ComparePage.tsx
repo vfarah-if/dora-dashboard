@@ -269,7 +269,7 @@ export function ComparePage() {
 
   const header = (
     <>
-      <Link to="/" className="back-link">
+      <Link to="/repos" className="back-link">
         {copy.common.backToRepos}
       </Link>
       <header className="page-header page-header-row">
@@ -288,7 +288,7 @@ export function ComparePage() {
         {header}
         <EmptyState>
           <p>{copy.compare.needTwo}</p>
-          <Link to="/" className="button button-secondary">
+          <Link to="/repos" className="button button-secondary">
             {copy.common.backToRepos}
           </Link>
         </EmptyState>

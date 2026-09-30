@@ -178,7 +178,7 @@ export function RepoPage() {
 
   return (
     <div className="page">
-      <Link to="/" className="back-link">
+      <Link to="/repos" className="back-link">
         {copy.common.backToRepos}
       </Link>
       <RepoHeader report={report.data} leftOut={leftOut} />

@@ -48,7 +48,10 @@ describe("App sign-in gate", () => {
     });
     renderApp();
     expect(await screen.findByText("ada")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: copy.repos.title })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: copy.home.title })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: copy.nav.repositories }));
+    expect(await screen.findByRole("heading", { level: 1, name: copy.repos.title })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: copy.theme.toDark }));
     expect(document.documentElement.dataset.theme).toBe("dark");

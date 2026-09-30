@@ -46,6 +46,7 @@ export const copy = {
 
   nav: {
     label: "Main",
+    home: "Why it matters",
     repositories: "Repositories",
   },
 
@@ -597,6 +598,236 @@ export const copy = {
       partialWeek:
         "The current week is left off the weekly charts until it ends, so a week only two days old does not look like a slump.",
     },
+  },
+
+  home: {
+    eyebrow: "Why we measure",
+    title: "Deliver small changes often, and keep the code easy to change",
+    lede: "This dashboard measures how work moves from a first commit to production, and how healthy the code is that it moves through. This page explains the ideas behind those figures, why they matter to the people who write the software, and how to read them without turning them into targets.",
+    toRepos: "Go to your repositories",
+    toKeys: "Start with the four keys",
+    heroDiagram:
+      "A change moves from commit to review, merge, deploy and the people who use it, and what they learn feeds back into the next commit.",
+    pipeline: ["Commit", "Review", "Merge", "Deploy", "Users"],
+    feedback: "Feedback",
+
+    principlesTitle: "The short version",
+    principles: [
+      {
+        title: "Speed and stability move together",
+        body: "The DORA research programme has found, year after year, that teams who deploy more often also tend to fail less and recover sooner, so speed and safety are not a trade to be negotiated.",
+      },
+      {
+        title: "Batch size is the lever",
+        body: "Small pull requests are reviewed sooner, merged sooner and are easier to undo, which improves every one of the four keys at the same time.",
+      },
+      {
+        title: "Simple code keeps it that way",
+        body: "Code that is tested, clear and free of duplication stays cheap to change, and cheap change is what lets a team keep its pace as the system grows.",
+      },
+    ],
+
+    doraEyebrow: "Delivery performance",
+    doraTitle: "The four keys",
+    doraLede:
+      "The DevOps Research and Assessment programme, described in the book Accelerate and in the yearly State of DevOps reports, identified four measures that predict both software delivery performance and wider organisational outcomes. Two describe throughput and two describe stability, and they are most useful when read together.",
+    groups: {
+      throughput: {
+        title: "Throughput",
+        body: "How quickly a change can reach the people who use it.",
+      },
+      stability: {
+        title: "Stability",
+        body: "How often a change causes harm, and how quickly the team recovers.",
+      },
+    },
+    measureLabels: {
+      measures: "What we measure",
+      why: "Why it matters",
+      improve: "How to improve it",
+    },
+    measures: [
+      {
+        key: "frequency",
+        group: "throughput",
+        name: "Deployment frequency",
+        question: "How often do we ship to production?",
+        measures: "Successful runs of the deploy workflow on the deploy branch, counted per week.",
+        why: "Frequent deploys mean each one carries less, so each is less risky and far easier to understand when something does go wrong.",
+        improve:
+          "Automate the path to production, keep the main branch releasable and hide unfinished work behind flags rather than on long-lived branches.",
+      },
+      {
+        key: "lead",
+        group: "throughput",
+        name: "Lead time for changes",
+        question: "How long does a change wait before it is live?",
+        measures:
+          "The median time from the first commit of a pull request to the end of the first successful deploy after it merged.",
+        why: "Short lead time means fast feedback, because the sooner a change is in front of users the sooner the team learns whether it was the right change.",
+        improve:
+          "Open smaller pull requests, review within hours rather than days and remove manual gates that add waiting without adding safety.",
+      },
+      {
+        key: "failure",
+        group: "stability",
+        name: "Change failure rate",
+        question: "How often does a deploy go wrong?",
+        measures: "Failed deploy runs as a share of all counted deploy runs.",
+        why: "It keeps speed honest, since shipping faster only helps when the changes that are shipped still work.",
+        improve:
+          "Run meaningful tests on every change, review for behaviour rather than style and keep each deploy small enough to reason about.",
+      },
+      {
+        key: "restore",
+        group: "stability",
+        name: "Time to restore",
+        question: "When something breaks, how quickly do we recover?",
+        measures: "The median time from the first failed deploy in a streak to the next successful one.",
+        why: "Failure is unavoidable in any system that changes, so the ability to recover quickly matters more than the pretence of never failing.",
+        improve:
+          "Make rollback a single, rehearsed step, keep deploys small so the cause is obvious and fix forward only when that is genuinely quicker.",
+      },
+    ],
+
+    flowTitle: "Where the time goes",
+    flowLede:
+      "Lead time is the sum of several waits. The dashboard splits it into the stages below, because the longest stage is usually a queue rather than work, and a queue is something a team can shorten by agreement.",
+    flowDiagram:
+      "An illustrative split of lead time into coding, waiting for review, in review, to merge and to deploy, where waiting for review is the longest stage.",
+    flowIllustrative: "Illustrative proportions, not your data.",
+    cycleTime: "Cycle time",
+    leadTime: "Lead time",
+    stages: [
+      { key: "coding", name: "Coding", detail: "First commit to the pull request being opened." },
+      { key: "waiting", name: "Waiting for review", detail: "Ready for review to the first review by someone else." },
+      { key: "review", name: "In review", detail: "First review to approval." },
+      { key: "merge", name: "To merge", detail: "Approval to the merge itself." },
+      { key: "deploy", name: "To deploy", detail: "Merge to the end of the first successful deploy." },
+    ],
+    flowInsight:
+      "In most teams the waiting stages are longer than the working ones. Reviewing a colleague's pull request before starting new work is often the quickest way to improve lead time for everyone.",
+
+    bandsTitle: "Reading the bands",
+    bandsLede:
+      "Each measure is placed in one of four bands so a figure can be read at a glance. A band is always shown with its name as well as its colour, and it describes a team's system of work, never an individual.",
+    bandsCaption: "The thresholds this dashboard uses for each DORA band.",
+    bandsMeasure: "Measure",
+    bandRows: [
+      {
+        name: "Deployment frequency",
+        elite: "7 or more a week",
+        high: "1 or more a week",
+        medium: "1 or more a month",
+        low: "Less often",
+      },
+      { name: "Lead time for changes", elite: "Under a day", high: "Under a week", medium: "Under a month", low: "Longer" },
+      { name: "Change failure rate", elite: "5% or less", high: "10% or less", medium: "15% or less", low: "More" },
+      { name: "Time to restore", elite: "Under an hour", high: "Under a day", medium: "Under a week", low: "Longer" },
+    ],
+
+    beckEyebrow: "Code quality",
+    beckTitle: "Kent Beck's four rules of simple design",
+    beckLede:
+      "Delivery measures describe how fast change flows, but whether it can keep flowing depends on the code it flows through. Kent Beck's rules of simple design, summarised by Martin Fowler, give a short and practical definition of code that stays easy to change. The rules are given in priority order, so the first outweighs the others.",
+    beckSource: "Read Beck Design Rules by Martin Fowler",
+    beckMeasured: "What the dashboard measures",
+    rules: [
+      {
+        name: "Passes the tests",
+        body: "The software does what it is meant to do, and there are tests that prove it. Everything else rests on this rule, because without tests nobody can safely change the code in order to improve it.",
+        measured:
+          "Test ratio, the share of pull requests that include tests, whether CI runs the tests and whether a coverage floor is set.",
+      },
+      {
+        name: "Reveals intention",
+        body: "A reader can see what the code is for without tracing every path through it. Clear names and small, focused functions let the next person change the code with confidence.",
+        measured: "Cyclomatic complexity per function, and the share of code that sits in heavily branching functions.",
+      },
+      {
+        name: "No duplication",
+        body: "Each piece of knowledge lives in one place, so a change is made once rather than hunted down in several. Removing duplication often reveals the abstraction that the design was missing.",
+        measured:
+          "Not measured directly. Duplication tends to surface as larger pull requests and recurring hotspots, and is best caught in review.",
+      },
+      {
+        name: "Fewest elements",
+        body: "Anything that does not serve the first three rules is removed. Speculative abstractions, unused options and layers added for a future that never arrives all make the code harder to read.",
+        measured: "Long functions and functions with many parameters, which usually signal a function doing more than one job.",
+      },
+    ],
+
+    loopTitle: "Why code quality shows up in the four keys",
+    loopLede:
+      "Code health and delivery performance are two views of the same system. The same forces that make code hard to read also make changes large, reviews slow and deploys risky, and each circle below tends to reinforce itself.",
+    loops: {
+      vicious: {
+        title: "The vicious circle",
+        steps: [
+          "Complex, untested code",
+          "Larger and riskier changes",
+          "Slower reviews and more failed deploys",
+          "Pressure to cut corners",
+        ],
+      },
+      virtuous: {
+        title: "The virtuous circle",
+        steps: [
+          "Simple, tested code",
+          "Small and safe changes",
+          "Quick reviews and quiet deploys",
+          "Time to keep improving the code",
+        ],
+      },
+    },
+
+    practiceTitle: "Using these numbers well",
+    practices: [
+      {
+        title: "Measure the system, not the person",
+        body: "The figures describe how a team's way of working performs. Per-person views are off by default, because ranking people by throughput rewards work that looks small and safe and overlooks those who review, mentor and fix.",
+      },
+      {
+        title: "Follow the trend, not the target",
+        body: "When a measure becomes a target it stops being a good measure. Look for the direction of travel over several weeks, and ask what changed whenever a line moves.",
+      },
+      {
+        title: "Read the four together",
+        body: "Deploying more often while failures climb is not progress. A healthy improvement moves throughput and stability in the same direction.",
+      },
+      {
+        title: "Compare like with like",
+        body: "Teams differ in size, age and domain, so use the fairness options on the comparison view before drawing conclusions across repositories.",
+      },
+    ],
+
+    readingTitle: "Further reading",
+    reading: [
+      {
+        href: "https://martinfowler.com/bliki/BeckDesignRules.html",
+        title: "Beck Design Rules",
+        by: "Martin Fowler, on the four rules of simple design and why their order matters.",
+      },
+      {
+        href: "https://martinfowler.com/articles/is-quality-worth-cost.html",
+        title: "Is High Quality Software Worth the Cost?",
+        by: "Martin Fowler, on why internal quality makes software cheaper to build, not dearer.",
+      },
+      {
+        href: "https://dora.dev/",
+        title: "DORA",
+        by: "The research programme behind the four keys, with its reports, guides and quick check.",
+      },
+      {
+        href: "https://itrevolution.com/product/accelerate/",
+        title: "Accelerate",
+        by: "Nicole Forsgren, Jez Humble and Gene Kim, on the science behind high-performing technology organisations.",
+      },
+    ],
+
+    ctaTitle: "Put it into practice",
+    ctaBody:
+      "Add a repository to see its four keys, its flow and its code health side by side, then choose one small change to try this week.",
   },
 
   states: {

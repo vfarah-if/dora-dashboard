@@ -4,6 +4,16 @@ Point it at a repository and see how work actually flows through pull requests: 
 
 Self-hosted, and your credentials never leave the machine it runs on.
 
+## Why it measures what it measures
+
+The dashboard rests on a small number of principles, which the home page of the web app explains in full with diagrams.
+
+- **Speed and stability move together.** The DORA research programme, described in the book _Accelerate_ and the yearly State of DevOps reports, has found that teams who deploy more often also tend to fail less and recover sooner. Its four keys come in two pairs. Deployment frequency and lead time for changes describe throughput, while change failure rate and time to restore describe stability, and they are most useful read together.
+- **Batch size is the lever.** Small pull requests are reviewed sooner, merged sooner and are easier to undo, which improves all four keys at once. Lead time is mostly waiting rather than working, so the dashboard splits it into coding, waiting for review, in review, to merge and to deploy to show where the queue is.
+- **Simple code keeps it that way.** Delivery can only stay fast while the code it flows through stays easy to change. Kent Beck's [four rules of simple design](https://martinfowler.com/bliki/BeckDesignRules.html), in priority order, are that the code passes the tests, reveals intention, has no duplication and has the fewest elements. The code health grade measures what can be read from the files, namely tests and CI for the first rule, and complexity, long functions and long parameter lists for the second and fourth. Duplication is not measured and is best caught in review.
+- **Code quality shows up in the four keys.** Complex, untested code leads to larger and riskier changes, slower reviews and more failed deploys, which in turn create pressure to cut corners. Simple, tested code runs the same circle the other way.
+- **Measure the system, not the person.** Figures describe a team's way of working. Per-person views are off by default (ADR 0008), trends matter more than targets, and repositories should be compared only with the fairness options switched on.
+
 ## Quick start
 
 Requires Node 22.13 or later and, for the default sign-in, the [GitHub CLI](https://cli.github.com) signed in with `gh auth login`.

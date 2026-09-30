@@ -4,6 +4,7 @@ import { copy } from "./copy";
 import { Header } from "./components/Header";
 import { SignIn } from "./components/SignIn";
 import { ErrorState, Skeleton } from "./components/States";
+import { HomePage } from "./pages/HomePage";
 import { ReposPage } from "./pages/ReposPage";
 import { RepoPage } from "./pages/RepoPage";
 import { ComparePage } from "./pages/ComparePage";
@@ -18,7 +19,8 @@ export function App() {
   else
     content = (
       <Routes>
-        <Route path="/" element={<ReposPage />} />
+        <Route path="/" element={<HomePage />} />
+        <Route path="/repos" element={<ReposPage />} />
         <Route path="/repos/:id" element={<RepoPage />} />
         <Route path="/compare" element={<ComparePage />} />
         <Route path="*" element={<ReposPage />} />

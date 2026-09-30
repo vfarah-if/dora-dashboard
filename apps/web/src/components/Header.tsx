@@ -51,8 +51,9 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
         {user && (
           <nav aria-label={copy.nav.label} className="app-nav">
             <NavLink to="/" end>
-              {copy.nav.repositories}
+              {copy.nav.home}
             </NavLink>
+            <NavLink to="/repos">{copy.nav.repositories}</NavLink>
           </nav>
         )}
         <div className="app-header-actions">
