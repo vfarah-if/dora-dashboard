@@ -150,7 +150,12 @@ describe("CodeHealthService.report", () => {
   it("reports a stored error with its time", () => {
     store.saveCodeSnapshot(repoId, { commitSha: "", analysedAt: "2026-09-03T00:00:00Z", functions: [], error: "nope" });
 
-    expect(service.report(repoId)).toEqual({ status: "error", message: "nope", analysedAt: "2026-09-03T00:00:00Z" });
+    expect(service.report(repoId)).toEqual({
+      status: "error",
+      message: "nope",
+      analysedAt: "2026-09-03T00:00:00Z",
+      reason: "failed",
+    });
   });
 
   it("refuses an unknown repository", async () => {
@@ -557,7 +562,34 @@ describe("hardening of the code health service", () => {
     const report = service.report(repoId);
 
     expect(report).toMatchObject({ status: "ok", commitSha: "abc1234", functions: 1 });
-    expect(report).toHaveProperty("lastError", { message: "lizard crashed", analysedAt: expect.any(String) });
+    expect(report).toHaveProperty("lastError", {
+      message: "lizard crashed",
+      analysedAt: expect.any(String),
+      reason: "failed",
+    });
+  });
+
+  it("says lizard is missing as a reason, so the page can show how to install it", async () => {
+    analyser.isAvailable = false;
+    await service.analyse("t", repoId);
+
+    expect(service.report(repoId)).toMatchObject({ status: "error", message: ANALYSER_MISSING, reason: "analyser-missing" });
+  });
+
+  it("keeps the missing-lizard reason on lastError when older figures are served", async () => {
+    await service.analyse("t", repoId);
+    analyser.isAvailable = false;
+    checkout.head = "def5678";
+    await service.analyse("t", repoId);
+
+    expect(service.report(repoId)).toMatchObject({ status: "ok", lastError: { reason: "analyser-missing" } });
+  });
+
+  it("gives switching analysis off its own reason", async () => {
+    const off = new CodeHealthService(store, null, null, () => new Date("2026-09-02T00:00:00Z"));
+    await off.analyse("t", repoId);
+
+    expect(off.report(repoId)).toMatchObject({ status: "error", message: ANALYSIS_OFF, reason: "analysis-off" });
   });
 
   it("omits lastError once a later analysis succeeds", async () => {

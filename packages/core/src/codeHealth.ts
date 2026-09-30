@@ -116,11 +116,23 @@ export interface CodeHealthReport {
   /** The source function with the most lines (NLOC), or null when there is none. */
   longestFunction: FunctionMetrics | null;
   /** Present when a newer analysis failed; the figures above then come from the last successful one. */
-  lastError?: { message: string; analysedAt: string };
+  lastError?: CodeHealthFailure;
+}
+
+/**
+ * Why an analysis produced no figures, so a front end can offer the right remedy without matching message text.
+ * `analyser-missing` means lizard is not on the API's PATH, `analysis-off` means CODE_ANALYSIS=off, `failed` is anything else.
+ */
+export type CodeHealthFailureReason = "analyser-missing" | "analysis-off" | "failed";
+
+export interface CodeHealthFailure {
+  message: string;
+  analysedAt: string;
+  reason: CodeHealthFailureReason;
 }
 
 /** What the code health route returns: a report, or the reason there is not one. `error` means no analysis has ever succeeded. */
-export type CodeHealthResponse = CodeHealthReport | { status: "none" } | { status: "error"; message: string; analysedAt: string };
+export type CodeHealthResponse = CodeHealthReport | { status: "none" } | ({ status: "error" } & CodeHealthFailure);
 
 export const DEFAULT_CODE_THRESHOLDS: CodeHealthThresholds = { warn: WARN_CCN, high: HIGH_CCN };
 

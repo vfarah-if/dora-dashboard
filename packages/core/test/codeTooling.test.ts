@@ -443,6 +443,12 @@ describe("mentions that do not run a tool", () => {
     "- run: pip3 install ruff",
     "- run: cargo install cargo-clippy",
     "- run: sudo apt-get install -y golangci-lint",
+    "- run: uv tool install ruff",
+    "- run: uv pip install black flake8",
+    "- run: uv add --dev ruff",
+    "- run: winget install --id Biome.Biome",
+    "- run: choco install golangci-lint",
+    "- run: scoop install eslint",
   ])("ignores %s", (step) => {
     const facts = detectTooling([workflowOf(`steps:\n  ${step}\n`)]);
 

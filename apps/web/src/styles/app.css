@@ -1639,3 +1639,50 @@ a:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.install-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.install-help-title {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.install-help p {
+  margin: 0;
+}
+
+.install-help-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.install-help-option dt {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.install-help-option dd {
+  margin: 0;
+}
+
+.install-help-commands {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-small);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

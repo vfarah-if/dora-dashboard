@@ -98,7 +98,7 @@ export function parseLizardCsv(csv: string, rootDir: string): FunctionMetrics[] 
   return functions;
 }
 
-/** Runs the `lizard` command line tool (`pipx install lizard`), which reads more than 25 languages. */
+/** Runs the `lizard` command line tool (`uv tool install lizard` or `pipx install lizard`), which reads more than 25 languages. */
 export class LizardAnalyser implements CodeAnalyser {
   constructor(private readonly exec: Exec = defaultExec) {}
 

@@ -4,6 +4,7 @@ import {
   detectTooling,
   toolingCandidates,
   type CandidateFile,
+  type CodeHealthFailureReason,
   type CodeHealthRange,
   type CodeHealthResponse,
   type CodeSnapshot,
@@ -23,7 +24,13 @@ const MAX_CONFIG_BYTES = 256 * 1024;
 export const ANALYSIS_OFF = "Code analysis is switched off. Remove CODE_ANALYSIS=off and crawl again to enable it.";
 
 export const ANALYSER_MISSING =
-  "Code analysis needs lizard, which is not installed. Install it with `pipx install lizard` and crawl again.";
+  "Code analysis needs lizard, which the API cannot find on its PATH. Install it (see Code health in the README), restart the API if it was already running, and crawl again.";
+
+/** Snapshots store only the message, so the reason is recovered from the messages this service writes itself. */
+const reasonOf = (message: string): CodeHealthFailureReason =>
+  message === ANALYSER_MISSING ? "analyser-missing" : message === ANALYSIS_OFF ? "analysis-off" : "failed";
+
+const failure = (message: string, analysedAt: string) => ({ message, analysedAt, reason: reasonOf(message) });
 
 /** Clones a repository's deploy branch, measures its functions, keeps the result and discards the clone. */
 export class CodeHealthService {
@@ -58,9 +65,9 @@ export class CodeHealthService {
     const latest = this.store.latestCodeSnapshot(repoId);
     if (!latest) return { status: "none" };
     const good = this.store.latestSuccessfulCodeSnapshot(repoId);
-    if (!good) return { status: "error", message: latest.error ?? "Unknown error", analysedAt: latest.analysedAt };
+    if (!good) return { status: "error", ...failure(latest.error ?? "Unknown error", latest.analysedAt) };
     const report = codeHealth(good, this.store.pullRequests(repoId), range);
-    return latest.error ? { ...report, lastError: { message: latest.error, analysedAt: latest.analysedAt } } : report;
+    return latest.error ? { ...report, lastError: failure(latest.error, latest.analysedAt) } : report;
   }
 
   private async measure(

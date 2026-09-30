@@ -254,6 +254,32 @@ function HygienePanel({ report }: { report: CodeHealthReport }) {
   );
 }
 
+/** How to install lizard on each platform, shown only when the API reports that it cannot find it. */
+function InstallLizard() {
+  const c = copy.codeHealth.install;
+  return (
+    <section className="install-help card" aria-labelledby="install-lizard-title">
+      <h3 id="install-lizard-title" className="install-help-title">
+        {c.title}
+      </h3>
+      <p>{c.intro}</p>
+      <dl className="install-help-options">
+        {c.options.map((option) => (
+          <div key={option.label} className="install-help-option">
+            <dt>{option.label}</dt>
+            <dd>
+              <pre className="install-help-commands">
+                <code>{option.commands.join("\n")}</code>
+              </pre>
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p>{c.after}</p>
+    </section>
+  );
+}
+
 function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
   const rows = distributionRows(report);
   const c = copy.codeHealth;
@@ -266,6 +292,7 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
           <p>{c.stale(formatDate(report.analysedAt), formatDate(report.lastError.analysedAt), report.lastError.message)}</p>
         </aside>
       )}
+      {report.lastError?.reason === "analyser-missing" && <InstallLizard />}
 
       <Verdict report={report} />
       <Lists report={report} />
@@ -350,6 +377,7 @@ export function CodeHealthSection({ repoId, range }: { repoId: number; range?: C
           <p>{c.error.when(formatDateTime(data.analysedAt))}</p>
         </div>
       )}
+      {data?.status === "error" && data.reason === "analyser-missing" && <InstallLizard />}
       {data?.status === "ok" && <CodeHealthReportView report={data} />}
     </section>
   );

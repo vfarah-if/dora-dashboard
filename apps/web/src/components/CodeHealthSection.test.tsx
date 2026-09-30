@@ -240,7 +240,7 @@ describe("CodeHealthSection", () => {
   });
 
   it("warns quietly when a newer analysis failed and the figures are from an earlier commit", async () => {
-    show({ ...ok, lastError: { message: "clone failed", analysedAt: "2026-03-08T09:00:00Z" } });
+    show({ ...ok, lastError: { message: "clone failed", analysedAt: "2026-03-08T09:00:00Z", reason: "failed" } });
     const notice = await screen.findByText(copy.codeHealth.staleTitle);
     expect(notice.closest("aside")).toHaveTextContent(copy.codeHealth.stale("1 Mar 2026", "8 Mar 2026", "clone failed"));
   });
@@ -265,14 +265,31 @@ describe("CodeHealthSection", () => {
   });
 
   it("shows the API message once when the analysis has never succeeded", async () => {
-    show({
-      status: "error",
-      message: "lizard is not installed. Run pipx install lizard and crawl again.",
-      analysedAt: "2026-03-01T10:00:00Z",
-    });
+    show({ status: "error", message: "The clone timed out.", analysedAt: "2026-03-01T10:00:00Z", reason: "failed" });
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(copy.codeHealth.error.title);
-    expect(alert.textContent!.match(/pipx install lizard/g)).toHaveLength(1);
+    expect(alert.textContent!.match(/The clone timed out\./g)).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: copy.codeHealth.install.title })).not.toBeInTheDocument();
+  });
+
+  it("shows how to install lizard on each platform when the API cannot find it", async () => {
+    show({ status: "error", message: "lizard is missing", analysedAt: "2026-03-01T10:00:00Z", reason: "analyser-missing" });
+    const guide = (await screen.findByRole("heading", { name: copy.codeHealth.install.title })).closest("section")!;
+
+    for (const option of copy.codeHealth.install.options) {
+      expect(guide).toHaveTextContent(option.label);
+      for (const command of option.commands) expect(guide).toHaveTextContent(command);
+    }
+    expect(guide).toHaveTextContent("uv tool install lizard");
+    expect(guide).toHaveTextContent("brew install pipx");
+    expect(guide).toHaveTextContent("winget install --id astral-sh.uv -e");
+    expect(guide).toHaveTextContent(copy.codeHealth.install.after);
+  });
+
+  it("offers the install guide beside older figures when lizard has since gone missing", async () => {
+    show({ ...ok, lastError: { message: "lizard is missing", analysedAt: "2026-03-08T09:00:00Z", reason: "analyser-missing" } });
+    expect(await screen.findByRole("heading", { name: copy.codeHealth.install.title })).toBeInTheDocument();
+    expect(screen.getByText(copy.codeHealth.verdict.title)).toBeInTheDocument();
   });
 
   it("shows the request failure and offers a retry", async () => {

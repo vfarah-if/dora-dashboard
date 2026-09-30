@@ -148,7 +148,7 @@ Limits of the method, stated plainly.
 
 ### When there is no report
 
-The report also carries the commit that was analysed and when. The figures are always those of the last successful analysis. When a later attempt fails, for example because lizard is not installed, the clone failed, it timed out or the output exceeded 64 MiB, the page keeps the earlier figures and shows the reason beside them. Only a repository that has never been analysed successfully shows the reason alone. Flow and DORA figures are unaffected either way. A crawl skips the clone when the branch has not moved since the last successful analysis, unless the snapshot is from an older version (the current version is 3), and a full crawl always analyses again. `CODE_ANALYSIS=off` disables the analysis.
+The report also carries the commit that was analysed and when. The figures are always those of the last successful analysis. When a later attempt fails, for example because lizard is not installed, the clone failed, it timed out or the output exceeded 64 MiB, the page keeps the earlier figures and shows the reason beside them. Only a repository that has never been analysed successfully shows the reason alone. Each failure carries a reason code (`analyser-missing`, `analysis-off` or `failed`), and when lizard is missing the page shows how to install it on each platform. Flow and DORA figures are unaffected either way. A crawl skips the clone when the branch has not moved since the last successful analysis, unless the snapshot is from an older version (the current version is 3), and a full crawl always analyses again. `CODE_ANALYSIS=off` disables the analysis.
 
 ## Comparing repositories fairly
 

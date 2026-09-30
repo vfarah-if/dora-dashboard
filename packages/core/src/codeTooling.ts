@@ -131,7 +131,7 @@ function parseJson(content: string): Record<string, unknown> | null {
 
 /** Commands that put a tool on the machine rather than run it. */
 const INSTALL =
-  /^(?:sudo\s+)?(?:npm\s+(?:i|install|ci|add)|yarn\s+(?:add|install)|pnpm\s+(?:i|add|install)|bun\s+(?:add|install)|pip3?\s+install|pipx\s+install|python3?\s+-m\s+pip\s+install|apt(?:-get)?\s+install|brew\s+install|cargo\s+install|go\s+install|gem\s+install|dotnet\s+tool\s+install)\b/;
+  /^(?:sudo\s+)?(?:npm\s+(?:i|install|ci|add)|yarn\s+(?:add|install)|pnpm\s+(?:i|add|install)|bun\s+(?:add|install)|pip3?\s+install|pipx\s+install|uv\s+(?:tool\s+install|pip\s+install|add)|python3?\s+-m\s+pip\s+install|winget\s+install|choco\s+install|scoop\s+install|apt(?:-get)?\s+install|brew\s+install|cargo\s+install|go\s+install|gem\s+install|dotnet\s+tool\s+install)\b/;
 
 /**
  * The commands on one line of a workflow, script or recipe that could run a tool. A `name:` label, an `echo` and an

@@ -296,7 +296,7 @@ export const copy = {
       hygiene: "Hygiene",
       maintainabilityDefinition: "How much of the code sits in complex, long or wide functions.",
       testingDefinition: "How much test code there is, and whether pull requests and CI keep it up.",
-      hygieneDefinition: "Whether a linter and a formatter are set up and enforced in CI.",
+      hygieneDefinition: "Whether a linter and a formatter are set up and run in CI.",
       limitedBy: (sentence: string) => `${sentence}.`,
       nothingLimits: "All checks in this part pass.",
     },
@@ -441,6 +441,23 @@ export const copy = {
     error: {
       title: "Code health could not be measured",
       when: (when: string) => `The last attempt was on ${when}.`,
+    },
+
+    install: {
+      title: "Install lizard on the machine that runs the API",
+      intro: "Choose whichever of these suits the machine. Each installs the same tool.",
+      options: [
+        { label: "Any platform, if you already use uv", commands: ["uv tool install lizard"] },
+        { label: "Any platform, if you already use pipx", commands: ["pipx install lizard"] },
+        { label: "macOS, with Homebrew", commands: ["brew install pipx", "pipx ensurepath", "pipx install lizard"] },
+        { label: "Windows, with winget", commands: ["winget install --id astral-sh.uv -e", "uv tool install lizard"] },
+        {
+          label: "Windows, with Python already installed",
+          commands: ["py -m pip install --user pipx", "py -m pipx ensurepath", "py -m pipx install lizard"],
+        },
+      ],
+      after:
+        "Open a new terminal and run lizard --version to check it is on the PATH. If the API was already running, restart it so it can find lizard, then crawl the repository again.",
     },
   },
 

@@ -21,9 +21,29 @@ Or add repositories from the web app by pasting `owner/name` or a GitHub URL.
 
 Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). This needs `git` and [lizard](https://github.com/terryyin/lizard) on the host.
 
+Install lizard with whichever of these suits the machine that runs the API:
+
 ```bash
+# Any platform, with uv or pipx
+uv tool install lizard
 pipx install lizard
+
+# macOS, with Homebrew
+brew install pipx && pipx ensurepath && pipx install lizard
 ```
+
+```powershell
+# Windows, with winget
+winget install --id astral-sh.uv -e
+uv tool install lizard
+
+# Windows, with Python already installed
+py -m pip install --user pipx
+py -m pipx ensurepath
+py -m pipx install lizard
+```
+
+Open a new terminal and check that `lizard --version` works. If the API was already running, restart it so it can find lizard on its PATH, then crawl again. The repository page shows the same commands when the API cannot find lizard.
 
 Without lizard, or if an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
 
