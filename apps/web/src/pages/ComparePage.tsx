@@ -14,6 +14,7 @@ import { ProfileLine } from "../components/ProfileLine";
 import { SeriesLegend, type LegendItem } from "../components/SeriesLegend";
 import { EmptyState, ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { Toggle } from "../components/Toggle";
+import { StickyPanel } from "../components/StickyPanel";
 import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, type TooltipEntry } from "../components/chartParts";
 import {
   cumulative,
@@ -293,7 +294,7 @@ export function ComparePage() {
   if (ids.length < 2) {
     return (
       <div className="page">
-        {header}
+        <StickyPanel>{header}</StickyPanel>
         <EmptyState>
           <p>{copy.compare.needTwo}</p>
           <Link to="/repos" className="button button-secondary">
@@ -308,32 +309,34 @@ export function ComparePage() {
 
   return (
     <div className="page">
-      {header}
+      <StickyPanel>
+        {header}
 
-      <section className="controls-bar" aria-label={copy.compare.controls}>
-        <DateRangeControls value={range} onChange={setRange} extraPresets={extraPresets} />
-        <div className="toggle-row">
-          <Toggle label={copy.compare.align} hint={copy.compare.alignHint} checked={aligned} onChange={setAligned} />
-          <Toggle
-            label={copy.compare.perContributor}
-            hint={copy.compare.perContributorHint}
-            checked={perContributor}
-            onChange={setPerContributor}
-          />
-          <Toggle
-            label={copy.compare.showPeople}
-            hint={copy.compare.showPeopleHint}
-            checked={showPeople}
-            onChange={setShowPeople}
-          />
-        </div>
-        {requested.length > MAX_SERIES && <p className="notice notice-info">{copy.compare.tooMany}</p>}
-        {aligned && clippedTo !== null && reports.length > 0 && (
-          <p className="notice notice-info" role="status">
-            {copy.compare.clippedNote(clippedTo)}
-          </p>
-        )}
-      </section>
+        <section className="controls-bar" aria-label={copy.compare.controls}>
+          <DateRangeControls value={range} onChange={setRange} extraPresets={extraPresets} />
+          <div className="toggle-row">
+            <Toggle label={copy.compare.align} hint={copy.compare.alignHint} checked={aligned} onChange={setAligned} />
+            <Toggle
+              label={copy.compare.perContributor}
+              hint={copy.compare.perContributorHint}
+              checked={perContributor}
+              onChange={setPerContributor}
+            />
+            <Toggle
+              label={copy.compare.showPeople}
+              hint={copy.compare.showPeopleHint}
+              checked={showPeople}
+              onChange={setShowPeople}
+            />
+          </div>
+          {requested.length > MAX_SERIES && <p className="notice notice-info">{copy.compare.tooMany}</p>}
+          {aligned && clippedTo !== null && reports.length > 0 && (
+            <p className="notice notice-info" role="status">
+              {copy.compare.clippedNote(clippedTo)}
+            </p>
+          )}
+        </section>
+      </StickyPanel>
 
       {compare.isPending && (
         <>

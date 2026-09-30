@@ -15,6 +15,7 @@ import { ProfileLine } from "../components/ProfileLine";
 import { RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
+import { StickyPanel } from "../components/StickyPanel";
 import { everyoneLeftOut, excludedInRange } from "../lib/authorFilter";
 import { doraFigures, reworkFigure } from "../lib/dora";
 import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent } from "../lib/format";
@@ -184,15 +185,17 @@ export function RepoPage() {
 
   return (
     <div className="page">
-      <Link to="/repos" className="back-link">
-        {copy.common.backToRepos}
-      </Link>
-      <RepoHeader report={report.data} leftOut={leftOut} />
+      <StickyPanel>
+        <Link to="/repos" className="back-link">
+          {copy.common.backToRepos}
+        </Link>
+        <RepoHeader report={report.data} leftOut={leftOut} />
 
-      <div className="controls-bar">
-        <DateRangeControls value={range} onChange={setRange} />
-        {choices.length > 0 && <AuthorFilter choices={choices} excluded={excluded} onChange={setExcluded} />}
-      </div>
+        <div className="controls-bar">
+          <DateRangeControls value={range} onChange={setRange} />
+          {choices.length > 0 && <AuthorFilter choices={choices} excluded={excluded} onChange={setExcluded} />}
+        </div>
+      </StickyPanel>
 
       {everyoneLeftOut(choices, leftOut) && <InfoNotice text={copy.authorFilter.noneChosen} />}
       {crawling && <InfoNotice text={copy.repo.crawlInProgress} />}

@@ -9,6 +9,7 @@ import { BandLegend, RepoQueueCard } from "../components/RepoQueueCard";
 import { ReviewFlag } from "../components/ReviewFlag";
 import { StatTile } from "../components/StatTile";
 import { EmptyState, ErrorState, Skeleton, SkeletonGrid } from "../components/States";
+import { StickyPanel } from "../components/StickyPanel";
 import { Toggle } from "../components/Toggle";
 import { formatTime } from "../lib/format";
 import {
@@ -215,75 +216,77 @@ export function ReviewQueuePage() {
 
   return (
     <div className="page">
-      <header className="page-header page-header-row">
-        <div className="page-header">
-          <h1>{text.title}</h1>
-          <p className="lede">{text.lede}</p>
-          {data && <p className="chart-subtitle">{text.updated(formatTime(data.fetchedAt))}</p>}
-        </div>
-        <div className="queue-actions">
-          <button type="button" className="button button-secondary" disabled={!data} onClick={() => void copySummary()}>
-            {text.copySummary}
-          </button>
-          <button type="button" className="button button-secondary" disabled={queue.refreshing} onClick={queue.refresh}>
-            {queue.refreshing ? text.refreshing : text.refresh}
-          </button>
-          {data && <DownloadReportButton subject={text.title} label={text.pdfLabel} />}
-          <p role="status" className="queue-status">
-            {copied === "done" ? text.copied : copied === "failed" ? text.copyFailed : ""}
-          </p>
-        </div>
-      </header>
-
-      <section className="controls-bar queue-controls" aria-label={text.controls.label}>
-        {data && data.repos.length > 1 && (
-          <fieldset className="queue-repos">
-            <legend>{text.controls.repos}</legend>
-            {data.repos.map((repo) => (
-              <label key={repo.repoId} className="queue-check">
-                <input type="checkbox" checked={repoIds.includes(repo.repoId)} onChange={() => toggleRepo(repo.repoId)} />
-                {repo.repo}
-              </label>
-            ))}
-          </fieldset>
-        )}
-        <div className="queue-fields">
-          <div className="field">
-            <label htmlFor="queue-search">{text.controls.search}</label>
-            <input
-              id="queue-search"
-              className="input"
-              type="search"
-              value={search}
-              placeholder={text.controls.searchPlaceholder}
-              onChange={(event) => setSearch(event.target.value)}
-            />
+      <StickyPanel>
+        <header className="page-header page-header-row">
+          <div className="page-header">
+            <h1>{text.title}</h1>
+            <p className="lede">{text.lede}</p>
+            {data && <p className="chart-subtitle">{text.updated(formatTime(data.fetchedAt))}</p>}
           </div>
-          {showNames && (
-            <div className="field">
-              <label htmlFor="queue-waiting-on">{text.controls.waitingOn}</label>
-              <select
-                id="queue-waiting-on"
-                className="input"
-                value={waitingOn}
-                onChange={(event) => setWaitingOn(event.target.value)}
-              >
-                <option value="">{text.controls.anyone}</option>
-                {reviewers.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="queue-actions">
+            <button type="button" className="button button-secondary" disabled={!data} onClick={() => void copySummary()}>
+              {text.copySummary}
+            </button>
+            <button type="button" className="button button-secondary" disabled={queue.refreshing} onClick={queue.refresh}>
+              {queue.refreshing ? text.refreshing : text.refresh}
+            </button>
+            {data && <DownloadReportButton subject={text.title} label={text.pdfLabel} />}
+            <p role="status" className="queue-status">
+              {copied === "done" ? text.copied : copied === "failed" ? text.copyFailed : ""}
+            </p>
+          </div>
+        </header>
+
+        <section className="controls-bar queue-controls" aria-label={text.controls.label}>
+          {data && data.repos.length > 1 && (
+            <fieldset className="queue-repos">
+              <legend>{text.controls.repos}</legend>
+              {data.repos.map((repo) => (
+                <label key={repo.repoId} className="queue-check">
+                  <input type="checkbox" checked={repoIds.includes(repo.repoId)} onChange={() => toggleRepo(repo.repoId)} />
+                  {repo.repo}
+                </label>
+              ))}
+            </fieldset>
           )}
-        </div>
-        <div className="queue-toggles">
-          <Toggle label={text.controls.drafts} hint={text.controls.draftsHint} checked={showDrafts} onChange={setShowDrafts} />
-          <Toggle label={text.controls.bots} hint={text.controls.botsHint} checked={showBots} onChange={setShowBots} />
-          <Toggle label={text.controls.names} hint={text.controls.namesHint} checked={showNames} onChange={setShowNames} />
-        </div>
-      </section>
+          <div className="queue-fields">
+            <div className="field">
+              <label htmlFor="queue-search">{text.controls.search}</label>
+              <input
+                id="queue-search"
+                className="input"
+                type="search"
+                value={search}
+                placeholder={text.controls.searchPlaceholder}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            {showNames && (
+              <div className="field">
+                <label htmlFor="queue-waiting-on">{text.controls.waitingOn}</label>
+                <select
+                  id="queue-waiting-on"
+                  className="input"
+                  value={waitingOn}
+                  onChange={(event) => setWaitingOn(event.target.value)}
+                >
+                  <option value="">{text.controls.anyone}</option>
+                  {reviewers.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+          <div className="queue-toggles">
+            <Toggle label={text.controls.drafts} hint={text.controls.draftsHint} checked={showDrafts} onChange={setShowDrafts} />
+            <Toggle label={text.controls.bots} hint={text.controls.botsHint} checked={showBots} onChange={setShowBots} />
+            <Toggle label={text.controls.names} hint={text.controls.namesHint} checked={showNames} onChange={setShowNames} />
+          </div>
+        </section>
+      </StickyPanel>
 
       {body}
     </div>

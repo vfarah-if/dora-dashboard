@@ -5,6 +5,7 @@ import { copy } from "../copy";
 import { AddRepoForm } from "../components/AddRepoForm";
 import { RepoRow } from "../components/RepoRow";
 import { EmptyState, ErrorState, SkeletonGrid } from "../components/States";
+import { StickyPanel } from "../components/StickyPanel";
 import { MAX_SERIES } from "../lib/series";
 
 /** Adds or removes an id from the selection. A repository chosen again moves to the end. */
@@ -73,10 +74,12 @@ export function ReposPage() {
 
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>{copy.repos.title}</h1>
-        <p className="lede">{copy.repos.lede}</p>
-      </header>
+      <StickyPanel>
+        <header className="page-header">
+          <h1>{copy.repos.title}</h1>
+          <p className="lede">{copy.repos.lede}</p>
+        </header>
+      </StickyPanel>
 
       <AddRepoForm />
 

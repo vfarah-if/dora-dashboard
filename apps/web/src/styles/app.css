@@ -99,6 +99,7 @@ a:hover {
 
 .app-header {
   position: sticky;
+  height: var(--app-header-height);
   top: 0;
   z-index: 10;
   background: var(--surface);
@@ -112,7 +113,7 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 20px;
-  min-height: 56px;
+  height: 100%;
 }
 
 .brand {
@@ -218,6 +219,27 @@ a:hover {
 .page-header-row > .page-header {
   min-width: 0;
   flex: 1 1 320px;
+}
+
+/* The top of the page (back link, title, actions and controls) stays under the app header while the
+ * content scrolls beneath it. It bleeds into the gutter so scrolled content does not show at its edges.
+ * Left in the flow on short or narrow screens, where it would take most of the view. */
+.sticky-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@media (min-width: 720px) and (min-height: 720px) {
+  .sticky-panel {
+    position: sticky;
+    top: var(--app-header-height);
+    z-index: 5;
+    margin: -12px calc(-1 * var(--gutter)) 0;
+    padding: 12px var(--gutter) 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
 }
 
 .print-only {
@@ -1389,7 +1411,10 @@ a:hover {
 
 .fair-panel {
   position: sticky;
-  top: 72px;
+  --fair-top: calc(var(--app-header-height) + var(--sticky-panel-height, 0px) + 16px);
+  top: var(--fair-top);
+  max-height: calc(100vh - var(--fair-top) - 16px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1429,6 +1454,7 @@ a:hover {
   }
   .fair-panel {
     position: static;
+    max-height: none;
     order: -1;
   }
 }
@@ -1447,8 +1473,25 @@ a:hover {
   grid-template-columns: minmax(0, 1fr);
 }
 
+:root.is-printing .sticky-panel {
+  position: static;
+  margin: 0;
+  padding: 0;
+  border-bottom: 0;
+}
+
+@media print {
+  .sticky-panel {
+    position: static;
+    margin: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+}
+
 :root.is-printing .fair-panel {
   position: static;
+  max-height: none;
   order: -1;
 }
 
