@@ -15,7 +15,7 @@ export function PipelineDiagram() {
   return (
     <svg className="pipeline" viewBox="0 0 520 180" role="img" aria-label={home.heroDiagram}>
       <path className="pipeline-feedback" d={`M${NODE_X[4]} 96 C 400 20, 120 20, ${NODE_X[0]} 96`} />
-      <text className="pipeline-feedback-label" x="260" y="40" textAnchor="middle">
+      <text className="pipeline-feedback-label" x="260" y="30" textAnchor="middle">
         {home.feedback}
       </text>
       <path className="pipeline-track" d={PIPE} />
