@@ -199,6 +199,7 @@ export const copy = {
 
   charts: {
     weekStarting: "Week starting",
+    zoomLabel: "Weeks shown. Drag either handle to widen or narrow the range, or drag the band to move along it.",
     hours: "Hours",
     share: "Share of merged PRs",
     count: "Count",

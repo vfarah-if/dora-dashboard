@@ -2,6 +2,7 @@ import type { RepoReport } from "@dora-dashboard/core";
 import {
   Bar,
   BarChart,
+  Brush,
   CartesianGrid,
   Line,
   LineChart,
@@ -16,8 +17,9 @@ import { copy } from "../copy";
 import { STAGE_KEYS } from "../lib/compare";
 import { formatDuration, formatNumber, formatPercent, formatWeek } from "../lib/format";
 import { seriesColour } from "../lib/series";
+import { fromFirstActive } from "../lib/weekly";
 import { ChartCard } from "./ChartCard";
-import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps } from "./chartParts";
+import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, weekZoom } from "./chartParts";
 import { SeriesLegend } from "./SeriesLegend";
 
 const STAGE_LABEL = {
@@ -38,7 +40,12 @@ export function RepoCharts({ report }: { report: RepoReport }) {
   // The part-finished current week would read as a slump on every weekly chart.
   const weekly = report.weekly.filter((w) => !w.partial);
   const hasPrs = weekly.some((w) => w.opened > 0 || w.merged > 0);
-  const hasDeploys = weekly.some((w) => w.deploys > 0 || w.deployFailures > 0);
+  const hasDeploy = (w: (typeof weekly)[number]) => w.deploys > 0 || w.deployFailures > 0;
+  const hasDeploys = weekly.some(hasDeploy);
+  // Deploy history often starts long after pull request history, when the workflow was added.
+  const deployWeeks = fromFirstActive(weekly, hasDeploy);
+  const zoom = weekZoom(weekly.length);
+  const deployZoom = weekZoom(deployWeeks.length);
   const stageRows = weekly.map((w) => ({ week: w.week, ...(w.stages ?? {}) }));
   const hasStages = weekly.some((w) => w.stages !== null);
   const distribution = report.distribution.map((d) => ({ label: d.short, share: d.share * 100, count: d.count }));
@@ -73,7 +80,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
           rows: weekly.map((w) => [formatWeek(w.week), w.opened, w.merged]),
         }}
       >
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <ResponsiveContainer width="100%" height={zoom?.height ?? CHART_HEIGHT}>
           <BarChart data={weekly} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
@@ -84,6 +91,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             />
             <Bar dataKey="opened" name={copy.charts.openedVsMerged.opened} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
             <Bar dataKey="merged" name={copy.charts.openedVsMerged.merged} fill={seriesColour(1)} radius={[2, 2, 0, 0]} />
+            {zoom && <Brush {...zoom.brush} />}
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>
@@ -98,7 +106,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
           rows: weekly.map((w) => [formatWeek(w.week), formatDuration(w.medianOpenToMergeHours)]),
         }}
       >
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <ResponsiveContainer width="100%" height={zoom?.height ?? CHART_HEIGHT}>
           <LineChart data={weekly} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
@@ -123,6 +131,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
               dot={false}
               connectNulls
             />
+            {zoom && <Brush {...zoom.brush} />}
           </LineChart>
         </ResponsiveContainer>
       </ChartCard>
@@ -142,11 +151,11 @@ export function RepoCharts({ report }: { report: RepoReport }) {
         }
         table={{
           columns: [copy.charts.weekStarting, copy.charts.deploys.deploys, copy.charts.deploys.failures],
-          rows: weekly.map((w) => [formatWeek(w.week), w.deploys, w.deployFailures]),
+          rows: deployWeeks.map((w) => [formatWeek(w.week), w.deploys, w.deployFailures]),
         }}
       >
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-          <BarChart data={weekly} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
+        <ResponsiveContainer width="100%" height={deployZoom?.height ?? CHART_HEIGHT}>
+          <BarChart data={deployWeeks} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
             <YAxis {...axisProps} allowDecimals={false} />
@@ -156,6 +165,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             />
             <Bar dataKey="deploys" name={copy.charts.deploys.deploys} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
             <Bar dataKey="deployFailures" name={copy.charts.deploys.failures} fill={seriesColour(1)} radius={[2, 2, 0, 0]} />
+            {deployZoom && <Brush {...deployZoom.brush} />}
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>
@@ -174,7 +184,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
           ]),
         }}
       >
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <ResponsiveContainer width="100%" height={zoom?.height ?? CHART_HEIGHT}>
           <BarChart data={stageRows} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
@@ -196,6 +206,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             {STAGE_KEYS.map((key, i) => (
               <Bar key={key} dataKey={key} name={STAGE_LABEL[key]} stackId="stages" fill={stageColour(i)} />
             ))}
+            {zoom && <Brush {...zoom.brush} />}
           </BarChart>
         </ResponsiveContainer>
       </ChartCard>

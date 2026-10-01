@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { categoryAxisProps, ChartTooltip, endLabel } from "./chartParts";
+import { categoryAxisProps, CHART_HEIGHT, ChartTooltip, endLabel, weekZoom } from "./chartParts";
 
 describe("ChartTooltip", () => {
   it("lists each numeric value with the formatted label and hides when inactive", () => {
@@ -61,5 +61,18 @@ describe("categoryAxisProps", () => {
     expect(shown.endsWith("…")).toBe(true);
     expect(shown.length).toBe(Math.floor((200 - 12) / 7));
     expect(tickFormatter("widgets")).toBe("widgets");
+  });
+});
+
+describe("weekZoom", () => {
+  it("adds no slider when every week fits", () => {
+    expect(weekZoom(26)).toBeNull();
+  });
+
+  it("opens a long chart on the latest 26 weeks and makes room for the slider", () => {
+    const zoom = weekZoom(110)!;
+    expect(zoom.brush).toMatchObject({ dataKey: "week", startIndex: 84, endIndex: 109 });
+    expect(zoom.height).toBeGreaterThan(CHART_HEIGHT);
+    expect(zoom.brush.tickFormatter("2026-03-23")).toBe("23 Mar");
   });
 });

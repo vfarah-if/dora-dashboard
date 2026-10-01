@@ -1142,6 +1142,24 @@ a:hover {
   overflow: visible;
 }
 
+/* The zoom slider under a long weekly chart. Recharts draws its labels in black unless told. */
+.chart-brush text {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+
+.chart-brush:focus-visible,
+.chart-brush .recharts-brush-traveller:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media print {
+  .chart-brush {
+    display: none;
+  }
+}
+
 .chart-empty {
   padding: 24px 0;
   color: var(--text-muted);

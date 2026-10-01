@@ -1,5 +1,8 @@
 import type { ReactElement } from "react";
 import type { LabelProps } from "recharts";
+import { copy } from "../copy";
+import { formatWeek } from "../lib/format";
+import { initialWindow } from "../lib/weekly";
 
 /** Shared axis and grid styling. Every value is a token so charts follow the theme. */
 export const axisProps = {
@@ -11,6 +14,32 @@ export const axisProps = {
 export const gridProps = { stroke: "var(--grid)", vertical: false } as const;
 
 export const CHART_HEIGHT = 280;
+
+const BRUSH_HEIGHT = 28;
+
+/**
+ * Props for the zoom slider under a weekly chart, or null when every week fits without one.
+ * The slider opens on the latest weeks; dragging it widens the range back to the full history.
+ * Spread the result into a Recharts `Brush` and size the chart with `height`.
+ */
+export function weekZoom(length: number) {
+  const window = initialWindow(length);
+  if (!window) return null;
+  return {
+    height: CHART_HEIGHT + BRUSH_HEIGHT,
+    brush: {
+      dataKey: "week",
+      ...window,
+      height: BRUSH_HEIGHT - 8,
+      travellerWidth: 10,
+      stroke: "var(--axis)",
+      fill: "var(--surface)",
+      tickFormatter: (value: unknown) => formatWeek(String(value)),
+      ariaLabel: copy.charts.zoomLabel,
+      className: "chart-brush",
+    },
+  };
+}
 
 /** Approximate width of one 12px tick character, so the axis can be sized without measuring the DOM. */
 const TICK_CHAR_PX = 7;
