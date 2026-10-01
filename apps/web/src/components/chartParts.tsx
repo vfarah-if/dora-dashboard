@@ -12,6 +12,26 @@ export const gridProps = { stroke: "var(--grid)", vertical: false } as const;
 
 export const CHART_HEIGHT = 280;
 
+/** Approximate width of one 12px tick character, so the axis can be sized without measuring the DOM. */
+const TICK_CHAR_PX = 7;
+const CATEGORY_AXIS_MIN = 60;
+const CATEGORY_AXIS_MAX = 200;
+
+/**
+ * Props for the category axis of a horizontal bar chart. The axis is as wide as its longest name,
+ * up to a cap; longer names are cut with an ellipsis so they never spill outside the card.
+ * The tooltip still shows the full name.
+ */
+export function categoryAxisProps(names: readonly string[]) {
+  const longest = names.reduce((max, name) => Math.max(max, name.length), 0);
+  const width = Math.min(CATEGORY_AXIS_MAX, Math.max(CATEGORY_AXIS_MIN, longest * TICK_CHAR_PX + 12));
+  const maxChars = Math.floor((width - 12) / TICK_CHAR_PX);
+  return {
+    width,
+    tickFormatter: (name: string) => (name.length > maxChars ? `${name.slice(0, maxChars - 1)}\u2026` : name),
+  };
+}
+
 export interface TooltipEntry {
   name?: string | number;
   value?: unknown;

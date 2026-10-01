@@ -15,7 +15,7 @@ import { SeriesLegend, type LegendItem } from "../components/SeriesLegend";
 import { EmptyState, ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { Toggle } from "../components/Toggle";
 import { StickyPanel } from "../components/StickyPanel";
-import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, type TooltipEntry } from "../components/chartParts";
+import { axisProps, CHART_HEIGHT, categoryAxisProps, ChartTooltip, gridProps, type TooltipEntry } from "../components/chartParts";
 import {
   cumulative,
   meanStages,
@@ -204,7 +204,7 @@ function SeriesBarChart({
       <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 24, bottom: 0, left: 0 }}>
         <CartesianGrid stroke="var(--grid)" horizontal={false} />
         <XAxis type="number" {...axisProps} tickFormatter={format} />
-        <YAxis type="category" dataKey="name" {...axisProps} width={110} />
+        <YAxis type="category" dataKey="name" {...axisProps} {...categoryAxisProps(rows.map((r) => r.name))} />
         <Tooltip content={<ChartTooltip formatValue={format} />} cursor={{ fill: "var(--surface-sunken)" }} />
         <Bar dataKey="value" radius={[0, 2, 2, 0]} isAnimationActive={false} barSize={18}>
           {rows.map((row) => (
@@ -479,7 +479,12 @@ export function ComparePage() {
                   <BarChart data={compositionRows} layout="vertical" margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
                     <CartesianGrid stroke="var(--grid)" horizontal={false} />
                     <XAxis type="number" domain={[0, 1]} {...axisProps} tickFormatter={(v: number) => formatPercent(v)} />
-                    <YAxis type="category" dataKey="name" {...axisProps} width={120} />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      {...axisProps}
+                      {...categoryAxisProps(compositionRows.map((r) => String(r.name)))}
+                    />
                     <Tooltip
                       cursor={{ fill: "var(--surface-sunken)" }}
                       content={
