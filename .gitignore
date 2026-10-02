@@ -11,3 +11,5 @@ coverage/
 repos.local.json
 .private-names
 .run/
+docs/diagrams/*.svg
+docs/diagrams/*.png

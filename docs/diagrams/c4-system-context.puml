@@ -1,0 +1,33 @@
+@startuml c4-system-context
+' C4 level 1: who uses the DORA Dashboard and which systems it depends on.
+' Uses the C4-PlantUML library bundled with PlantUML, so it renders offline.
+!include <C4/C4_Context>
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title System context diagram for the DORA Dashboard
+
+Person(reader, "Team member or lead", "Reads how work flows through pull requests, the four DORA measures, code health and the review queue.")
+Person(operator, "Operator", "Runs the dashboard on their own machine, chooses the repositories and starts crawls.")
+
+System(dashboard, "DORA Dashboard", "Self-hosted. Crawls a code host, caches what it reads and charts pull request flow and DORA measures for one repository or several side by side.")
+
+System_Ext(github, "GitHub", "Pull requests, reviews and Actions workflow runs through the GraphQL and REST APIs, OAuth sign-in and git over HTTPS.")
+
+Boundary(host, "Operator's machine", "host tooling") {
+  System_Ext(ghcli, "GitHub CLI", "Holds the operator's local GitHub login and hands out its token.")
+  System_Ext(tooling, "git and lizard", "git makes a shallow clone of the deploy branch. lizard measures cyclomatic complexity per function.")
+}
+
+Rel(reader, dashboard, "Views reports, comparisons and the review queue", "web browser")
+Rel(operator, dashboard, "Configures, adds repositories and crawls", "make, web browser")
+
+Rel(dashboard, github, "Reads pull requests, workflow runs and the signed-in user", "HTTPS, GraphQL and REST")
+Rel(reader, github, "Signs in with GitHub when AUTH_MODE is oauth", "OAuth 2.0")
+Rel(dashboard, ghcli, "Reads a token when AUTH_MODE is gh-cli", "subprocess")
+Rel(dashboard, tooling, "Clones and measures complexity, never runs the repository's code", "subprocess")
+Rel(tooling, github, "Clones the deploy branch", "git over HTTPS")
+
+SHOW_LEGEND()
+@enduml

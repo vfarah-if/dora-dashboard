@@ -1,0 +1,61 @@
+@startuml c4-container
+' C4 level 2: the deployable parts of the DORA Dashboard and how they talk.
+' Uses the C4-PlantUML library bundled with PlantUML, so it renders offline.
+!include <C4/C4_Container>
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title Container diagram for the DORA Dashboard
+
+Person(reader, "Team member or lead", "Reads reports, comparisons, code health and the review queue.")
+Person(operator, "Operator", "Runs the dashboard and starts crawls.")
+
+System_Boundary(dashboard, "DORA Dashboard") {
+  Container(web, "Web app", "React 19, Vite, Recharts, TanStack Query", "Single page app on :5181. Charts flow, DORA bands, comparisons and the review queue. The Vite server proxies /api to the API.")
+  Container(api, "API", "Node 22, Fastify", "Listens on 127.0.0.1:8787. Routes call services, services call ports, adapters implement them (ADR 0003). Holds tokens and sessions in memory only (ADR 0004).")
+  Container(cli, "Crawl CLI", "Node 22, apps/api/src/cli.ts", "Runs the same crawl and code health analysis as the API from the terminal, with the local GitHub CLI login and no server. Run by make crawl and make crawl-all.")
+  Container(core, "Core", "TypeScript package", "Domain types and every metric as a pure function, with no I/O (ADR 0006). Linked into the API and CLI; the web app imports its types only.")
+  ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys and code health results (ADR 0005).")
+  ContainerDb(clone, "Shallow clone", "Temporary directory", "The deploy branch at its tip. Read for complexity and tooling files, then deleted (ADR 0011, ADR 0013).")
+}
+
+System_Ext(github, "GitHub", "GraphQL and REST APIs, OAuth and git over HTTPS.")
+
+Boundary(host, "Operator's machine", "host tooling") {
+  System_Ext(ghcli, "GitHub CLI", "The operator's local GitHub login.")
+  System_Ext(git, "git", "Makes the shallow clone.")
+  System_Ext(lizard, "lizard", "Measures complexity per function. Optional; code health is skipped without it.")
+}
+
+Lay_R(reader, operator)
+Lay_R(web, cli)
+Lay_R(db, clone)
+Lay_R(ghcli, git)
+Lay_R(git, lizard)
+
+Rel(reader, web, "Reads reports, comparisons and the review queue", "HTTP, browser")
+Rel(operator, web, "Adds repositories and starts crawls", "HTTP, browser")
+Rel(operator, cli, "Runs", "make crawl")
+
+Rel(web, api, "Requests reports and starts crawls", "JSON over HTTP, /api")
+Rel(web, core, "Imports types from", "build time")
+
+Rel(api, core, "Computes metrics with", "in process")
+Rel(cli, core, "Computes metrics with", "in process")
+Rel(api, db, "Reads and writes", "SQL")
+Rel(cli, db, "Writes", "SQL")
+Rel(api, clone, "Reads tooling files, never runs them", "file system")
+
+Rel(api, github, "Reads pull requests, workflow runs and the user, and exchanges OAuth codes", "HTTPS, GraphQL and REST")
+Rel(cli, github, "Reads pull requests and workflow runs", "HTTPS, GraphQL and REST")
+Rel(api, ghcli, "Reads a token when AUTH_MODE is gh-cli", "subprocess")
+Rel(cli, ghcli, "Reads a token", "subprocess")
+Rel(api, git, "Clones the deploy branch into the shallow clone", "subprocess")
+Rel(cli, git, "Clones the deploy branch", "subprocess")
+Rel(api, lizard, "Measures the shallow clone", "subprocess")
+Rel(cli, lizard, "Measures the shallow clone", "subprocess")
+Rel(git, github, "Fetches the deploy branch", "git over HTTPS")
+
+SHOW_LEGEND()
+@enduml
