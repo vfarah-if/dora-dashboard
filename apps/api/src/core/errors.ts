@@ -29,3 +29,13 @@ export class UpstreamError extends AppError {
     super(message);
   }
 }
+
+/** The caller is asking too often; routes answer 429. */
+export class RateLimitedError extends AppError {
+  override readonly name = "RateLimitedError";
+}
+
+/** The request came from somewhere we do not serve; routes answer 403. */
+export class ForbiddenError extends AppError {
+  override readonly name = "ForbiddenError";
+}

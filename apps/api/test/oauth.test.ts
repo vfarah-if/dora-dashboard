@@ -60,7 +60,7 @@ describe("OAuth sign-in", () => {
     expect(JSON.stringify(callback.headers)).not.toContain("token-for-abc");
 
     const me = await app.inject({ url: "/api/auth/me", cookies: { dora_sid: sid } });
-    expect(me.json()).toMatchObject({ user: { login: "user-of-token-for-abc" } });
+    expect(me.json()).toMatchObject({ user: { login: "user-of-token-for-abc" }, source: "oauth" });
     expect((await app.inject({ url: "/api/repos", cookies: { dora_sid: sid } })).statusCode).toBe(200);
   });
 

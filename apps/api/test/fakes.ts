@@ -5,6 +5,7 @@ import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import type { CodeAnalyser, CodeAnalysis } from "../src/interfaces/code-analyser.js";
 import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
+import type { DeviceAuthorisation, DeviceCode, DevicePoll } from "../src/interfaces/device-authorisation.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
 
 export function pr(overrides: Partial<PullRequest> & { number: number }): PullRequest {
@@ -143,6 +144,33 @@ export class FakeCli implements CliTokenSource {
   }
 }
 
+/** Scripted device flow: `polls` are served in order, and the last one repeats. */
+export class FakeDeviceAuthorisation implements DeviceAuthorisation {
+  startFailWith: Error | null = null;
+  code: DeviceCode = {
+    deviceCode: "secret-device-code",
+    userCode: "ABCD-1234",
+    verificationUri: "https://example.test/device",
+    expiresIn: 900,
+    interval: 5,
+  };
+  polls: DevicePoll[] = [{ status: "pending" }];
+  starts = 0;
+  readonly polled: string[] = [];
+
+  async start(): Promise<DeviceCode> {
+    this.starts++;
+    if (this.startFailWith) throw this.startFailWith;
+    return this.code;
+  }
+
+  async poll(deviceCode: string): Promise<DevicePoll> {
+    this.polled.push(deviceCode);
+    const next = this.polls.length > 1 ? this.polls.shift()! : this.polls[0]!;
+    return next;
+  }
+}
+
 export function fn(overrides: Partial<FunctionMetrics> = {}): FunctionMetrics {
   return { file: "src/index.ts", language: "TypeScript", name: "main", startLine: 1, ccn: 3, nloc: 12, params: 1, ...overrides };
 }
@@ -219,6 +247,7 @@ export function config(overrides: Partial<Config> = {}): Config {
     authMode: "gh-cli",
     githubClientId: "client-id",
     githubClientSecret: "client-secret",
+    deviceClientId: "",
     sessionSecret: "a-test-secret-that-is-long-enough",
     port: 0,
     databasePath: ":memory:",
