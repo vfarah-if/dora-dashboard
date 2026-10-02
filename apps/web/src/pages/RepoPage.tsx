@@ -122,7 +122,7 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
         <AuthorsTable authors={report.authors} caption={copy.authors.title} />
       </section>
 
-      <section aria-labelledby="prs-title" className="section card">
+      <section aria-labelledby="prs-title" className="section card screen-only">
         <h2 id="prs-title" className="section-title">
           {copy.prTable.title}
         </h2>

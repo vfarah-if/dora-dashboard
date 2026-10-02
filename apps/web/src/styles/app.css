@@ -246,6 +246,13 @@ a:hover {
   display: none;
 }
 
+/* Shown on screen but left out of the PDF report, such as the pull request table, which runs to many pages. */
+@media print {
+  .screen-only {
+    display: none !important;
+  }
+}
+
 .lede,
 .section-lede {
   color: var(--text-muted);

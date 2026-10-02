@@ -33,6 +33,19 @@ describe("RepoPage", () => {
     expect(printedAs).toMatch(/^acme-widgets-delivery-report-\d{4}-\d{2}-\d{2}$/);
   });
 
+  it("leaves the pull request table out of the PDF report but keeps the authors table", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const prs = await screen.findByRole("heading", { level: 2, name: copy.prTable.title });
+    expect(prs.closest("section")).toHaveClass("screen-only");
+    const authors = screen.getByRole("heading", { level: 2, name: copy.authors.title });
+    expect(authors.closest("section")).not.toHaveClass("screen-only");
+  });
+
   it("shows the DORA tiles, flow tiles and charts for a repository", async () => {
     const fetchMock = mockFetch({
       "GET /api/repos/1/report": { body: report() },
