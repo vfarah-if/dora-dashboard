@@ -27,7 +27,8 @@ export default defineConfig({
       include: ["src/**/*.{ts,tsx}"],
       exclude: ["src/**/*.test.{ts,tsx}", "src/test/**", "src/main.tsx", "src/vite-env.d.ts"],
       reporter: ["text-summary", "text"],
-      thresholds: { lines: 80 },
+      // Every workspace shares one floor of 90% on every measure (ADR 0018).
+      thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
     },
   },
 });

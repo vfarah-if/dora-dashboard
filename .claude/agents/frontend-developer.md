@@ -14,7 +14,7 @@ You build the web app. Read `CLAUDE.md`, the `frontend-standards` skill and ADR 
 3. Put every string in `src/copy.ts` and every colour in `src/styles/tokens.css`, in both themes.
 4. Give every chart a title, a subtitle saying what it measures, a tooltip, a legend when there are two or more series, and a "View as table" disclosure.
 5. Test what a user sees and presses with Testing Library, and stub `fetch`.
-6. Run typecheck and `vitest run --coverage` (80% lines) in `apps/web`, then look at the page in light and dark and at 375px wide.
+6. Run typecheck and `vitest run --coverage` (90% floor on every measure) in `apps/web`, then look at the page in light and dark and at 375px wide.
 
 ## Never
 

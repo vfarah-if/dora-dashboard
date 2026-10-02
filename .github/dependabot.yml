@@ -1,0 +1,43 @@
+# Weekly dependency updates, grouped so a quiet week is one pull request rather than many (ADR 0018).
+version: 2
+updates:
+  # One root lockfile covers every workspace, so one entry is enough.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/London
+    # Let a new release age before proposing it, so a compromised publish is usually caught first.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: [dependencies]
+    groups:
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/London
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    labels: [dependencies]
+    groups:
+      actions:
+        patterns: ["*"]

@@ -40,4 +40,4 @@ description: >
 
 ## Checks
 
-`npm run typecheck -w @dora-dashboard/web`, `npm run test:coverage -w @dora-dashboard/web` (80% lines), then look at it in both themes.
+`npm run typecheck -w @dora-dashboard/web`, `npm run test:coverage -w @dora-dashboard/web` (90% floor on every measure), then look at it in both themes.

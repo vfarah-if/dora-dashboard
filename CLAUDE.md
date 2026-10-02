@@ -36,7 +36,7 @@ One test: `cd apps/api && npx vitest run test/routes.test.ts -t "compares"`.
 2. **Git is the human's.** Do not stage, commit or push unless asked in so many words. Conventional commits, lower-case subject.
 3. **Layers only point down.** Routes call services, services call interfaces, infrastructure implements interfaces. Only `main.ts` names a concrete adapter. A new code host or tracker is a new adapter behind a port, not an `if` in a service.
 4. **Metrics live in core and are pure.** No `Date.now()` inside a metric; pass the range in. Every new metric gets a test with hand-computed expectations and a line in `docs/metrics.md`.
-5. **Tests prove behaviour.** Use the fakes in `apps/api/test/fakes.ts`; no network in any test. Coverage floors: core 90%, API 85%, web 80%.
+5. **Tests prove behaviour.** Use the fakes in `apps/api/test/fakes.ts`; no network in any test. Coverage floor: 90% lines, branches, functions and statements in every workspace (ADR 0018).
 6. **UK English, no em or en dashes**, no consultancy speak. User-facing copy lives in `apps/web/src/copy.ts`.
 7. **Record decisions.** A new dependency, a changed metric definition or a new external system means an ADR.
 

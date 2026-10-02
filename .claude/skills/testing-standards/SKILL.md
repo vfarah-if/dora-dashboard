@@ -17,11 +17,13 @@ description: >
 
 ## Where tests live
 
-| Workspace       | Folder                          | Floor                   |
-| --------------- | ------------------------------- | ----------------------- |
-| `packages/core` | `test/`                         | 90% lines, 85% branches |
-| `apps/api`      | `test/`                         | 85% lines, 80% branches |
-| `apps/web`      | beside the code, `*.test.ts(x)` | 80% lines               |
+| Workspace       | Folder                          |
+| --------------- | ------------------------------- |
+| `packages/core` | `test/`                         |
+| `apps/api`      | `test/`                         |
+| `apps/web`      | beside the code, `*.test.ts(x)` |
+
+Every workspace has the same floor: 90% lines, branches, functions and statements (ADR 0018).
 
 ## Traps
 

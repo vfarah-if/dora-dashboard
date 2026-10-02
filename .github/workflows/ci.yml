@@ -1,22 +1,57 @@
+# Runs the same gates as `make quality`, plus a production build, on every pull request and on main.
+# Coverage floors live in each workspace's vitest config and fail the run below 90% (ADR 0018).
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   quality:
+    name: Quality (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The lowest version package.json allows, and the current LTS.
+        node: ["22.13", "24"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
         with:
-          node-version: 24
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci --no-audit --no-fund
-      - run: node scripts/check-private-names.mjs --self-test
-      - run: make fmt-check lint typecheck test-coverage
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Private-name guard still bites
+        run: node scripts/check-private-names.mjs --self-test
+
+      - name: Format
+        run: make fmt-check
+
+      - name: Lint
+        run: make lint
+
+      - name: Typecheck
+        run: make typecheck
+
+      - name: Tests with coverage floors
+        run: make test-coverage
+
+      - name: Build
+        run: make build

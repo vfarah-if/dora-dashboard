@@ -6,7 +6,8 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: ["src/index.ts", "src/types.ts"],
-      thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 },
+      // Every workspace shares one floor of 90% on every measure (ADR 0018).
+      thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
     },
   },
 });

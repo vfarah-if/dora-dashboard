@@ -41,5 +41,5 @@ ADR 0010 sets the order and names two further ports: `DeploymentSignalProvider` 
 
 ## Checks
 
-- `make test` green, API coverage at or above 85%.
+- `make test` green, API coverage at or above 90% on every measure.
 - No real hostnames, project keys or organisation names in fixtures (ADR 0009).
