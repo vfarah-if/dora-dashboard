@@ -31,3 +31,7 @@ In both modes the token never reaches the browser and is never written to disk. 
 - An API restart signs every OAuth user out, because sessions live in memory. Acceptable for a self-hosted tool; a shared deployment would need a persistent `SessionStore`.
 - An OAuth App registered in an organisation needs an owner's approval before members can grant it access to that organisation's private repositories.
 - Crawled data is shared by everyone who can reach the server, whichever account crawled it. Access control on reports is out of scope.
+
+## Revision History
+
+- 2026-10-02. In `gh-cli` mode a missing CLI login now falls back to the GitHub device flow, using a published client ID and no secret. See ADR 0019.

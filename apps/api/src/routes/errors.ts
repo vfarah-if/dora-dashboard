@@ -1,12 +1,23 @@
 import type { FastifyError, FastifyInstance } from "fastify";
-import { AppError, ConflictError, NotFoundError, UnauthorisedError, UpstreamError, ValidationError } from "../core/errors.js";
+import {
+  AppError,
+  ConflictError,
+  ForbiddenError,
+  RateLimitedError,
+  NotFoundError,
+  UnauthorisedError,
+  UpstreamError,
+  ValidationError,
+} from "../core/errors.js";
 
 /** The one place a service error becomes an HTTP status. Every error body is `{ error: string }`. */
 export function statusFor(error: unknown): number {
   if (error instanceof ValidationError) return 400;
   if (error instanceof UnauthorisedError) return 401;
+  if (error instanceof ForbiddenError) return 403;
   if (error instanceof NotFoundError) return 404;
   if (error instanceof ConflictError) return 409;
+  if (error instanceof RateLimitedError) return 429;
   if (error instanceof UpstreamError) return 502;
   return 500;
 }

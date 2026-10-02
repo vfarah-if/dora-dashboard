@@ -1,5 +1,6 @@
 import type { AuthState } from "../api/hooks";
 import { copy } from "../copy";
+import { DeviceSignIn } from "./DeviceSignIn";
 
 export function SignIn({ auth }: { auth: AuthState }) {
   if (auth.mode === "oauth") {
@@ -34,6 +35,7 @@ export function SignIn({ auth }: { auth: AuthState }) {
       <button type="button" className="button button-secondary" onClick={() => window.location.reload()}>
         {copy.auth.reload}
       </button>
+      {auth.deviceFlow && <DeviceSignIn />}
     </section>
   );
 }

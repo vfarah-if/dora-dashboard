@@ -1,6 +1,7 @@
 import cookie from "@fastify/cookie";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Config } from "./core/config.js";
+import type { DeviceAuthorisation } from "./interfaces/device-authorisation.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
 import type { WorkspaceReader } from "./interfaces/workspace-reader.js";
@@ -11,6 +12,7 @@ import { registerAuthRoutes, requireSession } from "./routes/auth.js";
 import { registerErrorHandler } from "./routes/errors.js";
 import { registerRepoRoutes } from "./routes/repos.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
+import { DeviceSignInService } from "./services/device-sign-in-service.js";
 import { CodeHealthService } from "./services/code-health-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { RepoService } from "./services/repo-service.js";
@@ -24,6 +26,10 @@ export interface AppDeps {
   sessions: SessionStore;
   cli: CliTokenSource;
   exchangeCode: (code: string) => Promise<string>;
+  /** Browser sign-in for gh-cli mode when the CLI is not logged in; used only if `config.deviceClientId` is set. */
+  deviceAuth?: DeviceAuthorisation;
+  /** Milliseconds since the epoch for device sign-in intervals; tests pass a controllable one. */
+  now?: () => number;
   /** Both are needed for code analysis; leave either out, or set `config.codeAnalysis` false, to skip it. */
   checkout?: SourceCheckout;
   analyser?: CodeAnalyser;
@@ -56,6 +62,7 @@ function registerRoutes(app: FastifyInstance, deps: AppDeps, crawler: CrawlServi
     sessions: deps.sessions,
     cli: deps.cli,
     exchangeCode: deps.exchangeCode,
+    deviceSignIn: deps.deviceAuth && new DeviceSignInService(deps.deviceAuth, deps.sessions, deps.provider, deps.now),
   };
   registerAuthRoutes(app, auth);
   registerRepoRoutes(app, {

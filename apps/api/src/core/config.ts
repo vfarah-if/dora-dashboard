@@ -3,12 +3,17 @@ import { fileURLToPath } from "node:url";
 /** `<repo root>/data/dora.sqlite`, the same whether run from `src/` through tsx or from `dist/`. */
 const DEFAULT_DATABASE = fileURLToPath(new URL("../../../../data/dora.sqlite", import.meta.url));
 
+/** The public client ID of the project's OAuth App (device flow enabled); safe to publish because device flow uses no secret. */
+export const PUBLISHED_DEVICE_CLIENT_ID = "";
+
 export type AuthMode = "gh-cli" | "oauth";
 
 export interface Config {
   authMode: AuthMode;
   githubClientId: string;
   githubClientSecret: string;
+  /** Client ID for the GitHub device flow fallback in gh-cli mode. Empty turns the fallback off. */
+  deviceClientId: string;
   sessionSecret: string;
   port: number;
   databasePath: string;
@@ -60,6 +65,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authMode,
     githubClientId,
     githubClientSecret,
+    deviceClientId: env.GITHUB_DEVICE_CLIENT_ID || PUBLISHED_DEVICE_CLIENT_ID,
     sessionSecret: sessionSecretFor(authMode, env.SESSION_SECRET ?? ""),
     ...readServerSettings(env),
   };

@@ -12,6 +12,25 @@ export interface AuthState {
   mode: "gh-cli" | "oauth";
   user: AuthUser | null;
   error: string | null;
+  /** True when the API can start a GitHub device code sign-in. Treat as false when absent. */
+  deviceFlow?: boolean;
+  /** How the current user signed in. Absent on older servers. */
+  source?: "cli" | "device" | "oauth" | null;
+}
+
+export interface DeviceStart {
+  userCode: string;
+  verificationUri: string;
+  /** Seconds between polls. */
+  interval: number;
+  /** Seconds until the code lapses. */
+  expiresIn: number;
+}
+
+export interface DevicePoll {
+  status: "pending" | "granted" | "expired" | "denied";
+  interval: number;
+  user?: AuthUser;
 }
 
 export type RepoWithCounts = Repo & { pullRequests: number; deployRuns: number };

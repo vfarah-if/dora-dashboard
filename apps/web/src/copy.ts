@@ -42,6 +42,25 @@ export const copy = {
     signOut: "Sign out",
     signedInAs: (login: string) => `Signed in as ${login}`,
     avatarAlt: (login: string) => `${login} avatar`,
+    device: {
+      or: "Or sign in with your GitHub account from this page.",
+      starting: "Contacting GitHub",
+      codeLabel: "Your one-time code",
+      copy: "Copy code",
+      copied: "Copied",
+      stepsTitle: "To finish signing in",
+      stepOpen: "Open the GitHub page using the link below.",
+      stepEnter: "Enter the code shown above.",
+      stepApprove: "Approve the request, then return to this page.",
+      openLink: "Open GitHub to enter the code",
+      newTab: "(opens in a new tab)",
+      waiting: "Waiting for GitHub",
+      expired: "The code has expired. Start again to get a new one.",
+      denied: "The request was declined on GitHub. Start again if you would like to try once more.",
+      incomplete:
+        "GitHub approved the request, but the sign-in could not be completed here. Your browser may not be keeping the session cookie. Start again, and if it repeats, check that you are using a secure address.",
+      tryAgain: "Try again",
+    },
   },
 
   nav: {

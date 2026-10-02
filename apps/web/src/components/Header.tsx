@@ -34,6 +34,10 @@ function ThemeToggle() {
   );
 }
 
+/** Sign out applies to browser sign-ins only. A CLI session belongs to the machine, not the page. */
+const canSignOut = (auth: AuthState | undefined) =>
+  auth?.source ? auth.source === "device" || auth.source === "oauth" : auth?.mode === "oauth";
+
 export function Header({ auth }: { auth: AuthState | undefined }) {
   const logout = useLogout();
   const user = auth?.user ?? null;
@@ -65,7 +69,7 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
             </span>
           )}
           <ThemeToggle />
-          {user && auth?.mode === "oauth" && (
+          {user && canSignOut(auth) && (
             <button type="button" className="button button-ghost" onClick={() => logout.mutate()} disabled={logout.isPending}>
               {copy.auth.signOut}
             </button>

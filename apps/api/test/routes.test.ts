@@ -39,7 +39,13 @@ describe("repository and report routes (gh-cli mode)", () => {
 
   it("reports the local CLI user", async () => {
     const res = await app.inject("/api/auth/me");
-    expect(res.json()).toEqual({ mode: "gh-cli", user: { login: "local-dev", avatarUrl: "" }, error: null });
+    expect(res.json()).toEqual({
+      mode: "gh-cli",
+      user: { login: "local-dev", avatarUrl: "" },
+      error: null,
+      source: "cli",
+      deviceFlow: false,
+    });
   });
 
   it("explains a missing CLI login rather than failing", async () => {
