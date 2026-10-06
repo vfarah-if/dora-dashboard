@@ -25,6 +25,7 @@ make dev                  # API :8787 and web :5181
 make test                 # all suites (turbo cached)
 make test-coverage-force  # uncached; use before quoting a figure
 make quality              # what CI runs: format, lint, private names, typecheck, coverage floors
+make upgrade              # choose dependency updates under Dependabot's rules, then every gate (ADR 0024)
 make crawl repo=owner/name workflow=deploy.yml branch=main
 ```
 
