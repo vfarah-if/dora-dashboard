@@ -17,6 +17,7 @@ export default {
     name !== "typescript" || !(Number(upgradedVersionSemver?.major) > Number(currentVersionSemver[0]?.major)),
 
   // Vitest and its plugins require each other at the exact same version, majors included (ADR 0018). A custom
-  // group keeps them together on screen and unticked, so they are taken as a set or left as a set.
+  // group keeps them together on screen and unticked, so they are taken as a set or left as a set. Dependabot
+  // ignores them, because its lockfile cannot keep Vitest hoisted, so this is the only route for a Vitest update.
   groupFunction: (name, defaultGroup) => (name === "vitest" || name.startsWith("@vitest/") ? VITEST_GROUP : defaultGroup),
 };

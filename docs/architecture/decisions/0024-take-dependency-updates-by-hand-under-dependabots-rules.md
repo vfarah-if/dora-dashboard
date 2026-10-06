@@ -34,3 +34,7 @@ Dependabot proposes updates once a week under three rules (ADR 0018). A release 
 - The Vitest group only places the pair together and leaves it unticked; it does not stop someone ticking one of them. The `npm ls` check after the install is what enforces the pairing.
 - The targets are interactive and need a terminal, so they cannot run in CI.
 - Every upgrade that changes a manifest ends with the full quality gate and a production build, even for a single patch.
+
+## Revision History
+
+- 2026-10-06: Dependabot no longer proposes `vitest` or `@vitest/*` (ADR 0018), so `make upgrade` is now the only route for a Vitest update rather than a way to take one between Dependabot runs. The Vitest group in `.ncurc.mjs`, the cooldown passed to `npm install` and the `npm ls` peer check are unchanged.
