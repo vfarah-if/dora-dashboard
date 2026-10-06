@@ -19,17 +19,17 @@ updates:
       prefix: chore
       include: scope
     labels: [dependencies]
-    # The root pins TypeScript 5.9 for typescript-eslint, which does not support 7 yet; the workspaces build with 7.
-    # Remove this once typescript-eslint supports TypeScript 7 and the root pin is dropped.
     ignore:
+      # The root pins TypeScript 5.9 for typescript-eslint, which does not support 7 yet; the workspaces build with 7.
+      # Remove this once typescript-eslint supports TypeScript 7 and the root pin is dropped.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
-    # Dependabot puts an update in the first group that matches, so the Vitest group must stay first.
+      # Dependabot's lockfile leaves a separate Vitest in each workspace instead of one at the root, even when the
+      # whole set moves together, and the jest-dom matchers at the root then cannot reach apps/web. Take Vitest by
+      # hand with `make upgrade`, which installs it from the root and keeps it hoisted (ADR 0018).
+      - dependency-name: vitest
+      - dependency-name: "@vitest/*"
     groups:
-      # Vitest and its plugins require each other at the exact same version, majors included. Bumped apart,
-      # npm cannot hoist Vitest, and the jest-dom matcher types in apps/web stop resolving (ADR 0018).
-      vitest:
-        patterns: ["vitest", "@vitest/*"]
       development:
         dependency-type: development
         update-types: [minor, patch]
