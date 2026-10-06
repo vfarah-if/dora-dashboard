@@ -23,7 +23,12 @@ updates:
     ignore:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
+    # Dependabot puts an update in the first group that matches, so the Vitest group must stay first.
     groups:
+      # Vitest and its plugins require each other at the exact same version, majors included. Bumped apart,
+      # npm cannot hoist Vitest, and the jest-dom matcher types in apps/web stop resolving (ADR 0018).
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
       development:
         dependency-type: development
         update-types: [minor, patch]
