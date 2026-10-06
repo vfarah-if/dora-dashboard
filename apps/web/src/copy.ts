@@ -16,6 +16,7 @@ export const copy = {
     close: "Close",
     viewAsTable: "View as table",
     backToRepos: "Back to repositories",
+    backToSpaces: "Back to Jira spaces",
     requestFailed: (status: number) => `The request failed with status ${status}.`,
     networkFailed: "The dashboard could not reach its API. Check that the API is running and try again.",
     errorTitle: "Something went wrong",
@@ -68,6 +69,7 @@ export const copy = {
     home: "Why it matters",
     repositories: "Repositories",
     reviewQueue: "Review queue",
+    jira: "Jira",
   },
 
   repos: {
@@ -610,6 +612,154 @@ export const copy = {
     notFound: "This repository could not be found.",
   },
 
+  spaces: {
+    title: "Jira spaces",
+    lede: "The spaces the dashboard has crawled from Jira. Open one to see how its work flows from idea to production.",
+    loading: "Loading Jira spaces",
+    emptyTitle: "No Jira spaces are tracked yet",
+    emptyBody:
+      "Open Configure deploy on a repository and link a space under Jira spaces. The space is crawled once it is linked, and it then appears here.",
+    toRepos: "Go to repositories",
+    offTitle: "Jira is not switched on",
+    offBody: "Add the Atlassian settings to the API's .env file and restart it, then connect Jira from a repository.",
+    site: "Site",
+    issues: "Issues",
+    lastCrawled: "Last crawled",
+    neverCrawled: "Not crawled yet",
+    linkedRepos: "Linked repositories",
+    noLinkedRepos: "None linked",
+  },
+
+  space: {
+    loadingTitle: "Loading space",
+    notFoundTitle: "This space could not be found",
+    notFoundBody: "It may have been unlinked, or Jira may not be switched on for this dashboard.",
+    toSpaces: "Go to Jira spaces",
+    rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
+    lastCrawled: (when: string) => `Last crawled ${when}`,
+    showPeople: "Show people",
+    showPeopleHint: "Group the hygiene lists by assignee name. Names never appear in charts or tiles.",
+    showAll: (count: number) => `Show all ${count}`,
+    showFewer: "Show fewer",
+    openInJira: "(opens in Jira)",
+
+    headline: {
+      title: "Delivery from Jira",
+      lede: "Stories, bugs, tasks and features are counted. Sub-tasks roll up into their parent, and epics are shown apart rather than counted.",
+      done: "Done",
+      doneHint: (created: number) => `Items finished in this range, with ${created} created`,
+      inProgress: "In progress",
+      inProgressHint: (epics: number) =>
+        `At the end of the range, with ${epics} ${epics === 1 ? "epic" : "epics"} open and not counted`,
+      cycle: "Issue cycle time",
+      cycleHint: (p75: string) => `Median started to done, 75th percentile ${p75}`,
+      lead: "Issue lead time",
+      leadHint: (p75: string) => `Median created to done, 75th percentile ${p75}`,
+      flowEfficiency: "Flow efficiency",
+      flowEfficiencyHint: "Time spent actively worked as a share of started to done",
+      linked: "Linked to a pull request",
+      linkedHint: (linked: number, of: number) => `${linked} of ${of} done items have at least one pull request`,
+    },
+
+    flow: {
+      title: "Flow",
+      lede: "How much work finishes each week, how much is under way at once, and what has been waiting longest.",
+      throughput: {
+        title: "Items done each week",
+        subtitle: "Delivery items finished each week, stacked by issue type. Weeks still running are left out.",
+        total: "Total",
+        /** The one series every issue type beyond story, bug, task and feature is folded into. */
+        otherType: "Other",
+      },
+      wip: {
+        title: "Work in progress",
+        subtitle: "Delivery items in an in-progress status at the end of each week. Weeks still running are left out.",
+        series: "In progress",
+      },
+      ageing: {
+        title: "Ageing work",
+        subtitle: "Items in progress now, oldest first, with the time since they started.",
+        key: "Issue",
+        summary: "Summary",
+        type: "Type",
+        status: "Status",
+        age: "Age",
+        empty: "Nothing is in progress at the end of this range.",
+      },
+    },
+
+    columns: {
+      title: "Time per column",
+      lede: "Where finished work spent its time on the board.",
+      chartTitle: "Mean time in each board column",
+      subtitle:
+        "Mean hours per done item in each column, from started to done, so the columns add up to the mean issue cycle time.",
+      column: "Column",
+      mean: "Mean",
+      median: "Median",
+      items: "Items",
+      barLabel: "Mean time",
+      /** Time in statuses that no board column holds. */
+      notOnBoard: "Not on the board",
+    },
+
+    idea: {
+      title: "Idea to production",
+      lede: (linked: number, of: number, share: string) =>
+        `Only done items with a linked pull request can be measured, so these figures cover ${linked} of ${of} done items (${share}). Work with no linked pull request is left out, which makes the times look better than the whole picture.`,
+      toFirstPr: "Issue to first pull request",
+      toFirstPrHint: (p75: string, count: number) =>
+        `Median created to first pull request opened, 75th percentile ${p75}, across ${count} items`,
+      toProduction: "Issue to production",
+      toProductionHint: (p75: string, count: number) =>
+        `Median created to the deploy that shipped the last pull request, 75th percentile ${p75}, across ${count} items`,
+    },
+
+    hygiene: {
+      title: "Jira hygiene",
+      lede: "Prompts to tidy the board so the figures above can be trusted. They are not a score, and some work genuinely needs no code.",
+      checkThese: "Check these",
+      none: "Nothing to check here.",
+      found: (count: number) => `${count} to check`,
+      foundOf: (count: number, of: number, share: string) => `${count} of ${of} to check (${share})`,
+      unassigned: "Unassigned",
+      movedTogether: (count: number, at: string) => `${count} moved to done at ${at}`,
+      checks: {
+        pr_without_key: {
+          title: "Pull requests with no issue key",
+          explanation:
+            "Merged pull requests whose title or branch names no Jira issue, so their work cannot be traced back to the board.",
+        },
+        done_without_pr: {
+          title: "Done items with no pull request",
+          explanation:
+            "Items marked done that no pull request mentions. Some work needs no code, so check whether a key is missing.",
+        },
+        skipped_in_progress: {
+          title: "Done items that skipped in progress",
+          explanation: "Items that went straight to done without being started, which hides how long the work really took.",
+        },
+        bulk_move: {
+          title: "Items closed together",
+          explanation:
+            "Five or more items moved to done within ten minutes, which usually means the board was tidied rather than updated as work finished.",
+        },
+        reopened: {
+          title: "Reopened items",
+          explanation: "Items moved from done back into work, which is worth a look at what was missed the first time.",
+        },
+        stale_in_progress: {
+          title: "Stale work in progress",
+          explanation: "Items in progress with no update in the seven days before the end of the range.",
+        },
+        in_progress_unassigned: {
+          title: "In progress with no assignee",
+          explanation: "Items being worked on that nobody is shown as owning.",
+        },
+      },
+    },
+  },
+
   compare: {
     title: "Compare repositories",
     lede: "The same measures for each repository on shared axes. Each repository keeps one colour throughout.",
@@ -939,6 +1089,56 @@ export const copy = {
         by: "Nicole Forsgren, Jez Humble and Gene Kim, on the science behind high-performing technology organisations.",
       },
     ],
+
+    jira: {
+      eyebrow: "Delivery from Jira",
+      title: "Seeing the whole journey, from idea to production",
+      lede: "Pull requests show how code moves, but they do not show how work moves. Measuring delivery from the tracker as well shows how work flows from idea to production, where it waits on the way, and whether the board tells the truth about what is happening. Each figure describes the team's system of work, and the dashboard hides people by default.",
+      measures: [
+        {
+          name: "Issue cycle time",
+          reveals:
+            "How long finished work took from the day it was started to the day it was done, which shows how quickly a team can complete what it begins.",
+        },
+        {
+          name: "Issue lead time",
+          reveals:
+            "How long a request waited from the day it was raised to the day it was done, which includes the time it sat before anyone began.",
+        },
+        {
+          name: "Throughput",
+          reveals:
+            "How many items finish each week and of which type, which shows the steady rhythm of the team and any shift towards bugs or tasks.",
+        },
+        {
+          name: "Work in progress and ageing work",
+          reveals:
+            "How much is under way at once and which items have been open longest, because work that is started but not finished is the usual place for delay to build up.",
+        },
+        {
+          name: "Time per column",
+          reveals:
+            "Where finished items spent their time on the board, so a queue such as waiting for review can be seen and shortened by agreement.",
+        },
+        {
+          name: "Flow efficiency",
+          reveals:
+            "How much of the time between started and done was spent actively worked rather than waiting, which is often lower than a team expects.",
+        },
+        {
+          name: "Issue to first pull request and to production",
+          reveals:
+            "How long it takes for an idea to become code and then to reach users, measured only for items linked to a pull request.",
+        },
+        {
+          name: "Hygiene checks",
+          reveals:
+            "Whether the board matches reality, for example whether pull requests name their issue and whether cards move when work starts. They make the other figures trustworthy, and they are prompts to tidy rather than a score.",
+        },
+      ],
+      people:
+        "People are hidden by default. A Show people switch on the page groups the hygiene lists by assignee name, and names never appear in charts or tiles.",
+    },
 
     ctaTitle: "Put it into practice",
     ctaBody:

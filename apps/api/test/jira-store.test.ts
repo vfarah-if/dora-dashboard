@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -202,6 +203,135 @@ describe("a store reopened after an interrupted crawl", () => {
 
     expect(second.getSpace(space!.id)).toMatchObject({ crawlStatus: "idle", crawlProgress: null });
     expect(second.workItemCount(space!.id)).toBe(1);
+  });
+});
+
+describe("space people, listing and linked repositories", () => {
+  let store: SqliteRepoStore;
+  let repoId: number;
+
+  beforeEach(() => {
+    store = new SqliteRepoStore(":memory:");
+    repoId = store.addRepo("acme", "widgets", [], "main").id;
+  });
+
+  it("reads a space without people until names are saved, then returns them", () => {
+    const [space] = store.linkSpaces(repoId, "cloud-1", [wid]);
+    expect("people" in store.getSpace(space!.id)!).toBe(false);
+
+    store.setSpacePeople(space!.id, { "acct-1": "Someone" });
+    expect(store.getSpace(space!.id)!.people).toEqual({ "acct-1": "Someone" });
+    expect(store.spacesFor(repoId)[0]!.people).toEqual({ "acct-1": "Someone" });
+
+    // Saving replaces the map, and an empty map reads back as empty rather than absent.
+    store.setSpacePeople(space!.id, {});
+    expect(store.getSpace(space!.id)!.people).toEqual({});
+  });
+
+  it("lists every space across repositories, ordered by site then key", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    const ops = { siteId: "cloud-0", siteUrl: "https://other.example.test", key: "OPS", name: "Operations" };
+    store.linkSpaces(repoId, "cloud-1", [wid]);
+    store.linkSpaces(other, "cloud-1", [gad]);
+    store.linkSpaces(other, "cloud-0", [ops]);
+
+    expect(store.listSpaces().map((s) => [s.siteId, s.key])).toEqual([
+      ["cloud-0", "OPS"],
+      ["cloud-1", "GAD"],
+      ["cloud-1", "WID"],
+    ]);
+  });
+
+  it("lists no spaces when none are tracked", () => {
+    expect(store.listSpaces()).toEqual([]);
+  });
+
+  it("returns the repositories a space is linked to, ordered by owner then name", () => {
+    const gadgets = store.addRepo("acme", "gadgets", [], "main").id;
+    const [space] = store.linkSpaces(repoId, "cloud-1", [wid]);
+    store.linkSpaces(gadgets, "cloud-1", [wid]);
+    store.addRepo("acme", "unlinked", [], "main");
+
+    expect(store.reposForSpace(space!.id).map((r) => `${r.owner}/${r.name}`)).toEqual(["acme/gadgets", "acme/widgets"]);
+    expect(store.reposForSpace(9999)).toEqual([]);
+  });
+});
+
+describe("migrating a database made before spaces held people", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "dora-migrate-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** The tracker_spaces table as the first Jira release created it, with no people column. */
+  function oldDatabase(path: string): void {
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE tracker_spaces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      site_id TEXT NOT NULL,
+      site_url TEXT NOT NULL,
+      space_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      statuses TEXT NOT NULL DEFAULT '[]',
+      columns TEXT NOT NULL DEFAULT '[]',
+      last_crawled_at TEXT,
+      crawl_status TEXT NOT NULL DEFAULT 'idle',
+      crawl_error TEXT,
+      crawl_progress TEXT,
+      crawl_cursor TEXT,
+      UNIQUE (site_id, space_key)
+    )`);
+    db.prepare("INSERT INTO tracker_spaces (site_id, site_url, space_key, name) VALUES (?, ?, ?, ?)").run(
+      "cloud-1",
+      "https://acme.example.test",
+      "WID",
+      "Widgets",
+    );
+    db.close();
+  }
+
+  it("adds the column, keeps the existing space and lets names be saved", () => {
+    const path = join(dir, "old.db");
+    oldDatabase(path);
+
+    const store = new SqliteRepoStore(path);
+    const [space] = store.listSpaces();
+    expect(space).toMatchObject({ key: "WID", name: "Widgets" });
+    expect("people" in space!).toBe(false);
+
+    store.setSpacePeople(space!.id, { "acct-1": "Someone" });
+    expect(store.getSpace(space!.id)!.people).toEqual({ "acct-1": "Someone" });
+  });
+
+  it.each([
+    ["text that is not JSON", "{not json"],
+    ["JSON that is not a map of names", "[1, 2]"],
+    ["a JSON null", "null"],
+  ])("reads a space whose saved names are %s as having no names, rather than failing", (_, saved) => {
+    const path = join(dir, "corrupt.db");
+    const first = new SqliteRepoStore(path);
+    const id = first.linkSpaces(first.addRepo("acme", "widgets", [], "main").id, "cloud-1", [wid])[0]!.id;
+    const db = new DatabaseSync(path);
+    db.prepare("UPDATE tracker_spaces SET people = ? WHERE id = ?").run(saved, id);
+    db.close();
+
+    const store = new SqliteRepoStore(path);
+
+    expect(store.getSpace(id)).toMatchObject({ key: "WID", name: "Widgets" });
+    expect("people" in store.getSpace(id)!).toBe(false);
+    expect("people" in store.listSpaces()[0]!).toBe(false);
+  });
+
+  it("opens the same database again without trying to add the column twice", () => {
+    const path = join(dir, "old.db");
+    oldDatabase(path);
+    const first = new SqliteRepoStore(path);
+    first.setSpacePeople(first.listSpaces()[0]!.id, { "acct-1": "Someone" });
+
+    const second = new SqliteRepoStore(path);
+
+    expect(second.listSpaces()[0]!.people).toEqual({ "acct-1": "Someone" });
   });
 });
 

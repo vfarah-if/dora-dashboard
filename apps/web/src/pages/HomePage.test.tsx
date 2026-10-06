@@ -62,4 +62,24 @@ describe("HomePage", () => {
     expect(links).toHaveLength(2);
     for (const link of links) expect(link).toHaveAttribute("href", "/repos");
   });
+
+  it("explains delivery from Jira with a line for each measure and says people are hidden", () => {
+    renderRoute(<HomePage />);
+    const section = screen.getByRole("region", { name: copy.home.jira.title });
+    const names = within(section)
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(names).toEqual([
+      "Issue cycle time",
+      "Issue lead time",
+      "Throughput",
+      "Work in progress and ageing work",
+      "Time per column",
+      "Flow efficiency",
+      "Issue to first pull request and to production",
+      "Hygiene checks",
+    ]);
+    expect(within(section).getByText(/prompts to tidy rather than a score/)).toBeInTheDocument();
+    expect(within(section).getByText(copy.home.jira.people)).toBeInTheDocument();
+  });
 });

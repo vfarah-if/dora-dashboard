@@ -6,6 +6,7 @@ import type {
   Repo,
   RepoReport,
   ReviewQueue,
+  SpaceReport,
   TrackerSite,
   TrackerSpace,
   TrackerSpaceSummary,
@@ -84,7 +85,15 @@ export const queryKeys = {
   jiraSpaces: (siteId: string) => ["jira", "sites", siteId, "spaces"] as const,
   jiraSpace: (siteId: string, key: string) => ["jira", "sites", siteId, "spaces", key] as const,
   linkedSpaces: (repoId: number) => ["repos", repoId, "spaces"] as const,
+  spaces: ["spaces"] as const,
+  spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
 };
+
+/** The part of the page range a space report reads. Bots do not apply to issues. */
+export interface SpaceRange {
+  from: string | null;
+  to: string | null;
+}
 
 export function rangeQuery(range: ReportRange): string {
   const params = new URLSearchParams();
@@ -360,5 +369,49 @@ export function useCrawlSpace(repoId: number) {
       apiRequest<unknown>(withQuery(`/api/spaces/${id}/crawl`, full ? "full=1" : ""), { method: "POST" }),
     // A refused crawl (already running) still means the list is out of date, so refresh on either outcome.
     onSettled: () => client.invalidateQueries({ queryKey: queryKeys.linkedSpaces(repoId) }),
+  });
+}
+
+/** A tracked space with the repositories linked to it, as listed on the Jira page. */
+export interface SpaceListItem {
+  id: number;
+  key: string;
+  name: string;
+  siteUrl: string;
+  lastCrawledAt: string | null;
+  crawlStatus: "idle" | "crawling" | "failed";
+  workItemCount: number;
+  repos: { id: number; name: string }[];
+}
+
+/** Every tracked space. Only asked for when Jira is switched on, since the route is absent otherwise. */
+export function useSpaces(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.spaces,
+    queryFn: ({ signal }) => apiRequest<SpaceListItem[]>("/api/spaces", { signal }),
+    enabled,
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
+  });
+}
+
+/** One space's delivery report. Names are asked for only when `people` is true (ADR 0008). */
+export function useSpaceReport(id: number, range: SpaceRange, people: boolean) {
+  return useQuery({
+    queryKey: queryKeys.spaceReport(id, range, people),
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams();
+      if (range.from) params.set("from", range.from);
+      if (range.to) params.set("to", range.to);
+      if (people) params.set("people", "1");
+      return apiRequest<SpaceReport>(withQuery(`/api/spaces/${id}/report`, params.toString()), { signal });
+    },
+    enabled: Number.isFinite(id),
+    retry: false,
+    // A range change keeps the old figures on screen. Moving to another space never does, so one space's report is
+    // not shown under the next one's address; nor does turning names on or off, so a report fetched without names
+    // is not shown as "unassigned" while the one with names loads.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === id && previousQuery.queryKey[4] === people ? previous : undefined,
   });
 }

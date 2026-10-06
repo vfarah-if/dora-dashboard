@@ -250,7 +250,15 @@ export interface TrackerSpace {
   crawlStatus: "idle" | "crawling" | "failed";
   crawlError: string | null;
   crawlProgress: string | null;
+  /**
+   * Assignee display names by account id, read on the last crawl. Shown only behind "Show people" (ADR 0008,
+   * ADR 0021). Absent on spaces crawled before names were recorded.
+   */
+  people?: Record<string, string>;
 }
+
+/** Where an issue sits in Jira's hierarchy: a sub-task, a standard issue (story, bug, task) or an epic and above. */
+export type WorkItemLevel = "subtask" | "standard" | "epic";
 
 /** One status change in an issue's history. */
 export interface WorkItemTransition {
@@ -281,4 +289,6 @@ export interface WorkItem {
   parentKey: string | null;
   labels: string[];
   transitions: WorkItemTransition[];
+  /** From the issue type's hierarchy level. Absent on items crawled before it was recorded; the type name is used then. */
+  level?: WorkItemLevel;
 }

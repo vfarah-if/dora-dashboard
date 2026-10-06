@@ -58,7 +58,13 @@ export interface RepoStore {
   linkSpaces(repoId: number, siteId: string, spaces: SpaceLink[]): TrackerSpace[];
   /** The spaces linked to a repository, ordered by site then key. */
   spacesFor(repoId: number): TrackerSpace[];
+  /** Every tracked space, ordered by site then key. */
+  listSpaces(): TrackerSpace[];
+  /** The repositories a space is linked to, ordered by owner then name. */
+  reposForSpace(spaceId: number): Repo[];
   getSpace(id: number): TrackerSpace | null;
+  /** Replaces the space's assignee display names (account id to name). A space never given any reads back without `people`. */
+  setSpacePeople(id: number, people: Record<string, string>): void;
   setSpaceDetails(id: number, statuses: TrackerStatus[], columns: BoardColumn[]): void;
   setSpaceCrawlState(id: number, status: TrackerSpace["crawlStatus"], progress: string | null, error?: string | null): void;
   finishSpaceCrawl(id: number, cursor: string | null): void;

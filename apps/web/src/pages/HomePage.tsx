@@ -168,6 +168,28 @@ function Bands() {
   );
 }
 
+function JiraDelivery() {
+  const jira = copy.home.jira;
+  return (
+    <section id="jira-delivery" className="home-section" aria-labelledby="jira-delivery-title">
+      <p className="home-eyebrow">{jira.eyebrow}</p>
+      <h2 id="jira-delivery-title" className="home-h2">
+        {jira.title}
+      </h2>
+      <p className="home-section-lede">{jira.lede}</p>
+      <ul className="practice-grid">
+        {jira.measures.map((m) => (
+          <li key={m.name} className="practice">
+            <h3>{m.name}</h3>
+            <p>{m.reveals}</p>
+          </li>
+        ))}
+      </ul>
+      <p className="home-callout">{jira.people}</p>
+    </section>
+  );
+}
+
 function BeckRules() {
   const home = copy.home;
   return (
@@ -280,6 +302,7 @@ export function HomePage() {
       <FourKeys />
       <Flow />
       <Bands />
+      <JiraDelivery />
       <BeckRules />
       <Loops />
       <Practices />

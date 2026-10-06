@@ -1,4 +1,13 @@
-import type { QueueEntry, RepoReport, ReviewQueue, WeekRow } from "@dora-dashboard/core";
+import type {
+  ItemRef,
+  JiraHygieneCheck,
+  JiraHygieneFinding,
+  QueueEntry,
+  RepoReport,
+  ReviewQueue,
+  SpaceReport,
+  WeekRow,
+} from "@dora-dashboard/core";
 import type { RepoWithCounts } from "../api/hooks";
 
 export function week(overrides: Partial<WeekRow> & Pick<WeekRow, "week" | "weekIndex">): WeekRow {
@@ -295,5 +304,90 @@ export function reviewQueue(overrides: Partial<ReviewQueue> = {}): ReviewQueue {
     errors: [],
     warnings: [],
     ...overrides,
+  };
+}
+
+const hygiene = (check: JiraHygieneCheck, overrides: Partial<JiraHygieneFinding> = {}): JiraHygieneFinding => ({
+  check,
+  count: 0,
+  of: null,
+  items: [],
+  pullRequests: [],
+  ...overrides,
+});
+
+const issue = (key: string, assignee?: string | null): ItemRef => ({
+  key,
+  type: "Story",
+  summary: `Summary of ${key}`,
+  ...(assignee === undefined ? {} : { assignee }),
+});
+
+/** A space report for the space WID on https://acme.example.test (ADR 0009). Names appear only when asked for. */
+export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
+  const named = (key: string, name: string | null) => issue(key, options.people ? name : undefined);
+  return {
+    space: { id: 7, key: "WID", name: "Widgets", siteUrl: "https://acme.example.test", lastCrawledAt: "2026-03-01T10:00:00Z" },
+    range: { from: "2026-01-05", to: "2026-01-25" },
+    repos: [{ id: 1, name: "acme/widgets" }],
+    totals: { done: 12, inProgress: 3, created: 15, epicsOpen: 2 },
+    issueCycleTime: { count: 10, median: 30, p75: 60, mean: 40 },
+    issueLeadTime: { count: 12, median: 72, p75: 120, mean: 90 },
+    weekly: [
+      { week: "2026-01-05", doneByType: { Story: 3, Bug: 1 }, done: 4, inProgress: 2, partial: false },
+      { week: "2026-01-12", doneByType: { Story: 2, Task: 1 }, done: 3, inProgress: 3, partial: false },
+      { week: "2026-01-19", doneByType: { Story: 5 }, done: 5, inProgress: 3, partial: true },
+    ],
+    ageing: [
+      { key: "WID-9", type: "Bug", summary: "Oldest bug", status: "In review", startedAt: "2026-01-01T09:00:00Z", ageHours: 240 },
+      {
+        key: "WID-10",
+        type: "Story",
+        summary: "Newer story",
+        status: "In progress",
+        startedAt: "2026-01-10T09:00:00Z",
+        ageHours: 24,
+      },
+    ],
+    columns: [
+      { column: "In progress", meanHours: 20, medianHours: 18, items: 10 },
+      { column: "In review", meanHours: 10, medianHours: 6, items: 9 },
+      { column: "Not on the board", meanHours: 2, medianHours: 1, items: 2 },
+    ],
+    flowEfficiency: 0.4,
+    ideaToProduction: {
+      toFirstPr: { count: 8, median: 50, p75: 90, mean: 60 },
+      toProduction: { count: 7, median: 100, p75: 200, mean: 120 },
+      linked: 8,
+      of: 12,
+    },
+    hygiene: [
+      hygiene("in_progress_unassigned", { count: 1, items: [named("WID-20", null)] }),
+      hygiene("pr_without_key", {
+        count: 2,
+        of: 8,
+        pullRequests: [
+          { repo: "acme/widgets", number: 5, title: "Tidy the readme", url: "https://github.com/acme/widgets/pull/5" },
+          { repo: "acme/widgets", number: 6, title: "Bump deps", url: "https://github.com/acme/widgets/pull/6" },
+        ],
+      }),
+      hygiene("done_without_pr", {
+        count: 3,
+        of: 12,
+        items: [named("WID-1", "Zoe Example"), named("WID-2", "Ann Example"), named("WID-3", "Ann Example")],
+      }),
+      hygiene("skipped_in_progress"),
+      hygiene("bulk_move", {
+        count: 5,
+        of: 12,
+        items: [],
+        batches: [{ at: "2026-01-16T15:00:00Z", keys: ["WID-1", "WID-2", "WID-3", "WID-4", "WID-5"] }],
+      }),
+      hygiene("reopened", { count: 1, items: [named("WID-30", "Ann Example")] }),
+      hygiene("stale_in_progress", {
+        count: 12,
+        items: Array.from({ length: 12 }, (_, i) => named(`WID-${100 + i}`, "Ann Example")),
+      }),
+    ],
   };
 }

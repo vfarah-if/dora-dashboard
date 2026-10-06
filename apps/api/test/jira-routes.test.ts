@@ -1,3 +1,4 @@
+import type { StatusCategory } from "@dora-dashboard/core";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -13,6 +14,8 @@ import {
   FakeTrackerAuthorisation,
   FakeWorkItemProvider,
   grant,
+  pr,
+  run,
   settled,
   SITE,
   workItem,
@@ -57,6 +60,7 @@ describe("Jira routes", () => {
       provider,
       sessions: new MemorySessionStore(),
       cli,
+      clock: () => new Date("2026-09-10T12:00:00Z"),
       exchangeCode: async () => "unused",
       jira: { provider: tracker, auth: authorisation, grants },
     })) as { app: FastifyInstance; workItemCrawler: WorkItemCrawlService });
@@ -88,6 +92,8 @@ describe("Jira routes", () => {
       ["GET", "/api/auth/jira/callback"],
       ["GET", "/api/jira/sites/cloud-1/spaces"],
       ["GET", "/api/jira/sites/cloud-1/spaces/WID"],
+      ["GET", "/api/spaces"],
+      ["GET", "/api/spaces/1/report"],
       ["GET", "/api/repos/1/spaces"],
       ["PUT", "/api/repos/1/spaces"],
       ["POST", "/api/spaces/1/crawl"],
@@ -112,6 +118,8 @@ describe("Jira routes", () => {
       ["GET", "/api/auth/jira/start"],
       ["GET", "/api/auth/jira/callback?code=c&state=s"],
       ["GET", "/api/jira/sites/cloud-1/spaces"],
+      ["GET", "/api/spaces"],
+      ["GET", "/api/spaces/1/report"],
       ["GET", `/api/repos/${repoId}/spaces`],
       ["PUT", `/api/repos/${repoId}/spaces`],
       ["POST", "/api/spaces/1/crawl"],
@@ -443,6 +451,152 @@ describe("Jira routes", () => {
       });
       expect(res.statusCode).toBe(403);
       expect(store.spacesFor(repoId)).toEqual([]);
+    });
+  });
+
+  describe("listing tracked spaces", () => {
+    it("answers an empty list before any space is linked", async () => {
+      const res = await app.inject("/api/spaces");
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+    });
+
+    it("lists each tracked space with its state, item count and repositories, and no names of people", async () => {
+      connect();
+      tracker.seedSpace(SITE.id, "WID", {
+        name: "Widgets",
+        people: { "account-1": "Alex" },
+        items: [workItem({ key: "WID-1" }), workItem({ key: "WID-2", updatedAt: "2026-09-02T12:00:00Z" })],
+      });
+      await app.inject({ method: "PUT", url: `/api/repos/${repoId}/spaces`, payload: { siteId: SITE.id, keys: ["WID", "GAD"] } });
+      await settled(() => workItemCrawler.isCrawling());
+
+      const res = await app.inject("/api/spaces");
+
+      expect(res.statusCode).toBe(200);
+      const listed = res.json<{ key: string; lastCrawledAt: string | null }[]>();
+      expect(listed).toEqual([
+        {
+          id: expect.any(Number),
+          key: "GAD",
+          name: "Gadgets",
+          siteUrl: "https://acme.example.test",
+          lastCrawledAt: expect.any(String),
+          crawlStatus: "idle",
+          workItemCount: 0,
+          repos: [{ id: repoId, name: "acme/widgets" }],
+        },
+        {
+          id: expect.any(Number),
+          key: "WID",
+          name: "Widgets",
+          siteUrl: "https://acme.example.test",
+          lastCrawledAt: expect.any(String),
+          crawlStatus: "idle",
+          workItemCount: 2,
+          repos: [{ id: repoId, name: "acme/widgets" }],
+        },
+      ]);
+      expect(res.body).not.toContain("Alex");
+    });
+  });
+
+  describe("the space report", () => {
+    const move = (
+      at: string,
+      from: string | null,
+      to: string,
+      fromCategory: StatusCategory | null,
+      toCategory: StatusCategory,
+    ) => ({
+      at,
+      from,
+      to,
+      fromCategory,
+      toCategory,
+    });
+    const delivered = (key: string, assigneeId: string, doneAt: string) =>
+      workItem({
+        key,
+        level: "standard",
+        assigneeId,
+        createdAt: "2026-09-01T09:00:00Z",
+        updatedAt: doneAt,
+        resolvedAt: doneAt,
+        transitions: [
+          move("2026-09-01T09:00:00Z", null, "To Do", null, "todo"),
+          move("2026-09-02T09:00:00Z", "To Do", "In Progress", "todo", "in_progress"),
+          move(doneAt, "In Progress", "Done", "in_progress", "done"),
+        ],
+      });
+    let spaceId: number;
+
+    beforeEach(() => {
+      const [space] = store.linkSpaces(repoId, SITE.id, [{ siteId: SITE.id, siteUrl: SITE.url, key: "WID", name: "Widgets" }]);
+      spaceId = space!.id;
+      store.setSpacePeople(spaceId, { "acct-alex": "Alexandra Example" });
+      // WID-1 has a pull request that shipped; WID-2 has none, so it is a done item with no pull request.
+      store.upsertWorkItems(spaceId, [
+        delivered("WID-1", "acct-alex", "2026-09-04T09:00:00Z"),
+        delivered("WID-2", "acct-alex", "2026-09-05T09:00:00Z"),
+      ]);
+      store.updateRepoConfig(repoId, ["deploy.yml"], "main");
+      store.upsertPullRequests(repoId, [
+        pr({ number: 1, title: "WID-1 add widget", mergedAt: "2026-09-03T10:00:00Z", createdAt: "2026-09-03T08:00:00Z" }),
+      ]);
+      store.replaceDeployRuns(repoId, [
+        run({ runId: 1, createdAt: "2026-09-03T11:00:00Z", completedAt: "2026-09-03T11:30:00Z" }),
+      ]);
+    });
+
+    const get = (query = "") => app.inject(`/api/spaces/${spaceId}/report?from=2026-09-01&to=2026-09-10${query}`);
+    const finding = (body: { hygiene: { check: string; count: number }[] }, check: string) =>
+      body.hygiene.find((h) => h.check === check);
+
+    it("reports the delivery measures for the space and its linked repository", async () => {
+      const res = await get();
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{
+        space: { key: string };
+        repos: { name: string }[];
+        totals: { done: number };
+        ideaToProduction: { linked: number; of: number };
+        hygiene: { check: string; count: number }[];
+      }>();
+      expect(body.space.key).toBe("WID");
+      expect(body.repos.map((r) => r.name)).toEqual(["acme/widgets"]);
+      expect(body.totals.done).toBe(2);
+      // One of the two done items carries a pull request.
+      expect(body.ideaToProduction).toMatchObject({ linked: 1, of: 2 });
+      expect(finding(body, "done_without_pr")!.count).toBe(1);
+    });
+
+    it("leaves display names out unless people=1 is asked for", async () => {
+      expect((await get()).body).not.toContain("Alexandra Example");
+      expect((await get("&people=0")).body).not.toContain("Alexandra Example");
+    });
+
+    it("includes display names in the findings with people=1", async () => {
+      const res = await get("&people=1");
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain("Alexandra Example");
+    });
+
+    it("answers 404 for an unknown space", async () => {
+      expect((await app.inject("/api/spaces/9999/report")).statusCode).toBe(404);
+    });
+
+    it.each(["from=2026-9-1", "from=2026-09-10&to=2026-09-01", "people=2", "to=yesterday"])(
+      "answers 400 to %s",
+      async (query) => {
+        expect((await app.inject(`/api/spaces/${spaceId}/report?${query}`)).statusCode).toBe(400);
+      },
+    );
+
+    it("builds the report at the injected clock when no end is given", async () => {
+      const body = (await app.inject(`/api/spaces/${spaceId}/report?from=2026-09-01`)).json<{ range: { to: string } }>();
+      expect(body.range.to).toBe("2026-09-10");
     });
   });
 

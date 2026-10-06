@@ -26,9 +26,9 @@ ADR 0010 proposed a `WorkItemProvider` port for Jira as its second step. To see 
 
 **Joining to code.** Spaces are linked to repositories, many to many. Issues join to pull requests by issue key in the pull request title or head branch. The crawl now records `headRef` on pull requests, which needs one full re-crawl to back-fill.
 
-**What is stored.** Site URLs, space keys and issue summaries live only in SQLite under the gitignored `data/` directory (ADR 0009). Only the opaque assignee account id is stored, never a name or email address (ADR 0008).
+**What is stored.** Site URLs, space keys and issue summaries live only in SQLite under the gitignored `data/` directory (ADR 0009). The assignee account id is stored on each issue and, from ADR 0021, display names are stored per space. Email addresses are never read (ADR 0008).
 
-**Metrics.** Metrics are deliberately out of scope until real data has been spot-checked. When they arrive, issue-level timings will carry names that cannot be confused with DORA lead time.
+**Metrics.** Metrics are deliberately out of scope until real data has been spot-checked. When they arrive, issue-level timings will carry names that cannot be confused with DORA lead time. They arrived in ADR 0021.
 
 ### Alternatives considered
 
@@ -56,3 +56,7 @@ ADR 0010 proposed a `WorkItemProvider` port for Jira as its second step. To see 
 - A full crawl removes stored issues that the space no longer holds, so deleted or moved issues disappear once it completes. A failed full crawl removes nothing.
 - The incremental cursor is the newest update time less five minutes, so late-indexed and same-millisecond issues are read again; this costs a few repeated upserts, which are idempotent.
 - Saving the spaces of one site replaces only the repository's links on that site.
+
+## Revision History
+
+- 2026-10-06: Assignee display names are now stored per space, as a map from account id to name, so that the delivery page can list the people behind a hygiene finding. They are returned only when a report is requested with `people=1` and are shown only behind the Show people toggle, never on a chart or a tile. Email addresses are still never read. Because a name is personal data, a shared Atlassian app would have to answer Yes to the personal data declaration and meet its reporting duties. The measures themselves are in ADR 0021.

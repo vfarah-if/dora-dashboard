@@ -11,6 +11,8 @@ export interface DateRangeControlsProps {
   now?: Date;
   /** Page-specific presets shown before the standard ones. */
   extraPresets?: readonly ExtraPreset[];
+  /** Whether to offer the bots switch. Pages about issues rather than pull requests turn it off. */
+  showBots?: boolean;
 }
 
 export interface ExtraPreset {
@@ -56,7 +58,7 @@ function DateField({ label, value, min, max, onChange }: DateFieldProps) {
   );
 }
 
-export function DateRangeControls({ value, onChange, now, extraPresets = [] }: DateRangeControlsProps) {
+export function DateRangeControls({ value, onChange, now, extraPresets = [], showBots = true }: DateRangeControlsProps) {
   const presets = [...extraPresets, ...standardPresets(now)];
   const activePreset = presets.find((preset) => preset.range.from === value.from && preset.range.to === value.to)?.key;
 
@@ -80,12 +82,14 @@ export function DateRangeControls({ value, onChange, now, extraPresets = [] }: D
           </button>
         ))}
       </div>
-      <Toggle
-        label={copy.range.includeBots}
-        hint={copy.range.includeBotsHint}
-        checked={value.includeBots}
-        onChange={(includeBots) => onChange({ ...value, includeBots })}
-      />
+      {showBots && (
+        <Toggle
+          label={copy.range.includeBots}
+          hint={copy.range.includeBotsHint}
+          checked={value.includeBots}
+          onChange={(includeBots) => onChange({ ...value, includeBots })}
+        />
+      )}
     </fieldset>
   );
 }

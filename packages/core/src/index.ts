@@ -11,3 +11,4 @@ export * from "./codeGrade.js";
 export * from "./codeAdvice.js";
 export * from "./reviewQueue.js";
 export * from "./features.js";
+export * from "./spaceReport.js";

@@ -67,4 +67,29 @@ describe("App sign-in gate", () => {
     renderApp();
     expect(await screen.findByText(copy.common.networkFailed)).toBeInTheDocument();
   });
+
+  describe("Jira navigation", () => {
+    const signedIn = { body: { mode: "oauth", user: { login: "ada", avatarUrl: "" }, error: null } };
+
+    it("links to the Jira spaces only when health says Jira is on", async () => {
+      mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": { body: { jira: true } } });
+      renderApp();
+      expect(await screen.findByRole("link", { name: copy.nav.jira })).toHaveAttribute("href", "/spaces");
+    });
+
+    it("leaves the link out when Jira is off", async () => {
+      mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": { body: { jira: false } } });
+      renderApp();
+      await screen.findByText("ada");
+      expect(screen.queryByRole("link", { name: copy.nav.jira })).not.toBeInTheDocument();
+    });
+
+    it("opens the spaces page from the link", async () => {
+      const user = userEvent.setup();
+      mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": { body: { jira: true } }, "GET /api/spaces": { body: [] } });
+      renderApp();
+      await user.click(await screen.findByRole("link", { name: copy.nav.jira }));
+      expect(await screen.findByRole("heading", { level: 1, name: copy.spaces.title })).toBeInTheDocument();
+    });
+  });
 });

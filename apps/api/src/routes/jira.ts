@@ -11,8 +11,10 @@ import {
   jiraSpaceParams,
   jiraStartQuery,
   linkSpacesBody,
+  spaceReportQuery,
 } from "../schemas/requests.js";
 import type { JiraAuthService } from "../services/jira-auth-service.js";
+import type { SpaceReportService } from "../services/space-report-service.js";
 import type { TrackerService } from "../services/tracker-service.js";
 import { requireSameOrigin, signedCookie } from "./auth.js";
 
@@ -27,6 +29,7 @@ export interface JiraRouteDeps {
   authorisation: TrackerAuthorisation;
   auth: JiraAuthService;
   tracker: TrackerService;
+  spaceReports: SpaceReportService;
 }
 
 /** Appends a query parameter to a path that may already carry a query string. */
@@ -52,7 +55,7 @@ function safeReturnTo(value: string | null | undefined): string | null {
 }
 
 export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): void {
-  const { guard, config, authorisation, auth, tracker } = deps;
+  const { guard, config, authorisation, auth, tracker, spaceReports } = deps;
   const sameOrigin = requireSameOrigin(config);
   const cookie = {
     path: "/",
@@ -124,6 +127,17 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
     "/api/jira/sites/:siteId/spaces/:key",
     { preHandler: guard, schema: { params: jiraSpaceParams } },
     async (request) => tracker.describeSpace(request.session!.login, request.params.siteId, request.params.key),
+  );
+
+  app.get("/api/spaces", { preHandler: guard }, async () => tracker.trackedSpaces());
+
+  app.get<{ Params: { id: number }; Querystring: { from?: string; to?: string; people?: "0" | "1" } }>(
+    "/api/spaces/:id/report",
+    { preHandler: guard, schema: { params: idParams, querystring: spaceReportQuery } },
+    async (request) => {
+      const { from, to, people } = request.query;
+      return spaceReports.report(request.params.id, { from, to, people: people === "1" });
+    },
   );
 
   app.get<{ Params: { id: number } }>(

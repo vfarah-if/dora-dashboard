@@ -50,9 +50,10 @@ export function productionRuns(runs: readonly DeployRun[], branch: string): Depl
 
 /**
  * Each merged PR into the deploy branch paired with the first successful deploy that started at or after its merge.
- * Only PRs merged inside the observed deploy window are paired; a PR not yet shipped is left out.
+ * Only PRs merged inside the observed deploy window are paired; a PR not yet shipped is left out. Each `pr` is the
+ * object passed in, so a caller can look its PRs up by identity.
  */
-function shippedPrs(prs: readonly PullRequest[], runs: readonly DeployRun[], branch: string) {
+export function shippedPrs(prs: readonly PullRequest[], runs: readonly DeployRun[], branch: string) {
   const production = productionRuns(runs, branch);
   const successes = production.filter((r) => r.conclusion === "success");
   // A PR merged before the first observed deploy run would be matched to whatever deploy happened to be

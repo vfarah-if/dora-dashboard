@@ -16,6 +16,18 @@ export interface SpaceDescription {
   columns: BoardColumn[];
 }
 
+/** A tracked space as the spaces list shows it: its crawl state, how many items are held and the repositories it feeds. */
+export interface SpaceListing {
+  id: number;
+  key: string;
+  name: string;
+  siteUrl: string;
+  lastCrawledAt: string | null;
+  crawlStatus: TrackerSpace["crawlStatus"];
+  workItemCount: number;
+  repos: { id: number; name: string }[];
+}
+
 /** A linked space with how many of its work items are stored. */
 export type LinkedSpace = TrackerSpace & { workItemCount: number };
 
@@ -83,6 +95,20 @@ export class TrackerService {
     });
   }
 
+  /** Every tracked space with the repositories it is linked to. Carries no names of people. */
+  trackedSpaces(): SpaceListing[] {
+    return this.store.listSpaces().map((space) => ({
+      id: space.id,
+      key: space.key,
+      name: space.name,
+      siteUrl: space.siteUrl,
+      lastCrawledAt: space.lastCrawledAt,
+      crawlStatus: space.crawlStatus,
+      workItemCount: this.store.workItemCount(space.id),
+      repos: this.store.reposForSpace(space.id).map((repo) => ({ id: repo.id, name: `${repo.owner}/${repo.name}` })),
+    }));
+  }
+
   /** The repository's linked spaces, with crawl state and how many work items are held. */
   linkedSpaces(repoId: number): LinkedSpace[] {
     this.requireRepo(repoId);
@@ -137,7 +163,9 @@ export class TrackerService {
   }
 
   private withCount(space: TrackerSpace): LinkedSpace {
-    return { ...space, workItemCount: this.store.workItemCount(space.id) };
+    // Names are for the space report behind its toggle (ADR 0008), so they are not sent with the linked spaces.
+    const { people: _people, ...rest } = space;
+    return { ...rest, workItemCount: this.store.workItemCount(space.id) };
   }
 
   private prune(now: number): void {

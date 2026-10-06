@@ -122,12 +122,16 @@ ATLASSIAN_CLIENT_SECRET=<your client secret>
 
 A repository can link spaces on more than one site; saving on one site leaves the others untouched.
 
+### After upgrading to the delivery page
+
+The delivery measures need data that earlier crawls did not record, so after upgrading choose **Full re-crawl** on each linked space, which records issue levels and assignee names, and on each linked repository, which records the branch names used to join pull requests to issues. Until then, sub-tasks are told apart by type name and pull requests are joined by title only. The delivery page is at `/spaces`, reached through the **Jira** link in the header, and each space opens at `/spaces/:id` (ADR 0021).
+
 ### What to know
 
 - The Jira grant is held in memory only, so after the API restarts, or after you sign out, choose **Connect Jira** again. The terminal crawl (`make crawl`) cannot read Jira.
 - Linked spaces and their crawled issues, including summaries, are visible to everyone signed in to this dashboard, even if their own Jira account cannot see that space.
 - The dashboard reads the whole space, not one person's filtered view of a board.
-- Only the assignee's opaque account ID is stored, never a name or an email address (ADR 0008).
+- The assignee's account ID is stored on each issue, and display names are stored per space so that the delivery page can list them behind **Show people**. An email address is never read (ADR 0008, ADR 0020). An incremental crawl adds or updates names, and **Full re-crawl** replaces them, so names of people no longer assigned are dropped.
 - Before the first real crawl, add your real site hostnames and space keys to `.private-names` so that `make check-names` keeps them out of the repository (ADR 0009). Examples and tests use `acme.example.test` and the space key `WID`.
 
 ## Automated tests

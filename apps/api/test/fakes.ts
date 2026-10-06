@@ -173,6 +173,8 @@ interface FakeSpace {
   statuses: TrackerStatus[];
   columns: BoardColumn[];
   items: WorkItem[];
+  /** Display names by account id; a page returns the names of the assignees on it. */
+  people: Record<string, string>;
 }
 
 /** One recorded call on a FakeWorkItemProvider, with the token it carried. */
@@ -222,6 +224,7 @@ export class FakeWorkItemProvider implements WorkItemProvider {
       statuses: data.statuses ?? [],
       columns: data.columns ?? [],
       items: data.items ?? [],
+      people: data.people ?? {},
     });
   }
 
@@ -272,12 +275,18 @@ export class FakeWorkItemProvider implements WorkItemProvider {
     this.onPage?.();
     if (this.failWith && (this.failAfterPages === null || this.pagesServed >= this.failAfterPages)) throw this.failWith;
     this.pagesServed++;
-    const sorted = this.space(siteId, spaceKey)
-      .items.filter((item) => this.ignoreUpdatedSince || !updatedSince || item.updatedAt >= updatedSince)
+    const space = this.space(siteId, spaceKey);
+    const sorted = space.items
+      .filter((item) => this.ignoreUpdatedSince || !updatedSince || item.updatedAt >= updatedSince)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const start = cursor ? Number(cursor) : 0;
     const end = start + this.pageSize;
-    return { items: sorted.slice(start, end), nextCursor: end < sorted.length ? String(end) : null };
+    const items = sorted.slice(start, end);
+    // Built as data properties from the space's own names, so an account id such as "__proto__" is kept as a name.
+    const people: Record<string, string> = Object.fromEntries(
+      items.flatMap(({ assigneeId: id }) => (id !== null && Object.hasOwn(space.people, id) ? [[id, space.people[id]!]] : [])),
+    );
+    return { items, nextCursor: end < sorted.length ? String(end) : null, people };
   }
 }
 

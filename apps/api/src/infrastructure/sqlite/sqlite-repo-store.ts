@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS tracker_spaces (
   crawl_error TEXT,
   crawl_progress TEXT,
   crawl_cursor TEXT,
+  people TEXT,
   UNIQUE (site_id, space_key)
 );
 CREATE TABLE IF NOT EXISTS repo_spaces (
@@ -91,6 +92,7 @@ interface SpaceRow {
   crawl_status: TrackerSpace["crawlStatus"];
   crawl_error: string | null;
   crawl_progress: string | null;
+  people: string | null;
 }
 
 const toSpace = (row: SpaceRow): TrackerSpace => ({
@@ -105,7 +107,22 @@ const toSpace = (row: SpaceRow): TrackerSpace => ({
   crawlStatus: row.crawl_status,
   crawlError: row.crawl_error,
   crawlProgress: row.crawl_progress,
+  // Null until a crawl has recorded names; the key is then left off rather than set to an empty map.
+  ...peopleOf(row.people),
 });
+
+/** Saved names as a map, or nothing when none were saved or what was saved cannot be read; names are never worth a failed read. */
+function peopleOf(saved: string | null): { people?: Record<string, string> } {
+  if (saved === null) return {};
+  try {
+    const people: unknown = JSON.parse(saved);
+    return typeof people === "object" && people !== null && !Array.isArray(people)
+      ? { people: people as Record<string, string> }
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 interface RepoRow {
   id: number;
@@ -143,9 +160,20 @@ export class SqliteRepoStore implements RepoStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    this.migrate();
     // A crawl interrupted by a restart must not stay "crawling" forever.
     this.db.exec("UPDATE repos SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
     this.db.exec("UPDATE tracker_spaces SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
+  }
+
+  /**
+   * Brings a database made by an earlier version up to date. `CREATE TABLE IF NOT EXISTS` leaves an existing table
+   * as it was, so a column added later has to be added here. Each step checks first, so running it twice is safe.
+   */
+  private migrate(): void {
+    const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string }[];
+    // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
+    if (!columns.some((c) => c.name === "people")) this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN people TEXT");
   }
 
   listRepos(): Repo[] {
@@ -325,6 +353,25 @@ export class SqliteRepoStore implements RepoStore {
       )
       .all(repoId) as unknown as SpaceRow[];
     return rows.map(toSpace);
+  }
+
+  listSpaces(): TrackerSpace[] {
+    const rows = this.db.prepare("SELECT * FROM tracker_spaces ORDER BY site_id, space_key").all() as unknown as SpaceRow[];
+    return rows.map(toSpace);
+  }
+
+  reposForSpace(spaceId: number): Repo[] {
+    const rows = this.db
+      .prepare(
+        `SELECT r.* FROM repos r JOIN repo_spaces l ON l.repo_id = r.id
+         WHERE l.space_id = ? ORDER BY r.owner, r.name`,
+      )
+      .all(spaceId) as unknown as RepoRow[];
+    return rows.map(toRepo);
+  }
+
+  setSpacePeople(id: number, people: Record<string, string>): void {
+    this.db.prepare("UPDATE tracker_spaces SET people = ? WHERE id = ?").run(JSON.stringify(people), id);
   }
 
   getSpace(id: number): TrackerSpace | null {

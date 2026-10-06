@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { useLocation, useSearchParams } from "react-router";
+import { Link, useLocation, useSearchParams } from "react-router";
 import type { TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
 import {
   useCrawlSpace,
@@ -244,7 +244,10 @@ function LinkedSpaceItem({ space, onCrawl, busy }: { space: LinkedSpace; onCrawl
   return (
     <li className="jira-linked-item">
       <div className="jira-linked-head">
-        <strong>{space.name}</strong> <span className="mono text-muted">{space.key}</span>
+        <strong>
+          <Link to={`/spaces/${space.id}`}>{space.name}</Link>
+        </strong>{" "}
+        <span className="mono text-muted">{space.key}</span>
       </div>
       <dl className="repo-facts">
         <div>

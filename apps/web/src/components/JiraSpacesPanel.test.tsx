@@ -167,6 +167,12 @@ describe("JiraSpacesPanel", () => {
     await waitFor(() => expect(crawls).toEqual(["", "?full=1"]));
   });
 
+  it("links a linked space's name to its delivery page", async () => {
+    mockFetch(baseRoutes({ "GET /api/repos/1/spaces": { body: [linked()] } }));
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByRole("link", { name: "Widgets" })).toHaveAttribute("href", "/spaces/7");
+  });
+
   it("starts with a placeholder when several sites exist and none is linked", async () => {
     const user = userEvent.setup();
     mockFetch(

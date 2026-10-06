@@ -247,7 +247,50 @@ describe("fetchWorkItemPage", () => {
         ],
       },
     ]);
-    expect(JSON.stringify(page)).not.toContain("someone");
+    // The name travels beside the items, never on them, and the email address is not kept at all.
+    expect(page.people).toEqual({ "acct-1": "Someone" });
+    expect(JSON.stringify(page.items)).not.toContain("Someone");
+    expect(JSON.stringify(page)).not.toContain("someone@example.test");
+  });
+
+  it.each([
+    [-1, "subtask"],
+    [0, "standard"],
+    [1, "epic"],
+    [2, "epic"],
+  ])("maps issue type hierarchy level %i to %s", async (hierarchyLevel, level) => {
+    const { provider } = build(
+      search({ issues: [issue({ issuetype: { name: "Anything", hierarchyLevel } })], isLast: true }),
+      statusRoute,
+      changelog({}),
+    );
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    expect(item!.level).toBe(level);
+  });
+
+  it("leaves level off an item whose issue type carries no hierarchy level", async () => {
+    const { provider } = build(search({ issues: [issue()], isLast: true }), statusRoute, changelog({}));
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    expect("level" in item!).toBe(false);
+  });
+
+  it("collects one name per assignee and skips unassigned issues and assignees without a name", async () => {
+    const { provider } = build(
+      search({
+        issues: [
+          issue(),
+          { ...issue({ assignee: { accountId: "acct-1", displayName: "Someone" } }), id: "1002", key: "WID-2" },
+          { ...issue({ assignee: { accountId: "acct-2", displayName: "Another" } }), id: "1003", key: "WID-3" },
+          { ...issue({ assignee: { accountId: "acct-3" } }), id: "1004", key: "WID-4" },
+          { ...issue({ assignee: null }), id: "1005", key: "WID-5" },
+        ],
+        isLast: true,
+      }),
+      statusRoute,
+      changelog({}),
+    );
+    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    expect(page.people).toEqual({ "acct-1": "Someone", "acct-2": "Another" });
   });
 
   it("reads changelog times sent as epoch milliseconds, as the bulk changelog does", async () => {
@@ -450,7 +493,7 @@ describe("fetchWorkItemPage", () => {
 
   it("makes no follow-up calls for an empty page", async () => {
     const { provider, calls } = build(search({ isLast: true }));
-    expect(await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).toEqual({ items: [], nextCursor: null });
+    expect(await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).toEqual({ items: [], nextCursor: null, people: {} });
     expect(calls).toHaveLength(1);
   });
 

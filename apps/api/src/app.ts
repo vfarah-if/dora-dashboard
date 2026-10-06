@@ -23,6 +23,7 @@ import { JiraAuthService } from "./services/jira-auth-service.js";
 import { RepoService } from "./services/repo-service.js";
 import { ReportService } from "./services/report-service.js";
 import { ReviewQueueService } from "./services/review-queue-service.js";
+import { SpaceReportService } from "./services/space-report-service.js";
 import { TrackerService } from "./services/tracker-service.js";
 import { WorkItemCrawlService } from "./services/work-item-crawl-service.js";
 
@@ -94,7 +95,14 @@ function registerJira(
 ) {
   const crawler = new WorkItemCrawlService(deps.store, jira.provider, auth, app.log);
   const tracker = new TrackerService(deps.store, jira.provider, auth, crawler, deps.clock, app.log);
-  registerJiraRoutes(app, { guard, config: deps.config, authorisation: jira.auth, auth, tracker });
+  registerJiraRoutes(app, {
+    guard,
+    config: deps.config,
+    authorisation: jira.auth,
+    auth,
+    tracker,
+    spaceReports: new SpaceReportService(deps.store, deps.clock),
+  });
   return crawler;
 }
 

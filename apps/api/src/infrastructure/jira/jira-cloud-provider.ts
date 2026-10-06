@@ -5,6 +5,7 @@ import type {
   TrackerSpaceSummary,
   TrackerStatus,
   WorkItem,
+  WorkItemLevel,
   WorkItemTransition,
 } from "@dora-dashboard/core";
 import { NotFoundError, RateLimitedError, UnauthorisedError, UpstreamError, ValidationError } from "../../core/errors.js";
@@ -32,12 +33,12 @@ interface RawIssue {
   key: string;
   fields: {
     summary?: string;
-    issuetype?: { name?: string };
+    issuetype?: { name?: string; hierarchyLevel?: number };
     status?: RawStatus;
     created: string;
     updated: string;
     resolutiondate?: string | null;
-    assignee?: { accountId?: string } | null;
+    assignee?: { accountId?: string; displayName?: string } | null;
     parent?: { key?: string } | null;
     labels?: string[];
   };
@@ -56,6 +57,13 @@ interface RawChangelog {
   /** The bulk changelog sends `created` as epoch milliseconds, unlike the issue fields. */
   issueChangeLogs?: { issueId: string; changeHistories?: { created: string | number; items?: RawChangeItem[] }[] }[];
   nextPageToken?: string | null;
+}
+
+/** Jira's hierarchy level: -1 is a sub-task, 0 a standard issue, 1 and above an epic or higher. Absent stays unknown. */
+function levelOf(hierarchyLevel: number | undefined): WorkItemLevel | undefined {
+  if (typeof hierarchyLevel !== "number" || !Number.isFinite(hierarchyLevel)) return undefined;
+  if (hierarchyLevel < 0) return "subtask";
+  return hierarchyLevel === 0 ? "standard" : "epic";
 }
 
 /** One status change before categories are attached. */
@@ -250,7 +258,7 @@ export class JiraCloudProvider implements WorkItemProvider {
     );
     const issues = found.issues ?? [];
     const nextCursor = found.isLast || !found.nextPageToken ? null : found.nextPageToken;
-    if (issues.length === 0) return { items: [], nextCursor };
+    if (issues.length === 0) return { items: [], nextCursor, people: {} };
 
     const [byId, changes] = await Promise.all([
       this.categoriesFor(token, siteId, spaceKey),
@@ -260,7 +268,17 @@ export class JiraCloudProvider implements WorkItemProvider {
         issues.map((i) => i.id),
       ),
     ]);
-    return { items: issues.map((i) => this.toWorkItem(i, spaceKey, byId, changes.get(i.id) ?? [])), nextCursor };
+    // Names are returned beside the items, never on them, so a work item cannot leak one by accident. Email is not requested.
+    const people: Record<string, string> = {};
+    for (const i of issues) {
+      const a = i.fields.assignee;
+      if (a?.accountId && a.displayName) people[a.accountId] = a.displayName;
+    }
+    return {
+      items: issues.map((i) => this.toWorkItem(i, spaceKey, byId, changes.get(i.id) ?? [])),
+      nextCursor,
+      people,
+    };
   }
 
   /** Status changes per issue id, oldest first, following the changelog's own paging to the end. */
@@ -321,6 +339,7 @@ export class JiraCloudProvider implements WorkItemProvider {
       })),
     ];
 
+    const level = levelOf(f.issuetype?.hierarchyLevel);
     return {
       key: issue.key,
       spaceKey,
@@ -335,6 +354,7 @@ export class JiraCloudProvider implements WorkItemProvider {
       parentKey: f.parent?.key ?? null,
       labels: f.labels ?? [],
       transitions,
+      ...(level === undefined ? {} : { level }),
     };
   }
 }

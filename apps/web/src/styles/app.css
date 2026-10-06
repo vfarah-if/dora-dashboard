@@ -3011,3 +3011,78 @@ a:hover {
 .jira-category dd {
   margin: 0;
 }
+
+/* Jira hygiene on the space page. Lists wrap long issue summaries and never push the page wider. */
+.hygiene-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+}
+
+.hygiene-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hygiene-count {
+  font-weight: 650;
+}
+
+.hygiene-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.hygiene-heading,
+.hygiene-person {
+  font-size: 0.8125rem;
+  line-height: inherit;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.hygiene-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.hygiene-list,
+.hygiene-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hygiene-keys {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.hygiene-summary {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.space-ageing {
+  margin-top: 4px;
+}
+
+@media print {
+  .hygiene-card {
+    break-inside: avoid;
+  }
+}

@@ -327,6 +327,97 @@ describe("WorkItemCrawlService", () => {
     expect(await first).toBe(true);
   });
 
+  describe("assignee names", () => {
+    const withPeople = (provider: FakeWorkItemProvider, people: Record<string, string>, ids: (string | null)[]) =>
+      provider.seedSpace(SITE.id, "WID", {
+        name: "Widgets",
+        people,
+        items: ids.map((id, n) => workItem({ key: `WID-${n + 1}`, assigneeId: id, updatedAt: `2026-09-0${n + 1}T10:00:00Z` })),
+      });
+
+    it("gathers the names from every page and saves them when the crawl finishes", async () => {
+      const { store, provider, space, crawler } = setUp();
+      // Pages are two items each, newest first: [WID-5, WID-4], [WID-3, WID-2], [WID-1].
+      withPeople(provider, { a: "Alex", b: "Blake", c: "Casey", unseen: "Nobody" }, ["a", "b", null, "c", "a"]);
+
+      await crawler.crawl("alice", space.id, true);
+
+      expect(store.getSpace(space.id)!.people).toEqual({ a: "Alex", b: "Blake", c: "Casey" });
+    });
+
+    it("lets a full crawl replace the stored names, dropping people no longer assigned", async () => {
+      const { store, provider, space, crawler } = setUp();
+      store.setSpacePeople(space.id, { gone: "Former" });
+      withPeople(provider, { a: "Alex" }, ["a"]);
+
+      await crawler.crawl("alice", space.id, true);
+
+      expect(store.getSpace(space.id)!.people).toEqual({ a: "Alex" });
+    });
+
+    it("lets an incremental crawl add to the stored names and refresh a changed one", async () => {
+      const { store, provider, space, crawler } = setUp();
+      withPeople(provider, { a: "Alex", b: "Blake" }, ["a", "b"]);
+      await crawler.crawl("alice", space.id, true);
+      withPeople(provider, { a: "Alex", b: "Blake", c: "Casey" }, ["a", "b"]);
+      provider.seedSpace(SITE.id, "WID", {
+        name: "Widgets",
+        people: { b: "Blake Renamed", c: "Casey" },
+        items: [
+          workItem({ key: "WID-1", assigneeId: "a", updatedAt: "2026-09-01T10:00:00Z" }),
+          workItem({ key: "WID-2", assigneeId: "b", updatedAt: "2026-09-09T10:00:00Z" }),
+          workItem({ key: "WID-3", assigneeId: "c", updatedAt: "2026-09-10T10:00:00Z" }),
+        ],
+      });
+
+      await crawler.crawl("alice", space.id);
+
+      expect(store.getSpace(space.id)!.people).toEqual({ a: "Alex", b: "Blake Renamed", c: "Casey" });
+    });
+
+    it("leaves the stored names alone when an incremental crawl finds nobody new", async () => {
+      const { store, provider, space, crawler } = setUp();
+      withPeople(provider, { a: "Alex" }, ["a"]);
+      await crawler.crawl("alice", space.id, true);
+
+      await crawler.crawl("alice", space.id);
+
+      expect(store.getSpace(space.id)!.people).toEqual({ a: "Alex" });
+    });
+
+    it("keeps an account id that is also an object key as a name, and copies no inherited name", async () => {
+      const { store, provider, space, crawler } = setUp();
+      // Parsed as Jira's JSON would be, so "__proto__" is an own key holding a name, not the prototype.
+      withPeople(provider, JSON.parse('{"__proto__": "Proto Person", "a": "Alex"}') as Record<string, string>, [
+        "__proto__",
+        "a",
+      ]);
+      const serve = provider.fetchWorkItemPage.bind(provider);
+      provider.fetchWorkItemPage = async (...args) => {
+        const page = await serve(...args);
+        return { ...page, people: Object.setPrototypeOf({ ...page.people }, { ghost: "Inherited" }) as Record<string, string> };
+      };
+
+      await crawler.crawl("alice", space.id, true);
+
+      const people = store.getSpace(space.id)!.people!;
+      expect(Object.keys(people).sort()).toEqual(["__proto__", "a"]);
+      expect(people["__proto__"]).toBe("Proto Person");
+    });
+
+    it("does not save names when the crawl fails", async () => {
+      const { store, provider, space, crawler } = setUp();
+      store.setSpacePeople(space.id, { old: "Earlier" });
+      withPeople(provider, { a: "Alex" }, ["a", "a", "a"]);
+      provider.failAfterPages = 1;
+      provider.failWith = new UpstreamError("Jira answered 500", 500);
+
+      await expect(crawler.crawl("alice", space.id, true)).rejects.toThrow();
+
+      expect(store.getSpace(space.id)!.people).toEqual({ old: "Earlier" });
+    });
+  });
+
   it("removes stored work items the space no longer holds once a full crawl completes", async () => {
     const { store, provider, space, crawler } = setUp();
     await crawler.crawl("alice", space.id, true);
@@ -547,6 +638,59 @@ describe("TrackerService", () => {
     await settledCrawls(crawler);
     expect(store.workItemCount(linked[0]!.id)).toBe(5);
     expect(service.linkedSpaces(repoId)[0]).toMatchObject({ crawlStatus: "idle", workItemCount: 5 });
+  });
+
+  describe("tracked spaces", () => {
+    it("lists every space with its crawl state, item count and linked repositories, without names of people", async () => {
+      const { service, store, provider, repoId, space, crawler } = tracker();
+      provider.seedSpace(SITE.id, "WID", {
+        name: "Widgets",
+        people: { "account-1": "Alex" },
+        items: [workItem({ key: "WID-1" })],
+      });
+      await crawler.crawl("alice", space.id, true);
+      const gadgets = store.addRepo("acme", "gadgets", [], "main").id;
+      store.linkSpaces(gadgets, SITE.id, [
+        { siteId: SITE.id, siteUrl: SITE.url, key: "WID", name: "Widgets" },
+        { siteId: SITE.id, siteUrl: SITE.url, key: "GAD", name: "Gadgets" },
+      ]);
+
+      const listed = service.trackedSpaces();
+
+      expect(listed).toEqual([
+        {
+          id: listed[0]!.id,
+          key: "GAD",
+          name: "Gadgets",
+          siteUrl: "https://acme.example.test",
+          lastCrawledAt: null,
+          crawlStatus: "idle",
+          workItemCount: 0,
+          repos: [{ id: gadgets, name: "acme/gadgets" }],
+        },
+        {
+          id: space.id,
+          key: "WID",
+          name: "Widgets",
+          siteUrl: "https://acme.example.test",
+          lastCrawledAt: store.getSpace(space.id)!.lastCrawledAt,
+          crawlStatus: "idle",
+          workItemCount: 1,
+          repos: [
+            { id: gadgets, name: "acme/gadgets" },
+            { id: repoId, name: "acme/widgets" },
+          ],
+        },
+      ]);
+      expect(JSON.stringify(listed)).not.toContain("Alex");
+    });
+
+    it("keeps names of people out of a repository's linked spaces too", async () => {
+      const { service, store, repoId, space } = tracker();
+      store.setSpacePeople(space.id, { "account-1": "Alex" });
+
+      expect("people" in service.linkedSpaces(repoId)[0]!).toBe(false);
+    });
   });
 
   it("raises NotFoundError naming a key the site does not have, and links nothing", async () => {

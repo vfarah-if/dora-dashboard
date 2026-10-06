@@ -25,6 +25,8 @@ export const CURSOR_OVERLAP_MS = 5 * 60_000;
 interface ReadOutcome {
   newest: string | null;
   keys: Set<string>;
+  /** Display names the pages carried, by account id. */
+  people: Record<string, string>;
 }
 
 export class WorkItemCrawlService {
@@ -56,6 +58,7 @@ export class WorkItemCrawlService {
       // A space pruned mid-crawl has nothing left to finish.
       if (read && this.store.getSpace(spaceId)) {
         if (full) this.store.removeWorkItemsExcept(spaceId, read.keys);
+        this.savePeople(space, read.people, full);
         this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest));
       }
     } catch (error) {
@@ -66,6 +69,14 @@ export class WorkItemCrawlService {
       this.running.delete(spaceId);
     }
     return true;
+  }
+
+  /** A full crawl replaces the names with those it read; an incremental one adds to the names already stored. */
+  private savePeople(space: CrawledSpace, read: Record<string, string>, full: boolean): void {
+    if (full) this.store.setSpacePeople(space.id, read);
+    else if (Object.keys(read).length > 0) {
+      this.store.setSpacePeople(space.id, { ...this.store.getSpace(space.id)?.people, ...read });
+    }
   }
 
   private async readDetails(login: string, space: CrawledSpace): Promise<void> {
@@ -87,12 +98,15 @@ export class WorkItemCrawlService {
     let newest: string | null = null;
     let seen = 0;
     const keys = new Set<string>();
+    // A map, so an account id such as "__proto__" is kept as a name rather than read as the object's prototype.
+    const people = new Map<string, string>();
     do {
       const token = await this.auth.accessToken(login);
       const page = await this.provider.fetchWorkItemPage(token, space.siteId, space.key, stopAt, cursor);
       const fresh = stopAt ? page.items.filter((item) => item.updatedAt > stopAt) : page.items;
       newest ??= page.items[0]?.updatedAt ?? null;
       for (const item of page.items) keys.add(item.key);
+      for (const id in page.people) if (Object.hasOwn(page.people, id)) people.set(id, page.people[id]!);
       if (!this.store.getSpace(space.id)) {
         this.log.warn({ spaceId: space.id }, "space was removed during its crawl; stopping");
         return null;
@@ -102,6 +116,6 @@ export class WorkItemCrawlService {
       this.store.setSpaceCrawlState(space.id, "crawling", `Read ${seen} work items`);
       cursor = fresh.length < page.items.length ? null : page.nextCursor;
     } while (cursor);
-    return { newest, keys };
+    return { newest, keys, people: Object.fromEntries(people) };
   }
 }

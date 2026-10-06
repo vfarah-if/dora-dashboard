@@ -1,6 +1,6 @@
 import { NavLink } from "react-router";
 import type { AuthState } from "../api/hooks";
-import { useLogout } from "../api/hooks";
+import { useHealth, useLogout } from "../api/hooks";
 import { copy } from "../copy";
 import { useTheme } from "../lib/theme";
 
@@ -40,6 +40,7 @@ const canSignOut = (auth: AuthState | undefined) =>
 
 export function Header({ auth }: { auth: AuthState | undefined }) {
   const logout = useLogout();
+  const jira = useHealth().data?.jira === true;
   const user = auth?.user ?? null;
   return (
     <header className="app-header">
@@ -58,6 +59,7 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
               {copy.nav.home}
             </NavLink>
             <NavLink to="/repos">{copy.nav.repositories}</NavLink>
+            {jira && <NavLink to="/spaces">{copy.nav.jira}</NavLink>}
             <NavLink to="/review-queue">{copy.nav.reviewQueue}</NavLink>
           </nav>
         )}

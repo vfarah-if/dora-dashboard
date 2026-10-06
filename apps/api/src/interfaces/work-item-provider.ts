@@ -5,6 +5,11 @@ export interface WorkItemPage {
   items: WorkItem[];
   /** Opaque cursor for the next page, or null on the last page. */
   nextCursor: string | null;
+  /**
+   * Display names by account id for the assignees on this page. Kept off `WorkItem` so names travel separately
+   * and are shown only behind the "Show people" toggle (ADR 0008). Never carries an email address.
+   */
+  people: Record<string, string>;
 }
 
 /**
@@ -15,6 +20,7 @@ export interface WorkItemPage {
  * Contract every implementation must honour, because the crawl service relies on it:
  * - `fetchWorkItemPage` returns items updated at or after `updatedSince` (all items when null),
  *   ordered by `updatedAt` descending, each with its full status history oldest first.
+ * - Each item's `level` comes from the issue type's hierarchy level, and is left unset when the tracker does not say.
  * - `fetchBoardColumns` returns an empty list when the space has no board, never an error.
  * - A site or space the credential cannot see raises `NotFoundError`, never an empty result. A 403 raises it too,
  *   with a message saying the space cannot be seen or the app lacks a scope; no message ever carries the token.

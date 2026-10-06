@@ -56,6 +56,11 @@ export const codeHealthQuery = {
   properties: { from: date, to: date },
 } as const;
 
+export const spaceReportQuery = {
+  type: "object",
+  properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },
+} as const;
+
 /** `ids` is optional: leave it out for every repository. */
 export const reviewQueueQuery = {
   type: "object",
