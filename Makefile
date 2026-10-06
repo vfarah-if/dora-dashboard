@@ -29,7 +29,7 @@ RESET := \033[0m
 
 .PHONY: help all install build typecheck test test-coverage test-coverage-force quality \
         fmt fmt-check lint lint-fix check-names dev dev-bg dev-stop dev-logs api web crawl crawl-full \
-        crawl-all env clean clean-data
+        crawl-all env clean clean-data upgrade upgrade-check upgrade-root upgrade-core upgrade-api upgrade-web
 
 # --- Getting started ----------------------------------------------------------
 
@@ -132,6 +132,58 @@ crawl-all: ## Crawl every repository listed in repos.local.json
 			$(TURBO) run build --filter=$(CORE_WS) > /dev/null; \
 			npm run --silent crawl -w $(API_WS) -- $$repo $$flags --branch $$branch || exit 1; \
 		done
+
+# --- Dependencies -------------------------------------------------------------
+
+# npm-check-updates at an exact version, so the tool that rewrites every manifest cannot change between runs.
+# Run through npx rather than installed, because it needs a newer Node 22 than engines allows. Its rules
+# live in .ncurc.mjs and mirror .github/dependabot.yml (ADR 0024).
+NCU         := npx --yes npm-check-updates@23.1.0
+MANIFESTS   := package.json $(wildcard apps/*/package.json packages/*/package.json)
+
+# Days a release must age before it is used: cooldown= on the command line, otherwise the figure in .ncurc.mjs.
+# npm install gets it too, because ncu only writes the range and npm would fill it with whatever is newest.
+COOLDOWN    = $(or $(cooldown),$(shell node --input-type=module -e 'console.log((await import("./.ncurc.mjs")).default.cooldown)'))
+NCU_OPTIONS = --cooldown $(COOLDOWN) $(if $(target),--target $(target))
+
+upgrade-check: ## List the updates each workspace could take, changing nothing [target=minor|patch] [cooldown=days]
+	@$(NCU) --workspaces --root --format group,cooldown $(NCU_OPTIONS)
+	@printf '%b\n' "" "Run $(CYAN)make upgrade$(RESET) to choose from these and prove them."
+
+upgrade: ## Choose updates for every workspace, like yarn upgrade-interactive, then run every CI gate
+	@$(call upgrade_interactively,--workspaces --root)
+
+upgrade-root: ## The same for the root package.json alone (lint, format and build tooling)
+	@$(call upgrade_interactively,)
+
+upgrade-core: ## The same for packages/core alone
+	@$(call upgrade_interactively,--workspace $(CORE_WS) --no-root)
+
+upgrade-api: ## The same for apps/api alone
+	@$(call upgrade_interactively,--workspace $(API_WS) --no-root)
+
+upgrade-web: ## The same for apps/web alone
+	@$(call upgrade_interactively,--workspace $(WEB_WS) --no-root)
+
+# $(1) picks the manifests: --workspaces --root for all of them, --workspace <name> --no-root for one, nothing
+# for the root. Choosing nothing stops before anything is installed. Otherwise the lockfile is refreshed inside
+# the cooldown, and the installed tree is checked with peer dependencies enforced whatever ~/.npmrc says, so a
+# pair such as vitest and @vitest/coverage-v8 bumped apart fails here (ADR 0018). Then every CI gate and the build.
+define upgrade_interactively
+before=$$(cat $(MANIFESTS) | cksum); \
+$(NCU) --interactive --install never $(NCU_OPTIONS) $(1) || exit $$?; \
+if [ "$$(cat $(MANIFESTS) | cksum)" = "$$before" ]; then printf '%b\n' "$(YELLOW)Nothing chosen, so nothing changed.$(RESET)"; exit 0; fi; \
+npm install --no-audit --no-fund --min-release-age=$(COOLDOWN) \
+	&& npm ls --all --legacy-peer-deps=false > /dev/null \
+	&& $(MAKE) --no-print-directory quality build \
+	|| { printf '%b\n' "" "$(YELLOW)The upgrade broke a gate above. Fix it, or discard every uncommitted change to the manifests with:$(RESET)" \
+		"  git checkout -- $(MANIFESTS) package-lock.json && make install"; exit 1; }; \
+printf '%b\n' "" "$(BOLD)What changed$(RESET)"; \
+git --no-pager diff --stat -- $(MANIFESTS) package-lock.json; \
+printf '%b\n' "" "$(BOLD)Install scripts$(RESET) (approve a new version with npm approve-scripts <pkg>)"; \
+npm approve-scripts --allow-scripts-pending; \
+printf '%b\n' "" "$(GREEN)Every gate passed.$(RESET) Read the diff and the changelogs of any major, then commit as chore(deps)."
+endef
 
 # --- Housekeeping -------------------------------------------------------------
 
