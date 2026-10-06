@@ -1,4 +1,5 @@
 # Weekly dependency updates, grouped so a quiet week is one pull request rather than many (ADR 0018).
+# The npm rules below are mirrored for `make upgrade` in .ncurc.mjs (ADR 0024); change both together.
 version: 2
 updates:
   # One root lockfile covers every workspace, so one entry is enough.
