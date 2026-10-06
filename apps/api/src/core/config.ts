@@ -20,8 +20,15 @@ export interface Config {
   webOrigin: string;
   /** Clone and analyse each repository's code during a crawl. `CODE_ANALYSIS=off` disables it. */
   codeAnalysis: boolean;
+  /** The Atlassian OAuth 2.0 (3LO) app's credentials. Jira is switched on only when both are set (ADR 0020). */
+  atlassianClientId: string;
+  atlassianClientSecret: string;
+  atlassianRedirectUri: string;
+  /** True when both Atlassian credentials are set. */
+  jiraEnabled: boolean;
 }
 
+const DEFAULT_ATLASSIAN_REDIRECT_URI = "http://localhost:5181/api/auth/jira/callback";
 const PLACEHOLDER_SESSION_SECRET = "change-me-to-a-long-random-string";
 
 function readAuthMode(env: NodeJS.ProcessEnv): AuthMode {
@@ -61,6 +68,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const githubClientId = env.GITHUB_CLIENT_ID ?? "";
   const githubClientSecret = env.GITHUB_CLIENT_SECRET ?? "";
   if (authMode === "oauth") requireOAuthCredentials(githubClientId, githubClientSecret);
+  const atlassianClientId = env.ATLASSIAN_CLIENT_ID ?? "";
+  const atlassianClientSecret = env.ATLASSIAN_CLIENT_SECRET ?? "";
   return {
     authMode,
     githubClientId,
@@ -68,5 +77,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     deviceClientId: env.GITHUB_DEVICE_CLIENT_ID || PUBLISHED_DEVICE_CLIENT_ID,
     sessionSecret: sessionSecretFor(authMode, env.SESSION_SECRET ?? ""),
     ...readServerSettings(env),
+    atlassianClientId,
+    atlassianClientSecret,
+    atlassianRedirectUri: env.ATLASSIAN_REDIRECT_URI || DEFAULT_ATLASSIAN_REDIRECT_URI,
+    jiraEnabled: atlassianClientId !== "" && atlassianClientSecret !== "",
   };
 }

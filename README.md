@@ -69,6 +69,10 @@ Tokens are held in memory only and never sent to the browser (ADR 0004).
 
 [SETUP.md](SETUP.md) walks through setup step by step, including the browser sign-in offered when the GitHub CLI is not signed in and how to test it locally.
 
+## Jira (optional)
+
+Jira Cloud can be connected through OAuth 2.0 (3LO) so that issues can be read beside pull requests. It is off until `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` are set (`ATLASSIAN_REDIRECT_URI` is optional and has a default), and grants are held in memory only (ADR 0020). [SETUP.md](SETUP.md) walks through registering the Atlassian app and connecting it.
+
 ## What it measures
 
 See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions with advice on where to start simplifying (ADR 0015), and an overall grade for maintainability, testing and hygiene worked out from the repository's files and pull requests without running any of its code (ADR 0013). Run a full crawl once after upgrading so that pull request file lists are fetched for the testing check.

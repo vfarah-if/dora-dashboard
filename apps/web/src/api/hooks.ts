@@ -1,6 +1,16 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CodeHealthResponse, Repo, RepoReport, ReviewQueue } from "@dora-dashboard/core";
+import type {
+  BoardColumn,
+  CodeHealthResponse,
+  Repo,
+  RepoReport,
+  ReviewQueue,
+  TrackerSite,
+  TrackerSpace,
+  TrackerSpaceSummary,
+  TrackerStatus,
+} from "@dora-dashboard/core";
 import { apiRequest } from "./client";
 
 export interface AuthUser {
@@ -69,6 +79,11 @@ export const queryKeys = {
     range ? (["code-health", id, range] as const) : (["code-health", id] as const),
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
   reviewQueue: (ids: readonly number[], names = false) => ["review-queue", ids, names] as const,
+  health: ["health"] as const,
+  jira: ["jira"] as const,
+  jiraSpaces: (siteId: string) => ["jira", "sites", siteId, "spaces"] as const,
+  jiraSpace: (siteId: string, key: string) => ["jira", "sites", siteId, "spaces", key] as const,
+  linkedSpaces: (repoId: number) => ["repos", repoId, "spaces"] as const,
 };
 
 export function rangeQuery(range: ReportRange): string {
@@ -248,4 +263,102 @@ export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions =
     refreshing: refresh.isPending,
     refreshFailed: refresh.isError,
   };
+}
+
+export interface Health {
+  /** True when Jira is configured on the server. Treat as false when absent. */
+  jira?: boolean;
+}
+
+export interface JiraState {
+  enabled: true;
+  connected: boolean;
+  sites: TrackerSite[];
+}
+
+export interface SpaceDetail {
+  statuses: TrackerStatus[];
+  columns: BoardColumn[];
+}
+
+export type LinkedSpace = TrackerSpace & { workItemCount: number };
+
+/** Whether optional features, Jira among them, are switched on. */
+export function useHealth() {
+  return useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => apiRequest<Health>("/api/health"),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useJira(enabled: boolean) {
+  return useQuery({ queryKey: queryKeys.jira, queryFn: () => apiRequest<JiraState>("/api/jira"), enabled });
+}
+
+/** Revokes the stored Jira grant. Everything read through it is dropped from the cache. */
+export function useDisconnectJira() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiRequest<void>("/api/jira", { method: "DELETE" }),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jira }),
+  });
+}
+
+/** Every space on a site, read live from Jira, so the list can run to hundreds. */
+export function useJiraSpaces(siteId: string) {
+  return useQuery({
+    queryKey: queryKeys.jiraSpaces(siteId),
+    queryFn: ({ signal }) =>
+      apiRequest<TrackerSpaceSummary[]>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces`, { signal }),
+    enabled: siteId !== "",
+    retry: false,
+  });
+}
+
+/** One space's statuses and board columns, read when someone asks how it flows. */
+export function useJiraSpaceDetail(siteId: string, key: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.jiraSpace(siteId, key),
+    queryFn: ({ signal }) =>
+      apiRequest<SpaceDetail>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces/${encodeURIComponent(key)}`, {
+        signal,
+      }),
+    enabled,
+    retry: false,
+  });
+}
+
+/** The spaces linked to a repository, polled every two seconds while any is crawling. */
+export function useLinkedSpaces(repoId: number, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.linkedSpaces(repoId),
+    queryFn: () => apiRequest<LinkedSpace[]>(`/api/repos/${repoId}/spaces`),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
+  });
+}
+
+/** Replaces the set of spaces linked to a repository. An empty list unlinks them all. */
+export function useLinkSpaces(repoId: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { siteId: string; keys: string[] }) =>
+      apiRequest<LinkedSpace[]>(`/api/repos/${repoId}/spaces`, { method: "PUT", body }),
+    onSuccess: (linked) => {
+      client.setQueryData(queryKeys.linkedSpaces(repoId), linked);
+      return client.invalidateQueries({ queryKey: queryKeys.linkedSpaces(repoId) });
+    },
+  });
+}
+
+export function useCrawlSpace(repoId: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, full }: { id: number; full: boolean }) =>
+      apiRequest<unknown>(withQuery(`/api/spaces/${id}/crawl`, full ? "full=1" : ""), { method: "POST" }),
+    // A refused crawl (already running) still means the list is out of date, so refresh on either outcome.
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.linkedSpaces(repoId) }),
+  });
 }

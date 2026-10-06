@@ -7,6 +7,9 @@ import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubDeviceFlow } from "./infrastructure/github/github-device-flow.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
+import { MemoryTrackerGrantStore } from "./infrastructure/auth/memory-tracker-grant-store.js";
+import { AtlassianOAuth } from "./infrastructure/jira/atlassian-oauth.js";
+import { JiraCloudProvider } from "./infrastructure/jira/jira-cloud-provider.js";
 import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
 import { githubCodeExchange } from "./routes/auth.js";
@@ -28,8 +31,17 @@ const { app } = await buildApp({
   checkout,
   analyser: new LizardAnalyser(reader),
   reader,
+  jira: config.jiraEnabled
+    ? {
+        provider: new JiraCloudProvider(),
+        auth: new AtlassianOAuth(config.atlassianClientId, config.atlassianClientSecret, config.atlassianRedirectUri),
+        grants: new MemoryTrackerGrantStore(),
+      }
+    : undefined,
   logger: true,
 });
 
 await app.listen({ port: config.port, host: "127.0.0.1" });
-app.log.info(`API listening on http://127.0.0.1:${config.port} (auth ${config.authMode})`);
+app.log.info(
+  `API listening on http://127.0.0.1:${config.port} (auth ${config.authMode}, jira ${config.jiraEnabled ? "on" : "off"})`,
+);

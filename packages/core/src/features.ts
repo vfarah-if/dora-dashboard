@@ -1,4 +1,4 @@
-import type { FeatureGroup, FeatureMember, OpenPullRequest, QueueEntry, Repo, ReviewLane } from "./types.js";
+import type { FeatureGroup, FeatureMember, OpenPullRequest, PullRequest, QueueEntry, Repo, ReviewLane } from "./types.js";
 
 const TICKET_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 /** Look like ticket keys but are not. */
@@ -6,11 +6,21 @@ const NOT_TICKETS = new Set(["UTF", "SHA", "ISO", "HTTP", "RFC", "CVE", "MD", "T
 /** Branches that many unrelated pull requests are opened from or against. */
 const SHARED_BRANCHES = new Set(["main", "master", "develop", "dev", "trunk"]);
 
-/** Ticket keys such as `ABC-123` in the title, branch name and linked issues, in order of appearance, without repeats. */
-export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "linkedIssues">): string[] {
-  const text = [pr.title, pr.headRef, ...pr.linkedIssues].join(" ");
+/** The distinct, non-lookalike ticket keys in the given pieces of text, in order of appearance. */
+function keysIn(parts: (string | null | undefined)[]): string[] {
+  const text = parts.filter(Boolean).join(" ");
   const keys = (text.match(TICKET_KEY) ?? []).filter((key) => !NOT_TICKETS.has(key.slice(0, key.lastIndexOf("-"))));
   return [...new Set(keys)];
+}
+
+/** Issue keys such as `ABC-123` in a pull request's title and branch name, in order of appearance, without repeats. */
+export function issueKeysOf(pr: Pick<PullRequest, "title" | "headRef">): string[] {
+  return keysIn([pr.title, pr.headRef]);
+}
+
+/** Ticket keys such as `ABC-123` in the title, branch name and linked issues, in order of appearance, without repeats. */
+export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "linkedIssues">): string[] {
+  return keysIn([pr.title, pr.headRef, ...pr.linkedIssues]);
 }
 
 /** Pull requests named on a `Related:` line of the body: `owner/name#12`, a pull request link, or `#12` in the same repository. */

@@ -4,13 +4,14 @@ import {
   ConflictError,
   ForbiddenError,
   RateLimitedError,
+  TrackerUnauthorisedError,
   NotFoundError,
   UnauthorisedError,
   UpstreamError,
   ValidationError,
 } from "../core/errors.js";
 
-/** The one place a service error becomes an HTTP status. Every error body is `{ error: string }`. */
+/** The one place a service error becomes an HTTP status. Every error body is `{ error: string }`; a lost tracker connection adds `message`. */
 export function statusFor(error: unknown): number {
   if (error instanceof ValidationError) return 400;
   if (error instanceof UnauthorisedError) return 401;
@@ -26,6 +27,9 @@ export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error: FastifyError | Error, request, reply) => {
     if ("validation" in error && error.validation) {
       return reply.code(400).send({ error: error.message });
+    }
+    if (error instanceof TrackerUnauthorisedError) {
+      return reply.code(401).send({ error: error.code, message: error.message });
     }
     const status = statusFor(error);
     if (status === 500) {

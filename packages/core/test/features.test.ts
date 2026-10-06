@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupFeatures, ticketKeysOf, type FeatureCandidate } from "../src/features.js";
+import { groupFeatures, issueKeysOf, ticketKeysOf, type FeatureCandidate } from "../src/features.js";
 import type { OpenPullRequest, ReviewLane } from "../src/types.js";
 import { open } from "./openPr.js";
 
@@ -23,6 +23,34 @@ describe("ticketKeysOf", () => {
 
   it("ignores lookalikes such as UTF-8 and SHA-256", () => {
     expect(ticketKeysOf(open({ number: 1, title: "Switch to UTF-8 and SHA-256" }))).toEqual([]);
+  });
+});
+
+describe("issueKeysOf", () => {
+  it("finds a key in the title alone", () => {
+    expect(issueKeysOf({ title: "WID-12 add widgets", headRef: "main" })).toEqual(["WID-12"]);
+  });
+
+  it("finds a key in the branch alone", () => {
+    expect(issueKeysOf({ title: "Add widgets", headRef: "feature/GAD-7-add-widgets" })).toEqual(["GAD-7"]);
+  });
+
+  it("reads the title only when the pull request was crawled before headRef was recorded", () => {
+    expect(issueKeysOf({ title: "WID-3 tidy" })).toEqual(["WID-3"]);
+    expect(issueKeysOf({ title: "WID-3 tidy", headRef: null })).toEqual(["WID-3"]);
+    expect(issueKeysOf({ title: "No key here" })).toEqual([]);
+  });
+
+  it("ignores lookalikes such as UTF-8 and SHA-256 but keeps a real key beside them", () => {
+    expect(issueKeysOf({ title: "Switch to UTF-8", headRef: "sha-256-WID-9" })).toEqual(["WID-9"]);
+  });
+
+  it("lists a key named in both title and branch once, title first", () => {
+    expect(issueKeysOf({ title: "GAD-7 and WID-12", headRef: "WID-12-GAD-7-and-WID-20" })).toEqual(["GAD-7", "WID-12", "WID-20"]);
+  });
+
+  it("does not match lower-case or single-letter prefixes", () => {
+    expect(issueKeysOf({ title: "wid-12 and A-1", headRef: "x" })).toEqual([]);
   });
 });
 

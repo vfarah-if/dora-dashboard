@@ -39,3 +39,11 @@ export class RateLimitedError extends AppError {
 export class ForbiddenError extends AppError {
   override readonly name = "ForbiddenError";
 }
+
+/**
+ * The person's issue tracker connection is missing, expired or refused. It is still a 401, but routes send
+ * `error: "jira_unauthorised"` so the web can offer to connect again rather than treat it as a GitHub sign-out.
+ */
+export class TrackerUnauthorisedError extends UnauthorisedError {
+  readonly code = "jira_unauthorised";
+}

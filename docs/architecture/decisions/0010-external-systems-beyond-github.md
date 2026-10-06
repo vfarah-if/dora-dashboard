@@ -6,6 +6,8 @@ Date: 2026-09-29
 
 Proposed
 
+Note: step 2 (Jira) is decided by [ADR 0020](0020-jira-through-oauth-3lo.md), which chooses OAuth 2.0 (3LO) and holds grants in memory only. The other steps remain proposed.
+
 ## Context
 
 The dashboard reads github.com only. Teams using it also work in client-hosted git, client-owned Jira instances, and deliver to live client sites whose own availability is the truest signal of deployment and recovery. Results also need to reach the places those teams read, such as Confluence.

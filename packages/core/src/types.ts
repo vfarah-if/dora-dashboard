@@ -41,6 +41,8 @@ export interface PullRequest {
   /** Earliest authored or committed date of the PR's first commit. */
   firstCommitAt: string | null;
   baseRef: string;
+  /** The branch the pull request was opened from. Absent on pull requests crawled before it was recorded. */
+  headRef?: string | null;
   reviews: Review[];
   /** Paths of the files changed, capped at 100. Absent on pull requests crawled before this was recorded. */
   files?: string[] | null;
@@ -201,4 +203,82 @@ export interface ReviewQueue {
   errors: ReviewQueueError[];
   /** Repositories that were read only in part, for example because they have more open pull requests than are fetched. */
   warnings: ReviewQueueError[];
+}
+
+/** One Jira Cloud site (an Atlassian instance) the connected account can reach. */
+export interface TrackerSite {
+  /** The site's cloud id, used in every API path. */
+  id: string;
+  url: string;
+  name: string;
+}
+
+/** A space (Jira still calls it a project in its API) on a tracker site, as listed live. */
+export interface TrackerSpaceSummary {
+  key: string;
+  name: string;
+  /** "software", "business" or "service_desk" on Jira Cloud; null when the tracker does not say. */
+  type: string | null;
+}
+
+/** Jira's three fixed status categories, which every team-defined status belongs to. */
+export type StatusCategory = "todo" | "in_progress" | "done";
+
+export interface TrackerStatus {
+  id: string;
+  name: string;
+  category: StatusCategory;
+}
+
+/** One column of a space's board, and the statuses that place an issue in it. */
+export interface BoardColumn {
+  name: string;
+  statusIds: string[];
+}
+
+/** A space the dashboard tracks, with what was learnt about it on the last crawl. */
+export interface TrackerSpace {
+  id: number;
+  siteId: string;
+  siteUrl: string;
+  key: string;
+  name: string;
+  statuses: TrackerStatus[];
+  /** The first board's columns, left to right; empty when the space has no board. */
+  columns: BoardColumn[];
+  lastCrawledAt: string | null;
+  crawlStatus: "idle" | "crawling" | "failed";
+  crawlError: string | null;
+  crawlProgress: string | null;
+}
+
+/** One status change in an issue's history. */
+export interface WorkItemTransition {
+  at: string;
+  /** Status names; `from` is null for the first status an issue was created in. */
+  from: string | null;
+  to: string;
+  /** Null when the status no longer exists in the space, so its category cannot be looked up. */
+  fromCategory: StatusCategory | null;
+  toCategory: StatusCategory | null;
+}
+
+/** An issue read from a tracker, with its status history oldest first. */
+export interface WorkItem {
+  key: string;
+  spaceKey: string;
+  /** The issue type's name, such as "Story", "Bug", "Task" or "Sub-task". */
+  type: string;
+  summary: string;
+  status: string;
+  statusCategory: StatusCategory | null;
+  createdAt: string;
+  updatedAt: string;
+  /** When the issue was resolved; null while it is unresolved. */
+  resolvedAt: string | null;
+  /** The tracker's opaque account id; never a name or an email (ADR 0008). */
+  assigneeId: string | null;
+  parentKey: string | null;
+  labels: string[];
+  transitions: WorkItemTransition[];
 }

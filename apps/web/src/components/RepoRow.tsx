@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { useCrawl, useDeleteRepo, useUpdateRepo, useWorkflows, type RepoWithCounts } from "../api/hooks";
 import { errorText } from "../api/client";
 import { copy } from "../copy";
+import { JiraSpacesPanel } from "./JiraSpacesPanel";
 import { formatDateTime, formatNumber } from "../lib/format";
 
 function ConfigureDeploy({ repo, onDone }: { repo: RepoWithCounts; onDone: () => void }) {
@@ -220,6 +221,7 @@ export function RepoRow({ repo, selected, selectable, onSelect }: RepoRowProps) 
         onRemove={confirmRemove}
       />
       {configuring && <ConfigureDeploy repo={repo} onDone={() => setConfiguring(false)} />}
+      {configuring && <JiraSpacesPanel repoId={repo.id} />}
     </li>
   );
 }

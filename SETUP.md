@@ -84,6 +84,52 @@ Then open http://localhost:5181 and work through these checks.
 
 When you have finished, remove the stand-in with `rm -rf /tmp/no-gh`.
 
+## Connect Jira
+
+Jira Cloud is optional. When it is connected, issues from the Jira spaces you choose are read beside a repository's pull requests and joined to them by issue key (such as `WID-12`) in the pull request title or branch name. The dashboard reaches Jira through OAuth 2.0 (3LO), so each deployment registers its own Atlassian app once (ADR 0020). Until that app's client ID and secret are in `.env`, Jira is switched off and the dashboard behaves exactly as it does without it.
+
+### Register the Atlassian app
+
+1. Open the developer console at <https://developer.atlassian.com/console/myapps/> and sign in with the Atlassian account you use for Jira. The console is a separate site; the settings cog inside Jira does not lead to it.
+2. Choose **Create**, then **OAuth 2.0 integration**. Give it a name that says what it is for, such as "DORA dashboard".
+3. For **Access type** choose **Resource-level**, so the app reaches only the site picked on the consent screen. Account-level would also reach every other site in the same Atlassian organisation without asking, which the dashboard does not need. A client's own Jira lives in their Atlassian account, so neither option reaches it without its own consent.
+4. Agree to the developer terms and choose **Create**. The notice about rotating refresh tokens needs no action; the dashboard stores each new refresh token as Atlassian issues it.
+
+### Give it permissions and a callback
+
+1. In the app's left-hand menu open **Permissions**, choose **Add** beside **Jira API**, then **Configure**. Add the classic scopes `read:jira-work` and `read:jira-user`, and the granular scopes `read:board-scope:jira-software`, `read:board-scope.admin:jira-software` and `read:project:jira`. If the board scopes are not listed there, add the **Jira Software API** in the same way and find them under it. Without the admin board scope a space's board columns read as empty rather than failing. The `offline_access` scope is requested when you connect and needs no tick.
+2. Open **Authorization**, choose **Add** beside **OAuth 2.0 (3LO)** and set the callback URL to exactly `http://localhost:5181/api/auth/jira/callback`, then save. This is the web address, which forwards `/api` to the API in the same way as the GitHub callback. In another deployment use the address the dashboard is served from, and set `ATLASSIAN_REDIRECT_URI` to match.
+3. Leave **Distribution** on **Not sharing**. An unshared app can still be used by its owner, which is all a local dashboard needs. Sharing asks for vendor details and a personal data declaration, and the honest answer to "Does your app store personal data?" is Yes, because the crawl keeps each issue's assignee account ID. Answering Yes commits you to polling Atlassian's personal data reporting API, which the dashboard does not yet do, so a teammate who needs Jira should register their own app instead.
+
+### Add the credentials
+
+Open **Settings** in the app's menu and copy the **Client ID** and **Secret** from Authentication details into `.env` in the repository root. Use `.env`, which is gitignored, and never `.env.example`, which is committed. Treat the secret as a password.
+
+```bash
+ATLASSIAN_CLIENT_ID=<your client id>
+ATLASSIAN_CLIENT_SECRET=<your client secret>
+```
+
+`ATLASSIAN_REDIRECT_URI` defaults to the callback above and is needed only when the dashboard is served from another address. Restart `make dev`; the API's start-up line ends with `jira on` when both values were read, and `jira off` otherwise.
+
+### Connect and choose spaces
+
+1. Open `http://localhost:5181/repos` and choose **Configure deploy** on a repository. The Jira spaces panel sits under the deploy settings.
+2. Choose **Connect Jira**, pick your site on Atlassian's consent screen and allow access. You return to the same page.
+3. Choose the site (it is chosen for you when there is only one), then search for spaces by name or key and tick the ones whose work this repository delivers.
+4. Before saving, open **How this space flows** and check that the board columns and statuses match the board your team uses. The dashboard reads the first board it finds in a space, so a space with several boards may show a different one.
+5. Choose **Save links**. Each linked space is crawled straight away, and the panel shows its issue count and crawl status. **Re-crawl** reads what changed since the last crawl; **Full re-crawl** reads everything again and removes issues that no longer exist in the space.
+
+A repository can link spaces on more than one site; saving on one site leaves the others untouched.
+
+### What to know
+
+- The Jira grant is held in memory only, so after the API restarts, or after you sign out, choose **Connect Jira** again. The terminal crawl (`make crawl`) cannot read Jira.
+- Linked spaces and their crawled issues, including summaries, are visible to everyone signed in to this dashboard, even if their own Jira account cannot see that space.
+- The dashboard reads the whole space, not one person's filtered view of a board.
+- Only the assignee's opaque account ID is stored, never a name or an email address (ADR 0008).
+- Before the first real crawl, add your real site hostnames and space keys to `.private-names` so that `make check-names` keeps them out of the repository (ADR 0009). Examples and tests use `acme.example.test` and the space key `WID`.
+
 ## Automated tests
 
 ```bash
@@ -96,12 +142,19 @@ To run only the sign-in tests, use `cd apps/api && npx vitest run test/device-fl
 
 ## When something goes wrong
 
-| What you see                                          | What to do                                                                                                      |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| No "Sign in with GitHub" button                       | Check that `AUTH_MODE` is `gh-cli`, that `GITHUB_DEVICE_CLIENT_ID` is set in `.env`, and restart the API        |
-| The page signs straight in during the fallback test   | The API is still finding `gh`; start it again with the `PATH` shown above, through `make api`                   |
-| GitHub says device flow is disabled                   | Tick Enable Device Flow on the OAuth App and save                                                               |
-| "Too many sign-in attempts"                           | The API allows one new sign-in every two seconds and twenty waiting at once; wait a moment and choose Try again |
-| Private repositories from an organisation are missing | An owner of that organisation must approve the OAuth App, or sign in through `gh` instead                       |
-| `make crawl` fails with no browser sign-in            | The terminal crawl always uses the GitHub CLI; run `gh auth login`                                              |
-| Code health is unavailable                            | Install `git` and lizard as the README describes, restart the API and crawl again, or set `CODE_ANALYSIS=off`   |
+| What you see                                          | What to do                                                                                                                |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| No "Sign in with GitHub" button                       | Check that `AUTH_MODE` is `gh-cli`, that `GITHUB_DEVICE_CLIENT_ID` is set in `.env`, and restart the API                  |
+| The page signs straight in during the fallback test   | The API is still finding `gh`; start it again with the `PATH` shown above, through `make api`                             |
+| GitHub says device flow is disabled                   | Tick Enable Device Flow on the OAuth App and save                                                                         |
+| "Too many sign-in attempts"                           | The API allows one new sign-in every two seconds and twenty waiting at once; wait a moment and choose Try again           |
+| Private repositories from an organisation are missing | An owner of that organisation must approve the OAuth App, or sign in through `gh` instead                                 |
+| `make crawl` fails with no browser sign-in            | The terminal crawl always uses the GitHub CLI; run `gh auth login`                                                        |
+| Code health is unavailable                            | Install `git` and lizard as the README describes, restart the API and crawl again, or set `CODE_ANALYSIS=off`             |
+| No Jira panel under Configure deploy                  | The API printed `jira off`: put both `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` in `.env` and restart `make dev` |
+| Atlassian reports a redirect or callback mismatch     | The callback URL on the app's Authorization page must be exactly `http://localhost:5181/api/auth/jira/callback`           |
+| The consent screen says the app is blocked            | Your organisation's Atlassian admin restricts third-party apps and must allow this one                                    |
+| "Connect Jira again"                                  | The API restarted, you signed out, or the refresh token lapsed after 90 days unused; connect again                        |
+| A space shows no board columns                        | Add the `read:board-scope.admin:jira-software` scope and reconnect, or the space has no board                             |
+| The columns differ from your board                    | The space has several boards and the first one was read; the statuses are still correct                                   |
+| `make dev` says port 5181 or 8787 is in use           | An earlier `make dev` is still running; stop it in its terminal, or find it with `lsof -nP -iTCP:5181 -sTCP:LISTEN`       |

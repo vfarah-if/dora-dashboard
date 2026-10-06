@@ -1,8 +1,17 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { CodeSnapshot, DeployRun, PullRequest, Repo } from "@dora-dashboard/core";
-import type { RepoCounts, RepoStore } from "../../interfaces/repo-store.js";
+import type {
+  BoardColumn,
+  CodeSnapshot,
+  DeployRun,
+  PullRequest,
+  Repo,
+  TrackerSpace,
+  TrackerStatus,
+  WorkItem,
+} from "@dora-dashboard/core";
+import type { RepoCounts, RepoStore, SpaceLink } from "../../interfaces/repo-store.js";
 
 const SNAPSHOTS_KEPT = 10;
 
@@ -41,7 +50,62 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
   data TEXT NOT NULL,
   PRIMARY KEY (repo_id, analysed_at)
 );
+CREATE TABLE IF NOT EXISTS tracker_spaces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id TEXT NOT NULL,
+  site_url TEXT NOT NULL,
+  space_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  statuses TEXT NOT NULL DEFAULT '[]',
+  columns TEXT NOT NULL DEFAULT '[]',
+  last_crawled_at TEXT,
+  crawl_status TEXT NOT NULL DEFAULT 'idle',
+  crawl_error TEXT,
+  crawl_progress TEXT,
+  crawl_cursor TEXT,
+  UNIQUE (site_id, space_key)
+);
+CREATE TABLE IF NOT EXISTS repo_spaces (
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  space_id INTEGER NOT NULL REFERENCES tracker_spaces(id) ON DELETE CASCADE,
+  PRIMARY KEY (repo_id, space_id)
+);
+CREATE TABLE IF NOT EXISTS work_items (
+  space_id INTEGER NOT NULL REFERENCES tracker_spaces(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (space_id, key)
+);
 `;
+
+interface SpaceRow {
+  id: number;
+  site_id: string;
+  site_url: string;
+  space_key: string;
+  name: string;
+  statuses: string;
+  columns: string;
+  last_crawled_at: string | null;
+  crawl_status: TrackerSpace["crawlStatus"];
+  crawl_error: string | null;
+  crawl_progress: string | null;
+}
+
+const toSpace = (row: SpaceRow): TrackerSpace => ({
+  id: row.id,
+  siteId: row.site_id,
+  siteUrl: row.site_url,
+  key: row.space_key,
+  name: row.name,
+  statuses: JSON.parse(row.statuses) as TrackerStatus[],
+  columns: JSON.parse(row.columns) as BoardColumn[],
+  lastCrawledAt: row.last_crawled_at,
+  crawlStatus: row.crawl_status,
+  crawlError: row.crawl_error,
+  crawlProgress: row.crawl_progress,
+});
 
 interface RepoRow {
   id: number;
@@ -81,6 +145,7 @@ export class SqliteRepoStore implements RepoStore {
     this.db.exec(SCHEMA);
     // A crawl interrupted by a restart must not stay "crawling" forever.
     this.db.exec("UPDATE repos SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
+    this.db.exec("UPDATE tracker_spaces SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
   }
 
   listRepos(): Repo[] {
@@ -114,6 +179,7 @@ export class SqliteRepoStore implements RepoStore {
 
   deleteRepo(id: number): void {
     this.db.prepare("DELETE FROM repos WHERE id = ?").run(id);
+    this.pruneSpaces();
   }
 
   setCrawlState(id: number, status: Repo["crawlStatus"], progress: string | null, error: string | null = null): void {
@@ -217,5 +283,126 @@ export class SqliteRepoStore implements RepoStore {
       .prepare(`SELECT data FROM code_snapshots WHERE repo_id = ? ${condition} ORDER BY analysed_at DESC LIMIT 1`)
       .get(repoId) as unknown as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as CodeSnapshot) : null;
+  }
+
+  /** Spaces no repository links to any more are dropped, with their work items, so no unreachable data lingers. */
+  private pruneSpaces(): void {
+    this.db.exec("DELETE FROM tracker_spaces WHERE id NOT IN (SELECT space_id FROM repo_spaces)");
+  }
+
+  linkSpaces(repoId: number, siteId: string, spaces: SpaceLink[]): TrackerSpace[] {
+    const upsert = this.db.prepare(
+      `INSERT INTO tracker_spaces (site_id, site_url, space_key, name) VALUES (?, ?, ?, ?)
+       ON CONFLICT (site_id, space_key) DO UPDATE SET site_url = excluded.site_url, name = excluded.name
+       RETURNING id`,
+    );
+    const link = this.db.prepare("INSERT OR IGNORE INTO repo_spaces (repo_id, space_id) VALUES (?, ?)");
+    const ids: number[] = [];
+    this.db.exec("BEGIN");
+    try {
+      this.db
+        .prepare("DELETE FROM repo_spaces WHERE repo_id = ? AND space_id IN (SELECT id FROM tracker_spaces WHERE site_id = ?)")
+        .run(repoId, siteId);
+      for (const space of spaces) {
+        const row = upsert.get(space.siteId, space.siteUrl, space.key, space.name) as unknown as { id: number };
+        link.run(repoId, row.id);
+        ids.push(row.id);
+      }
+      this.pruneSpaces();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return [...new Set(ids)].map((id) => this.getSpace(id)!);
+  }
+
+  spacesFor(repoId: number): TrackerSpace[] {
+    const rows = this.db
+      .prepare(
+        `SELECT s.* FROM tracker_spaces s JOIN repo_spaces r ON r.space_id = s.id
+         WHERE r.repo_id = ? ORDER BY s.site_id, s.space_key`,
+      )
+      .all(repoId) as unknown as SpaceRow[];
+    return rows.map(toSpace);
+  }
+
+  getSpace(id: number): TrackerSpace | null {
+    const row = this.db.prepare("SELECT * FROM tracker_spaces WHERE id = ?").get(id) as unknown as SpaceRow | undefined;
+    return row ? toSpace(row) : null;
+  }
+
+  setSpaceDetails(id: number, statuses: TrackerStatus[], columns: BoardColumn[]): void {
+    this.db
+      .prepare("UPDATE tracker_spaces SET statuses = ?, columns = ? WHERE id = ?")
+      .run(JSON.stringify(statuses), JSON.stringify(columns), id);
+  }
+
+  setSpaceCrawlState(
+    id: number,
+    status: TrackerSpace["crawlStatus"],
+    progress: string | null,
+    error: string | null = null,
+  ): void {
+    this.db
+      .prepare("UPDATE tracker_spaces SET crawl_status = ?, crawl_progress = ?, crawl_error = ? WHERE id = ?")
+      .run(status, progress, error, id);
+  }
+
+  finishSpaceCrawl(id: number, cursor: string | null): void {
+    this.db
+      .prepare(
+        "UPDATE tracker_spaces SET crawl_status = 'idle', crawl_progress = NULL, crawl_error = NULL, last_crawled_at = ?, crawl_cursor = COALESCE(?, crawl_cursor) WHERE id = ?",
+      )
+      .run(new Date().toISOString(), cursor, id);
+  }
+
+  spaceCrawlCursor(id: number): string | null {
+    const row = this.db.prepare("SELECT crawl_cursor FROM tracker_spaces WHERE id = ?").get(id) as
+      { crawl_cursor: string | null } | undefined;
+    return row?.crawl_cursor ?? null;
+  }
+
+  resetSpaceCrawlCursor(id: number): void {
+    this.db.prepare("UPDATE tracker_spaces SET crawl_cursor = NULL WHERE id = ?").run(id);
+  }
+
+  upsertWorkItems(spaceId: number, items: WorkItem[]): void {
+    const stmt = this.db.prepare(
+      "INSERT INTO work_items (space_id, key, updated_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (space_id, key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+    );
+    this.db.exec("BEGIN");
+    try {
+      for (const item of items) stmt.run(spaceId, item.key, item.updatedAt, JSON.stringify(item));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  removeWorkItemsExcept(spaceId: number, keep: ReadonlySet<string>): number {
+    const held = this.db.prepare("SELECT key FROM work_items WHERE space_id = ?").all(spaceId) as unknown as { key: string }[];
+    const gone = held.filter((row) => !keep.has(row.key));
+    const stmt = this.db.prepare("DELETE FROM work_items WHERE space_id = ? AND key = ?");
+    this.db.exec("BEGIN");
+    try {
+      for (const row of gone) stmt.run(spaceId, row.key);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return gone.length;
+  }
+
+  workItems(spaceId: number): WorkItem[] {
+    const rows = this.db.prepare("SELECT data FROM work_items WHERE space_id = ?").all(spaceId) as unknown as { data: string }[];
+    return rows.map((r) => JSON.parse(r.data) as WorkItem);
+  }
+
+  workItemCount(spaceId: number): number {
+    const row = this.db.prepare("SELECT count(*) AS n FROM work_items WHERE space_id = ?").get(spaceId) as { n: number };
+    return row.n;
   }
 }

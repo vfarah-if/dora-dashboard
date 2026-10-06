@@ -65,3 +65,41 @@ export const reviewQueueQuery = {
     names: { type: "string", enum: ["0", "1"] },
   },
 } as const;
+
+/** A relative path on the dashboard, with no host, no `//` prefix and no backslash, to come back to after consent. */
+export const jiraStartQuery = {
+  type: "object",
+  properties: { returnTo: { type: "string", maxLength: 200, pattern: "^/(?![/\\\\])[^\\s\\u0000-\\u001f\\u007f\\\\]*$" } },
+} as const;
+
+export const jiraCallbackQuery = {
+  type: "object",
+  properties: {
+    code: { type: "string", maxLength: 2000 },
+    state: { type: "string", maxLength: 200 },
+    error: { type: "string", maxLength: 200 },
+    error_description: { type: "string", maxLength: 2000 },
+  },
+} as const;
+
+const siteId = { type: "string", pattern: "^[A-Za-z0-9-]{1,64}$" } as const;
+const spaceKey = { type: "string", pattern: "^[A-Z][A-Z0-9_]+$", maxLength: 100 } as const;
+
+export const jiraSiteParams = {
+  type: "object",
+  required: ["siteId"],
+  properties: { siteId },
+} as const;
+
+export const jiraSpaceParams = {
+  type: "object",
+  required: ["siteId", "key"],
+  properties: { siteId, key: spaceKey },
+} as const;
+
+export const linkSpacesBody = {
+  type: "object",
+  required: ["siteId", "keys"],
+  additionalProperties: false,
+  properties: { siteId, keys: { type: "array", items: spaceKey, maxItems: 20 } },
+} as const;
