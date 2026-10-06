@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useRepos, type RepoWithCounts } from "../api/hooks";
 import { copy } from "../copy";
+import { JiraOutcomeNotice } from "../components/JiraOutcomeNotice";
 import { AddRepoForm } from "../components/AddRepoForm";
 import { RepoRow } from "../components/RepoRow";
 import { EmptyState, ErrorState, SkeletonGrid } from "../components/States";
@@ -80,6 +81,8 @@ export function ReposPage() {
           <p className="lede">{copy.repos.lede}</p>
         </header>
       </StickyPanel>
+
+      <JiraOutcomeNotice />
 
       <AddRepoForm />
 

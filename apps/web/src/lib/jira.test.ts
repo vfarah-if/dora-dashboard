@@ -10,6 +10,7 @@ import {
   isJiraUnauthorised,
   jiraConnectUrl,
   linkedKeysForSite,
+  parseJiraOutcome,
   returnPath,
   toggleKey,
 } from "./jira";
@@ -136,9 +137,11 @@ describe("returnPath", () => {
 
 describe("isJiraUnauthorised", () => {
   it("recognises only a 401 carrying the Jira code", () => {
-    expect(isJiraUnauthorised(new ApiError(401, "jira_unauthorised"))).toBe(true);
+    expect(isJiraUnauthorised(new ApiError(401, "Connect Jira again", "jira_unauthorised"))).toBe(true);
     expect(isJiraUnauthorised(new ApiError(401, "Sign in"))).toBe(false);
-    expect(isJiraUnauthorised(new ApiError(403, "jira_unauthorised"))).toBe(false);
+    // The code is read, never the message.
+    expect(isJiraUnauthorised(new ApiError(401, "jira_unauthorised"))).toBe(false);
+    expect(isJiraUnauthorised(new ApiError(403, "Connect Jira again", "jira_unauthorised"))).toBe(false);
     expect(isJiraUnauthorised(null)).toBe(false);
     expect(isJiraUnauthorised("jira_unauthorised")).toBe(false);
   });
@@ -149,5 +152,15 @@ describe("isCrawlConflict", () => {
     expect(isCrawlConflict(new ApiError(409, "A crawl of this space is already running"))).toBe(true);
     expect(isCrawlConflict(new ApiError(500, "x"))).toBe(false);
     expect(isCrawlConflict(undefined)).toBe(false);
+  });
+});
+
+describe("parseJiraOutcome", () => {
+  it.each(["denied", "error", "expired", "misconfigured", "rate_limited"])("accepts %s", (value) => {
+    expect(parseJiraOutcome(value)).toBe(value);
+  });
+
+  it.each([null, "", "Denied", "success"])("gives null for %j", (value) => {
+    expect(parseJiraOutcome(value)).toBeNull();
   });
 });

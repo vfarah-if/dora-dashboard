@@ -1,40 +1,22 @@
 import { createHash } from "node:crypto";
-import type { BoardColumn, TrackerSite, TrackerSpace, TrackerSpaceSummary, TrackerStatus } from "@dora-dashboard/core";
+import type {
+  LinkedSpace,
+  SpaceDescription,
+  SpaceListing,
+  TrackerSite,
+  TrackerSpace,
+  TrackerSpaceSummary,
+} from "@dora-dashboard/core";
 import { ConflictError, NotFoundError, TrackerUnauthorisedError, UnauthorisedError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { WorkItemProvider } from "../interfaces/work-item-provider.js";
-import type { JiraAuthService } from "./jira-auth-service.js";
+import { JIRA_REFUSED, type JiraAuthService } from "./jira-auth-service.js";
 import type { WorkItemCrawlService } from "./work-item-crawl-service.js";
 
 /** Spaces listed live are kept this long, per token and site, in memory only (as the review queue is, ADR 0017). */
 export const SPACE_LIST_TTL_MS = 60_000;
-
-export interface SpaceDescription {
-  statuses: TrackerStatus[];
-  columns: BoardColumn[];
-}
-
-/** A tracked space as the spaces list shows it: its crawl state, how many items are held and the repositories it feeds. */
-export interface SpaceListing {
-  id: number;
-  key: string;
-  name: string;
-  siteUrl: string;
-  lastCrawledAt: string | null;
-  crawlStatus: TrackerSpace["crawlStatus"];
-  /** Why the last crawl failed, or null. Fit to show to the person. */
-  crawlError: string | null;
-  workItemCount: number;
-  repos: { id: number; name: string }[];
-}
-
-/**
- * A linked space with how many of its work items are stored. It never carries assignee names (ADR 0008), and `never`
- * makes spreading a whole space into one a compile error rather than a leak.
- */
-export type LinkedSpace = Omit<TrackerSpace, "people"> & { workItemCount: number; people?: never };
 
 interface CachedSpaces {
   at: number;
@@ -59,17 +41,18 @@ export class TrackerService {
     private readonly ttlMs = SPACE_LIST_TTL_MS,
   ) {}
 
-  /** A rejected grant at the tracker means the same to the person as a missing one: connect again. */
+  /** A rejected grant (401) at the tracker means the same to the person as a missing one: connect again. A refusal (403) is not a rejected grant, so it passes through and the grant stays. */
   private async withToken<T>(login: string, read: (token: string) => Promise<T>): Promise<T> {
     const token = await this.auth.accessToken(login);
     try {
       return await read(token);
     } catch (error) {
       if (error instanceof UnauthorisedError && !(error instanceof TrackerUnauthorisedError)) {
-        // Jira has revoked this grant, so keeping it would leave the person shown as connected.
-        this.auth.disconnect(login);
-        this.log.warn({ err: error }, "jira rejected the grant; disconnected it");
-        throw new TrackerUnauthorisedError("Jira refused the connection. Connect Jira again");
+        // Jira has revoked this grant, so keeping it would leave the person shown as connected. A grant the person has
+        // since replaced is not the one Jira refused, and stays.
+        const dropped = this.auth.dropIfCurrent(login, token);
+        this.log.warn({ err: error, dropped }, "jira rejected the grant");
+        throw new TrackerUnauthorisedError(JIRA_REFUSED, { cause: error });
       }
       throw error;
     }
@@ -95,11 +78,11 @@ export class TrackerService {
   /** Statuses and board columns read live, so the picker shows what the board looks like before anything is linked. */
   describeSpace(login: string, siteId: string, key: string): Promise<SpaceDescription> {
     return this.withToken(login, async (token) => {
-      const [statuses, columns] = await Promise.all([
+      const [statuses, { board, columns }] = await Promise.all([
         this.provider.fetchStatuses(token, siteId, key),
         this.provider.fetchBoardColumns(token, siteId, key),
       ]);
-      return { statuses, columns };
+      return { statuses, columns, board };
     });
   }
 
@@ -133,7 +116,8 @@ export class TrackerService {
     this.requireRepo(repoId);
     const wanted = [...new Set(keys)];
     if (wanted.length === 0) {
-      this.store.linkSpaces(repoId, siteId, []);
+      // Nothing is created, so the site's URL is never read; unlinking needs no call to Jira.
+      this.store.linkSpaces(repoId, { id: siteId, url: "" }, []);
       return this.linkedSpaces(repoId);
     }
     const sites = await this.listSites(login);
@@ -143,10 +127,10 @@ export class TrackerService {
     const missing = wanted.filter((key) => !available.has(key));
     if (missing.length > 0) throw new NotFoundError(`Jira space not found: ${missing.join(", ")}`);
 
-    const links = wanted.map((key) => ({ siteId, siteUrl: site.url, key, name: available.get(key)!.name }));
+    const links = wanted.map((key) => ({ key, name: available.get(key)!.name }));
     let linked: TrackerSpace[];
     try {
-      linked = this.store.linkSpaces(repoId, siteId, links);
+      linked = this.store.linkSpaces(repoId, site, links);
     } catch (error) {
       // The repository can be deleted while Jira was being asked; the store then refuses the link.
       this.requireRepo(repoId);
@@ -169,7 +153,7 @@ export class TrackerService {
   /** Whether a crawl started; false when the space is already being crawled. */
   private startCrawl(login: string, spaceId: number, full: boolean): boolean {
     if (this.crawler.isCrawling(spaceId)) return false;
-    // The crawl logs its own failure and records it on the space, so there is nothing more to do with it here.
+    // The crawl logs its own failure, and any failure to record it, so there is nothing more to do with it here.
     this.crawler.crawl(login, spaceId, full).catch(() => undefined);
     return true;
   }

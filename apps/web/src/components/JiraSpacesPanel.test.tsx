@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
+import type { LinkedSpace, TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
 import { JiraSpacesPanel } from "./JiraSpacesPanel";
 import { mockFetch, renderRoute, type MockResponse } from "../test/render";
-import type { LinkedSpace } from "../api/hooks";
 import { copy } from "../copy";
 
 const site: TrackerSite = { id: "cloud-1", url: "https://acme.example.test", name: "Acme" };
@@ -24,6 +23,7 @@ const detail = {
     { name: "Underway", statusIds: ["2"] },
     { name: "Finished", statusIds: ["3"] },
   ],
+  board: "read",
 };
 
 function linked(overrides: Partial<LinkedSpace> = {}): LinkedSpace {
@@ -35,6 +35,7 @@ function linked(overrides: Partial<LinkedSpace> = {}): LinkedSpace {
     name: "Widgets",
     statuses: detail.statuses as LinkedSpace["statuses"],
     columns: detail.columns,
+    board: "read",
     lastCrawledAt: "2026-03-01T10:00:00Z",
     crawlStatus: "idle",
     crawlError: null,
@@ -44,7 +45,7 @@ function linked(overrides: Partial<LinkedSpace> = {}): LinkedSpace {
   };
 }
 
-const unauthorised: MockResponse = { status: 401, body: { error: "jira_unauthorised", message: "Connect Jira again" } };
+const unauthorised: MockResponse = { status: 401, body: { error: "Connect Jira again", code: "jira_unauthorised" } };
 
 function baseRoutes(extra: Record<string, MockResponse | ((url: URL, init?: RequestInit) => MockResponse)> = {}) {
   return {
@@ -101,19 +102,6 @@ describe("JiraSpacesPanel", () => {
     expect(assign).toHaveBeenCalledWith("/api/auth/jira/start?returnTo=%2Frepos%3Fx%3D1");
   });
 
-  it("shows a calm, dismissible notice when the person declined access at Atlassian", async () => {
-    const user = userEvent.setup();
-    mockFetch({ ...baseRoutes(), "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } });
-    renderRoute(<JiraSpacesPanel repoId={1} />, { path: "/repos", route: "/repos?jira=denied" });
-    expect(await screen.findByText(copy.jira.deniedTitle)).toBeInTheDocument();
-    expect(screen.getByText(copy.jira.deniedBody)).toBeInTheDocument();
-    expect(screen.queryByText(copy.jira.connectFailedTitle)).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: copy.jira.dismiss }));
-    expect(screen.queryByText(copy.jira.deniedTitle)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
-  });
-
   it("offers to connect and navigates to the start route with the current path", async () => {
     const user = userEvent.setup();
     mockFetch({ ...baseRoutes(), "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } });
@@ -122,15 +110,6 @@ describe("JiraSpacesPanel", () => {
     await user.click(await screen.findByRole("button", { name: copy.jira.connect }));
     expect(screen.getByText(copy.jira.lede)).toBeInTheDocument();
     expect(assign).toHaveBeenCalledWith("/api/auth/jira/start?returnTo=%2Frepos%3Fx%3D1");
-  });
-
-  it("shows a dismissible error when the sign-in came back with jira=error", async () => {
-    const user = userEvent.setup();
-    mockFetch({ ...baseRoutes(), "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } });
-    renderRoute(<JiraSpacesPanel repoId={1} />, { path: "/repos", route: "/repos?jira=error" });
-    expect(await screen.findByText(copy.jira.connectFailedTitle)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: copy.jira.dismiss }));
-    expect(screen.queryByText(copy.jira.connectFailedTitle)).not.toBeInTheDocument();
   });
 
   it("auto-selects a single site, filters spaces, preselects linked ones and saves the chosen keys", async () => {
@@ -270,9 +249,123 @@ describe("JiraSpacesPanel", () => {
     expect(within(done).getByText("Shipped")).toBeInTheDocument();
   });
 
+  it("tells the person what to do when Jira refused the board, instead of saying there is no board", async () => {
+    const user = userEvent.setup();
+    mockFetch(
+      baseRoutes({
+        "GET /api/jira/sites/cloud-1/spaces/WID": {
+          body: { statuses: detail.statuses, columns: [], board: "forbidden" },
+        },
+      }),
+    );
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    await user.click(await screen.findByRole("checkbox", { name: /Widgets/ }));
+    await user.click(screen.getByRole("button", { name: copy.jira.flowToggleLabel("Widgets") }));
+    expect(await screen.findByText(copy.jira.boardForbiddenTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.jira.boardForbidden)).toBeInTheDocument();
+    expect(screen.queryByText(copy.jira.noBoard)).not.toBeInTheDocument();
+    expect(screen.getByText("Backlog")).toBeInTheDocument();
+  });
+
+  it("shows the Jira message, not a not-found state, when the flow answers 403", async () => {
+    const user = userEvent.setup();
+    const message =
+      "Jira refused access to /rest/api/3/project/WID. The connected account may lack permission, or the app may lack a scope";
+    mockFetch(baseRoutes({ "GET /api/jira/sites/cloud-1/spaces/WID": { status: 403, body: { error: message } } }));
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    await user.click(await screen.findByRole("checkbox", { name: /Widgets/ }));
+    await user.click(screen.getByRole("button", { name: copy.jira.flowToggleLabel("Widgets") }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
+  it("reads the connection again when a crawling space turns out to have failed, and offers Connect when it is gone", async () => {
+    let listCalls = 0;
+    let connected = true;
+    mockFetch(
+      baseRoutes({
+        "GET /api/jira": () => ({ body: { enabled: true, connected, sites: connected ? [site] : [] } }),
+        "GET /api/repos/1/spaces": () => {
+          listCalls += 1;
+          if (listCalls === 1) return { body: [linked({ crawlStatus: "crawling", crawlProgress: "1 of 9" })] };
+          connected = false;
+          return {
+            body: [
+              linked({
+                crawlStatus: "failed",
+                crawlError: "Jira refused the connection used for this crawl. Crawl again with a working connection.",
+              }),
+            ],
+          };
+        },
+      }),
+    );
+    const { client } = renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByText("1 of 9")).toBeInTheDocument();
+    await act(() => client.invalidateQueries({ queryKey: ["repos", 1, "spaces"] }));
+    expect(await screen.findByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
+  });
+
+  it("reads the connection again when a space goes from idle straight to failed", async () => {
+    let listCalls = 0;
+    let connected = true;
+    mockFetch(
+      baseRoutes({
+        "GET /api/jira": () => ({ body: { enabled: true, connected, sites: connected ? [site] : [] } }),
+        "GET /api/repos/1/spaces": () => {
+          listCalls += 1;
+          if (listCalls === 1) return { body: [linked({ crawlStatus: "idle" })] };
+          connected = false;
+          return { body: [linked({ crawlStatus: "failed", crawlError: "Jira refused the connection used for this crawl." })] };
+        },
+      }),
+    );
+    const { client } = renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByText(copy.jira.status.idle)).toBeInTheDocument();
+    await act(() => client.invalidateQueries({ queryKey: ["repos", 1, "spaces"] }));
+    expect(await screen.findByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
+  });
+
+  it.each(["idle", "refused", "expired"] as const)(
+    "says why the connection is gone when it lapsed as %s, and offers Connect again",
+    async (reason) => {
+      const user = userEvent.setup();
+      mockFetch(baseRoutes({ "GET /api/jira": { body: { enabled: true, connected: false, sites: [], lapsed: reason } } }));
+      renderRoute(<JiraSpacesPanel repoId={1} />);
+      expect(await screen.findByText(copy.jira.lapsed[reason].title)).toBeInTheDocument();
+      expect(screen.getByText(copy.jira.lapsed[reason].body)).toBeInTheDocument();
+      expect(screen.queryByText(copy.jira.notConnectedTitle)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: copy.jira.connectAgain }));
+      expect(assign).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("shows the plain not connected state when there is no lapsed reason", async () => {
+    mockFetch(baseRoutes({ "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } }));
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByText(copy.jira.notConnectedTitle)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.jira.connectAgain })).not.toBeInTheDocument();
+  });
+
+  it("does not read the connection again for a space that was already failed", async () => {
+    const fetchMock = mockFetch(
+      baseRoutes({ "GET /api/repos/1/spaces": { body: [linked({ crawlStatus: "failed", crawlError: "Rate limited" })] } }),
+    );
+    const { client } = renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByText("Rate limited")).toBeInTheDocument();
+    await act(() => client.invalidateQueries({ queryKey: ["repos", 1, "spaces"] }));
+    const connectionReads = fetchMock.mock.calls.filter(
+      (c) => new URL(String(c[0]), "http://localhost").pathname === "/api/jira",
+    );
+    expect(connectionReads).toHaveLength(1);
+  });
+
   it("says when a space has no board", async () => {
     const user = userEvent.setup();
-    mockFetch(baseRoutes({ "GET /api/jira/sites/cloud-1/spaces/WID": { body: { statuses: detail.statuses, columns: [] } } }));
+    mockFetch(
+      baseRoutes({
+        "GET /api/jira/sites/cloud-1/spaces/WID": { body: { statuses: detail.statuses, columns: [], board: "none" } },
+      }),
+    );
     renderRoute(<JiraSpacesPanel repoId={1} />);
     await user.click(await screen.findByRole("checkbox", { name: /Widgets/ }));
     await user.click(screen.getByRole("button", { name: copy.jira.flowToggleLabel("Widgets") }));
@@ -283,7 +376,7 @@ describe("JiraSpacesPanel", () => {
     const user = userEvent.setup();
     mockFetch(
       baseRoutes({
-        "GET /api/jira/sites/cloud-1/spaces/WID": { body: { statuses: [], columns: [] } },
+        "GET /api/jira/sites/cloud-1/spaces/WID": { body: { statuses: [], columns: [], board: "none" } },
         "GET /api/jira/sites/cloud-1/spaces/GAD": { status: 502, body: { error: "Jira is down" } },
       }),
     );
@@ -324,7 +417,10 @@ describe("JiraSpacesPanel", () => {
     mockFetch(
       baseRoutes({
         "GET /api/repos/1/spaces": { body: [linked()] },
-        "POST /api/spaces/7/crawl": { status: 401, body: { error: "jira_unauthorised" } },
+        "POST /api/spaces/7/crawl": {
+          status: 401,
+          body: { error: "Jira refused the connection. Connect Jira again", code: "jira_unauthorised" },
+        },
       }),
     );
     renderRoute(<JiraSpacesPanel repoId={1} />);
@@ -438,8 +534,13 @@ describe("JiraSpacesPanel", () => {
     const user = userEvent.setup();
     mockFetch(baseRoutes({ "GET /api/jira/sites/cloud-1/spaces": { body: many } }));
     renderRoute(<JiraSpacesPanel repoId={1} />);
-    for (let i = 0; i < 20; i += 1) await user.click(await screen.findByRole("checkbox", { name: new RegExp(`Space ${i} `) }));
-    expect(screen.getByRole("checkbox", { name: /Space 20 / })).toBeDisabled();
+    await screen.findByRole("checkbox", { name: /Space 0 / });
+    // One role query while the list is small: each pick adds controls, and a query per click was slow enough to time out in CI.
+    const boxes = screen.getAllByRole("checkbox", { name: /^Space \d+ / });
+    expect(boxes).toHaveLength(21);
+    for (const box of boxes.slice(0, 20)) await user.click(box);
+    expect(boxes[20]).toHaveAccessibleName(/Space 20 /);
+    expect(boxes[20]).toBeDisabled();
     expect(screen.getByText(new RegExp(copy.jira.limitReached(20)))).toBeInTheDocument();
   });
 

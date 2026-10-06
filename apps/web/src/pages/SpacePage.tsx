@@ -1,5 +1,5 @@
 import { Link, useParams } from "react-router";
-import type { SpaceReport } from "@dora-dashboard/core";
+import type { BoardAccess, SpaceReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { isRecordId, useSpaceReport } from "../api/hooks";
@@ -118,6 +118,7 @@ function SpaceBody({ report, people }: { report: SpaceReport; people: boolean })
           {copy.space.columns.title}
         </h2>
         <p className="section-lede">{copy.space.columns.lede}</p>
+        <BoardNote board={report.space.board} />
         <ColumnTimeChart columns={report.columns} />
         <ColumnTimeTable columns={report.columns} />
       </section>
@@ -132,6 +133,19 @@ function SpaceBody({ report, people }: { report: SpaceReport; people: boolean })
         <SpaceHygiene findings={report.hygiene} siteUrl={report.space.siteUrl} people={people} />
       </section>
     </>
+  );
+}
+
+/** Says why time per column may be per status rather than per board column, and what to do when Jira refused the board. */
+function BoardNote({ board }: { board: BoardAccess | null }) {
+  // Null means the board has not been read yet, which says nothing about whether the space has one.
+  if (board === "read" || board === null) return null;
+  if (board === "none") return <p className="field-hint">{copy.space.columns.noBoardNote}</p>;
+  return (
+    <div className="notice notice-warning" role="status">
+      <p className="notice-title">{copy.space.columns.forbiddenTitle}</p>
+      <p>{copy.space.columns.forbiddenNote}</p>
+    </div>
   );
 }
 

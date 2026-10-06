@@ -224,7 +224,7 @@ describe("doraDrivers", () => {
   describe("deployment frequency", () => {
     it("counts complete weeks, leaving out the partial week at the end", () => {
       // Successful runs 1, 2 and 5. Weeks of the 7th and 14th are complete; only the 7th had a deploy.
-      expect(drivers.deploymentFrequency).toMatchObject({ deploys: 3, weeks: 2, weeksWithoutDeploy: 1 });
+      expect(drivers.deploymentFrequency).toMatchObject({ deploys: 3, completeWeeks: 2, weeksWithoutDeploy: 1 });
     });
 
     it("treats a week the range only partly covers at either end as incomplete", () => {
@@ -237,7 +237,7 @@ describe("doraDrivers", () => {
       ];
       const result = doraDrivers([], deploys, "main", midWeek, profile);
       // Of the two complete weeks only the 21st had no deploy; the empty partial week of the 7th is not counted.
-      expect(result.deploymentFrequency).toMatchObject({ deploys: 2, weeks: 2, weeksWithoutDeploy: 1 });
+      expect(result.deploymentFrequency).toMatchObject({ deploys: 2, completeWeeks: 2, weeksWithoutDeploy: 1 });
       // The tile still divides by every week the range touches: 2 deploys over 4 weeks.
       expect(doraSummary([], deploys, "main", 4, profile).deploymentFrequency).toMatchObject({ total: 2, weeks: 4 });
     });
@@ -328,7 +328,7 @@ describe("doraDrivers", () => {
     expect(empty).toEqual({
       position: { deploymentFrequency: null, leadTime: null, changeFailure: null, timeToRestore: null },
       leadTime: { count: 0, meanHours: null, p75Hours: null, parts: [], size: nothing },
-      deploymentFrequency: { deploys: 0, weeks: 2, weeksWithoutDeploy: 2, prsPerDeploy: nothing },
+      deploymentFrequency: { deploys: 0, completeWeeks: 2, weeksWithoutDeploy: 2, prsPerDeploy: nothing },
       changeFailure: { failed: 0, total: 0, byWorkflow: [], rework: null },
       timeToRestore: { streaks: 0, failedRunsPerStreak: nothing, longestHours: null, unrecovered: null },
     });
@@ -430,7 +430,7 @@ describe("buildReport doraDrivers", () => {
 
     // The weeks of the 7th (complete) and the 14th (partial, the range ends on Wednesday the 16th).
     expect(report.weekly.map((w) => w.partial)).toEqual([false, true]);
-    expect(drivers.deploymentFrequency).toMatchObject({ deploys: 3, weeks: 1, weeksWithoutDeploy: 0 });
+    expect(drivers.deploymentFrequency).toMatchObject({ deploys: 3, completeWeeks: 1, weeksWithoutDeploy: 0 });
   });
 
   it("counts a bot's pull request when bots are included", () => {

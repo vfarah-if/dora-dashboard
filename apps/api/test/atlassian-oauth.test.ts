@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { UnauthorisedError, UpstreamError } from "../src/core/errors.js";
+import { TrackerConfigurationError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { ATLASSIAN_SCOPES, AtlassianOAuth } from "../src/infrastructure/jira/atlassian-oauth.js";
 
 const json = (body: unknown, status = 200) =>
@@ -88,6 +88,87 @@ describe("AtlassianOAuth", () => {
     expect((failure as Error).message).toContain("Unknown or invalid refresh token.");
     expect((failure as Error).message).not.toContain("secret-1");
     expect((failure as Error).message).not.toContain("refresh-secret");
+  });
+
+  describe("a sign-in refused because of this dashboard's own app credentials", () => {
+    it.each([
+      ["a 401 with no body detail", {}, 401],
+      ["a 401 whatever the code", { error: "invalid_grant" }, 401],
+      ["access_denied (a wrong client secret)", { error: "access_denied", error_description: "Unauthorized" }, 403],
+      ["invalid_client", { error: "invalid_client" }, 400],
+      ["unauthorized_client", { error: "unauthorized_client" }, 400],
+      ["a redirect_uri mismatch", { error: "invalid_request", error_description: "Invalid redirect_uri" }, 400],
+    ])("raises TrackerConfigurationError for %s", async (_name, body, status) => {
+      const { oauth } = build(() => json(body, status));
+      const failure = await oauth.exchange("code-secret").catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(TrackerConfigurationError);
+      const message = (failure as Error).message;
+      expect(message).toContain("ATLASSIAN_CLIENT_ID");
+      expect(message).toContain("ATLASSIAN_CLIENT_SECRET");
+      expect(message).toContain("callback URL");
+      expect(message).not.toContain("secret-1");
+      expect(message).not.toContain("code-secret");
+    });
+
+    it("keeps the Atlassian error code in the cause, for the log", async () => {
+      const { oauth } = build(() => json({ error: "invalid_client" }, 400));
+      const failure = (await oauth.exchange("c").catch((e: unknown) => e)) as Error;
+      expect(String(failure.cause)).toContain("invalid_client");
+    });
+
+    it.each([
+      ["an expired or reused code", { error: "invalid_grant", error_description: "Invalid authorization code" }, 403],
+      ["a bad request", { error: "invalid_request" }, 400],
+    ])("still raises UnauthorisedError for %s", async (_name, body, status) => {
+      const { oauth } = build(() => json(body, status));
+      const failure = await oauth.exchange("c").catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(UnauthorisedError);
+      expect(failure).not.toBeInstanceOf(TrackerConfigurationError);
+    });
+  });
+
+  it.each([
+    ["a revoked grant", { error: "unauthorized_client", error_description: "Token was globally revoked" }, 401],
+    ["a client refusal", { error: "invalid_client" }, 401],
+    ["access_denied", { error: "access_denied", error_description: "Unauthorized" }, 403],
+    ["a redirect_uri mention", { error: "invalid_grant", error_description: "bad redirect_uri" }, 400],
+  ])("a refresh refused as %s stays an UnauthorisedError so the grant is dropped", async (_name, body, status) => {
+    const { oauth } = build(() => json(body, status));
+    const failure = await oauth.refresh("r").catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(UnauthorisedError);
+    expect(failure).not.toBeInstanceOf(TrackerConfigurationError);
+  });
+
+  it.each([
+    ["invalid_request", { error: "invalid_request", error_description: "Missing grant_type" }],
+    ["unsupported_grant_type", { error: "unsupported_grant_type" }],
+    ["no error code", {}],
+  ])(
+    "a refresh answered 400 %s is a fault in this dashboard's own request, so it is an UpstreamError and the grant is kept",
+    async (_name, body) => {
+      const { oauth } = build(() => json(body, 400));
+      const failure = await oauth.refresh("r").catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(UpstreamError);
+      expect(failure).not.toBeInstanceOf(UnauthorisedError);
+      expect(failure).toMatchObject({ status: 400 });
+    },
+  );
+
+  it("still refuses a sign-in answered 400 whatever the code, since no grant exists to keep", async () => {
+    const { oauth } = build(() => json({ error: "invalid_request" }, 400));
+    await expect(oauth.exchange("c")).rejects.toBeInstanceOf(UnauthorisedError);
+  });
+
+  it("puts Atlassian's description, cut to 200 characters, in the configuration error's cause", async () => {
+    const description = `The client secret is wrong ${"x".repeat(300)}`;
+    const { oauth } = build(() => json({ error: "invalid_client", error_description: description }, 401));
+    const failure = (await oauth.exchange("c").catch((e: unknown) => e)) as Error;
+    expect(failure).toBeInstanceOf(TrackerConfigurationError);
+    const cause = String(failure.cause);
+    expect(cause).toContain("401 invalid_client: The client secret is wrong");
+    expect(cause).toContain(description.slice(0, 200));
+    expect(cause).not.toContain(description.slice(0, 201));
+    expect(cause).not.toContain("secret-1");
   });
 
   it("falls back to the error code, then a generic reason", async () => {

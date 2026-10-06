@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { SpaceListing } from "@dora-dashboard/core";
 import { SpacesPage } from "./SpacesPage";
 import { mockFetch, renderRoute } from "../test/render";
-import { CRAWL_POLL_MS, type SpaceListItem } from "../api/hooks";
+import { CRAWL_POLL_MS } from "../api/hooks";
 import { copy } from "../copy";
 
-const space = (overrides: Partial<SpaceListItem> = {}): SpaceListItem => ({
+const space = (overrides: Partial<SpaceListing> = {}): SpaceListing => ({
   id: 7,
   key: "WID",
   name: "Widgets",

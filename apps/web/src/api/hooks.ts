@@ -1,16 +1,16 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
-  BoardColumn,
   CodeHealthResponse,
+  JiraConnection,
+  LinkedSpace,
   Repo,
   RepoReport,
   ReviewQueue,
+  SpaceDescription,
+  SpaceListing,
   SpaceReport,
-  TrackerSite,
-  TrackerSpace,
   TrackerSpaceSummary,
-  TrackerStatus,
 } from "@dora-dashboard/core";
 import { apiRequest } from "./client";
 
@@ -90,10 +90,7 @@ export const queryKeys = {
 };
 
 /** The part of the page range a space report reads. Bots do not apply to issues. */
-export interface SpaceRange {
-  from: string | null;
-  to: string | null;
-}
+export type SpaceRange = Pick<ReportRange, "from" | "to">;
 
 export function rangeQuery(range: ReportRange): string {
   const params = new URLSearchParams();
@@ -282,19 +279,6 @@ export interface Health {
   jira?: boolean;
 }
 
-export interface JiraState {
-  enabled: true;
-  connected: boolean;
-  sites: TrackerSite[];
-}
-
-export interface SpaceDetail {
-  statuses: TrackerStatus[];
-  columns: BoardColumn[];
-}
-
-export type LinkedSpace = TrackerSpace & { workItemCount: number };
-
 /** Whether optional features, Jira among them, are switched on. */
 export function useHealth() {
   return useQuery({
@@ -306,7 +290,7 @@ export function useHealth() {
 }
 
 export function useJira(enabled: boolean) {
-  return useQuery({ queryKey: queryKeys.jira, queryFn: () => apiRequest<JiraState>("/api/jira"), enabled });
+  return useQuery({ queryKey: queryKeys.jira, queryFn: () => apiRequest<JiraConnection>("/api/jira"), enabled });
 }
 
 /** Revokes the stored Jira grant and invalidates every query under the `jira` key, so the connection and live space lists are read again. */
@@ -334,7 +318,7 @@ export function useJiraSpaceDetail(siteId: string, key: string, enabled: boolean
   return useQuery({
     queryKey: queryKeys.jiraSpace(siteId, key),
     queryFn: ({ signal }) =>
-      apiRequest<SpaceDetail>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces/${encodeURIComponent(key)}`, {
+      apiRequest<SpaceDescription>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces/${encodeURIComponent(key)}`, {
         signal,
       }),
     enabled,
@@ -342,14 +326,29 @@ export function useJiraSpaceDetail(siteId: string, key: string, enabled: boolean
   });
 }
 
-/** The spaces linked to a repository, polled every `CRAWL_POLL_MS` while any is crawling. */
+/**
+ * The spaces linked to a repository, polled every `CRAWL_POLL_MS` while any is crawling. When a space moves into
+ * failed from any other status, including idle, the Jira connection is read again, since a crawl that Jira refused drops the grant.
+ */
 export function useLinkedSpaces(repoId: number, enabled: boolean) {
-  return useQuery({
+  const client = useQueryClient();
+  const query = useQuery({
     queryKey: queryKeys.linkedSpaces(repoId),
     queryFn: () => apiRequest<LinkedSpace[]>(`/api/repos/${repoId}/spaces`),
     enabled,
-    refetchInterval: (query) => (query.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
+    refetchInterval: (q) => (q.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
   });
+  const seen = useRef<Map<number, LinkedSpace["crawlStatus"]> | null>(null);
+  const data = query.data;
+  useEffect(() => {
+    if (!data) return;
+    const before = seen.current;
+    seen.current = new Map(data.map((s) => [s.id, s.crawlStatus]));
+    if (before && data.some((s) => s.crawlStatus === "failed" && before.has(s.id) && before.get(s.id) !== "failed")) {
+      void client.invalidateQueries({ queryKey: queryKeys.jira });
+    }
+  }, [data, client]);
+  return query;
 }
 
 /** Replaces the repository's linked spaces on one site; spaces on other sites stay linked. An empty list unlinks only that site's. */
@@ -375,25 +374,11 @@ export function useCrawlSpace(repoId: number) {
   });
 }
 
-/** A tracked space with the repositories linked to it, as listed on the Jira page. */
-export interface SpaceListItem {
-  id: number;
-  key: string;
-  name: string;
-  siteUrl: string;
-  lastCrawledAt: string | null;
-  crawlStatus: "idle" | "crawling" | "failed";
-  /** Why the last crawl failed; null when it did not. */
-  crawlError: string | null;
-  workItemCount: number;
-  repos: { id: number; name: string }[];
-}
-
 /** Every tracked space. Only asked for when Jira is switched on, since the route is absent otherwise. */
 export function useSpaces(enabled = true) {
   return useQuery({
     queryKey: queryKeys.spaces,
-    queryFn: ({ signal }) => apiRequest<SpaceListItem[]>("/api/spaces", { signal }),
+    queryFn: ({ signal }) => apiRequest<SpaceListing[]>("/api/spaces", { signal }),
     enabled,
     retry: false,
     refetchInterval: (query) => (query.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),

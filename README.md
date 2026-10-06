@@ -71,7 +71,7 @@ Tokens are held in memory only and never sent to the browser (ADR 0004).
 
 ## Jira (optional)
 
-Jira Cloud can be connected through OAuth 2.0 (3LO) so that issues can be read beside pull requests. It is off until `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` are set (`ATLASSIAN_REDIRECT_URI` is optional and defaults to `WEB_ORIGIN` followed by `/api/auth/jira/callback`; setting only one of the two credentials stops the API at start-up), and grants are held in memory only (ADR 0020). The two consent routes allow 20 requests a minute from one client address (ADR 0023). [SETUP.md](SETUP.md) walks through registering the Atlassian app and connecting it.
+Jira Cloud can be connected through OAuth 2.0 (3LO) so that issues can be read beside pull requests. It is off until `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` are set together, and setting only one stops the API at start-up. `ATLASSIAN_REDIRECT_URI` is optional and defaults to `WEB_ORIGIN` followed by `/api/auth/jira/callback`. Grants are held in memory only and dropped after 8 hours without use (ADR 0020). [SETUP.md](SETUP.md) walks through registering the Atlassian app, connecting it, and what each `jira=` outcome or crawl message means.
 
 ## What it measures
 

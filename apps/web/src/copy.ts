@@ -8,6 +8,7 @@ export const copy = {
 
   common: {
     loading: "Loading",
+    unreadableResponse: "The server sent a reply that could not be read. Try again in a moment.",
     retry: "Try again",
     notAvailable: "No data",
     and: "and",
@@ -135,13 +136,44 @@ export const copy = {
     connectAgain: "Connect Jira again",
     disconnect: "Disconnect Jira",
     disconnecting: "Disconnecting",
+    lapsed: {
+      idle: {
+        title: "Your Jira connection was closed after a period of inactivity",
+        body: "Jira was not used for more than 8 hours, which is the length of a dashboard session, so the connection was closed. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+      refused: {
+        title: "Jira turned the connection down",
+        body: "Jira or Atlassian refused the connection, for example because access was revoked. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+      expired: {
+        title: "Your Jira connection ran out",
+        body: "The access it was given ran out and could not be renewed. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+    },
     unauthorisedTitle: "Your Jira connection has expired or is missing",
     unauthorisedBody: "Connect Jira again to carry on reading spaces. Links you have already saved are kept.",
-    connectFailedTitle: "Jira could not be connected",
-    connectFailedBody: "Atlassian did not complete the sign-in. Try connecting again.",
-    deniedTitle: "Jira access was not allowed",
-    deniedBody:
-      "You chose not to allow access at Atlassian, so nothing has changed. You can connect Jira whenever you are ready.",
+    outcomes: {
+      denied: {
+        title: "Jira access was not allowed",
+        body: "You chose not to allow access at Atlassian, so nothing has changed. You can connect Jira whenever you are ready.",
+      },
+      error: {
+        title: "Jira could not be connected",
+        body: "The connection could not be completed. Try connecting again, and if it keeps failing, the dashboard's API log says why.",
+      },
+      expired: {
+        title: "The Jira sign-in took too long or was lost",
+        body: "The request lapsed because consent took more than 10 minutes, consent was started again in another tab, the dashboard was restarted, or the page was opened at a different address from the one the dashboard is set up with. Connect Jira again, and if this keeps happening, open the dashboard at the address set as WEB_ORIGIN.",
+      },
+      misconfigured: {
+        title: "Atlassian refused the dashboard's own settings",
+        body: "Whoever runs the dashboard should check ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET and the callback URL in .env against the app in the Atlassian developer console. Trying again will not help until they are corrected.",
+      },
+      rate_limited: {
+        title: "Too many Jira sign-in attempts",
+        body: "More than 20 attempts were made in a minute. Wait a minute and then try again.",
+      },
+    },
     dismiss: "Dismiss",
     loading: "Loading Jira",
     siteLabel: "Jira site",
@@ -182,7 +214,10 @@ export const copy = {
     flowToggleLabel: (name: string) => `How the ${name} space flows`,
     loadingFlow: "Loading statuses and columns",
     columnsTitle: "Board columns, left to right",
-    noBoard: "This space has no board the dashboard can read, so only its statuses are shown.",
+    noBoard: "This space has no board, so only its statuses are shown.",
+    boardForbiddenTitle: "Jira refused access to this space's board",
+    boardForbidden:
+      "The board columns are unknown, so only the statuses are shown. Add the read:board-scope.admin:jira-software scope to the app in the Atlassian developer console and connect Jira again, or check that your account can see the board.",
     noColumnStatuses: "No statuses",
     categoriesTitle: "Statuses by category",
     categories: {
@@ -891,6 +926,10 @@ export const copy = {
       barLabel: "Mean time",
       /** The label for time in statuses that no board column holds, which the report gives as a column of null. */
       notOnBoard: "Not on the board",
+      noBoardNote: "This space has no board, so each status is shown as its own column.",
+      forbiddenTitle: "The board could not be read",
+      forbiddenNote:
+        "Jira refused access to this space's board, so each status is shown as its own column. Add the read:board-scope.admin:jira-software scope to the app in the Atlassian developer console and connect Jira again, or check that your account has permission to see the board.",
     },
 
     idea: {

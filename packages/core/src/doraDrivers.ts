@@ -20,19 +20,36 @@ import type { DeployRun, PullRequest } from "./types.js";
 
 export type DoraMeasure = "deploymentFrequency" | "leadTime" | "changeFailure" | "timeToRestore";
 
-/** Where a value sits against the profile, and what the next band up needs. */
-export interface BandPosition {
-  band: Band;
-  /** The next band up; null at elite. */
-  next: Band | null;
-  /** The next band's threshold, in the measure's unit (deploys per week, hours, or a rate from 0 to 1); null at elite. */
-  threshold: number | null;
-  /**
-   * How far the value must move to reach the next band, never negative, in the measure's unit; null at elite.
-   * Strict thresholds (the durations) need the value to fall below the threshold, so the gap is to the threshold itself.
-   */
-  gap: number | null;
+/** A band with one below it, so one a value can move up into. */
+export type UpperBand = Exclude<Band, "low">;
+
+/** An elite value: there is no band above it, so nothing to reach. */
+export interface EliteBandPosition {
+  band: "elite";
+  next: null;
+  threshold: null;
+  gap: null;
 }
+
+/** A value below elite, with what the next band up needs. */
+export interface BelowEliteBandPosition {
+  band: Exclude<Band, "elite">;
+  /** The next band up. */
+  next: UpperBand;
+  /** The next band's threshold, in the measure's unit (deploys per week, hours, or a rate from 0 to 1). */
+  threshold: number;
+  /**
+   * How far the value must move to reach the next band, never negative, in the measure's unit. Strict thresholds
+   * (the durations) need the value to fall below the threshold, so the gap is to the threshold itself.
+   */
+  gap: number;
+}
+
+/**
+ * Where a value sits against the profile, and what the next band up needs. `next`, `threshold` and `gap` are null
+ * together, and only at elite, so checking any one of them narrows the other two.
+ */
+export type BandPosition = EliteBandPosition | BelowEliteBandPosition;
 
 /** One part of the mean lead time; the parts add up to the mean (ADR 0006). */
 export type LeadTimePart = "coding" | "waitingForReview" | "inReview" | "toMerge" | "toDeploy";
@@ -55,7 +72,7 @@ export interface DeployFrequencyDrivers {
    * Complete weeks in the range: those lying wholly inside it at both ends. The tile divides by every week the range
    * touches instead, partial ones included, so this can be smaller than the tile's week count.
    */
-  weeks: number;
+  completeWeeks: number;
   /** Complete weeks with no successful deploy; a partial week at either end is never counted. */
   weeksWithoutDeploy: number;
   /** Pull requests shipped by each successful deploy that shipped any, counting those with a readable lead time as `leadTimes` does. */
@@ -103,8 +120,7 @@ const THRESHOLDS_OF: Record<DoraMeasure, (profile: DoraProfile) => BandThreshold
   timeToRestore: (p) => p.restoreHours,
 };
 
-type UpperBand = Exclude<Band, "low">;
-const NEXT_BAND: Record<Band, UpperBand | null> = { low: "medium", medium: "high", high: "elite", elite: null };
+const NEXT_BAND: Record<BelowEliteBandPosition["band"], UpperBand> = { low: "medium", medium: "high", high: "elite" };
 /** Where each band's threshold sits in a profile's `[elite, high, medium]` tuple. */
 const THRESHOLD_INDEX: Record<UpperBand, 0 | 1 | 2> = { elite: 0, high: 1, medium: 2 };
 
@@ -116,8 +132,8 @@ const THRESHOLD_INDEX: Record<UpperBand, 0 | 1 | 2> = { elite: 0, high: 1, mediu
  */
 export function doraBandPosition(measure: DoraMeasure, value: number, profile: DoraProfile): BandPosition {
   const band = BAND_OF[measure](value, profile);
+  if (band === "elite") return { band, next: null, threshold: null, gap: null };
   const next = NEXT_BAND[band];
-  if (next === null) return { band, next: null, threshold: null, gap: null };
   const threshold = THRESHOLDS_OF[measure](profile)[THRESHOLD_INDEX[next]];
   const gap = measure === "deploymentFrequency" ? threshold - value : value - threshold;
   return { band, next, threshold, gap };
@@ -213,7 +229,7 @@ function deployFrequencyDrivers(
   for (const s of shipped) perDeploy.set(s.deployRunId, (perDeploy.get(s.deployRunId) ?? 0) + 1);
   return {
     deploys: successes.length,
-    weeks: complete.length,
+    completeWeeks: complete.length,
     weeksWithoutDeploy: complete.filter((week) => !deployWeeks.has(week)).length,
     prsPerDeploy: summarise([...perDeploy.values()]),
   };

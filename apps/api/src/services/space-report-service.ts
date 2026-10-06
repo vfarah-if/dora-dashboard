@@ -1,15 +1,10 @@
-import { buildSpaceReport, type SpaceReport } from "@dora-dashboard/core";
+import { buildSpaceReport, type SpaceReport, type SpaceReportOptions } from "@dora-dashboard/core";
 import { NotFoundError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
-import { validateDateRange } from "./date-range.js";
+import { dayOf, validateDateRange } from "./date-range.js";
 
-/** What a caller asks of a space report; core's SpaceReportOptions adds the instant it is built at. */
-export interface SpaceReportQuery {
-  from?: string;
-  to?: string;
-  /** Include assignee display names in the findings. Off unless asked for (ADR 0008). */
-  people?: boolean;
-}
+/** What a caller asks of a space report: core's options without the instant it is built at, which the clock gives. */
+export type SpaceReportQuery = Omit<SpaceReportOptions, "now">;
 
 /** Builds the delivery report for a tracked space from what is stored; no arithmetic here, that is core's (ADR 0021). */
 export class SpaceReportService {
@@ -19,7 +14,7 @@ export class SpaceReportService {
   ) {}
 
   report(spaceId: number, options: SpaceReportQuery = {}): SpaceReport {
-    validateDateRange(options);
+    validateDateRange(options, dayOf(this.clock()));
     const space = this.store.getSpace(spaceId);
     if (!space) throw new NotFoundError(`Unknown space ${spaceId}`);
     const linked = this.store.reposForSpace(spaceId).map((repo) => ({

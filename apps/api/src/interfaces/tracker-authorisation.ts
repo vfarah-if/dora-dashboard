@@ -13,7 +13,10 @@ export interface TrackerGrant {
  * `authoriseUrl` builds the consent page address carrying `state`, which the caller has stored and
  * checks on return. `exchange` trades the returned code for a grant, and `refresh` trades a refresh
  * token for a new grant (the tracker may rotate the refresh token). A refused code or refresh token
- * raises `UnauthorisedError`; any other failure raises `UpstreamError` with the tracker's reason.
+ * raises `UnauthorisedError`, and a refresh token so refused is gone for good. At `refresh`, a 400 counts as a refusal only when it says `invalid_grant`; any other 400 is a fault in the dashboard's own request and raises `UpstreamError`, so the grant is kept. At `exchange` only, a refusal of the
+ * dashboard's own app credentials raises `TrackerConfigurationError` instead, because there is no grant yet to keep or
+ * drop and a refused refresh must never be read as a configuration fault (ADR 0020). Any other failure raises
+ * `UpstreamError` with the tracker's reason.
  */
 export interface TrackerAuthorisation {
   readonly kind: string;

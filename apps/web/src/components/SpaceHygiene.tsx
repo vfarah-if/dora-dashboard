@@ -1,4 +1,9 @@
-import type { ItemRef, JiraHygieneFinding } from "@dora-dashboard/core";
+import type {
+  ItemRef,
+  SpaceHygieneBulkMoveFinding,
+  SpaceHygieneFinding,
+  SpaceHygienePullRequestFinding,
+} from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatPercent, formatTime } from "../lib/format";
 import { assigneeLabel, groupByAssignee, HYGIENE_ORDER, limitGroups, shareOf, browseUrl } from "../lib/space";
@@ -6,7 +11,7 @@ import { ExternalLink } from "./ExternalLink";
 import { ShowAllList } from "./ShowAllList";
 
 interface FindingProps {
-  finding: JiraHygieneFinding;
+  finding: SpaceHygieneFinding;
   siteUrl: string;
   people: boolean;
 }
@@ -44,7 +49,7 @@ function IssueList({ items, siteUrl, people }: { items: readonly ItemRef[]; site
   );
 }
 
-function PullRequestList({ pullRequests }: { pullRequests: JiraHygieneFinding["pullRequests"] }) {
+function PullRequestList({ pullRequests }: { pullRequests: SpaceHygienePullRequestFinding["pullRequests"] }) {
   return (
     <ShowAllList total={pullRequests.length}>
       {(limit) => (
@@ -61,7 +66,7 @@ function PullRequestList({ pullRequests }: { pullRequests: JiraHygieneFinding["p
   );
 }
 
-function BatchList({ batches, siteUrl }: { batches: readonly { at: string; keys: string[] }[]; siteUrl: string }) {
+function BatchList({ batches, siteUrl }: { batches: SpaceHygieneBulkMoveFinding["batches"]; siteUrl: string }) {
   return (
     <ShowAllList total={batches.length}>
       {(limit) => (
@@ -86,6 +91,18 @@ function BatchList({ batches, siteUrl }: { batches: readonly { at: string; keys:
   );
 }
 
+/** The list a finding carries, chosen by its check: pull requests, batches of moves, or delivery items. */
+function FindingList({ finding, siteUrl, people }: FindingProps) {
+  switch (finding.check) {
+    case "pr_without_key":
+      return <PullRequestList pullRequests={finding.pullRequests} />;
+    case "bulk_move":
+      return <BatchList batches={finding.batches} siteUrl={siteUrl} />;
+    default:
+      return <IssueList items={finding.items} siteUrl={siteUrl} people={people} />;
+  }
+}
+
 function Finding({ finding, siteUrl, people }: FindingProps) {
   const text = copy.space.hygiene;
   const { title, explanation } = text.checks[finding.check];
@@ -104,11 +121,7 @@ function Finding({ finding, siteUrl, people }: FindingProps) {
       {hasList && (
         <div className="hygiene-body">
           <p className="hygiene-heading">{text.checkThese}</p>
-          {finding.check === "pr_without_key" && <PullRequestList pullRequests={finding.pullRequests} />}
-          {finding.check === "bulk_move" && <BatchList batches={finding.batches ?? []} siteUrl={siteUrl} />}
-          {finding.check !== "pr_without_key" && finding.check !== "bulk_move" && (
-            <IssueList items={finding.items} siteUrl={siteUrl} people={people} />
-          )}
+          <FindingList finding={finding} siteUrl={siteUrl} people={people} />
         </div>
       )}
     </section>
@@ -121,7 +134,7 @@ export function SpaceHygiene({
   siteUrl,
   people,
 }: {
-  findings: readonly JiraHygieneFinding[];
+  findings: readonly SpaceHygieneFinding[];
   siteUrl: string;
   people: boolean;
 }) {

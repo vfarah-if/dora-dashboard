@@ -1,6 +1,8 @@
 import type {
+  BoardAccess,
   BoardColumn,
   CodeSnapshot,
+  CrawlStatus,
   DeployRun,
   PullRequest,
   Repo,
@@ -14,14 +16,6 @@ export interface RepoCounts {
   deployRuns: number;
 }
 
-/** A tracker space to link to a repository; the store assigns its id. */
-export interface SpaceLink {
-  siteId: string;
-  siteUrl: string;
-  key: string;
-  name: string;
-}
-
 /** Persistence for tracked repositories and everything crawled from them. */
 export interface RepoStore {
   listRepos(): Repo[];
@@ -31,7 +25,7 @@ export interface RepoStore {
   updateRepoConfig(id: number, deployWorkflows: string[], deployBranch: string): void;
   deleteRepo(id: number): void;
 
-  setCrawlState(id: number, status: Repo["crawlStatus"], progress: string | null, error?: string | null): void;
+  setCrawlState(id: number, status: CrawlStatus, progress: string | null, error?: string | null): void;
   finishCrawl(id: number, cursor: string | null): void;
   /** The newest `updatedAt` a complete crawl saw; an incremental crawl stops once it reaches it. */
   crawlCursor(id: number): string | null;
@@ -51,11 +45,12 @@ export interface RepoStore {
   latestSuccessfulCodeSnapshot(repoId: number): CodeSnapshot | null;
 
   /**
-   * Makes `spaces` the repository's linked spaces on the site `siteId`: each is created (or has its name and site URL
+   * Makes `spaces` the repository's linked spaces on `site`: each is created (or has its name and the site's URL
    * refreshed) and the repository's earlier links on that site are replaced. Links on other sites are left alone.
-   * Spaces left linked to no repository are removed with their work items. Returns the given spaces in order.
+   * Every space belongs to `site`, which is given once so no space can name another. Spaces left linked to no
+   * repository are removed with their work items. Returns the given spaces in order.
    */
-  linkSpaces(repoId: number, siteId: string, spaces: SpaceLink[]): TrackerSpace[];
+  linkSpaces(repoId: number, site: { id: string; url: string }, spaces: { key: string; name: string }[]): TrackerSpace[];
   /** The spaces linked to a repository, ordered by site then key. */
   spacesFor(repoId: number): TrackerSpace[];
   /** Every tracked space, ordered by site then key. */
@@ -65,8 +60,9 @@ export interface RepoStore {
   getSpace(id: number): TrackerSpace | null;
   /** Replaces the space's assignee display names (account id to name). A space never given any reads back without `people`. */
   setSpacePeople(id: number, people: Record<string, string>): void;
-  setSpaceDetails(id: number, statuses: TrackerStatus[], columns: BoardColumn[]): void;
-  setSpaceCrawlState(id: number, status: TrackerSpace["crawlStatus"], progress: string | null, error?: string | null): void;
+  /** Records the statuses and board columns read, and `board`, which says why the columns are empty when they are. */
+  setSpaceDetails(id: number, statuses: TrackerStatus[], columns: BoardColumn[], board: BoardAccess): void;
+  setSpaceCrawlState(id: number, status: CrawlStatus, progress: string | null, error?: string | null): void;
   /** Marks the crawl complete. A null `cursor` keeps the cursor already stored rather than clearing it. */
   finishSpaceCrawl(id: number, cursor: string | null): void;
   /** The point a complete crawl leaves for the next: the newest `updatedAt` it saw less a small overlap. An incremental crawl stops once it reaches it. */

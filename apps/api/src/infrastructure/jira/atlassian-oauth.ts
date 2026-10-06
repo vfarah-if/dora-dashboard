@@ -1,4 +1,4 @@
-import { UnauthorisedError, UpstreamError } from "../../core/errors.js";
+import { TrackerConfigurationError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
 import type { TrackerAuthorisation, TrackerGrant } from "../../interfaces/tracker-authorisation.js";
 
 /**
@@ -27,8 +27,37 @@ interface TokenBody {
   error_description?: string;
 }
 
-/** Statuses on which Atlassian says a code or refresh token is no longer good. */
-const REFUSED = new Set([400, 401, 403]);
+/**
+ * Statuses on which Atlassian says a code or refresh token is no longer good. A refresh answered with 401 or 403 loses
+ * the grant, by status and not by error code, because Atlassian documents only a 403 `invalid_grant` for refresh and
+ * reports a revoked grant as a 401 `unauthorized_client` (ADR 0020). A 400 counts only when it says `invalid_grant`
+ * at refresh: any other 400 there (`invalid_request`, `unsupported_grant_type`) is a fault in this dashboard's own
+ * request, and dropping the grant for it would disconnect everyone while hiding the bug.
+ */
+const REFUSED = new Set([401, 403]);
+
+/** How much of Atlassian's `error_description` a log keeps. It carries no secret. */
+const MAX_DESCRIPTION = 200;
+
+function refusesToken(step: "sign-in" | "refresh", status: number, body: TokenBody): boolean {
+  if (REFUSED.has(status)) return true;
+  return status === 400 && (step === "sign-in" || body.error === "invalid_grant");
+}
+
+/**
+ * Error codes that, at the sign-in exchange, point at this dashboard's own app credentials. Atlassian reports a wrong
+ * client secret as `access_denied` "Unauthorized" or a 401, and a client it does not accept as `invalid_client` or
+ * `unauthorized_client`. A reused or expired code is `invalid_grant`, which is not here.
+ */
+const CREDENTIAL_ERRORS = new Set(["invalid_client", "access_denied", "unauthorized_client"]);
+
+const MISCONFIGURED =
+  "Atlassian refused this dashboard's app credentials. Check ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET and the callback URL (ATLASSIAN_REDIRECT_URI) against the app in the Atlassian developer console";
+
+/** Only at sign-in: a revoked refresh token also arrives as a 401 `unauthorized_client`, and must drop the grant. */
+function refusesAppCredentials(status: number, body: TokenBody): boolean {
+  return status === 401 || CREDENTIAL_ERRORS.has(body.error ?? "") || /redirect_uri/i.test(body.error_description ?? "");
+}
 
 /** Atlassian's OAuth 2.0 (3LO) authorisation code grant, with rotating refresh tokens. */
 export class AtlassianOAuth implements TrackerAuthorisation {
@@ -89,7 +118,19 @@ export class AtlassianOAuth implements TrackerAuthorisation {
       };
     }
     const reason = body.error_description ?? body.error ?? "Atlassian did not issue a token";
-    if (REFUSED.has(response.status)) throw new UnauthorisedError(`Atlassian refused the ${step}. ${reason}`);
+    if (step === "sign-in" && refusesAppCredentials(response.status, body)) {
+      throw new TrackerConfigurationError(MISCONFIGURED, {
+        // The status, the code and Atlassian's description, which says whether the secret or the redirect URI is wrong.
+        cause: new Error(
+          `Atlassian answered ${response.status}${body.error ? ` ${body.error}` : ""}${
+            typeof body.error_description === "string" && body.error_description !== ""
+              ? `: ${body.error_description.slice(0, MAX_DESCRIPTION)}`
+              : ""
+          }`,
+        ),
+      });
+    }
+    if (refusesToken(step, response.status, body)) throw new UnauthorisedError(`Atlassian refused the ${step}. ${reason}`);
     throw new UpstreamError(`Atlassian ${step} failed. ${reason}`, response.status);
   }
 }

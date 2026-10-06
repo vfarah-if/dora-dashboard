@@ -404,13 +404,20 @@ describe("loadConfig", () => {
   });
 
   it("derives the Jira callback from the web origin unless one is given", () => {
-    expect(loadConfig({}).atlassianRedirectUri).toBe("http://localhost:5181/api/auth/jira/callback");
-    expect(loadConfig({ WEB_ORIGIN: "https://dora.example.test" }).atlassianRedirectUri).toBe(
-      "https://dora.example.test/api/auth/jira/callback",
+    expect(loadConfig({ ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "b" }).jira?.redirectUri).toBe(
+      "http://localhost:5181/api/auth/jira/callback",
     );
     expect(
-      loadConfig({ WEB_ORIGIN: "https://dora.example.test", ATLASSIAN_REDIRECT_URI: "https://other.example.test/cb" })
-        .atlassianRedirectUri,
+      loadConfig({ WEB_ORIGIN: "https://dora.example.test", ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "b" }).jira
+        ?.redirectUri,
+    ).toBe("https://dora.example.test/api/auth/jira/callback");
+    expect(
+      loadConfig({
+        WEB_ORIGIN: "https://dora.example.test",
+        ATLASSIAN_REDIRECT_URI: "https://other.example.test/cb",
+        ATLASSIAN_CLIENT_ID: "a",
+        ATLASSIAN_CLIENT_SECRET: "b",
+      }).jira?.redirectUri,
     ).toBe("https://other.example.test/cb");
   });
 

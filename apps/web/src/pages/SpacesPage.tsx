@@ -1,10 +1,11 @@
 import { Link } from "react-router";
-import { useHealth, useSpaces, type SpaceListItem } from "../api/hooks";
+import type { SpaceListing } from "@dora-dashboard/core";
+import { useHealth, useSpaces } from "../api/hooks";
 import { copy } from "../copy";
 import { EmptyState, ErrorState, Skeleton } from "../components/States";
 import { formatDateTime, formatNumber } from "../lib/format";
 
-function SpaceRow({ space }: { space: SpaceListItem }) {
+function SpaceRow({ space }: { space: SpaceListing }) {
   return (
     <li className="card repo-row">
       <div className="repo-row-body">

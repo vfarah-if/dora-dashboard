@@ -93,7 +93,7 @@ describe("Jira with sign-out, crawl conflicts and several sites", () => {
     it("still signs out when Jira is not wired", async () => {
       const bareSessions = new MemorySessionStore();
       const { app: bare } = await buildApp({
-        config: config({ jiraEnabled: false }),
+        config: config({ jira: null }),
         store: new SqliteRepoStore(":memory:"),
         provider: new FakeProvider(),
         sessions: bareSessions,
@@ -180,7 +180,7 @@ describe("Jira with sign-out, crawl conflicts and several sites", () => {
       });
       const oauth = (
         await buildApp({
-          config: config({ authMode: "oauth", jiraEnabled: false }),
+          config: config({ authMode: "oauth", jira: null }),
           store: new SqliteRepoStore(":memory:"),
           provider: new FakeProvider(),
           sessions: new MemorySessionStore(),

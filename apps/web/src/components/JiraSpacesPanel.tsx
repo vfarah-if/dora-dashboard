@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router";
-import type { TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
+import { Link } from "react-router";
+import type { LinkedSpace, TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
 import {
   useCrawlSpace,
   useDisconnectJira,
@@ -10,10 +10,10 @@ import {
   useJiraSpaces,
   useLinkSpaces,
   useLinkedSpaces,
-  type LinkedSpace,
 } from "../api/hooks";
 import { errorText } from "../api/client";
 import { copy } from "../copy";
+import { ConnectButton } from "./JiraOutcomeNotice";
 import { ErrorState } from "./States";
 import { formatDateTime, formatNumber } from "../lib/format";
 import {
@@ -23,21 +23,18 @@ import {
   groupStatusesByCategory,
   isCrawlConflict,
   isJiraUnauthorised,
-  jiraConnectUrl,
   linkedKeysForSite,
-  returnPath,
   toggleKey,
 } from "../lib/jira";
 
-const ERROR_PARAM = "jira";
-
-function ConnectButton({ label, primary = true }: { label: string; primary?: boolean }) {
-  const location = useLocation();
-  const connect = () => window.location.assign(jiraConnectUrl(returnPath(location.pathname, location.search)));
+function LapsedNotice({ reason }: { reason: "idle" | "refused" | "expired" }) {
+  const text = copy.jira.lapsed[reason];
   return (
-    <button type="button" className={`button ${primary ? "button-primary" : "button-secondary"}`} onClick={connect}>
-      {label}
-    </button>
+    <div className="notice notice-warning jira-connect" role="status" data-lapsed={reason}>
+      <p className="notice-title">{text.title}</p>
+      <p>{text.body}</p>
+      <ConnectButton label={copy.jira.connectAgain} />
+    </div>
   );
 }
 
@@ -47,30 +44,6 @@ function ReconnectNotice() {
       <p className="notice-title">{copy.jira.unauthorisedTitle}</p>
       <p>{copy.jira.unauthorisedBody}</p>
       <ConnectButton label={copy.jira.connectAgain} />
-    </div>
-  );
-}
-
-function ConnectDeniedNotice({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <div className="notice notice-info" role="status">
-      <p className="notice-title">{copy.jira.deniedTitle}</p>
-      <p>{copy.jira.deniedBody}</p>
-      <button type="button" className="button button-ghost" onClick={onDismiss}>
-        {copy.jira.dismiss}
-      </button>
-    </div>
-  );
-}
-
-function ConnectFailedNotice({ onDismiss }: { onDismiss: () => void }) {
-  return (
-    <div className="notice notice-error" role="alert">
-      <p className="notice-title">{copy.jira.connectFailedTitle}</p>
-      <p>{copy.jira.connectFailedBody}</p>
-      <button type="button" className="button button-ghost" onClick={onDismiss}>
-        {copy.jira.dismiss}
-      </button>
     </div>
   );
 }
@@ -107,7 +80,13 @@ function SpaceFlow({ siteId, spaceKey, name }: { siteId: string; spaceKey: strin
         {open && data && (
           <div className="jira-flow-body">
             <h5 className="jira-flow-heading">{copy.jira.columnsTitle}</h5>
-            {data.columns.length === 0 ? (
+            {data.board === "forbidden" && (
+              <div className="notice notice-warning" role="status">
+                <p className="notice-title">{copy.jira.boardForbiddenTitle}</p>
+                <p>{copy.jira.boardForbidden}</p>
+              </div>
+            )}
+            {data.board === "forbidden" ? null : data.columns.length === 0 ? (
               <p className="field-hint">{copy.jira.noBoard}</p>
             ) : (
               <ol className="jira-columns">
@@ -410,18 +389,10 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
   const health = useHealth();
   const enabled = health.data?.jira === true;
   const jira = useJira(enabled);
-  const [params, setParams] = useSearchParams();
   const titleId = useId();
 
   if (health.isError) return <ErrorState error={health.error} onRetry={() => void health.refetch()} />;
   if (!enabled) return null;
-
-  const outcome = params.get(ERROR_PARAM);
-  const dismiss = () => {
-    const next = new URLSearchParams(params);
-    next.delete(ERROR_PARAM);
-    setParams(next, { replace: true });
-  };
 
   let body;
   if (jira.isPending) body = <p role="status">{copy.jira.loading}</p>;
@@ -431,6 +402,8 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
     ) : (
       <ErrorState error={jira.error} onRetry={() => void jira.refetch()} />
     );
+  } else if (!jira.data.connected && jira.data.lapsed) {
+    body = <LapsedNotice reason={jira.data.lapsed} />;
   } else if (!jira.data.connected) {
     body = (
       <div className="jira-connect">
@@ -446,8 +419,6 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
         {copy.jira.title}
       </h3>
       <p className="field-hint">{copy.jira.lede}</p>
-      {outcome === "error" && <ConnectFailedNotice onDismiss={dismiss} />}
-      {outcome === "denied" && <ConnectDeniedNotice onDismiss={dismiss} />}
       {body}
     </section>
   );

@@ -662,6 +662,7 @@ describe("hardening of the code health service", () => {
     const now = () => new Date((clock += 60_000));
     service = new CodeHealthService(store, checkout, analyser, now, {
       warn: (context, message) => void logged.push({ context, message }),
+      info: () => undefined,
       error: () => undefined,
     });
     repoId = store.addRepo("acme", "widgets", [], "main").id;
@@ -792,6 +793,7 @@ describe("hardening of the code health service", () => {
     };
     const crawler = new CrawlService(store, provider, service, {
       warn: (context, message) => void logged.push({ context, message }),
+      info: () => undefined,
       error: () => undefined,
     });
 

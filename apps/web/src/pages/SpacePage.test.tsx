@@ -6,6 +6,7 @@ import { SpacePage } from "./SpacePage";
 import { mockFetch, renderRoute, type MockResponse } from "../test/render";
 import { spaceReport } from "../test/fixtures";
 import { copy } from "../copy";
+import { isoDaysAgo } from "../lib/format";
 
 const route = (query = "") => ({ path: "/spaces/:id", route: `/spaces/7${query}` });
 
@@ -362,5 +363,66 @@ describe("SpacePage", () => {
     expect(within(card(copy.space.flow.throughput.title)).getByText(copy.charts.noData)).toBeInTheDocument();
     expect(within(card(copy.space.columns.chartTitle)).getByText(copy.charts.noData)).toBeInTheDocument();
     expect(screen.getByText(copy.space.flow.ageing.empty)).toBeInTheDocument();
+  });
+
+  it("says nothing about the board when its columns were read", async () => {
+    mockReport();
+    renderRoute(<SpacePage />, route());
+    await screen.findByRole("region", { name: copy.space.columns.chartTitle });
+    expect(screen.queryByText(copy.space.columns.noBoardNote)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.space.columns.forbiddenTitle)).not.toBeInTheDocument();
+  });
+
+  it("says nothing about the board when it has not been read yet", async () => {
+    mockFetch({
+      "GET /api/spaces/7/report": () => {
+        const report = spaceReport();
+        return { body: { ...report, space: { ...report.space, board: null } } };
+      },
+    });
+    renderRoute(<SpacePage />, route());
+    await screen.findByRole("region", { name: copy.space.columns.chartTitle });
+    expect(screen.queryByText(copy.space.columns.noBoardNote)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.space.columns.forbiddenTitle)).not.toBeInTheDocument();
+  });
+
+  it("notes that each status is its own column when the space has no board", async () => {
+    mockFetch({
+      "GET /api/spaces/7/report": () => {
+        const report = spaceReport();
+        return { body: { ...report, space: { ...report.space, board: "none" } } };
+      },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText(copy.space.columns.noBoardNote)).toBeInTheDocument();
+    expect(screen.queryByText(copy.space.columns.forbiddenTitle)).not.toBeInTheDocument();
+  });
+
+  it("warns, and says what to do, when Jira refused the board", async () => {
+    mockFetch({
+      "GET /api/spaces/7/report": () => {
+        const report = spaceReport();
+        return { body: { ...report, space: { ...report.space, board: "forbidden" } } };
+      },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText(copy.space.columns.forbiddenTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.space.columns.forbiddenNote)).toBeInTheDocument();
+    expect(screen.queryByText(copy.space.columns.noBoardNote)).not.toBeInTheDocument();
+  });
+
+  it("asks for today, not a future date, when a link starts after today", async () => {
+    const fetchMock = mockReport();
+    renderRoute(<SpacePage />, route("?from=2999-01-01"));
+    await screen.findByRole("heading", { level: 1, name: "Widgets" });
+    const asked = new URL(String(fetchMock.mock.calls.find((c) => String(c[0]).includes("/report"))![0]), "http://localhost");
+    expect(asked.searchParams.get("from")).toBe(isoDaysAgo(0));
+  });
+
+  it("shows a 403 as an error with the message, not as a missing space", async () => {
+    mockFetch({ "GET /api/spaces/7/report": { status: 403, body: { error: "Jira refused access to /x" } } });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Jira refused access to /x");
+    expect(screen.queryByText(copy.space.notFoundTitle)).not.toBeInTheDocument();
   });
 });

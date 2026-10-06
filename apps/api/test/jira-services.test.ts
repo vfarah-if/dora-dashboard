@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
 import {
+  AccessRefusedError,
   ConflictError,
   NotFoundError,
   RateLimitedError,
@@ -13,13 +14,14 @@ import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.
 import type { Logger } from "../src/interfaces/logger.js";
 import { JiraAuthService } from "../src/services/jira-auth-service.js";
 import { SPACE_LIST_TTL_MS, TrackerService } from "../src/services/tracker-service.js";
+import { JiraCloudProvider } from "../src/infrastructure/jira/jira-cloud-provider.js";
 import { WorkItemCrawlService } from "../src/services/work-item-crawl-service.js";
 import { FakeTrackerAuthorisation, FakeWorkItemProvider, grant, settled, SITE, workItem } from "./fakes.js";
 
 const T0 = 1_000_000_000;
 
 interface Logged {
-  level: "warn" | "error";
+  level: "info" | "warn" | "error";
   context: Record<string, unknown>;
   message: string;
 }
@@ -29,6 +31,7 @@ function recordingLogger(): Logger & { logged: Logged[] } {
   const logged: Logged[] = [];
   return {
     logged,
+    info: (context, message) => void logged.push({ level: "info", context: context as Record<string, unknown>, message }),
     warn: (context, message) => void logged.push({ level: "warn", context: context as Record<string, unknown>, message }),
     error: (context, message) => void logged.push({ level: "error", context: context as Record<string, unknown>, message }),
   };
@@ -167,11 +170,83 @@ describe("JiraAuthService", () => {
     });
   });
 
-  it("logs nothing when the refresh token is refused, since the person is told to connect again", async () => {
+  it("logs a refused refresh at warn with the cause, and keeps that cause on the error the person sees", async () => {
+    grants.set("alice", grant({ expiresAt: T0 - 1 }));
+    const refusal = new UnauthorisedError("Atlassian refused the refresh. Token was globally revoked");
+    auth.refreshFailWith = refusal;
+
+    const failure = (await service.accessToken("alice").catch((e: unknown) => e)) as TrackerUnauthorisedError;
+
+    expect(failure).toBeInstanceOf(TrackerUnauthorisedError);
+    expect(failure.cause).toBe(refusal);
+    expect(log.logged.map((l) => [l.level, l.message])).toEqual([
+      ["warn", "jira refused the refresh token; dropped the connection"],
+      ["info", "jira connection dropped"],
+    ]);
+    expect(log.logged[0]!.context).toEqual({ err: refusal });
+    expect(log.logged[1]!.context).toEqual({ reason: "refused" });
+  });
+
+  it("remembers that a refused refresh dropped the connection, until the person connects again", async () => {
     grants.set("alice", grant({ expiresAt: T0 - 1 }));
     auth.refreshFailWith = new UnauthorisedError("refused");
-    await expect(service.accessToken("alice")).rejects.toBeInstanceOf(TrackerUnauthorisedError);
-    expect(log.logged).toEqual([]);
+    await service.accessToken("alice").catch(() => undefined);
+    expect(service.lapsed("alice")).toBe("refused");
+    expect(service.lapsed("bob")).toBeNull();
+
+    await service.connect("alice", "code");
+    expect(service.lapsed("alice")).toBeNull();
+  });
+
+  describe("dropIfCurrent", () => {
+    it("drops the grant that holds the refused token, remembering Jira refused it and logging the drop", () => {
+      grants.set("alice", grant({ accessToken: "refused-token" }));
+      expect(service.dropIfCurrent("alice", "refused-token")).toBe(true);
+      expect(service.isConnected("alice")).toBe(false);
+      expect(service.lapsed("alice")).toBe("refused");
+      expect(log.logged.map((l) => [l.level, l.message])).toEqual([["info", "jira connection dropped"]]);
+      expect(JSON.stringify(log.logged)).not.toContain("refused-token");
+    });
+
+    it("keeps a grant that holds another token, as when the person connected again while a request was out", () => {
+      grants.set("alice", grant({ accessToken: "reconnected" }));
+      expect(service.dropIfCurrent("alice", "old-token")).toBe(false);
+      expect(service.isConnected("alice")).toBe(true);
+      expect(service.lapsed("alice")).toBeNull();
+    });
+
+    it("does nothing for a login with no grant", () => {
+      expect(service.dropIfCurrent("alice", "any")).toBe(false);
+      expect(service.lapsed("alice")).toBeNull();
+    });
+
+    it("stops a refresh that began earlier from restoring the dropped grant", async () => {
+      grants.set("alice", grant({ accessToken: "old", expiresAt: T0 - 1 }));
+      let release!: () => void;
+      auth.refreshGate = new Promise<void>((resolve) => (release = resolve));
+      const caller = service.accessToken("alice");
+      expect(service.dropIfCurrent("alice", "old")).toBe(true);
+      release();
+      await expect(caller).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+      expect(service.isConnected("alice")).toBe(false);
+    });
+  });
+
+  it("forgets why a grant went when the person disconnects on purpose", () => {
+    grants.set("alice", grant({ accessToken: "t" }));
+    service.dropIfCurrent("alice", "t");
+    service.disconnect("alice");
+    expect(service.lapsed("alice")).toBeNull();
+  });
+
+  it("logs an idle drop at info with the reason and no login, whichever call finds it", () => {
+    const store = new MemoryTrackerGrantStore(1000, () => now);
+    const idleService = new JiraAuthService(auth, store, () => now, log);
+    store.set("alice", grant());
+    now += 1001;
+    expect(idleService.isConnected("alice")).toBe(false);
+    expect(idleService.lapsed("alice")).toBe("idle");
+    expect(log.logged).toEqual([{ level: "info", context: { reason: "idle" }, message: "jira connection dropped" }]);
   });
 
   describe("requireUsableGrant", () => {
@@ -179,6 +254,8 @@ describe("JiraAuthService", () => {
       expect(() => service.requireUsableGrant("alice")).toThrow("Jira is not connected");
       grants.set("alice", grant({ refreshToken: null, expiresAt: T0 }));
       expect(() => service.requireUsableGrant("alice")).toThrow(TrackerUnauthorisedError);
+      expect(service.isConnected("alice")).toBe(false);
+      expect(service.lapsed("alice")).toBe("expired");
     });
 
     it("accepts a live grant, and an expired one that can be refreshed, without calling Atlassian", () => {
@@ -197,6 +274,9 @@ describe("JiraAuthService", () => {
     now = T0 + 30_000;
     await expect(service.accessToken("alice")).rejects.toThrow("Connect Jira again");
     expect(auth.refreshTokens).toEqual([]);
+    // Gone, and remembered as expired, so the page can say why rather than show someone who never connected.
+    expect(service.isConnected("alice")).toBe(false);
+    expect(service.lapsed("alice")).toBe("expired");
   });
 
   it("does not restore the old grant when the person disconnects while a refresh is out", async () => {
@@ -243,7 +323,7 @@ function setUp() {
   const jira = new JiraAuthService(auth, grants, () => state.now, log);
   grants.set("alice", grant({ accessToken: "access-1", expiresAt: T0 + 120_000 }));
   const repoId = store.addRepo("acme", "widgets", [], "main").id;
-  const [space] = store.linkSpaces(repoId, SITE.id, [{ siteId: SITE.id, siteUrl: SITE.url, key: "WID", name: "Widgets" }]);
+  const [space] = store.linkSpaces(repoId, SITE, [{ key: "WID", name: "Widgets" }]);
   const crawler = new WorkItemCrawlService(store, provider, jira, log);
   return { store, provider, auth, grants, state, jira, repoId, space: space!, crawler, log };
 }
@@ -287,6 +367,7 @@ describe("WorkItemCrawlService", () => {
     const stored = store.getSpace(space.id)!;
     expect(stored.statuses.map((s) => s.name)).toEqual(["To Do", "In Review", "Done"]);
     expect(stored.columns).toEqual([{ name: "Review", statusIds: ["2"] }]);
+    expect(stored.board).toBe("read");
     expect(stored).toMatchObject({ crawlStatus: "idle", crawlError: null, crawlProgress: null });
     expect(stored.lastCrawledAt).not.toBeNull();
     expect(store.spaceCrawlCursor(space.id)).toBe("2026-09-05T09:55:00.000Z");
@@ -400,17 +481,161 @@ describe("WorkItemCrawlService", () => {
     ]);
   });
 
-  it("stores a clear reason when Jira refuses the credential part way through a crawl", async () => {
+  it("records that the board was refused, not absent, when Jira refuses it", async () => {
     const { store, provider, space, crawler } = setUp();
-    provider.failWith = new UnauthorisedError("Jira rejected the credential; reconnect Jira");
+    provider.seedSpace(SITE.id, "WID", { name: "Widgets", board: "forbidden", items: [workItem({ key: "WID-1" })] });
+
+    await crawler.crawl("alice", space.id, true);
+
+    expect(store.getSpace(space.id)).toMatchObject({ columns: [], board: "forbidden", crawlStatus: "idle" });
+  });
+
+  it("records a space with no board as none", async () => {
+    const { store, provider, space, crawler } = setUp();
+    provider.seedSpace(SITE.id, "WID", { name: "Widgets", items: [] });
+
+    await crawler.crawl("alice", space.id, true);
+
+    expect(store.getSpace(space.id)).toMatchObject({ columns: [], board: "none" });
+  });
+
+  it("asks for each page with the stop time and the cursor named, not by position", async () => {
+    const { provider, space, crawler } = setUp();
+
+    await crawler.crawl("alice", space.id, true);
+
+    const asked = provider.calls.filter((c) => c.method === "fetchWorkItemPage");
+    expect(asked.map((c) => [c.updatedSince, c.cursor])).toEqual([
+      [null, null],
+      [null, "2"],
+      [null, "4"],
+    ]);
+  });
+
+  describe("when Jira refuses the credential part way through a crawl", () => {
+    const NEUTRAL = "Jira refused the connection used for this crawl. Crawl again with a working connection.";
+
+    it("drops the grant, logs a warning and stores neutral wording on the space, which every viewer reads", async () => {
+      const { store, provider, space, crawler, jira, log } = setUp();
+      provider.failWith = new UnauthorisedError("Jira rejected the credential; reconnect Jira");
+      provider.failAfterPages = 1;
+
+      const failure = await crawler.crawl("alice", space.id, true).catch((e: unknown) => e);
+
+      expect(failure).toBeInstanceOf(TrackerUnauthorisedError);
+      expect((failure as Error).message).toBe(NEUTRAL);
+      expect(jira.isConnected("alice")).toBe(false);
+      expect(jira.lapsed("alice")).toBe("refused");
+      expect(store.getSpace(space.id)).toMatchObject({ crawlStatus: "failed", crawlError: NEUTRAL });
+      expect(store.getSpace(space.id)!.crawlError).not.toContain("Connect Jira");
+      expect(log.logged.map((l) => [l.level, l.message])).toEqual([
+        ["info", "jira connection dropped"],
+        ["warn", "jira rejected the grant during a crawl"],
+        ["warn", "space crawl failed"],
+      ]);
+      expect(log.logged[1]!.context).toMatchObject({ dropped: true });
+    });
+
+    it("keeps a grant the person connected again while the crawl was reading, but still fails the crawl", async () => {
+      const { store, provider, space, crawler, jira, grants, log } = setUp();
+      provider.failWith = new UnauthorisedError("Atlassian said 401");
+      provider.failAfterPages = 0;
+      // The page request is out with "access-1" when the person reconnects.
+      provider.onPage = () => grants.set("alice", grant({ accessToken: "reconnected" }));
+
+      await expect(crawler.crawl("alice", space.id)).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+
+      expect(jira.isConnected("alice")).toBe(true);
+      expect(grants.get("alice")!.accessToken).toBe("reconnected");
+      expect(jira.lapsed("alice")).toBeNull();
+      expect(store.getSpace(space.id)!.crawlError).toBe(NEUTRAL);
+      expect(log.logged.find((l) => l.message === "jira rejected the grant during a crawl")!.context).toMatchObject({
+        dropped: false,
+      });
+    });
+
+    it("logs at error, and still throws the crawl's own failure, when recording the failure on the space fails too", async () => {
+      const { store, provider, space, crawler, log } = setUp();
+      provider.failWith = new UpstreamError("Jira answered 502", 502);
+      const original = store.setSpaceCrawlState.bind(store);
+      store.setSpaceCrawlState = (id, status, progress, error) => {
+        if (status === "failed") throw new Error("disk full");
+        original(id, status, progress, error);
+      };
+
+      await expect(crawler.crawl("alice", space.id)).rejects.toBeInstanceOf(UpstreamError);
+
+      const lost = log.logged.find((l) => l.message === "could not record that the space crawl failed");
+      expect(lost).toMatchObject({ level: "error" });
+      expect((lost!.context["err"] as Error).message).toBe("disk full");
+      expect((lost!.context["crawlError"] as Error).message).toBe("Jira answered 502");
+    });
+
+    it("records a board Jira refused for a missing scope as forbidden, keeping the grant", async () => {
+      const { store, jira, grants, log } = setUp();
+      const http = async (url: string): Promise<Response> => {
+        const body = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
+        if (url.includes("/rest/agile/1.0/board")) return body({ code: 401, message: "Unauthorized; scope does not match" }, 401);
+        if (url.includes("/statuses")) return body([]);
+        return body({ issues: [], isLast: true });
+      };
+      const real = new WorkItemCrawlService(store, new JiraCloudProvider(http as unknown as typeof fetch), jira, log);
+      const repo = store.addRepo("acme", "gadgets", [], "main").id;
+      const [space] = store.linkSpaces(repo, SITE, [{ key: "GAD", name: "Gadgets" }]);
+      expect(space!.board).toBeNull();
+
+      await real.crawl("alice", space!.id, true);
+
+      expect(store.getSpace(space!.id)).toMatchObject({ board: "forbidden", columns: [], crawlStatus: "idle", crawlError: null });
+      expect(jira.isConnected("alice")).toBe(true);
+      expect(grants.get("alice")!.accessToken).toBe("access-1");
+      expect(jira.lapsed("alice")).toBeNull();
+    });
+
+    it("also does so when the very first read is refused", async () => {
+      const { store, provider, space, crawler, jira } = setUp();
+      provider.failWith = new UnauthorisedError("Atlassian said 401");
+
+      await expect(crawler.crawl("alice", space.id)).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+
+      expect(jira.isConnected("alice")).toBe(false);
+      expect(store.getSpace(space.id)!.crawlError).toBe(
+        "Jira refused the connection used for this crawl. Crawl again with a working connection.",
+      );
+    });
+
+    it("leaves another person's grant alone", async () => {
+      const { provider, space, crawler, jira, grants } = setUp();
+      grants.set("bob", grant());
+      provider.failWith = new UnauthorisedError("Atlassian said 401");
+
+      await crawler.crawl("alice", space.id).catch(() => undefined);
+
+      expect(jira.isConnected("bob")).toBe(true);
+    });
+
+    it("keeps the grant when the failure is not a rejection", async () => {
+      const { provider, space, crawler, jira } = setUp();
+      provider.failWith = new UpstreamError("Jira answered 502", 502);
+
+      await crawler.crawl("alice", space.id).catch(() => undefined);
+
+      expect(jira.isConnected("alice")).toBe(true);
+    });
+  });
+
+  it("stores Jira's refusal of a resource, saying what may be missing, and keeps the grant", async () => {
+    const { store, provider, space, crawler, jira } = setUp();
+    const refusal = new AccessRefusedError(
+      "Jira refused access to /rest/api/3/search/jql. The connected account may lack permission, or the app may lack a scope",
+    );
+    provider.failWith = refusal;
     provider.failAfterPages = 1;
 
-    await expect(crawler.crawl("alice", space.id, true)).rejects.toBeInstanceOf(UnauthorisedError);
+    await expect(crawler.crawl("alice", space.id, true)).rejects.toBe(refusal);
 
-    expect(store.getSpace(space.id)).toMatchObject({
-      crawlStatus: "failed",
-      crawlError: "Jira rejected the credential; reconnect Jira",
-    });
+    expect(store.getSpace(space.id)).toMatchObject({ crawlStatus: "failed", crawlError: refusal.message });
+    expect(jira.isConnected("alice")).toBe(true);
   });
 
   it("fails, and leaves the cursor alone, when the newest update time is not a date", async () => {
@@ -621,7 +846,7 @@ describe("WorkItemCrawlService", () => {
 
   it("stops without raising when the space is removed during its crawl", async () => {
     const { store, provider, repoId, space, crawler } = setUp();
-    provider.onPage = () => store.linkSpaces(repoId, SITE.id, []);
+    provider.onPage = () => store.linkSpaces(repoId, SITE, []);
 
     expect(await crawler.crawl("alice", space.id, true)).toBe(true);
 
@@ -737,6 +962,24 @@ describe("TrackerService", () => {
     const description = await service.describeSpace("alice", SITE.id, "WID");
     expect(description.statuses.map((s) => s.category)).toEqual(["todo", "in_progress", "done"]);
     expect(description.columns).toEqual([{ name: "Review", statusIds: ["2"] }]);
+    expect(description.board).toBe("read");
+  });
+
+  it("tells a refused board from a missing one when describing a space", async () => {
+    const { service, provider } = tracker();
+    provider.seedSpace(SITE.id, "WID", { name: "Widgets", board: "forbidden" });
+    expect(await service.describeSpace("alice", SITE.id, "WID")).toMatchObject({ columns: [], board: "forbidden" });
+    provider.seedSpace(SITE.id, "WID", { name: "Widgets" });
+    expect(await service.describeSpace("alice", SITE.id, "WID")).toMatchObject({ columns: [], board: "none" });
+  });
+
+  it("passes a refused resource through as it is, without disconnecting the person", async () => {
+    const { service, provider, jira } = tracker();
+    provider.failWith = new AccessRefusedError("Jira refused access to /x. The connected account may lack permission");
+
+    await expect(service.describeSpace("alice", SITE.id, "WID")).rejects.toBeInstanceOf(AccessRefusedError);
+
+    expect(jira.isConnected("alice")).toBe(true);
   });
 
   it("turns a refused credential at the tracker into a connect-again error", async () => {
@@ -756,6 +999,29 @@ describe("TrackerService", () => {
     await expect(service.listSites("alice")).rejects.toThrow("Jira is not connected");
   });
 
+  it("keeps a grant the person connected again while the request was out, and still asks them to connect again", async () => {
+    const { service, provider, jira, grants, log } = tracker();
+    provider.listSites = async () => {
+      grants.set("alice", grant({ accessToken: "reconnected" }));
+      throw new UnauthorisedError("Atlassian said 401");
+    };
+
+    await expect(service.listSites("alice")).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+
+    expect(jira.isConnected("alice")).toBe(true);
+    expect(grants.get("alice")!.accessToken).toBe("reconnected");
+    expect(log.logged.find((l) => l.message === "jira rejected the grant")!.context).toMatchObject({ dropped: false });
+  });
+
+  it("remembers that Jira refused the grant it dropped, and keeps Jira's reason as the cause", async () => {
+    const { service, provider, jira } = tracker();
+    const refusal = new UnauthorisedError("Jira rejected the credential for /x. Unauthorized; reconnect Jira");
+    provider.failWith = refusal;
+    const failure = (await service.listSites("alice").catch((e: unknown) => e)) as Error;
+    expect(failure.cause).toBe(refusal);
+    expect(jira.lapsed("alice")).toBe("refused");
+  });
+
   it("lets other tracker errors through unchanged", async () => {
     const { service, provider } = tracker();
     provider.failWith = new UpstreamError("Jira answered 500", 500);
@@ -764,7 +1030,7 @@ describe("TrackerService", () => {
 
   it("links the spaces named, stores them with the site's URL and starts a crawl of each", async () => {
     const { service, store, repoId, crawler } = tracker();
-    store.linkSpaces(repoId, SITE.id, []);
+    store.linkSpaces(repoId, SITE, []);
     const linked = await service.linkSpaces("alice", repoId, SITE.id, ["WID", "WID"]);
 
     expect(linked).toHaveLength(1);
@@ -789,9 +1055,9 @@ describe("TrackerService", () => {
       });
       await crawler.crawl("alice", space.id, true);
       const gadgets = store.addRepo("acme", "gadgets", [], "main").id;
-      store.linkSpaces(gadgets, SITE.id, [
-        { siteId: SITE.id, siteUrl: SITE.url, key: "WID", name: "Widgets" },
-        { siteId: SITE.id, siteUrl: SITE.url, key: "GAD", name: "Gadgets" },
+      store.linkSpaces(gadgets, SITE, [
+        { key: "WID", name: "Widgets" },
+        { key: "GAD", name: "Gadgets" },
       ]);
 
       const listed = service.trackedSpaces();
@@ -948,19 +1214,18 @@ const settledCrawls = (crawler: WorkItemCrawlService) => settled(() => crawler.i
 
 describe("loadConfig for Jira", () => {
   it("turns Jira on when both the client id and secret are set, and off when neither is, refusing just one", () => {
-    expect(loadConfig({}).jiraEnabled).toBe(false);
+    expect(loadConfig({}).jira).toBeNull();
     expect(() => loadConfig({ ATLASSIAN_CLIENT_ID: "id" })).toThrow("ATLASSIAN_CLIENT_SECRET");
     expect(() => loadConfig({ ATLASSIAN_CLIENT_SECRET: "secret" })).toThrow("ATLASSIAN_CLIENT_ID");
     expect(loadConfig({ ATLASSIAN_CLIENT_ID: "id", ATLASSIAN_CLIENT_SECRET: "secret" })).toMatchObject({
-      jiraEnabled: true,
-      atlassianClientId: "id",
-      atlassianClientSecret: "secret",
+      jira: { clientId: "id", clientSecret: "secret" },
     });
   });
 
   it("defaults the redirect URI to the local API callback and honours an override", () => {
-    expect(loadConfig({}).atlassianRedirectUri).toBe("http://localhost:5181/api/auth/jira/callback");
-    expect(loadConfig({ ATLASSIAN_REDIRECT_URI: "https://dash.example.test/cb" }).atlassianRedirectUri).toBe(
+    const keys = { ATLASSIAN_CLIENT_ID: "id", ATLASSIAN_CLIENT_SECRET: "secret" };
+    expect(loadConfig(keys).jira?.redirectUri).toBe("http://localhost:5181/api/auth/jira/callback");
+    expect(loadConfig({ ...keys, ATLASSIAN_REDIRECT_URI: "https://dash.example.test/cb" }).jira?.redirectUri).toBe(
       "https://dash.example.test/cb",
     );
   });

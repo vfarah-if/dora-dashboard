@@ -1,10 +1,8 @@
 import type { BoardColumn, StatusCategory, TrackerSpaceSummary, TrackerStatus } from "@dora-dashboard/core";
+import type { ApiError } from "../api/client";
 
 /** The most spaces the API accepts in one link request. */
 export const MAX_LINKED_SPACES = 20;
-
-/** The code the API puts in `error` when the Jira grant is missing or has lapsed. */
-export const JIRA_UNAUTHORISED = "jira_unauthorised";
 
 export const CATEGORY_ORDER: readonly StatusCategory[] = ["todo", "in_progress", "done"];
 
@@ -68,6 +66,18 @@ export function isAcceptedReturnTo(value: string): boolean {
   return !/[\s\\]/.test(value) && ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
 }
 
+/** The outcomes the consent callback can leave in the `jira` query parameter. */
+export const JIRA_OUTCOMES = ["denied", "error", "expired", "misconfigured", "rate_limited"] as const;
+export type JiraOutcome = (typeof JIRA_OUTCOMES)[number];
+
+/** The query parameter the callback uses to report how consent went. */
+export const JIRA_OUTCOME_PARAM = "jira";
+
+/** The outcome a `jira` parameter names, or null when it is absent or not one the dashboard knows. */
+export function parseJiraOutcome(value: string | null): JiraOutcome | null {
+  return JIRA_OUTCOMES.find((outcome) => outcome === value) ?? null;
+}
+
 /** A page's path and query to come back to, without the `jira` outcome a previous attempt left in it. */
 export function returnPath(pathname: string, search: string): string {
   const params = new URLSearchParams(search);
@@ -86,14 +96,11 @@ export function jiraConnectUrl(returnTo: string): string {
   return `/api/auth/jira/start?returnTo=${encodeURIComponent(safe)}`;
 }
 
-/** True when an error is the API saying the Jira grant is missing or expired. */
+/** True when an error is the API saying the Jira grant is missing or expired: a 401 carrying the Jira code. */
 export function isJiraUnauthorised(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { status?: unknown }).status === 401 &&
-    (error as { message?: unknown }).message === JIRA_UNAUTHORISED
-  );
+  if (typeof error !== "object" || error === null) return false;
+  const { status, code } = error as Partial<Pick<ApiError, "status" | "code">>;
+  return status === 401 && code === "jira_unauthorised";
 }
 
 /** True when the API refused a crawl because that space is already being crawled. */

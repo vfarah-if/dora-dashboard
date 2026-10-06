@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { NotFoundError, RateLimitedError, UnauthorisedError, UpstreamError, ValidationError } from "../src/core/errors.js";
+import {
+  AccessRefusedError,
+  NotFoundError,
+  RateLimitedError,
+  UnauthorisedError,
+  UpstreamError,
+  ValidationError,
+} from "../src/core/errors.js";
 import { JiraCloudProvider, STATUS_CACHE_TTL_MS } from "../src/infrastructure/jira/jira-cloud-provider.js";
 
 const BASE = "https://api.atlassian.com";
@@ -117,6 +124,22 @@ describe("fetchStatuses", () => {
     ]);
   });
 
+  it("leaves out a status that names no category rather than guessing one", async () => {
+    const { provider } = build(
+      on("/statuses", () =>
+        json([
+          {
+            statuses: [
+              { id: "1", name: "Odd" },
+              { id: "2", name: "Done", statusCategory: { key: "done" } },
+            ],
+          },
+        ]),
+      ),
+    );
+    expect(await provider.fetchStatuses(TOKEN, SITE, "WID")).toEqual([{ id: "2", name: "Done", category: "done" }]);
+  });
+
   it("tolerates an issue type with no statuses", async () => {
     const { provider } = build(on("/statuses", () => json([{ id: "1" }])));
     expect(await provider.fetchStatuses(TOKEN, SITE, "WID")).toEqual([]);
@@ -139,33 +162,52 @@ describe("fetchBoardColumns", () => {
 
   it("reads the first board's columns", async () => {
     const { provider, calls } = build(boards, config);
-    expect(await provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual([
-      { name: "To Do", statusIds: ["10"] },
-      { name: "In Review", statusIds: ["14", "15"] },
-      { name: "Backlog", statusIds: [] },
-    ]);
+    expect(await provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual({
+      board: "read",
+      columns: [
+        { name: "To Do", statusIds: ["10"] },
+        { name: "In Review", statusIds: ["14", "15"] },
+        { name: "Backlog", statusIds: [] },
+      ],
+    });
     expect(calls[0]!.url).toBe(`${API}/rest/agile/1.0/board?projectKeyOrId=WID&maxResults=1`);
   });
 
-  it("returns an empty list when there is no board or no column config", async () => {
-    expect(await build(on("/board?", () => json({ values: [] }))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual([]);
-    expect(await build(on("/board?", () => json({}))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual([]);
+  it("says there is no board when Jira lists none", async () => {
+    const none = { board: "none", columns: [] };
+    expect(await build(on("/board?", () => json({ values: [] }))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual(none);
+    expect(await build(on("/board?", () => json({}))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual(none);
+  });
+
+  it("reads a board with no column config as a board that has no columns", async () => {
     expect(
       await build(
         boards,
         on("/configuration", () => json({})),
       ).provider.fetchBoardColumns(TOKEN, SITE, "WID"),
-    ).toEqual([]);
+    ).toEqual({ board: "read", columns: [] });
   });
 
-  it.each([403, 404])("returns an empty list when the agile API answers %s", async (status) => {
-    expect(await build(on("/board?", () => json({}, status))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual([]);
+  it("answers none when the agile API says 404, at the board list or its configuration", async () => {
+    const none = { board: "none", columns: [] };
+    expect(await build(on("/board?", () => json({}, 404))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual(none);
     expect(
       await build(
         boards,
-        on("/configuration", () => json({}, status)),
+        on("/configuration", () => json({}, 404)),
       ).provider.fetchBoardColumns(TOKEN, SITE, "WID"),
-    ).toEqual([]);
+    ).toEqual(none);
+  });
+
+  it("answers forbidden, not none, when the agile API refuses the board list or its configuration", async () => {
+    const forbidden = { board: "forbidden", columns: [] };
+    expect(await build(on("/board?", () => json({}, 403))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual(forbidden);
+    expect(
+      await build(
+        boards,
+        on("/configuration", () => json({}, 403)),
+      ).provider.fetchBoardColumns(TOKEN, SITE, "WID"),
+    ).toEqual(forbidden);
   });
 
   it("still throws on 401 and on other failures", async () => {
@@ -175,6 +217,70 @@ describe("fetchBoardColumns", () => {
     await expect(build(on("/board?", () => json({}, 500))).provider.fetchBoardColumns(TOKEN, SITE, "WID")).rejects.toBeInstanceOf(
       UpstreamError,
     );
+  });
+});
+
+describe("a 401 that says the token's scope does not match", () => {
+  const SCOPE = { code: 401, message: "Unauthorized; scope does not match" };
+
+  it("answers forbidden at the board list, since the app lacks a scope and reconnecting cannot help", async () => {
+    const { provider } = build(on("/board?", () => json(SCOPE, 401)));
+    expect(await provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual({ board: "forbidden", columns: [] });
+  });
+
+  it("answers forbidden at the board configuration", async () => {
+    const { provider } = build(
+      on("/board?", () => json({ values: [{ id: 7 }] })),
+      on("/board/7/configuration", () => json(SCOPE, 401)),
+    );
+    expect(await provider.fetchBoardColumns(TOKEN, SITE, "WID")).toEqual({ board: "forbidden", columns: [] });
+  });
+
+  it("raises AccessRefusedError, saying the app lacks a scope and never carrying the token, on any other call", async () => {
+    const error = (await build(() => json(SCOPE, 401))
+      .provider.listSpaces(TOKEN, SITE)
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(AccessRefusedError);
+    expect(error).not.toBeInstanceOf(UnauthorisedError);
+    expect(error.message).toContain("app lacks a scope");
+    expect(error.message).toContain(`/ex/jira/${SITE}/rest/api/3/project/search`);
+    expect(error.message).not.toContain(TOKEN);
+  });
+});
+
+describe("a 401 that is a rejected credential", () => {
+  it.each([
+    ["a gateway message", { code: 401, message: "Unauthorized" }, "Unauthorized"],
+    ["Jira's own error messages", { errorMessages: ["You are not authenticated"] }, "You are not authenticated"],
+  ])("stays an UnauthorisedError and appends Atlassian's reason for %s", async (_name, body, reason) => {
+    const error = (await build(() => json(body, 401))
+      .provider.listSites(TOKEN)
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(UnauthorisedError);
+    expect(error.message).toContain(reason);
+    expect(error.message).not.toContain(TOKEN);
+  });
+
+  it("cuts a long reason to 200 characters", async () => {
+    const error = (await build(() => json({ message: "y".repeat(500) }, 401))
+      .provider.listSites(TOKEN)
+      .catch((e: unknown) => e)) as Error;
+    expect(error.message).toContain("y".repeat(200));
+    expect(error.message).not.toContain("y".repeat(201));
+  });
+
+  it("stays an UnauthorisedError, with no reason appended, when the body is not JSON", async () => {
+    const error = (await build(() => new Response("<html>", { status: 401 }))
+      .provider.listSites(TOKEN)
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(UnauthorisedError);
+    expect(error.message).toBe("Jira rejected the credential for /oauth/token/accessible-resources; reconnect Jira");
+  });
+
+  it("still throws it from the board read, so the person is asked to connect again", async () => {
+    await expect(
+      build(on("/board?", () => json({ message: "Unauthorized" }, 401))).provider.fetchBoardColumns(TOKEN, SITE, "WID"),
+    ).rejects.toBeInstanceOf(UnauthorisedError);
   });
 });
 
@@ -224,7 +330,7 @@ describe("fetchWorkItemPage", () => {
         ],
       }),
     );
-    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
     expect(page.nextCursor).toBeNull();
     expect(page.items).toEqual([
       {
@@ -264,13 +370,13 @@ describe("fetchWorkItemPage", () => {
       statusRoute,
       changelog({}),
     );
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect(item!.level).toBe(level);
   });
 
   it("leaves level off an item whose issue type carries no hierarchy level", async () => {
     const { provider } = build(search({ issues: [issue()], isLast: true }), statusRoute, changelog({}));
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect("level" in item!).toBe(false);
   });
 
@@ -289,7 +395,7 @@ describe("fetchWorkItemPage", () => {
       statusRoute,
       changelog({}),
     );
-    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
     expect(page.people).toEqual({ "acct-1": "Someone", "acct-2": "Another" });
   });
 
@@ -309,7 +415,7 @@ describe("fetchWorkItemPage", () => {
         ],
       }),
     );
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect(item!.transitions.map((t) => [t.at, t.to])).toEqual([
       ["2024-05-01T08:00:00.000Z", "To Do"],
       ["2024-05-02T08:00:00.000Z", "In Progress"],
@@ -324,9 +430,9 @@ describe("fetchWorkItemPage", () => {
       changelog({ issueChangeLogs: [] }),
     );
     await provider.fetchStatuses(TOKEN, SITE, "WID");
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, "tok-1");
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, "tok-2");
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: "tok-1" });
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: "tok-2" });
 
     expect(calls.filter((c) => c.url.endsWith("/project/WID/statuses"))).toHaveLength(1);
   });
@@ -338,13 +444,13 @@ describe("fetchWorkItemPage", () => {
       changelog({ issueChangeLogs: [] }),
     );
     const statusCalls = () => calls.filter((c) => c.url.endsWith("/project/WID/statuses")).length;
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
     clock.now += STATUS_CACHE_TTL_MS - 1;
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
     expect(statusCalls()).toBe(1);
 
     clock.now += 1;
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
     expect(statusCalls()).toBe(2);
   });
 
@@ -355,14 +461,14 @@ describe("fetchWorkItemPage", () => {
       statusRoute,
       changelog({ issueChangeLogs: [] }),
     );
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null);
-    await provider.fetchWorkItemPage(TOKEN, SITE, "GAD", null, null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null });
+    await provider.fetchWorkItemPage(TOKEN, SITE, "GAD", { updatedSince: null, cursor: null });
     expect(calls.filter((c) => c.url.includes("/statuses"))).toHaveLength(2);
   });
 
   it("starts from the current status when there is no history", async () => {
     const { provider } = build(search({ issues: [issue()], isLast: true }), statusRoute, changelog({ issueChangeLogs: [] }));
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect(item!.transitions).toEqual([
       { at: "2024-05-01T08:00:00.000Z", from: null, to: "Done", fromCategory: null, toCategory: "done" },
     ]);
@@ -376,7 +482,7 @@ describe("fetchWorkItemPage", () => {
         issueChangeLogs: [{ issueId: "1001" }, { issueId: "1002", changeHistories: [{ created: "2024-05-02T00:00:00.000Z" }] }],
       }),
     );
-    expect((await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items).toHaveLength(2);
+    expect((await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items).toHaveLength(2);
   });
 
   it("leaves categories null for an unknown status id and no inline category", async () => {
@@ -397,7 +503,7 @@ describe("fetchWorkItemPage", () => {
         ],
       }),
     );
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect(item!.statusCategory).toBeNull();
     expect(item!.transitions.map((t) => [t.fromCategory, t.toCategory])).toEqual([
       [null, null],
@@ -411,7 +517,9 @@ describe("fetchWorkItemPage", () => {
       statusRoute,
       changelog({ issueChangeLogs: [] }),
     );
-    expect((await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items[0]!.statusCategory).toBe("done");
+    expect(
+      (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items[0]!.statusCategory,
+    ).toBe("done");
   });
 
   it("handles missing optional fields", async () => {
@@ -425,7 +533,7 @@ describe("fetchWorkItemPage", () => {
       statusRoute,
       changelog({}),
     );
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     expect(item).toMatchObject({
       type: "",
       summary: "",
@@ -444,7 +552,9 @@ describe("fetchWorkItemPage", () => {
     ["resolutiondate", { resolutiondate: "soon" }, "resolution date"],
   ])("raises, naming the issue and the field, when %s is not a date", async (_field, over, label) => {
     const { provider } = build(search({ issues: [issue(over)], isLast: true }), statusRoute, changelog({}));
-    const failure = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null).catch((e: unknown) => e);
+    const failure = await provider
+      .fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })
+      .catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(UpstreamError);
     expect((failure as Error).message).toBe(`Jira sent a ${label} for WID-1 that is not a date`);
   });
@@ -457,7 +567,7 @@ describe("fetchWorkItemPage", () => {
         issueChangeLogs: [{ issueId: "1001", changeHistories: [{ created: "later", items: [{ field: "status" }] }] }],
       }),
     );
-    await expect(provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).rejects.toThrow(
+    await expect(provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).rejects.toThrow(
       "Jira sent a changelog date for WID-1 that is not a date",
     );
   });
@@ -468,7 +578,7 @@ describe("fetchWorkItemPage", () => {
       '{"issueChangeLogs":[{"issueId":"1001","changeHistories":[{"created":"2024-05-02T08:00:00.000Z","items":[{"field":"status","from":"11","to":"12"}]}]}]}',
     ) as unknown;
     const { provider } = build(search({ issues: [issue()], isLast: true }), statusRoute, changelog(body));
-    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).items;
     const moved = item!.transitions[1]!;
     expect(moved.to).toBe("");
     expect(moved.from).toBeNull();
@@ -493,7 +603,7 @@ describe("fetchWorkItemPage", () => {
         },
       ),
     );
-    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, "tok-1");
+    const page = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: "tok-1" });
     expect(page.nextCursor).toBe("tok-2");
     expect(page.items[0]!.transitions).toHaveLength(3);
     const searchCall = calls.find((c) => c.url.endsWith("/search/jql"))!;
@@ -518,34 +628,40 @@ describe("fetchWorkItemPage", () => {
 
   it("gives a null cursor when isLast is set even if a token is present, or when no token comes", async () => {
     const a = build(search({ issues: [issue()], nextPageToken: "tok", isLast: true }), statusRoute, changelog({}));
-    expect((await a.provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).nextCursor).toBeNull();
+    expect((await a.provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).nextCursor).toBeNull();
     const b = build(search({ issues: [issue()] }), statusRoute, changelog({}));
-    expect((await b.provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).nextCursor).toBeNull();
+    expect((await b.provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).nextCursor).toBeNull();
   });
 
   it("makes no follow-up calls for an empty page", async () => {
     const { provider, calls } = build(search({ isLast: true }));
-    expect(await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).toEqual({ items: [], nextCursor: null, people: {} });
+    expect(await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null })).toEqual({
+      items: [],
+      nextCursor: null,
+      people: {},
+    });
     expect(calls).toHaveLength(1);
   });
 
   it("builds JQL newest first, with the key escaped and no date filter by default", async () => {
     const { provider, calls } = build(search({ issues: [], isLast: true }));
-    await provider.fetchWorkItemPage(TOKEN, SITE, 'W"I\\D', null, null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, 'W"I\\D', { updatedSince: null, cursor: null });
     expect(calls[0]!.body!.jql).toBe('project = "W\\"I\\\\D" ORDER BY updated DESC');
     expect("nextPageToken" in calls[0]!.body!).toBe(false);
   });
 
   it("subtracts a day from updatedSince as a time zone margin", async () => {
     const { provider, calls } = build(search({ issues: [], isLast: true }));
-    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", "2024-03-01T00:05:00.000Z", null);
+    await provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: "2024-03-01T00:05:00.000Z", cursor: null });
     // 1 March 00:05 minus one day is 29 February 2024 (a leap year) 00:05.
     expect(calls[0]!.body!.jql).toBe('project = "WID" AND updated >= "2024/02/29 00:05" ORDER BY updated DESC');
   });
 
   it("rejects an updatedSince that is not a date", async () => {
     const { provider } = build();
-    await expect(provider.fetchWorkItemPage(TOKEN, SITE, "WID", "yesterday", null)).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: "yesterday", cursor: null }),
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 });
 
@@ -554,16 +670,33 @@ describe("error mapping", () => {
     await expect(build(() => json({}, 401)).provider.listSites(TOKEN)).rejects.toBeInstanceOf(UnauthorisedError);
   });
 
-  it.each([403, 404])("maps %s to NotFoundError", async (status) => {
-    await expect(build(() => json({}, status)).provider.fetchStatuses(TOKEN, SITE, "WID")).rejects.toBeInstanceOf(NotFoundError);
+  it("maps 404 to NotFoundError", async () => {
+    await expect(build(() => json({}, 404)).provider.fetchStatuses(TOKEN, SITE, "WID")).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("says on a 403 that the space cannot be seen or the app lacks a scope, without the token", async () => {
-    const error = (await build(() => json({}, 403))
+  it("maps 403 to AccessRefusedError, which is not a NotFoundError", async () => {
+    const error = await build(() => json({}, 403))
       .provider.fetchStatuses(TOKEN, SITE, "WID")
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AccessRefusedError);
+    expect(error).not.toBeInstanceOf(NotFoundError);
+  });
+
+  it("says on a 403 what was refused and what may be missing, naming the path without its query or the token", async () => {
+    const error = (await build(() => json({}, 403))
+      .provider.listSpaces(TOKEN, SITE)
       .catch((e: unknown) => e)) as Error;
-    expect(error.message).toBe("The Jira space cannot be seen by this account, or the app lacks a required scope");
+    expect(error.message).toBe(
+      `Jira refused access to /ex/jira/${SITE}/rest/api/3/project/search. The connected account may lack permission, or the app may lack a scope`,
+    );
+    expect(error.message).not.toContain("startAt");
     expect(error.message).not.toContain(TOKEN);
+  });
+
+  it("refuses the work item page on a 403 rather than reporting an empty space", async () => {
+    await expect(
+      build(() => json({}, 403)).provider.fetchWorkItemPage(TOKEN, SITE, "WID", { updatedSince: null, cursor: null }),
+    ).rejects.toBeInstanceOf(AccessRefusedError);
   });
 
   it.each([400, 500, 503])("maps %s to UpstreamError carrying the status", async (status) => {

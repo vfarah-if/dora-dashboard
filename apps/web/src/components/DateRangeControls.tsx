@@ -59,6 +59,9 @@ function DateField({ label, value, min, max, onChange }: DateFieldProps) {
 }
 
 export function DateRangeControls({ value, onChange, now, extraPresets = [], showBots = true }: DateRangeControlsProps) {
+  const today = isoDaysAgo(0, now);
+  // ISO dates compare correctly as text. Neither end may be later than today, and a typed date that is gets today instead.
+  const clamp = (date: string | null) => (date !== null && date > today ? today : date);
   const presets = [...extraPresets, ...standardPresets(now)];
   const activePreset = presets.find((preset) => preset.range.from === value.from && preset.range.to === value.to)?.key;
 
@@ -66,8 +69,19 @@ export function DateRangeControls({ value, onChange, now, extraPresets = [], sho
     <fieldset className="range-controls">
       <legend className="visually-hidden">{copy.range.legend}</legend>
       <div className="range-dates">
-        <DateField label={copy.range.from} value={value.from} max={value.to} onChange={(from) => onChange({ ...value, from })} />
-        <DateField label={copy.range.to} value={value.to} min={value.from} onChange={(to) => onChange({ ...value, to })} />
+        <DateField
+          label={copy.range.from}
+          value={value.from}
+          max={value.to && value.to < today ? value.to : today}
+          onChange={(from) => onChange({ ...value, from: clamp(from) })}
+        />
+        <DateField
+          label={copy.range.to}
+          value={value.to}
+          min={value.from}
+          max={today}
+          onChange={(to) => onChange({ ...value, to: clamp(to) })}
+        />
       </div>
       <div className="segmented" role="group" aria-label={copy.range.presetsLabel}>
         {presets.map((preset) => (

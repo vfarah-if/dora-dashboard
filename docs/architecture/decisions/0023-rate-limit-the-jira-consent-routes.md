@@ -12,7 +12,7 @@ Accepted
 
 ## Decision
 
-The API depends on `@fastify/rate-limit` (^10.3.0), registered in `apps/api/src/app.ts` with `global: false`, so only routes that name a limit are limited. `GET /api/auth/jira/start` and `GET /api/auth/jira/callback` each allow 20 requests a minute per client IP address. Counters are held in memory by the process. A request over the limit receives a 429 with the usual error body, because the plugin's error builder returns a `RateLimitedError` and the app's error handler formats it. The limit is declared once as `CONSENT_RATE_LIMIT` in `apps/api/src/routes/jira.ts`.
+The API depends on `@fastify/rate-limit` (^10.3.0), registered in `apps/api/src/app.ts` with `global: false`, so only routes that name a limit are limited. `GET /api/auth/jira/start` and `GET /api/auth/jira/callback` each allow 20 requests a minute per client IP address. Counters are held in memory by the process. The plugin's error builder returns a `RateLimitedError`. Because both consent routes are browser navigations, their route-level error handler (ADR 0020) turns it into a redirect to `/repos` with `jira=rate_limited`, and nothing answers raw JSON there. A route that opts in later and is not a navigation would answer a 429 with the usual error body, formatted by the app's error handler. The limit is declared once as `CONSENT_RATE_LIMIT` in `apps/api/src/routes/jira.ts`.
 
 ### Alternatives considered
 

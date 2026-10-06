@@ -82,7 +82,7 @@ export interface AgeingItem extends ItemRef {
   ageHours: number;
 }
 
-export type JiraHygieneCheck =
+export type SpaceHygieneCheck =
   | "pr_without_key"
   | "done_without_pr"
   | "skipped_in_progress"
@@ -91,22 +91,44 @@ export type JiraHygieneCheck =
   | "stale_in_progress"
   | "in_progress_unassigned";
 
-export interface JiraHygieneFinding {
-  check: JiraHygieneCheck;
+/** The checks whose findings list delivery items and nothing else. */
+export type SpaceHygieneItemCheck = Exclude<SpaceHygieneCheck, "pr_without_key" | "bulk_move">;
+
+/** What every hygiene finding carries, whatever it lists. */
+interface SpaceHygieneTally {
   /** How many items or pull requests were found. */
   count: number;
   /** Out of how many were checked, so a share can be shown; null when a share means nothing. */
   of: number | null;
-  items: ItemRef[];
-  /** Pull requests, for checks about pull requests. */
-  pullRequests: { repo: string; number: number; title: string; url: string }[];
-  /** For bulk moves: each batch, when it happened and which items moved. */
-  batches?: { at: string; keys: string[] }[];
 }
+
+/** Merged pull requests that name no issue key. */
+export interface SpaceHygienePullRequestFinding extends SpaceHygieneTally {
+  check: "pr_without_key";
+  pullRequests: { repo: string; number: number; title: string; url: string }[];
+}
+
+/** Delivery items moved into done in batches. */
+export interface SpaceHygieneBulkMoveFinding extends SpaceHygieneTally {
+  check: "bulk_move";
+  /** Every item in any batch. */
+  items: ItemRef[];
+  /** Each batch, when it happened and which items moved. */
+  batches: { at: string; keys: string[] }[];
+}
+
+/** Any other check: the delivery items it found. */
+export interface SpaceHygieneItemFinding extends SpaceHygieneTally {
+  check: SpaceHygieneItemCheck;
+  items: ItemRef[];
+}
+
+/** One hygiene check's result. `check` says which variant it is, so each carries only the list its check fills. */
+export type SpaceHygieneFinding = SpaceHygienePullRequestFinding | SpaceHygieneBulkMoveFinding | SpaceHygieneItemFinding;
 
 export interface SpaceReport {
   /** The space, with how its latest crawl went, so a page can say when the figures come from an older crawl. */
-  space: Pick<TrackerSpace, "id" | "key" | "name" | "siteUrl" | "lastCrawledAt" | "crawlStatus" | "crawlError">;
+  space: Pick<TrackerSpace, "id" | "key" | "name" | "siteUrl" | "lastCrawledAt" | "crawlStatus" | "crawlError" | "board">;
   range: { from: string; to: string };
   repos: { id: number; name: string }[];
   totals: {
@@ -138,7 +160,7 @@ export interface SpaceReport {
     linked: number;
     of: number;
   };
-  hygiene: JiraHygieneFinding[];
+  hygiene: SpaceHygieneFinding[];
 }
 
 const HOUR_MS = 3_600_000;
@@ -423,12 +445,15 @@ export function buildSpaceReport(
     return ref;
   };
   const refsOf = (list: readonly Tracked[]) => list.map((t) => refOf(t.item)).sort((a, b) => byKey(a.key, b.key));
-  const itemFinding = (check: JiraHygieneCheck, found: readonly Tracked[], of: number | null): JiraHygieneFinding => ({
+  const itemFinding = <C extends SpaceHygieneItemCheck | "bulk_move">(
+    check: C,
+    found: readonly Tracked[],
+    of: number | null,
+  ) => ({
     check,
     count: found.length,
     of,
     items: refsOf(found),
-    pullRequests: [],
   });
 
   const delivery = items.filter((i) => levelOf(i) === "standard").map(track);
@@ -455,6 +480,7 @@ export function buildSpaceReport(
       lastCrawledAt: space.lastCrawledAt,
       crawlStatus: space.crawlStatus,
       crawlError: space.crawlError,
+      board: space.board,
     },
     range: { from: range.from, to: range.to },
     repos: linked.map(({ repo }) => ({ id: repo.id, name: `${repo.owner}/${repo.name}` })),
@@ -486,7 +512,6 @@ export function buildSpaceReport(
         check: "pr_without_key",
         count: withoutKey.length,
         of: mergedHuman.length,
-        items: [],
         pullRequests: withoutKey.map(({ repo, pr }) => ({ repo, number: pr.number, title: pr.title, url: pr.url })),
       },
       itemFinding(

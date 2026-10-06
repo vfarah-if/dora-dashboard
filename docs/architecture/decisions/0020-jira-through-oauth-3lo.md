@@ -12,47 +12,53 @@ ADR 0010 proposed a `WorkItemProvider` port for Jira as its second step. To see 
 
 ## Decision
 
-**Authentication.** Jira Cloud is read through OAuth 2.0 (3LO). The person consents at `auth.atlassian.com` with the audience `api.atlassian.com` and `prompt=consent`. The code is exchanged at `auth.atlassian.com/oauth/token` for an access token that lasts about one hour and a rotating refresh token, issued because the `offline_access` scope is requested. Sites are discovered through `oauth/token/accessible-resources`, so every site the person granted at consent is listed without configuration. API calls go to `api.atlassian.com/ex/jira/{cloudId}`.
+**Authentication.** Jira Cloud is read through OAuth 2.0 (3LO). The person consents at `auth.atlassian.com` with `prompt=consent`, and the code is exchanged for an access token that lasts about an hour and a rotating refresh token, issued because `offline_access` is requested. Sites come from `oauth/token/accessible-resources`, and API calls go to `api.atlassian.com/ex/jira/{cloudId}`. The scopes are `read:jira-work`, `read:jira-user`, `offline_access` and three granular ones for the board endpoints, `read:board-scope:jira-software`, `read:board-scope.admin:jira-software` and `read:project:jira` (`ATLASSIAN_SCOPES` in `atlassian-oauth.ts`). SETUP.md tells the reader to enable them on the Atlassian app, because a scope the app does not hold cannot be added by connecting again.
 
-**Scopes.** `read:jira-work`, `read:jira-user` and `offline_access`, plus the granular scopes needed to read boards (`read:board-scope:jira-software`, `read:board-scope.admin:jira-software` for board configuration, and `read:project:jira`). SETUP.md lists the exact set to tick.
+**Configuration.** Each deployment registers its own Atlassian app. `Config.jira` holds `{ clientId, clientSecret, redirectUri }`, or null when Jira is off, and `main.ts` prints `jira on` or `jira off` from it. `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` are set together, and one alone stops the API at start-up so that a half-finished configuration is not mistaken for Jira being off. The redirect defaults to `WEB_ORIGIN` followed by `/api/auth/jira/callback`. With Jira off the routes are not registered and answer 404.
 
-**Registration.** Each deployment registers its own Atlassian OAuth 2.0 app and supplies `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET`, which are set together, and optionally `ATLASSIAN_REDIRECT_URI`, which defaults to `WEB_ORIGIN` followed by `/api/auth/jira/callback`. When both credentials are absent the Jira routes return 404 and the feature is off. Setting only one stops the API at start-up, so a half-finished configuration is not mistaken for Jira being off.
+**Consent routes.** `/api/auth/jira/start` and `/api/auth/jira/callback` are browser navigations, so each has a route-level error handler and nothing on them answers raw JSON. A signed-out person goes to the dashboard root, and a rate limit (ADR 0023) or a validation failure goes to `/repos` with an outcome. The callback returns to the page with a `jira` outcome of `denied` (consent declined), `expired`, `misconfigured`, `rate_limited` or `error` (everything else). SETUP.md maps each outcome to its cause and fix. Each redirect logs its reason at info, and an exchange failure logs at warn when it is an expected error and at error when it is not, never with the code, the state or any token.
 
-**Grants.** Grants are held in process memory only, keyed by the signed-in GitHub login, in line with ADR 0004. A restart means reconnecting Jira, and `make crawl` (the command line) cannot crawl Jira in this slice because it has no browser grant. An access token is refreshed when under a minute is left. A refresh that Atlassian refuses deletes the grant, so the person connects again, whereas one that fails for another reason (an Atlassian 5xx or 429, or the network) keeps the grant and reaches the caller as a 502 or 429. When Atlassian answers a data request with 401 the grant is dropped. Declining consent returns the person to the page with `jira=denied`, and every other failure of the callback returns with `jira=error` and logs a reason that never includes the code, the state or a token. Consent routes are rate limited (ADR 0023).
+- **State.** The state is random and used once, and a used state is refused while its cookie could still be replayed. The cookie signs the state together with its issue time, so a captured cookie older than 10 minutes is refused even if unused. A missing or lapsed cookie, or a state that differs because consent was started again in another tab, gives `expired`. That also covers slow consent, an API restart and a browser host that differs from `WEB_ORIGIN`.
+- **Misconfigured.** `misconfigured` means Atlassian refused the dashboard's own app credentials at the sign-in exchange, which is a 401, an error of `invalid_client`, `access_denied` or `unauthorized_client`, or a description naming `redirect_uri`. It is logged at error level with Atlassian's `error_description` (which holds no secret), because only the operator can fix it.
+- **Not found.** A not-found handler answers 404 `{ error: "Not found" }` and never logs or echoes the URL, so an unregistered callback's code never reaches the log.
 
-**Port and adapter.** The port is `WorkItemProvider` and the adapter is `JiraCloudProvider`, which takes `fetch` and an API base, so Jira Data Center becomes another adapter or a configuration change later. Issues are read with `POST /rest/api/3/search/jql`, because the legacy `/search` endpoint is deprecated. Status history is read with `POST /rest/api/3/changelog/bulkfetch`, because inline changelogs are truncated.
+**Why refresh is classified differently.** A refresh answered 401 or 403 is a refusal and drops the grant. A 400 is a refusal only when its error is `invalid_grant`, because any other 400 means this dashboard's own request is wrong and dropping every grant would hide the bug. Only the sign-in exchange classifies configuration errors, and a refused refresh is logged at warn. Atlassian documents only `403 invalid_grant` ("Unknown or invalid refresh token") for refresh (https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/), and a revoked grant is reported as `401 unauthorized_client` ("Token was globally revoked", https://community.developer.atlassian.com/t/token-was-globally-revoked-when-trying-to-get-auth-token/78751). Classifying refresh errors by code would therefore keep dead grants. At sign-in no grant exists yet, so a misclassification only changes the message. A refresh that fails for another reason (any other 400, a 5xx, a 429 or the network) keeps the grant and reaches the caller as a 502 or 429.
 
-**Default status rule.** The first transition into an in-progress category starts work and the last transition into done ends it. Jira's three status categories (to do, in progress, done) give a default that every space has. Per-space overrides come later. Board columns are stored, and ADR 0021 measures time per column from them.
+**Grants.** Grants are held in process memory only, keyed by the signed-in GitHub login (ADR 0004), and an access token is refreshed when under a minute is left. Any read of a grant counts as use, including a background crawl and the connection check the repositories page makes, because that check lists sites live through the token. A grant unused for more than the 8 hour session lifetime is dropped. Signing out, disconnecting and restarting also remove it, and `make crawl` cannot read Jira because it has no browser grant.
 
-**Joining to code.** Spaces are linked to repositories, many to many. Issues join to pull requests by issue key in the pull request title or head branch. The crawl now records `headRef` on pull requests, which needs one full re-crawl to back-fill.
+When a grant goes without the person asking, its reason is remembered for a day and `GET /api/jira` reports `lapsed` as `idle` (unused for 8 hours), `refused` (Jira or Atlassian turned it down) or `expired` (the access token ran out and there is no refresh token). Connecting again, disconnecting or signing out clears it, and every drop is logged at info with the reason and never the login.
 
-**What is stored.** Site URLs, space keys and issue summaries live only in SQLite under the gitignored `data/` directory (ADR 0009). The assignee account id is stored on each issue and, from ADR 0021, display names are stored per space. Email addresses are never read (ADR 0008).
+**Jira's refusals.** A Jira 401 during a read or a crawl drops the grant, but only if it still holds the token Jira refused, so a reconnect made during the request is kept. The crawl stores a neutral message on the space ("Jira refused the connection used for this crawl. Crawl again with a working connection."), because everyone who views the space reads it. Atlassian answers a token that lacks a scope with `401 {"code":401,"message":"Unauthorized; scope does not match"}` (https://community.developer.atlassian.com/t/how-to-solve-unauthorized-scope-does-not-match/81389, https://community.developer.atlassian.com/t/oauth-2-0-3lo-granular-jira-software-scopes-present-in-token-but-rest-agile-1-0-returns-401-scope-does-not-match/100456). The adapter reads the body and raises `AccessRefusedError` for that, so it is treated as a 403 below, and any other 401 stays a rejected credential with Atlassian's reason in the log. A Jira 403 raises `AccessRefusedError`, answered as 403 with a message that the account may lack permission or the app a scope, and the grant is kept. A 403 or 502 response is logged at warn. A 404 is not found. A malformed JSON body answers 400 and an oversized one 413.
 
-**Metrics.** Issue-level measures carry names that cannot be confused with DORA lead time, and are defined in ADR 0021.
+**Port and adapter.** `WorkItemProvider` is the port and `JiraCloudProvider` the adapter, which takes `fetch` and an API base, so Data Center becomes another adapter or a configuration change. Issues are read with `POST /rest/api/3/search/jql`, and status history with `POST /rest/api/3/changelog/bulkfetch` because inline changelogs are truncated.
+
+**Board access.** `board` is null until the board has been read (a newly linked or never crawled space), then `read`, `none` or `forbidden`. `forbidden` means Jira refused the board, usually for want of a board scope, and the page then says why time per column uses statuses (ADR 0021). The store migration runs in one transaction and marks existing rows `read` when they hold columns, keeps an earlier `forbidden`, marks the rest `none` when a crawl has finished and leaves null otherwise.
+
+**Status rule and joins.** The first transition into an in-progress category starts work and the last transition into done ends it, which every space has by default. Spaces link to repositories many to many, and issues join pull requests by issue key in the title or head branch, so the crawl records `headRef` and needs one full re-crawl to back-fill.
+
+**What is stored.** Site URLs, space keys, issue summaries, assignee account ids and per-space display names live only in SQLite under the gitignored `data/` directory (ADR 0009). Email addresses are never read (ADR 0008).
 
 ### Alternatives considered
 
-- **API token plus email.** It needs a per-site, per-person secret in the environment and does not discover sites, so every new site would need editing by hand.
-- **Personal Access Tokens.** They exist for Jira Data Center only, so they do not serve Jira Cloud.
-- **Storing refresh tokens on disk.** It would remove the reconnect after a restart but reopens the decision in ADR 0004 that no credential is written to disk.
+- **API token plus email.** It needs a per-site, per-person secret in the environment and does not discover sites.
+- **Personal Access Tokens.** They exist for Jira Data Center only.
+- **Storing refresh tokens on disk.** It would remove the reconnect after a restart but reopens ADR 0004.
 
 ## Consequences
 
 ### Positive
 
-- One consent lists every site the person granted and its spaces, with no per-site setup.
+- One consent lists every site the person granted, with no per-site setup.
 - No Jira credential is written to disk, and the browser never sees one.
+- A failed consent always lands on a page that says what happened, and an operator's mistake is told apart from a person's.
 - Data Center or another tracker is a new adapter behind the same port.
 
 ### Negative
 
 - Every deployment must register its own Atlassian app and keep a client secret in `.env`.
-- A restart drops every Jira grant, so people reconnect, and the terminal crawl cannot read Jira.
-- The category default will not match every team's columns until per-space overrides exist.
-- Pull requests crawled before this change lack `headRef`, so branch-name joins need one full re-crawl.
-- Crawled issues, including their summaries, for a linked space are visible to every signed-in dashboard user, even those whose Jira account cannot see that space. That is acceptable for a self-hosted team tool, but it must be known when choosing which spaces to link.
-- Only the first board of a space is read for its columns.
-- Grants are removed when a person signs out, as well as on an explicit disconnect and on a restart.
-- A full crawl removes stored issues that the space no longer holds, so deleted or moved issues disappear once it completes. A failed full crawl removes nothing.
-- The incremental cursor is the newest update time less five minutes, so late-indexed and same-millisecond issues are read again; this costs a few repeated upserts, which are idempotent.
+- A restart, 8 idle hours or signing out drops every affected grant, and the terminal crawl cannot read Jira.
+- The category default will not match every team's columns until per-space overrides exist, and only the first board of a space is read.
+- Pull requests crawled before `headRef` was recorded need one full re-crawl for branch joins.
+- Crawled issues, including summaries, for a linked space are visible to every signed-in dashboard user, even one whose Jira account cannot see that space, so that matters when choosing spaces to link.
+- A full crawl removes stored issues the space no longer holds, and a failed full crawl removes nothing. The incremental cursor is the newest update time less five minutes, which costs a few idempotent repeat upserts.
 - Saving the spaces of one site replaces only the repository's links on that site.

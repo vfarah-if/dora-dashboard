@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Band, BandPosition, DoraDrivers, DoraMeasure, RepoReport } from "@dora-dashboard/core";
+import type { Band, BandPosition, DoraDrivers, DoraMeasure, RepoReport, UpperBand } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { report } from "../test/fixtures";
 import { explainDora } from "./doraExplain";
@@ -230,7 +230,7 @@ describe("explainDora gap sentences", () => {
 describe("explainDora meaning", () => {
   const MEASURES: DoraMeasure[] = ["deploymentFrequency", "leadTime", "changeFailure", "timeToRestore"];
   const BANDS: Band[] = ["elite", "high", "medium", "low"];
-  const NEXT: Record<Band, Band | null> = { low: "medium", medium: "high", high: "elite", elite: null };
+  const NEXT: Record<Exclude<Band, "elite">, UpperBand> = { low: "medium", medium: "high", high: "elite" };
 
   it.each(MEASURES.flatMap((m) => BANDS.map((b) => [m, b] as const)))("gives the %s meaning for the %s band", (measure, band) => {
     const figures: Record<DoraMeasure, Partial<RepoReport["dora"]>> = {
@@ -239,9 +239,8 @@ describe("explainDora meaning", () => {
       changeFailure: { changeFailure: { rate: 0.2, failed: 1, total: 5, band, revertPrs: 0, rework: null } },
       timeToRestore: { timeToRestore: { medianHours: 5, count: 1, band } },
     };
-    const next = NEXT[band];
     const position: BandPosition =
-      next === null ? { band, next, threshold: null, gap: null } : { band, next, threshold: 1, gap: 1 };
+      band === "elite" ? { band, next: null, threshold: null, gap: null } : { band, next: NEXT[band], threshold: 1, gap: 1 };
     const result = explainDora(withMeasure(measure, figures[measure], position))[measure]!;
     expect(result.meaning).toBe(copy.dora.explain.meaning[measure][band]);
     expect(result.source.href).toContain("dora.dev");
@@ -366,7 +365,7 @@ describe("explainDora deployment frequency", () => {
 
   it("states the tile's own deploys and weeks, then the complete weeks with none, so the tile can be reproduced", () => {
     // The range touches 4 weeks, the first and last partial: 3 deploys over 4 weeks is the tile's 0.75 a week.
-    const result = freq({ deploys: 3, weeks: 2, weeksWithoutDeploy: 1, prsPerDeploy: summary(1) });
+    const result = freq({ deploys: 3, completeWeeks: 2, weeksWithoutDeploy: 1, prsPerDeploy: summary(1) });
     expect(result.findings).toEqual([
       "The tile divides 3 successful deploys by 4 weeks, counting every week the range touches, partial ones included. Of the 2 complete weeks, 1 had no deploy.",
     ]);
@@ -379,7 +378,7 @@ describe("explainDora deployment frequency", () => {
         dora: { ...base.dora, deploymentFrequency: { perWeek: 1, total: 1, weeks: 1, band: "high" } },
         doraDrivers: {
           ...base.doraDrivers,
-          deploymentFrequency: { deploys: 1, weeks: 1, weeksWithoutDeploy: 0, prsPerDeploy: summary(1) },
+          deploymentFrequency: { deploys: 1, completeWeeks: 1, weeksWithoutDeploy: 0, prsPerDeploy: summary(1) },
         },
       }),
     ).deploymentFrequency!;
@@ -407,7 +406,7 @@ describe("explainDora deployment frequency", () => {
   });
 
   it("says so when the range holds no complete week", () => {
-    expect(freq({ deploys: 3, weeks: 0, weeksWithoutDeploy: 0 }).findings[0]).toBe(
+    expect(freq({ deploys: 3, completeWeeks: 0, weeksWithoutDeploy: 0 }).findings[0]).toBe(
       "The tile divides 3 successful deploys by 4 weeks, counting every week the range touches, partial ones included. None of those weeks was complete, so none is counted as a week without a deploy.",
     );
   });

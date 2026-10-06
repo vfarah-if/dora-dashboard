@@ -1,11 +1,11 @@
-import type { ColumnTime, ItemRef, JiraHygieneCheck, SpaceWeekRow } from "@dora-dashboard/core";
+import type { ColumnTime, ItemRef, SpaceHygieneCheck, SpaceWeekRow } from "@dora-dashboard/core";
 import { copy } from "../copy";
 
 /**
  * Where each hygiene card sits on the page, so the page reads the same every time. A record rather than a list, so a
  * check added to core fails to compile here until it is given a place, instead of never being shown.
  */
-const HYGIENE_RANK: Record<JiraHygieneCheck, number> = {
+const HYGIENE_RANK: Record<SpaceHygieneCheck, number> = {
   pr_without_key: 0,
   done_without_pr: 1,
   skipped_in_progress: 2,
@@ -16,7 +16,7 @@ const HYGIENE_RANK: Record<JiraHygieneCheck, number> = {
 };
 
 /** Every hygiene check, in the order the cards are shown. */
-export const HYGIENE_ORDER: readonly JiraHygieneCheck[] = (Object.keys(HYGIENE_RANK) as JiraHygieneCheck[]).sort(
+export const HYGIENE_ORDER: readonly SpaceHygieneCheck[] = (Object.keys(HYGIENE_RANK) as SpaceHygieneCheck[]).sort(
   (a, b) => HYGIENE_RANK[a] - HYGIENE_RANK[b],
 );
 

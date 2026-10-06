@@ -47,7 +47,7 @@ export interface AppDeps {
   reader?: WorkspaceReader;
   /** The time source for review waits and the review queue cache; tests pass a fixed one. */
   clock?: () => Date;
-  /** Jira, through OAuth 2.0 (3LO). Left out, the Jira routes are not registered and answer 404 (ADR 0020). */
+  /** Jira, through OAuth 2.0 (3LO). Used only when `config.jira` is set; otherwise the Jira routes are not registered and answer 404 (ADR 0020). */
   jira?: { provider: WorkItemProvider; auth: TrackerAuthorisation; grants: TrackerGrantStore };
   /** `true` logs to stdout; a stream lets a test read the log lines. */
   logger?: boolean | { stream: NodeJS.WritableStream };
@@ -88,6 +88,11 @@ function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHeal
   return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log);
 }
 
+/** Jira is on only when the config carries the Atlassian app (ADR 0020) and the adapters were handed in. */
+function jiraWiring(deps: AppDeps): NonNullable<AppDeps["jira"]> | undefined {
+  return deps.config.jira ? deps.jira : undefined;
+}
+
 function registerJira(
   app: FastifyInstance,
   deps: AppDeps,
@@ -104,6 +109,7 @@ function registerJira(
     auth,
     tracker,
     spaceReports: new SpaceReportService(deps.store, deps.clock),
+    ...(deps.clock ? { now: () => deps.clock!().getTime() } : {}),
   });
   return crawler;
 }
@@ -114,7 +120,8 @@ function registerRoutes(
   crawler: CrawlService,
   codeHealth: CodeHealthService,
 ): WorkItemCrawlService | undefined {
-  const jiraAuth = deps.jira && new JiraAuthService(deps.jira.auth, deps.jira.grants, deps.now, app.log);
+  const jira = jiraWiring(deps);
+  const jiraAuth = jira && new JiraAuthService(jira.auth, jira.grants, deps.now, app.log);
   const auth = {
     config: deps.config,
     provider: deps.provider,
@@ -129,19 +136,19 @@ function registerRoutes(
     guard: requireSession(auth),
     repos: new RepoService(deps.store, deps.provider),
     crawler,
-    reports: new ReportService(deps.store),
+    reports: new ReportService(deps.store, deps.clock),
     codeHealth,
   });
   registerReviewQueueRoutes(app, {
     guard: requireSession(auth),
     queue: new ReviewQueueService(deps.store, deps.provider, deps.clock),
   });
-  const workItemCrawler = deps.jira && jiraAuth && registerJira(app, deps, requireSession(auth), deps.jira, jiraAuth);
+  const workItemCrawler = jira && jiraAuth && registerJira(app, deps, requireSession(auth), jira, jiraAuth);
   app.get("/api/health", async () => ({
     ok: true,
     authMode: deps.config.authMode,
     provider: deps.provider.kind,
-    jira: deps.jira !== undefined,
+    jira: jira !== undefined,
   }));
   return workItemCrawler;
 }

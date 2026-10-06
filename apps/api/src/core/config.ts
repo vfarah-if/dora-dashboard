@@ -20,12 +20,17 @@ export interface Config {
   webOrigin: string;
   /** Clone and analyse each repository's code during a crawl. `CODE_ANALYSIS=off` disables it. */
   codeAnalysis: boolean;
-  /** The Atlassian OAuth 2.0 (3LO) app's credentials. Both are set or both are empty; one alone fails at start-up (ADR 0020). */
-  atlassianClientId: string;
-  atlassianClientSecret: string;
-  atlassianRedirectUri: string;
-  /** True when both Atlassian credentials are set. */
-  jiraEnabled: boolean;
+  /**
+   * The Atlassian OAuth 2.0 (3LO) app, or null when Jira is off. Both credentials are set or both are empty; one alone
+   * fails at start-up (ADR 0020).
+   */
+  jira: JiraConfig | null;
+}
+
+export interface JiraConfig {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
 }
 
 const PLACEHOLDER_SESSION_SECRET = "change-me-to-a-long-random-string";
@@ -85,9 +90,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     deviceClientId: env.GITHUB_DEVICE_CLIENT_ID || PUBLISHED_DEVICE_CLIENT_ID,
     sessionSecret: sessionSecretFor(authMode, env.SESSION_SECRET ?? ""),
     ...server,
-    atlassianClientId,
-    atlassianClientSecret,
-    atlassianRedirectUri: env.ATLASSIAN_REDIRECT_URI || `${server.webOrigin}/api/auth/jira/callback`,
-    jiraEnabled: atlassianClientId !== "" && atlassianClientSecret !== "",
+    jira:
+      atlassianClientId === ""
+        ? null
+        : {
+            clientId: atlassianClientId,
+            clientSecret: atlassianClientSecret,
+            redirectUri: env.ATLASSIAN_REDIRECT_URI || `${server.webOrigin}/api/auth/jira/callback`,
+          },
   };
 }

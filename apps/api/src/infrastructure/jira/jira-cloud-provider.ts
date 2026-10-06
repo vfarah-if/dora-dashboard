@@ -1,5 +1,5 @@
 import type {
-  BoardColumn,
+  BoardAccess,
   StatusCategory,
   TrackerSite,
   TrackerSpaceSummary,
@@ -8,8 +8,15 @@ import type {
   WorkItemLevel,
   WorkItemTransition,
 } from "@dora-dashboard/core";
-import { NotFoundError, RateLimitedError, UnauthorisedError, UpstreamError, ValidationError } from "../../core/errors.js";
-import type { WorkItemPage, WorkItemProvider } from "../../interfaces/work-item-provider.js";
+import {
+  AccessRefusedError,
+  NotFoundError,
+  RateLimitedError,
+  UnauthorisedError,
+  UpstreamError,
+  ValidationError,
+} from "../../core/errors.js";
+import type { BoardRead, WorkItemPage, WorkItemPageRequest, WorkItemProvider } from "../../interfaces/work-item-provider.js";
 
 const PAGE_SIZE = 50;
 const SPACE_PAGE_SIZE = 50;
@@ -92,10 +99,11 @@ function toIso(value: string | number | null | undefined, issueKey: string, fiel
 /** Jira's own words for a failure, read best effort and cut short, so a long or odd body cannot flood a log or a row. */
 async function reasonFrom(response: Response): Promise<string | null> {
   try {
-    const body = (await response.json()) as { errorMessages?: unknown; errors?: unknown };
+    const body = (await response.json()) as { errorMessages?: unknown; errors?: unknown; message?: unknown };
     const messages = Array.isArray(body.errorMessages) ? body.errorMessages : [];
     const fields = body.errors && typeof body.errors === "object" ? Object.values(body.errors) : [];
-    const first = [...messages, ...fields].find((m): m is string => typeof m === "string" && m.trim() !== "");
+    // The gateway answers in `{ code, message }`, as it does for a token whose scope does not match.
+    const first = [...messages, ...fields, body.message].find((m): m is string => typeof m === "string" && m.trim() !== "");
     return first === undefined ? null : first.trim().slice(0, MAX_REASON_LENGTH);
   } catch {
     return null;
@@ -157,9 +165,23 @@ export class JiraCloudProvider implements WorkItemProvider {
         await this.sleep(seconds * 1000);
         continue;
       }
-      if (response.status === 401) throw new UnauthorisedError("Jira rejected the credential; reconnect Jira");
+      if (response.status === 401) {
+        const reason = await reasonFrom(response);
+        const where = new URL(url).pathname;
+        // Atlassian answers a token that lacks a scope with a 401. Reconnecting cannot add a scope the app does not
+        // have, so it is a refusal, which keeps the grant, and not a rejected credential, which drops it.
+        if (reason !== null && /scope does not match/i.test(reason)) {
+          throw new AccessRefusedError(
+            `Jira refused access to ${where}. The app lacks a scope this call needs; add it to the app in the Atlassian developer console and connect Jira again`,
+          );
+        }
+        throw new UnauthorisedError(`Jira rejected the credential for ${where}${reason ? `. ${reason}` : ""}; reconnect Jira`);
+      }
       if (response.status === 403) {
-        throw new NotFoundError("The Jira space cannot be seen by this account, or the app lacks a required scope");
+        // The path without its query; the token travels in a header and is never here.
+        throw new AccessRefusedError(
+          `Jira refused access to ${new URL(url).pathname}. The connected account may lack permission, or the app may lack a scope`,
+        );
       }
       if (response.status === 404) {
         throw new NotFoundError("Jira site or space was not found, or this account cannot see it");
@@ -234,7 +256,7 @@ export class JiraCloudProvider implements WorkItemProvider {
     return this.categoryCache.get(`${siteId}/${spaceKey}`)!.categories;
   }
 
-  async fetchBoardColumns(token: string, siteId: string, spaceKey: string): Promise<BoardColumn[]> {
+  async fetchBoardColumns(token: string, siteId: string, spaceKey: string): Promise<BoardRead> {
     try {
       const boards = await this.api<{ values?: { id: number }[] }>(
         token,
@@ -242,20 +264,23 @@ export class JiraCloudProvider implements WorkItemProvider {
         `/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(spaceKey)}&maxResults=1`,
       );
       const first = boards.values?.[0];
-      if (!first) return [];
+      if (!first) return { board: "none", columns: [] };
       const config = await this.api<{ columnConfig?: { columns?: { name: string; statuses?: { id: string }[] }[] } }>(
         token,
         siteId,
         `/rest/agile/1.0/board/${first.id}/configuration`,
       );
-      return (config.columnConfig?.columns ?? []).map((c) => ({
+      const columns = (config.columnConfig?.columns ?? []).map((c) => ({
         name: c.name,
         statusIds: (c.statuses ?? []).map((s) => s.id),
       }));
+      return { board: "read", columns };
     } catch (error) {
-      // A space without Jira Software, or a grant without board scopes, simply has no columns.
-      if (error instanceof NotFoundError) return [];
-      throw error;
+      // Not found is a space without Jira Software; refused is a missing board scope or a board the person cannot see.
+      const board: BoardAccess | null =
+        error instanceof NotFoundError ? "none" : error instanceof AccessRefusedError ? "forbidden" : null;
+      if (board === null) throw error;
+      return { board, columns: [] };
     }
   }
 
@@ -263,8 +288,7 @@ export class JiraCloudProvider implements WorkItemProvider {
     token: string,
     siteId: string,
     spaceKey: string,
-    updatedSince: string | null,
-    cursor: string | null,
+    { updatedSince, cursor }: WorkItemPageRequest,
   ): Promise<WorkItemPage> {
     let jql = `project = ${quoteJql(spaceKey)}`;
     if (updatedSince !== null) {

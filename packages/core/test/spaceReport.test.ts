@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildSpaceReport, type LinkedRepoData, type SpaceReport } from "../src/spaceReport.js";
+import {
+  buildSpaceReport,
+  type LinkedRepoData,
+  type SpaceHygieneCheck,
+  type SpaceHygieneFinding,
+  type SpaceReport,
+} from "../src/spaceReport.js";
 import type { DeployRun, PullRequest, StatusCategory, TrackerSpace, WorkItem } from "../src/types.js";
 
 const NOW = "2026-10-06T12:00:00Z"; // a Tuesday; the week starts on Monday 2026-10-05
@@ -24,6 +30,7 @@ const space: TrackerSpace = {
     { name: "Review", statusIds: ["3"] },
     { name: "Done", statusIds: ["5"] },
   ],
+  board: "read",
   lastCrawledAt: "2026-10-06T08:00:00Z",
   crawlStatus: "idle",
   crawlError: null,
@@ -129,8 +136,9 @@ function run(runId: number, createdAt: string, branch = "main"): DeployRun {
 const SEPTEMBER = { from: "2026-09-01", to: "2026-09-30", now: NOW };
 const EMPTY_SUMMARY = { count: 0, median: null, p75: null, mean: null };
 
-const finding = (report: SpaceReport, check: SpaceReport["hygiene"][number]["check"]) =>
-  report.hygiene.find((f) => f.check === check)!;
+/** The report's finding for one check, narrowed to that check's variant. */
+const finding = <C extends SpaceHygieneCheck>(report: SpaceReport, check: C) =>
+  report.hygiene.find((f): f is SpaceHygieneFinding & { check: C } => f.check === check)!;
 const keys = (refs: { key: string }[]) => refs.map((r) => r.key);
 
 describe("buildSpaceReport", () => {
@@ -145,6 +153,7 @@ describe("buildSpaceReport", () => {
       lastCrawledAt: "2026-10-06T08:00:00Z",
       crawlStatus: "idle",
       crawlError: null,
+      board: "read",
     });
     expect(report.range).toEqual({ from: "2026-10-06", to: "2026-10-06" });
     expect(report.repos).toEqual([]);
@@ -166,7 +175,10 @@ describe("buildSpaceReport", () => {
       ["in_progress_unassigned", 0, 0],
     ]);
     expect(finding(report, "bulk_move").batches).toEqual([]);
-    for (const f of report.hygiene) expect([f.items, f.pullRequests]).toEqual([[], []]);
+    // Each finding carries only the list its check fills, and every one is empty.
+    for (const f of report.hygiene) expect(f.check === "pr_without_key" ? f.pullRequests : f.items).toEqual([]);
+    expect(finding(report, "pr_without_key")).not.toHaveProperty("items");
+    for (const f of report.hygiene.filter((h) => h.check !== "pr_without_key")) expect(f).not.toHaveProperty("pullRequests");
   });
 
   describe("range", () => {
@@ -559,6 +571,15 @@ describe("buildSpaceReport", () => {
       ]);
     });
 
+    it("carries a board not yet read as null, so a space never crawled is not reported as having no board", () => {
+      expect(buildSpaceReport({ ...space, columns: [], board: null }, [], [], SEPTEMBER).space.board).toBeNull();
+    });
+
+    it("carries how the board was read, so a refused board is not mistaken for no board", () => {
+      expect(buildSpaceReport({ ...space, columns: [], board: "forbidden" }, [], [], SEPTEMBER).space.board).toBe("forbidden");
+      expect(buildSpaceReport({ ...space, columns: [], board: "none" }, [], [], SEPTEMBER).space.board).toBe("none");
+    });
+
     it("uses status names as the columns when the space has no board, in the order of the space's statuses", () => {
       const report = buildSpaceReport({ ...space, columns: [] }, items, [], SEPTEMBER);
 
@@ -753,7 +774,6 @@ describe("buildSpaceReport", () => {
         check: "pr_without_key",
         count: 1,
         of: 7,
-        items: [],
         pullRequests: [
           { repo: "acme/widgets", number: 6, title: "Tidy the readme", url: "https://github.com/acme/widgets/pull/6" },
         ],
@@ -788,7 +808,6 @@ describe("buildSpaceReport", () => {
           { key: "WID-9", type: "Story", summary: "Summary of WID-9", assigned: true },
           { key: "WID-10", type: "Story", summary: "Summary of WID-10", assigned: true },
         ],
-        pullRequests: [],
       });
     });
 

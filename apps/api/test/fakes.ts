@@ -1,4 +1,5 @@
 import type {
+  BoardAccess,
   BoardColumn,
   DeployRun,
   FunctionMetrics,
@@ -18,7 +19,7 @@ import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } 
 import type { DeviceAuthorisation, DeviceCode, DevicePoll } from "../src/interfaces/device-authorisation.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
 import type { TrackerAuthorisation, TrackerGrant } from "../src/interfaces/tracker-authorisation.js";
-import type { WorkItemPage, WorkItemProvider } from "../src/interfaces/work-item-provider.js";
+import type { BoardRead, WorkItemPage, WorkItemPageRequest, WorkItemProvider } from "../src/interfaces/work-item-provider.js";
 
 export function pr(overrides: Partial<PullRequest> & { number: number }): PullRequest {
   return {
@@ -172,6 +173,8 @@ interface FakeSpace {
   summary: TrackerSpaceSummary;
   statuses: TrackerStatus[];
   columns: BoardColumn[];
+  /** What reading the board comes to; defaults to "read" when columns are given, else "none". */
+  board: BoardAccess;
   items: WorkItem[];
   /** Display names by account id; a page returns the names of the assignees on it. */
   people: Record<string, string>;
@@ -223,6 +226,7 @@ export class FakeWorkItemProvider implements WorkItemProvider {
       summary: { key, name: data.name ?? `Space ${key}`, type: data.type ?? "software" },
       statuses: data.statuses ?? [],
       columns: data.columns ?? [],
+      board: data.board ?? (data.columns?.length ? "read" : "none"),
       items: data.items ?? [],
       people: data.people ?? {},
     });
@@ -258,18 +262,18 @@ export class FakeWorkItemProvider implements WorkItemProvider {
     return this.space(siteId, spaceKey).statuses;
   }
 
-  async fetchBoardColumns(token: string, siteId: string, spaceKey: string): Promise<BoardColumn[]> {
+  async fetchBoardColumns(token: string, siteId: string, spaceKey: string): Promise<BoardRead> {
     this.calls.push({ method: "fetchBoardColumns", token, siteId, spaceKey });
     this.fail();
-    return this.space(siteId, spaceKey).columns;
+    const { board, columns } = this.space(siteId, spaceKey);
+    return { board, columns };
   }
 
   async fetchWorkItemPage(
     token: string,
     siteId: string,
     spaceKey: string,
-    updatedSince: string | null,
-    cursor: string | null,
+    { updatedSince, cursor }: WorkItemPageRequest,
   ): Promise<WorkItemPage> {
     this.calls.push({ method: "fetchWorkItemPage", token, siteId, spaceKey, updatedSince, cursor });
     this.onPage?.();
@@ -442,10 +446,11 @@ export function config(overrides: Partial<Config> = {}): Config {
     databasePath: ":memory:",
     webOrigin: "http://localhost:5181",
     codeAnalysis: true,
-    atlassianClientId: "atlassian-client-id",
-    atlassianClientSecret: "atlassian-client-secret",
-    atlassianRedirectUri: "http://localhost:5181/api/auth/jira/callback",
-    jiraEnabled: true,
+    jira: {
+      clientId: "atlassian-client-id",
+      clientSecret: "atlassian-client-secret",
+      redirectUri: "http://localhost:5181/api/auth/jira/callback",
+    },
     ...overrides,
   };
 }

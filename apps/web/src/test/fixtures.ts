@@ -1,7 +1,7 @@
 import type {
   ItemRef,
-  JiraHygieneCheck,
-  JiraHygieneFinding,
+  SpaceHygieneItemCheck,
+  SpaceHygieneItemFinding,
   QueueEntry,
   RepoReport,
   ReviewQueue,
@@ -118,7 +118,7 @@ export function report(
         ],
         size: summary(40),
       },
-      deploymentFrequency: { deploys: 3, weeks: 3, weeksWithoutDeploy: 0, prsPerDeploy: summary(2) },
+      deploymentFrequency: { deploys: 3, completeWeeks: 3, weeksWithoutDeploy: 0, prsPerDeploy: summary(2) },
       changeFailure: {
         failed: 1,
         total: 4,
@@ -337,12 +337,12 @@ export function reviewQueue(overrides: Partial<ReviewQueue> = {}): ReviewQueue {
   };
 }
 
-const hygiene = (check: JiraHygieneCheck, overrides: Partial<JiraHygieneFinding> = {}): JiraHygieneFinding => ({
+/** A finding for a check that lists delivery items; pull request and bulk move findings are written out in full. */
+const hygiene = (check: SpaceHygieneItemCheck, overrides: Partial<SpaceHygieneItemFinding> = {}): SpaceHygieneItemFinding => ({
   check,
   count: 0,
   of: null,
   items: [],
-  pullRequests: [],
   ...overrides,
 });
 
@@ -368,6 +368,7 @@ export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
       lastCrawledAt: "2026-03-01T10:00:00Z",
       crawlStatus: "idle",
       crawlError: null,
+      board: "read",
     },
     range: { from: "2026-01-05", to: "2026-01-25" },
     repos: [{ id: 1, name: "acme/widgets" }],
@@ -413,26 +414,28 @@ export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
     },
     hygiene: [
       hygiene("in_progress_unassigned", { count: 1, items: [named("WID-20", null)] }),
-      hygiene("pr_without_key", {
+      {
+        check: "pr_without_key",
         count: 2,
         of: 8,
         pullRequests: [
           { repo: "acme/widgets", number: 5, title: "Tidy the readme", url: "https://github.com/acme/widgets/pull/5" },
           { repo: "acme/widgets", number: 6, title: "Bump deps", url: "https://github.com/acme/widgets/pull/6" },
         ],
-      }),
+      },
       hygiene("done_without_pr", {
         count: 3,
         of: 12,
         items: [named("WID-1", "Zoe Example"), named("WID-2", "Ann Example"), named("WID-3", "Ann Example")],
       }),
       hygiene("skipped_in_progress"),
-      hygiene("bulk_move", {
+      {
+        check: "bulk_move",
         count: 5,
         of: 12,
         items: [],
         batches: [{ at: "2026-01-16T15:00:00Z", keys: ["WID-1", "WID-2", "WID-3", "WID-4", "WID-5"] }],
-      }),
+      },
       // WID-31 is assigned, but to someone whose name the space did not record.
       hygiene("reopened", { count: 2, items: [named("WID-30", "Ann Example"), named("WID-31", null, true)] }),
       hygiene("stale_in_progress", {

@@ -99,8 +99,8 @@ function leadTimeAnalysis(report: RepoReport): Analysis {
  */
 function deploymentFrequencyAnalysis(report: RepoReport): Analysis {
   const tile = report.dora.deploymentFrequency!; // `explainOne` analyses only a measured figure
-  const { weeks, weeksWithoutDeploy, prsPerDeploy } = report.doraDrivers.deploymentFrequency;
-  const findings = [text.findings.fewDeploys(tile.total, tile.weeks, weeks, weeksWithoutDeploy)];
+  const { completeWeeks, weeksWithoutDeploy, prsPerDeploy } = report.doraDrivers.deploymentFrequency;
+  const findings = [text.findings.fewDeploys(tile.total, tile.weeks, completeWeeks, weeksWithoutDeploy)];
   const found: Driver[] = ["fewDeploys"];
   if (prsPerDeploy.median !== null && prsPerDeploy.median > 1) {
     findings.push(text.findings.largeBatches(formatNumber(prsPerDeploy.median, 1)));
@@ -244,7 +244,7 @@ const WORDING: Record<DoraMeasure, Wording> = {
 
 function gapSentence(measure: DoraMeasure, value: number, position: BandPosition, profile: DoraProfile): string {
   const w = WORDING[measure];
-  if (position.next === null || position.threshold === null || position.gap === null) {
+  if (position.next === null) {
     const limit = w.elite(profile);
     const margin = w.inside(value, limit);
     const written = w.write(value, margin);
