@@ -1,26 +1,31 @@
 import type { ColumnTime, ItemRef, JiraHygieneCheck, SpaceWeekRow } from "@dora-dashboard/core";
 import { copy } from "../copy";
 
-/** The order the hygiene cards are shown in, so the page reads the same every time. */
-export const HYGIENE_ORDER: readonly JiraHygieneCheck[] = [
-  "pr_without_key",
-  "done_without_pr",
-  "skipped_in_progress",
-  "bulk_move",
-  "reopened",
-  "stale_in_progress",
-  "in_progress_unassigned",
-];
+/**
+ * Where each hygiene card sits on the page, so the page reads the same every time. A record rather than a list, so a
+ * check added to core fails to compile here until it is given a place, instead of never being shown.
+ */
+const HYGIENE_RANK: Record<JiraHygieneCheck, number> = {
+  pr_without_key: 0,
+  done_without_pr: 1,
+  skipped_in_progress: 2,
+  bulk_move: 3,
+  reopened: 4,
+  stale_in_progress: 5,
+  in_progress_unassigned: 6,
+};
+
+/** Every hygiene check, in the order the cards are shown. */
+export const HYGIENE_ORDER: readonly JiraHygieneCheck[] = (Object.keys(HYGIENE_RANK) as JiraHygieneCheck[]).sort(
+  (a, b) => HYGIENE_RANK[a] - HYGIENE_RANK[b],
+);
 
 /** How many entries a list shows before the reader asks for the rest. */
 export const LIST_LIMIT = 10;
 
-/** The name the API gives time spent in statuses that no board column holds. Compared against, never shown. */
-const NOT_ON_BOARD = "Not on the board";
-
-/** A column's name as the page shows it: the board's own name, or the page's words for time outside the board. */
-export function columnLabel(column: string): string {
-  return column === NOT_ON_BOARD ? copy.space.columns.notOnBoard : column;
+/** A column's name as the page shows it: the board's own name, or the page's words for time outside the board (null). */
+export function columnLabel(column: string | null): string {
+  return column ?? copy.space.columns.notOnBoard;
 }
 
 /** The link to an issue in Jira. A trailing slash on the site address is tolerated. */
@@ -49,7 +54,7 @@ export interface TypeSeries {
 
 export interface ThroughputChart {
   series: TypeSeries[];
-  /** One row per complete week, with a count for each series key. */
+  /** One row per week that does not run past the end of the range, with a count for each series key. */
   rows: ({ week: string } & Record<string, number | string>)[];
 }
 
@@ -57,7 +62,10 @@ const typeKey = (label: string) => `type-${label}`;
 /** Lower case, so it cannot meet a known type's key. */
 const OTHER_KEY = "type-other";
 
-/** Weeks that have finished. A running week would read as a slump on a weekly chart. */
+/**
+ * Weeks that do not run past the end of the range; a week cut short there would read as a slump. A first week cut
+ * short by the start of the range is kept.
+ */
 export const completeWeeks = (weekly: readonly SpaceWeekRow[]) => weekly.filter((w) => !w.partial);
 
 /** Throughput stacked by type. Only types that appear are listed, in a fixed order. */
@@ -102,7 +110,7 @@ const COLUMN_COLOURS = 8;
 export function columnSegments(columns: readonly ColumnTime[]): ColumnSegment[] {
   let slot = 0;
   return columns.flatMap((column, index) => {
-    const onBoard = column.column !== NOT_ON_BOARD;
+    const onBoard = column.column !== null;
     const colour = onBoard ? `var(--column-${(slot % COLUMN_COLOURS) + 1})` : "var(--column-none)";
     if (onBoard) slot += 1;
     return column.meanHours > 0
@@ -117,21 +125,41 @@ export function columnRow(segments: readonly ColumnSegment[]): Record<string, nu
 }
 
 export interface AssigneeGroup<T> {
-  /** The assignee's name, or null for work with nobody assigned. */
+  /** Unique among the groups: names and the two nameless groups are kept apart by a prefix, so no name can clash. */
+  id: string;
+  /** The assignee's name, or null when there is none to show. */
   name: string | null;
+  /** True when someone is assigned, so a group with no name holds work whose assignee's name was not recorded. */
+  assigned: boolean;
   items: T[];
 }
 
-/** Groups items by assignee name, A to Z, with unassigned work last. Order within a group is kept. */
-export function groupByAssignee<T extends Pick<ItemRef, "assignee">>(items: readonly T[]): AssigneeGroup<T>[] {
-  const groups = new Map<string | null, T[]>();
+/** Named groups A to Z, then assigned work whose name was not recorded, then unassigned work. */
+const groupRank = (group: AssigneeGroup<unknown>) => (group.name !== null ? 0 : group.assigned ? 1 : 2);
+
+/**
+ * Groups items by assignee name, A to Z, then assigned work with no recorded name, then unassigned work last, so work
+ * from a space crawled before names were recorded is not shown as nobody's. Order within a group is kept.
+ */
+export function groupByAssignee<T extends Pick<ItemRef, "assigned" | "assignee">>(items: readonly T[]): AssigneeGroup<T>[] {
+  const groups = new Map<string, AssigneeGroup<T>>();
   for (const item of items) {
-    const name = item.assignee?.trim() || null;
-    groups.set(name, [...(groups.get(name) ?? []), item]);
+    const name = (item.assigned && item.assignee?.trim()) || null;
+    const id = name !== null ? `name:${name}` : item.assigned ? "assigned" : "unassigned";
+    const group = groups.get(id) ?? { id, name, assigned: item.assigned, items: [] };
+    group.items.push(item);
+    groups.set(id, group);
   }
-  return [...groups.entries()]
-    .map(([name, grouped]) => ({ name, items: grouped }))
-    .sort((a, b) => (a.name === null ? 1 : b.name === null ? -1 : a.name.localeCompare(b.name, "en-GB")));
+  // There is one nameless group of each kind, so only named groups share a rank and need comparing by name.
+  return [...groups.values()].sort(
+    (a, b) => groupRank(a) - groupRank(b) || String(a.name).localeCompare(String(b.name), "en-GB"),
+  );
+}
+
+/** The heading for a group: the assignee's name, or what the page says for work with no name to show. */
+export function assigneeLabel(group: Pick<AssigneeGroup<unknown>, "name" | "assigned">): string {
+  if (group.name !== null) return group.name;
+  return group.assigned ? copy.space.hygiene.nameNotRecorded : copy.space.hygiene.unassigned;
 }
 
 /** Keeps the first `limit` items across the groups, dropping groups that end up empty. */
@@ -141,6 +169,6 @@ export function limitGroups<T>(groups: readonly AssigneeGroup<T>[], limit: numbe
     if (left <= 0) return [];
     const items = group.items.slice(0, left);
     left -= items.length;
-    return [{ name: group.name, items }];
+    return [{ ...group, items }];
   });
 }

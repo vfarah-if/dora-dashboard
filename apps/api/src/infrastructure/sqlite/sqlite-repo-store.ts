@@ -151,6 +151,8 @@ const toRepo = (row: RepoRow): Repo => ({
   crawlProgress: row.crawl_progress,
 });
 
+const RESTARTED_DURING_CRAWL = "The API restarted during this crawl. Crawl again.";
+
 /** SQLite on Node's built-in `node:sqlite`, so there is no native module to compile. */
 export class SqliteRepoStore implements RepoStore {
   private db: DatabaseSync;
@@ -163,7 +165,12 @@ export class SqliteRepoStore implements RepoStore {
     this.migrate();
     // A crawl interrupted by a restart must not stay "crawling" forever.
     this.db.exec("UPDATE repos SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
-    this.db.exec("UPDATE tracker_spaces SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
+    // A space is told so, because a full crawl cut short never got to prune what the tracker no longer holds.
+    this.db
+      .prepare(
+        "UPDATE tracker_spaces SET crawl_status = 'failed', crawl_progress = NULL, crawl_error = ? WHERE crawl_status = 'crawling'",
+      )
+      .run(RESTARTED_DURING_CRAWL);
   }
 
   /**

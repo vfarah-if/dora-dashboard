@@ -179,6 +179,44 @@ describe("tracker spaces in the store", () => {
     expect(store.workItems(b!.id)).toEqual([]);
   });
 
+  describe("a failed write", () => {
+    it("rolls back linking spaces to a repository that does not exist, and the store still works", () => {
+      expect(() => store.linkSpaces(9999, "cloud-1", [wid])).toThrow();
+      // The space inserted before the link failed went with the rollback.
+      expect(store.listSpaces()).toEqual([]);
+
+      expect(store.linkSpaces(repoId, "cloud-1", [wid]).map((s) => s.key)).toEqual(["WID"]);
+    });
+
+    it("rolls back a batch of work items that fails part way, and the store still works", () => {
+      const [space] = store.linkSpaces(repoId, "cloud-1", [wid]);
+      const bad = { ...workItem({ key: "WID-2" }), updatedAt: undefined as unknown as string };
+
+      expect(() => store.upsertWorkItems(space!.id, [workItem({ key: "WID-1" }), bad])).toThrow();
+      expect(store.workItemCount(space!.id)).toBe(0);
+
+      store.upsertWorkItems(space!.id, [workItem({ key: "WID-1" })]);
+      expect(store.workItemCount(space!.id)).toBe(1);
+    });
+
+    it("rolls back removing work items when a delete fails, and the store still works", () => {
+      const [space] = store.linkSpaces(repoId, "cloud-1", [wid]);
+      store.upsertWorkItems(space!.id, [workItem({ key: "WID-1" }), workItem({ key: "WID-2" }), workItem({ key: "WID-3" })]);
+      const db = (store as unknown as { db: DatabaseSync }).db;
+      // Refuses the second delete only, so the first has to be undone.
+      db.exec(
+        "CREATE TRIGGER refuse_wid3 BEFORE DELETE ON work_items WHEN OLD.key = 'WID-3' BEGIN SELECT RAISE(ABORT, 'refused'); END",
+      );
+
+      expect(() => store.removeWorkItemsExcept(space!.id, new Set(["WID-1"]))).toThrow("refused");
+      expect(store.workItemCount(space!.id)).toBe(3);
+
+      db.exec("DROP TRIGGER refuse_wid3");
+      expect(store.removeWorkItemsExcept(space!.id, new Set(["WID-1"]))).toBe(2);
+      expect(store.workItems(space!.id).map((i) => i.key)).toEqual(["WID-1"]);
+    });
+  });
+
   it("returns null for a space that does not exist", () => {
     expect(store.getSpace(42)).toBeNull();
   });
@@ -191,7 +229,7 @@ describe("a store reopened after an interrupted crawl", () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("resets a space stuck at crawling to idle and keeps what was stored", () => {
+  it("marks a space stuck at crawling as failed, saying why, and keeps what was stored", () => {
     const path = join(dir, "dora.sqlite");
     const first = new SqliteRepoStore(path);
     const repoId = first.addRepo("acme", "widgets", [], "main").id;
@@ -201,7 +239,11 @@ describe("a store reopened after an interrupted crawl", () => {
 
     const second = new SqliteRepoStore(path);
 
-    expect(second.getSpace(space!.id)).toMatchObject({ crawlStatus: "idle", crawlProgress: null });
+    expect(second.getSpace(space!.id)).toMatchObject({
+      crawlStatus: "failed",
+      crawlProgress: null,
+      crawlError: "The API restarted during this crawl. Crawl again.",
+    });
     expect(second.workItemCount(space!.id)).toBe(1);
   });
 });
@@ -354,7 +396,7 @@ describe("MemoryTrackerGrantStore", () => {
     const store = new MemoryTrackerGrantStore();
     const original = grant({ accessToken: "a" });
     store.set("alice", original);
-    original.accessToken = "changed";
+    (original as { accessToken: string }).accessToken = "changed";
     expect(store.get("alice")!.accessToken).toBe("a");
   });
 });

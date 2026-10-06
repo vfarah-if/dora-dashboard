@@ -55,9 +55,34 @@ export function toggleKey(keys: readonly string[], key: string, on: boolean): st
   return on ? [...others, key] : others;
 }
 
-/** The sign-in link for Jira. `returnTo` must be a path on this site, so anything else becomes the root. */
+/** The longest `returnTo` the API accepts. */
+const MAX_RETURN_TO = 200;
+
+/**
+ * True when the API's `returnTo` rule would accept the value: a path on this site, no longer than 200 characters,
+ * not starting `//` or `/\\`, and holding no whitespace, control character or backslash.
+ */
+export function isAcceptedReturnTo(value: string): boolean {
+  if (value.length > MAX_RETURN_TO || !value.startsWith("/")) return false;
+  if (value[1] === "/" || value[1] === "\\") return false;
+  return !/[\s\\]/.test(value) && ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
+}
+
+/** A page's path and query to come back to, without the `jira` outcome a previous attempt left in it. */
+export function returnPath(pathname: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete("jira");
+  const query = params.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
+/**
+ * The sign-in link for Jira. `returnTo` is where to come back to. When the whole value would be refused by the API
+ * the path alone is sent, and when that would be refused too, the root, so the person never meets a raw error.
+ */
 export function jiraConnectUrl(returnTo: string): string {
-  const safe = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+  const path = returnTo.split("?")[0]!;
+  const safe = [returnTo, path].find(isAcceptedReturnTo) ?? "/";
   return `/api/auth/jira/start?returnTo=${encodeURIComponent(safe)}`;
 }
 

@@ -1,6 +1,12 @@
 import type { FeatureGroup, FeatureMember, OpenPullRequest, PullRequest, QueueEntry, Repo, ReviewLane } from "./types.js";
 
-const TICKET_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+/**
+ * A ticket key such as `ABC-123` or `MY_PROJ-7`: a capital letter, then capitals, digits or underscores, a hyphen and a
+ * number. Lookarounds stand in for word boundaries, because an underscore is a word character: the key must not follow
+ * a letter or digit and its number must not run on into another digit, so `WID-12_add_widget` and `feature_WID-12`
+ * both yield `WID-12`.
+ */
+const TICKET_KEY = /(?<![A-Za-z0-9])[A-Z][A-Z0-9_]+-\d+(?!\d)/g;
 /** Look like ticket keys but are not. */
 const NOT_TICKETS = new Set(["UTF", "SHA", "ISO", "HTTP", "RFC", "CVE", "MD", "TLS", "SSL", "AES", "RSA"]);
 /** Branches that many unrelated pull requests are opened from or against. */

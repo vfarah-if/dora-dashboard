@@ -173,6 +173,9 @@ export function useWorkflows(id: number, enabled: boolean) {
   });
 }
 
+/** True for a whole number above zero, the only kind of id the API hands out. An address like /spaces/abc is not one. */
+export const isRecordId = (id: number): boolean => Number.isInteger(id) && id > 0;
+
 /** One repository's report. Excluded authors' pull requests are left out of every figure by the API. */
 export function useReport(id: number, range: ReportRange, excludeAuthors: readonly string[] = []) {
   return useQuery({
@@ -182,7 +185,7 @@ export function useReport(id: number, range: ReportRange, excludeAuthors: readon
       if (excludeAuthors.length) params.set("excludeAuthors", excludeAuthors.join(","));
       return apiRequest<RepoReport>(withQuery(`/api/repos/${id}/report`, params.toString()), { signal });
     },
-    enabled: Number.isFinite(id),
+    enabled: isRecordId(id),
     placeholderData: keepPreviousData,
   });
 }
@@ -220,7 +223,7 @@ export function useCodeHealth(id: number, range: CodeHealthRange = { from: null,
   return useQuery({
     queryKey: queryKeys.codeHealth(id, { from: range.from, to: range.to }),
     queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(withQuery(`/api/repos/${id}/code-health`, query), { signal }),
-    enabled: Number.isFinite(id),
+    enabled: isRecordId(id),
     placeholderData: keepPreviousData,
   });
 }
@@ -306,7 +309,7 @@ export function useJira(enabled: boolean) {
   return useQuery({ queryKey: queryKeys.jira, queryFn: () => apiRequest<JiraState>("/api/jira"), enabled });
 }
 
-/** Revokes the stored Jira grant. Everything read through it is dropped from the cache. */
+/** Revokes the stored Jira grant and invalidates every query under the `jira` key, so the connection and live space lists are read again. */
 export function useDisconnectJira() {
   const client = useQueryClient();
   return useMutation({
@@ -339,7 +342,7 @@ export function useJiraSpaceDetail(siteId: string, key: string, enabled: boolean
   });
 }
 
-/** The spaces linked to a repository, polled every two seconds while any is crawling. */
+/** The spaces linked to a repository, polled every `CRAWL_POLL_MS` while any is crawling. */
 export function useLinkedSpaces(repoId: number, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.linkedSpaces(repoId),
@@ -349,7 +352,7 @@ export function useLinkedSpaces(repoId: number, enabled: boolean) {
   });
 }
 
-/** Replaces the set of spaces linked to a repository. An empty list unlinks them all. */
+/** Replaces the repository's linked spaces on one site; spaces on other sites stay linked. An empty list unlinks only that site's. */
 export function useLinkSpaces(repoId: number) {
   const client = useQueryClient();
   return useMutation({
@@ -380,6 +383,8 @@ export interface SpaceListItem {
   siteUrl: string;
   lastCrawledAt: string | null;
   crawlStatus: "idle" | "crawling" | "failed";
+  /** Why the last crawl failed; null when it did not. */
+  crawlError: string | null;
   workItemCount: number;
   repos: { id: number; name: string }[];
 }
@@ -406,7 +411,7 @@ export function useSpaceReport(id: number, range: SpaceRange, people: boolean) {
       if (people) params.set("people", "1");
       return apiRequest<SpaceReport>(withQuery(`/api/spaces/${id}/report`, params.toString()), { signal });
     },
-    enabled: Number.isFinite(id),
+    enabled: isRecordId(id),
     retry: false,
     // A range change keeps the old figures on screen. Moving to another space never does, so one space's report is
     // not shown under the next one's address; nor does turning names on or off, so a report fetched without names

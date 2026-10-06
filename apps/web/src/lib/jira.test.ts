@@ -6,9 +6,11 @@ import {
   filterSpaces,
   groupStatusesByCategory,
   isCrawlConflict,
+  isAcceptedReturnTo,
   isJiraUnauthorised,
   jiraConnectUrl,
   linkedKeysForSite,
+  returnPath,
   toggleKey,
 } from "./jira";
 
@@ -93,8 +95,42 @@ describe("jiraConnectUrl", () => {
     expect(jiraConnectUrl("/repos?x=1")).toBe("/api/auth/jira/start?returnTo=%2Frepos%3Fx%3D1");
   });
 
-  it.each(["https://evil.example.test/", "//evil.example.test", "repos"])("replaces %s with the root", (path) => {
-    expect(jiraConnectUrl(path)).toBe("/api/auth/jira/start?returnTo=%2F");
+  it.each(["https://evil.example.test/", "//evil.example.test", "repos", "/\\evil", "/a b", "/a\u0001b", "/a\u007fb"])(
+    "replaces %j with the root",
+    (path) => {
+      expect(jiraConnectUrl(path)).toBe("/api/auth/jira/start?returnTo=%2F");
+    },
+  );
+
+  it("sends the path alone when the path and query together are too long", () => {
+    const path = "/spaces/7";
+    expect(jiraConnectUrl(`${path}?x=${"a".repeat(200)}`)).toBe("/api/auth/jira/start?returnTo=%2Fspaces%2F7");
+  });
+
+  it("sends the path alone when the query holds a space", () => {
+    expect(jiraConnectUrl("/spaces/7?q=a b")).toBe("/api/auth/jira/start?returnTo=%2Fspaces%2F7");
+  });
+
+  it("falls back to the root when the path alone is too long", () => {
+    expect(jiraConnectUrl(`/${"a".repeat(250)}?x=1`)).toBe("/api/auth/jira/start?returnTo=%2F");
+  });
+});
+
+describe("isAcceptedReturnTo", () => {
+  it("accepts a path of exactly 200 characters and refuses 201", () => {
+    expect(isAcceptedReturnTo(`/${"a".repeat(199)}`)).toBe(true);
+    expect(isAcceptedReturnTo(`/${"a".repeat(200)}`)).toBe(false);
+  });
+});
+
+describe("returnPath", () => {
+  it("drops the jira outcome and keeps the other parameters", () => {
+    expect(returnPath("/repos/3", "?jira=error&range=30")).toBe("/repos/3?range=30");
+  });
+
+  it("returns the path alone when nothing else is left", () => {
+    expect(returnPath("/repos/3", "?jira=denied")).toBe("/repos/3");
+    expect(returnPath("/repos/3", "")).toBe("/repos/3");
   });
 });
 

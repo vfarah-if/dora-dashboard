@@ -16,7 +16,7 @@ export class ValidationError extends AppError {
 }
 
 export class UnauthorisedError extends AppError {
-  override readonly name = "UnauthorisedError";
+  override readonly name: string = "UnauthorisedError";
 }
 
 /** The code host answered, but not with what we asked for. */
@@ -25,8 +25,9 @@ export class UpstreamError extends AppError {
   constructor(
     message: string,
     readonly status: number,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -45,5 +46,6 @@ export class ForbiddenError extends AppError {
  * `error: "jira_unauthorised"` so the web can offer to connect again rather than treat it as a GitHub sign-out.
  */
 export class TrackerUnauthorisedError extends UnauthorisedError {
+  override readonly name = "TrackerUnauthorisedError";
   readonly code = "jira_unauthorised";
 }

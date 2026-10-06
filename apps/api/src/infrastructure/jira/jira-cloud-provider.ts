@@ -15,6 +15,7 @@ const PAGE_SIZE = 50;
 const SPACE_PAGE_SIZE = 50;
 const DEFAULT_RETRY_SECONDS = 1;
 const MAX_RETRY_SECONDS = 30;
+const MAX_REASON_LENGTH = 200;
 const DAY_MS = 86_400_000;
 /** How long a space's status categories are reused, so one crawl asks Jira for them once rather than per page. */
 export const STATUS_CACHE_TTL_MS = 5 * 60_000;
@@ -77,12 +78,33 @@ interface StatusChange {
 
 /**
  * Issue fields carry offsets like +0100, which JavaScript wants as +01:00; the bulk changelog sends epoch
- * milliseconds instead. Unparseable strings pass through unchanged.
+ * milliseconds instead. A value that is no date raises, naming the issue and field, because a stored date that
+ * cannot be read would corrupt the crawl cursor and the space report.
  */
-function toIso(value: string | number): string {
-  const date = new Date(typeof value === "number" ? value : value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
-  if (Number.isNaN(date.getTime())) return String(value);
+function toIso(value: string | number | null | undefined, issueKey: string, field: string): string {
+  const date = new Date(typeof value === "number" ? value : (value ?? "").replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+  if (Number.isNaN(date.getTime())) {
+    throw new UpstreamError(`Jira sent a ${field} for ${issueKey} that is not a date`, 502);
+  }
   return date.toISOString();
+}
+
+/** Jira's own words for a failure, read best effort and cut short, so a long or odd body cannot flood a log or a row. */
+async function reasonFrom(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { errorMessages?: unknown; errors?: unknown };
+    const messages = Array.isArray(body.errorMessages) ? body.errorMessages : [];
+    const fields = body.errors && typeof body.errors === "object" ? Object.values(body.errors) : [];
+    const first = [...messages, ...fields].find((m): m is string => typeof m === "string" && m.trim() !== "");
+    return first === undefined ? null : first.trim().slice(0, MAX_REASON_LENGTH);
+  } catch {
+    return null;
+  }
+}
+
+/** A string, or null. Typed this way because a parsed object's missing `toString` is the inherited function, not undefined. */
+function text(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 function pad(n: number): string {
@@ -125,8 +147,8 @@ export class JiraCloudProvider implements WorkItemProvider {
           },
           ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
         });
-      } catch {
-        throw new UpstreamError("Jira could not be reached", 502);
+      } catch (cause) {
+        throw new UpstreamError("Jira could not be reached", 502, { cause });
       }
       if (response.status === 429) {
         if (attempt > 0) throw new RateLimitedError("Jira is rate limiting requests; try again shortly");
@@ -142,7 +164,12 @@ export class JiraCloudProvider implements WorkItemProvider {
       if (response.status === 404) {
         throw new NotFoundError("Jira site or space was not found, or this account cannot see it");
       }
-      if (!response.ok) throw new UpstreamError(`Jira answered ${response.status}`, response.status);
+      if (!response.ok) {
+        // The path without its query, which can carry a space key or a date; the token travels in a header and is never here.
+        const where = new URL(url).pathname;
+        const reason = await reasonFrom(response);
+        throw new UpstreamError(`Jira answered ${response.status} for ${where}${reason ? `. ${reason}` : ""}`, response.status);
+      }
       try {
         return (await response.json()) as T;
       } catch {
@@ -262,11 +289,7 @@ export class JiraCloudProvider implements WorkItemProvider {
 
     const [byId, changes] = await Promise.all([
       this.categoriesFor(token, siteId, spaceKey),
-      this.statusChanges(
-        token,
-        siteId,
-        issues.map((i) => i.id),
-      ),
+      this.statusChanges(token, siteId, issues),
     ]);
     // Names are returned beside the items, never on them, so a work item cannot leak one by accident. Email is not requested.
     const people: Record<string, string> = {};
@@ -282,7 +305,9 @@ export class JiraCloudProvider implements WorkItemProvider {
   }
 
   /** Status changes per issue id, oldest first, following the changelog's own paging to the end. */
-  private async statusChanges(token: string, siteId: string, ids: string[]): Promise<Map<string, StatusChange[]>> {
+  private async statusChanges(token: string, siteId: string, issues: RawIssue[]): Promise<Map<string, StatusChange[]>> {
+    const ids = issues.map((i) => i.id);
+    const keyOf = new Map(issues.map((i) => [i.id, i.key]));
     const result = new Map<string, StatusChange[]>();
     let next: string | null = null;
     do {
@@ -296,11 +321,11 @@ export class JiraCloudProvider implements WorkItemProvider {
           for (const item of history.items ?? []) {
             if (item.field !== "status" && item.fieldId !== "status") continue;
             list.push({
-              at: toIso(history.created),
-              fromId: item.from ?? null,
-              fromName: item.fromString ?? null,
-              toId: item.to ?? null,
-              toName: item.toString ?? "",
+              at: toIso(history.created, keyOf.get(log.issueId) ?? log.issueId, "changelog date"),
+              fromId: text(item.from),
+              fromName: text(item.fromString),
+              toId: text(item.to),
+              toName: text(item.toString) ?? "",
             });
           }
         }
@@ -323,7 +348,7 @@ export class JiraCloudProvider implements WorkItemProvider {
     const currentId = f.status?.id ?? null;
     const currentName = f.status?.name ?? "";
     const inline = CATEGORIES[f.status?.statusCategory?.key ?? ""] ?? null;
-    const createdAt = toIso(f.created);
+    const createdAt = toIso(f.created, issue.key, "created date");
 
     const first = changes[0];
     const initialName = first ? (first.fromName ?? first.toName) : currentName;
@@ -348,8 +373,8 @@ export class JiraCloudProvider implements WorkItemProvider {
       status: currentName,
       statusCategory: lookup(currentId) ?? inline,
       createdAt,
-      updatedAt: toIso(f.updated),
-      resolvedAt: f.resolutiondate ? toIso(f.resolutiondate) : null,
+      updatedAt: toIso(f.updated, issue.key, "updated date"),
+      resolvedAt: f.resolutiondate ? toIso(f.resolutiondate, issue.key, "resolution date") : null,
       assigneeId: f.assignee?.accountId ?? null,
       parentKey: f.parent?.key ?? null,
       labels: f.labels ?? [],

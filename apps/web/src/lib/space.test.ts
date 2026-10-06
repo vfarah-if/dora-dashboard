@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { ColumnTime, SpaceWeekRow } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import {
+  assigneeLabel,
   browseUrl,
   columnLabel,
   columnRow,
   columnSegments,
   groupByAssignee,
+  HYGIENE_ORDER,
   limitGroups,
   shareOf,
   throughputChart,
+  type AssigneeGroup,
 } from "./space";
 
 const week = (iso: string, doneByType: Record<string, number>, partial = false): SpaceWeekRow => ({
@@ -18,6 +21,20 @@ const week = (iso: string, doneByType: Record<string, number>, partial = false):
   done: Object.values(doneByType).reduce((a, b) => a + b, 0),
   inProgress: 1,
   partial,
+});
+
+describe("HYGIENE_ORDER", () => {
+  it("lists every check once, in the order the cards are shown", () => {
+    expect(HYGIENE_ORDER).toEqual([
+      "pr_without_key",
+      "done_without_pr",
+      "skipped_in_progress",
+      "bulk_move",
+      "reopened",
+      "stale_in_progress",
+      "in_progress_unassigned",
+    ]);
+  });
 });
 
 describe("browseUrl", () => {
@@ -73,10 +90,10 @@ describe("throughputChart", () => {
 
 describe("columnSegments", () => {
   const columns: ColumnTime[] = [
-    { column: "To do", meanHours: 0, medianHours: null, items: 0 },
+    { column: "To do", meanHours: 0, medianHours: 0, items: 0 },
     { column: "In progress", meanHours: 10, medianHours: 8, items: 3 },
     { column: "Review", meanHours: 5, medianHours: 4, items: 3 },
-    { column: "Not on the board", meanHours: 1, medianHours: 1, items: 1 },
+    { column: null, meanHours: 1, medianHours: 1, items: 1 },
   ];
 
   it("drops empty columns but keeps colours by board position", () => {
@@ -88,9 +105,20 @@ describe("columnSegments", () => {
     ]);
   });
 
-  it("labels time outside the board with the page's own words, not the name the API compares by", () => {
-    expect(columnLabel("Not on the board")).toBe(copy.space.columns.notOnBoard);
+  it("labels time outside the board, which the report gives as null, with the page's own words", () => {
+    expect(columnLabel(null)).toBe(copy.space.columns.notOnBoard);
     expect(columnLabel("Review")).toBe("Review");
+  });
+
+  it("treats a board column that happens to share those words as a column of the board", () => {
+    const named: ColumnTime[] = [
+      { column: "Not on the board", meanHours: 2, medianHours: 2, items: 1 },
+      { column: null, meanHours: 1, medianHours: 1, items: 1 },
+    ];
+    expect(columnSegments(named).map((s) => [s.label, s.colour])).toEqual([
+      ["Not on the board", "var(--column-1)"],
+      [copy.space.columns.notOnBoard, "var(--column-none)"],
+    ]);
   });
 
   it("builds the single row for the stacked bar", () => {
@@ -105,42 +133,79 @@ describe("columnSegments", () => {
 });
 
 describe("groupByAssignee", () => {
-  const item = (key: string, assignee?: string | null) => ({ key, assignee });
+  const item = (key: string, assigned: boolean, assignee?: string | null) => ({ key, assigned, assignee });
+  const summary = (groups: AssigneeGroup<{ key: string }>[]) =>
+    groups.map((g) => [g.name, g.assigned, g.items.map((i) => i.key)]);
 
   it("sorts names A to Z with unassigned last and keeps order inside a group", () => {
     const groups = groupByAssignee([
-      item("W-1", "Zed Example"),
-      item("W-2", null),
-      item("W-3", "Ann Example"),
-      item("W-4", "Zed Example"),
+      item("W-1", true, "Zed Example"),
+      item("W-2", false, null),
+      item("W-3", true, "Ann Example"),
+      item("W-4", true, "Zed Example"),
     ]);
-    expect(groups.map((g) => [g.name, g.items.map((i) => i.key)])).toEqual([
-      ["Ann Example", ["W-3"]],
-      ["Zed Example", ["W-1", "W-4"]],
-      [null, ["W-2"]],
+    expect(summary(groups)).toEqual([
+      ["Ann Example", true, ["W-3"]],
+      ["Zed Example", true, ["W-1", "W-4"]],
+      [null, false, ["W-2"]],
     ]);
   });
 
-  it("treats a missing or blank name as unassigned", () => {
-    expect(groupByAssignee([item("W-1"), item("W-2", "  ")])).toEqual([{ name: null, items: [item("W-1"), item("W-2", "  ")] }]);
+  it("keeps assigned work whose name was not recorded apart from unassigned work, between the names and it", () => {
+    const groups = groupByAssignee([
+      item("W-1", false, null),
+      item("W-2", true, null), // a space crawled before names were recorded
+      item("W-3", true, "Ann Example"),
+      item("W-4", true, "  "), // a blank name is no name
+      item("W-5", true), // no name given at all
+    ]);
+    expect(summary(groups)).toEqual([
+      ["Ann Example", true, ["W-3"]],
+      [null, true, ["W-2", "W-4", "W-5"]],
+      [null, false, ["W-1"]],
+    ]);
+    expect(new Set(groups.map((g) => g.id)).size).toBe(3);
+  });
+
+  it("does not mistake a person's name for one of the nameless groups", () => {
+    const groups = groupByAssignee([item("W-1", true, "unassigned"), item("W-2", false, null)]);
+    expect(summary(groups)).toEqual([
+      ["unassigned", true, ["W-1"]],
+      [null, false, ["W-2"]],
+    ]);
   });
 
   it("puts unassigned last even when it is met first", () => {
-    expect(groupByAssignee([item("W-1", null), item("W-2", "Ann Example")]).map((g) => g.name)).toEqual(["Ann Example", null]);
+    const groups = groupByAssignee([item("W-1", false, null), item("W-2", true, null), item("W-3", true, "Ann Example")]);
+    expect(groups.map((g) => [g.name, g.assigned])).toEqual([
+      ["Ann Example", true],
+      [null, true],
+      [null, false],
+    ]);
+  });
+});
+
+describe("assigneeLabel", () => {
+  it.each([
+    [{ name: "Ann Example", assigned: true }, "Ann Example"],
+    [{ name: null, assigned: true }, copy.space.hygiene.nameNotRecorded],
+    [{ name: null, assigned: false }, copy.space.hygiene.unassigned],
+  ])("labels %j as %s", (group, label) => {
+    expect(assigneeLabel(group)).toBe(label);
   });
 });
 
 describe("limitGroups", () => {
   const groups = [
-    { name: "Ann", items: [1, 2, 3] },
-    { name: "Bea", items: [4, 5] },
-    { name: null, items: [6] },
+    { id: "name:Ann", name: "Ann", assigned: true, items: [1, 2, 3] },
+    { id: "name:Bea", name: "Bea", assigned: true, items: [4, 5] },
+    { id: "unassigned", name: null, assigned: false, items: [6] },
   ];
 
   it("keeps the first items across groups and drops the empty ones", () => {
     expect(limitGroups(groups, 4)).toEqual([
-      { name: "Ann", items: [1, 2, 3] },
-      { name: "Bea", items: [4] },
+      { id: "name:Ann", name: "Ann", assigned: true, items: [1, 2, 3] },
+      { id: "name:Bea", name: "Bea", assigned: true, items: [4] },
     ]);
   });
 

@@ -176,6 +176,7 @@ describe("SpacePage", () => {
     await screen.findByRole("heading", { level: 1, name: "Widgets" });
     expect(screen.queryByText("Ann Example")).not.toBeInTheDocument();
     expect(screen.queryByText(copy.space.hygiene.unassigned)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.space.hygiene.nameNotRecorded)).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: copy.space.showPeople })).toHaveAttribute("aria-checked", "false");
     expect(reportUrls(fetchMock).every((u) => !u.searchParams.has("people"))).toBe(true);
   });
@@ -199,6 +200,19 @@ describe("SpacePage", () => {
 
     const unassigned = screen.getByRole("region", { name: copy.space.hygiene.checks.in_progress_unassigned.title });
     expect(within(unassigned).getByRole("heading", { level: 4, name: copy.space.hygiene.unassigned })).toBeInTheDocument();
+  });
+
+  it("lists assigned work whose name was not recorded under its own heading, not as unassigned", async () => {
+    mockReport();
+    renderRoute(<SpacePage />, route("?people=1"));
+    const reopened = await screen.findByRole("region", { name: copy.space.hygiene.checks.reopened.title });
+    await waitFor(() => expect(within(reopened).getAllByRole("heading", { level: 4 })).toHaveLength(2));
+    const headings = within(reopened)
+      .getAllByRole("heading", { level: 4 })
+      .map((h) => h.textContent);
+    expect(headings).toEqual(["Ann Example", copy.space.hygiene.nameNotRecorded]);
+    const unnamed = within(reopened).getByRole("heading", { level: 4, name: copy.space.hygiene.nameNotRecorded }).parentElement!;
+    expect(within(unnamed).getByRole("link", { name: /WID-31/ })).toBeInTheDocument();
   });
 
   it("keeps names out of every chart and tile when Show people is on", async () => {
@@ -266,6 +280,67 @@ describe("SpacePage", () => {
     renderRoute(<SpacePage />, route());
     expect(await screen.findByText(copy.space.notFoundTitle)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: copy.space.toSpaces })).toHaveAttribute("href", "/spaces");
+  });
+
+  it("says so when the address does not name a space, without asking the API", () => {
+    const fetchMock = mockFetch({});
+    for (const address of ["abc", "0", "1.5", "-3"]) {
+      const { unmount } = renderRoute(<SpacePage />, { path: "/spaces/:id", route: `/spaces/${address}` });
+      expect(screen.getByText(copy.space.notFoundTitle)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: copy.space.toSpaces })).toHaveAttribute("href", "/spaces");
+      unmount();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("warns that the figures may be out of date, with the reason, when the latest crawl failed", async () => {
+    const base = spaceReport();
+    mockFetch({
+      "GET /api/spaces/7/report": {
+        body: { ...base, space: { ...base.space, crawlStatus: "failed", crawlError: "Jira refused the token" } },
+      },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText(copy.space.crawlFailedTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.space.crawlFailedBody)).toBeInTheDocument();
+    expect(screen.getByText(copy.space.crawlFailedReason("Jira refused the token"))).toBeInTheDocument();
+  });
+
+  it("gives no crawl warning when the latest crawl did not fail", async () => {
+    mockReport();
+    renderRoute(<SpacePage />, route());
+    await screen.findByRole("heading", { level: 1, name: "Widgets" });
+    expect(screen.queryByText(copy.space.crawlFailedTitle)).not.toBeInTheDocument();
+  });
+
+  it("warns without a reason when a failed crawl recorded none", async () => {
+    const base = spaceReport();
+    mockFetch({
+      "GET /api/spaces/7/report": { body: { ...base, space: { ...base.space, crawlStatus: "failed", crawlError: null } } },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText(copy.space.crawlFailedTitle)).toBeInTheDocument();
+    expect(screen.queryByText(/The reason given/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the previous figures on screen, marked as refreshing, while a new range loads", async () => {
+    const user = userEvent.setup();
+    let release: (value: MockResponse) => void = () => {};
+    const held = new Promise<MockResponse>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    mockFetch({
+      "GET /api/spaces/7/report": () => (++calls === 1 ? { body: spaceReport() } : held),
+    });
+    renderRoute(<SpacePage />, route());
+    const heading = await screen.findByRole("heading", { level: 1, name: "Widgets" });
+    await user.click(screen.getByRole("button", { name: copy.range.last30 }));
+    await waitFor(() => expect(calls).toBe(2));
+    expect(screen.getByRole("heading", { level: 1, name: "Widgets" })).toBe(heading);
+    expect(document.querySelector(".is-refreshing")).not.toBeNull();
+    release({ body: spaceReport() });
+    await waitFor(() => expect(document.querySelector(".is-refreshing")).toBeNull());
   });
 
   it("shows an error with a retry for any other failure", async () => {

@@ -1,24 +1,26 @@
-import { NotFoundError } from "../core/errors.js";
+import { AppError, NotFoundError, UpstreamError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { WorkItemProvider } from "../interfaces/work-item-provider.js";
 import type { JiraAuthService } from "./jira-auth-service.js";
 
+/** Shown in place of a failure's own message when it is not one the person can act on; the detail is in the log. */
+const UNEXPECTED_FAILURE = "The crawl failed unexpectedly. See the API log.";
+
+/** A cursor that is not a date would make every later incremental crawl misbehave, so refuse it now. */
 function cursorBefore(newest: string): string {
   const at = Date.parse(newest);
-  return Number.isNaN(at) ? newest : new Date(at - CURSOR_OVERLAP_MS).toISOString();
+  if (Number.isNaN(at))
+    throw new UpstreamError(
+      `The tracker sent a work item update time that is not a date (${JSON.stringify(newest.slice(0, 40))})`,
+      502,
+    );
+  return new Date(at - CURSOR_OVERLAP_MS).toISOString();
 }
 
 type CrawledSpace = NonNullable<ReturnType<RepoStore["getSpace"]>>;
 
-/**
- * Reads a tracker space's work items into the store, as `CrawlService` does for pull requests.
- *
- * Incremental by default: pages come most recently updated first, so the crawl stops at the first page
- * holding an item no newer than the last complete crawl. A full crawl clears that cursor and re-reads
- * everything and, once it completes, removes stored items the space no longer holds. The token is asked for per page, so a grant that expires mid-crawl is refreshed.
- */
 /** How far behind the newest item the stored cursor sits, so late-indexed and same-millisecond items are re-read. */
 export const CURSOR_OVERLAP_MS = 5 * 60_000;
 
@@ -29,6 +31,14 @@ interface ReadOutcome {
   people: Record<string, string>;
 }
 
+/**
+ * Reads a tracker space's work items into the store, as `CrawlService` does for pull requests.
+ *
+ * Incremental by default: pages come most recently updated first, so the crawl stops at the first page holding an
+ * item no newer than the last complete crawl. A full crawl clears that cursor and re-reads everything and, once it
+ * completes, removes stored items the space no longer holds. The token is asked for per page, so a grant that
+ * expires mid-crawl is refreshed.
+ */
 export class WorkItemCrawlService {
   private readonly running = new Set<number>();
 
@@ -62,8 +72,10 @@ export class WorkItemCrawlService {
         this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest));
       }
     } catch (error) {
-      this.log.warn({ err: error, spaceId }, "space crawl failed");
-      this.store.setSpaceCrawlState(spaceId, "failed", null, error instanceof Error ? error.message : String(error));
+      // Only a failure the services raised on purpose carries a message fit for the person; anything else stays in the log.
+      if (error instanceof AppError) this.log.warn({ err: error, spaceId }, "space crawl failed");
+      else this.log.error({ err: error, spaceId }, "space crawl failed unexpectedly");
+      this.store.setSpaceCrawlState(spaceId, "failed", null, error instanceof AppError ? error.message : UNEXPECTED_FAILURE);
       throw error;
     } finally {
       this.running.delete(spaceId);

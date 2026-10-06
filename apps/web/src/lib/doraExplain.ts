@@ -24,7 +24,7 @@ export interface DoraExplanation {
   source: { label: string; href: string };
   /** The value, the next band's requirement and how far away it is, or what holds an elite figure there. */
   gap: string;
-  /** Two or three sentences from the team's own data, the largest driver first, at every band, so an elite figure says why it holds. */
+  /** Up to three sentences from the team's own data, the largest driver first, at every band, so an elite figure says why it holds. */
   findings: string[];
   practices: Practice[];
   /** The 2023 report's finding on code review, present only below elite when waiting for review is the largest driver. */

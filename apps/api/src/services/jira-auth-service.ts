@@ -1,4 +1,6 @@
 import { TrackerUnauthorisedError, UnauthorisedError } from "../core/errors.js";
+import type { Logger } from "../interfaces/logger.js";
+import { noopLogger } from "../interfaces/logger.js";
 import type { TrackerAuthorisation, TrackerGrant } from "../interfaces/tracker-authorisation.js";
 import type { TrackerGrantStore } from "../interfaces/tracker-grant-store.js";
 
@@ -21,6 +23,7 @@ export class JiraAuthService {
     private readonly auth: TrackerAuthorisation,
     private readonly grants: TrackerGrantStore,
     private readonly now: () => number = () => Date.now(),
+    private readonly log: Logger = noopLogger,
   ) {}
 
   /** Trades the consent code for a grant and keeps it for the login. */
@@ -46,7 +49,17 @@ export class JiraAuthService {
     this.generations.set(login, this.generation(login) + 1);
   }
 
-  /** An access token with at least a minute left, refreshing (and storing the rotated grant) when needed. */
+  /**
+   * Raises the connect-again error at once when the login holds no grant, or one that has expired with no refresh token
+   * to renew it. It makes no call, so a refresh token Atlassian has since revoked is found only when it is used.
+   */
+  requireUsableGrant(login: string): void {
+    const grant = this.grants.get(login);
+    if (!grant) throw new TrackerUnauthorisedError(NOT_CONNECTED);
+    if (!grant.refreshToken && grant.expiresAt <= this.now()) throw new TrackerUnauthorisedError(CONNECT_AGAIN);
+  }
+
+  /** An access token, refreshed first (and the rotated grant stored) when under a minute is left. A grant with no refresh token is used until it expires. */
   async accessToken(login: string): Promise<string> {
     const grant = this.grants.get(login);
     if (!grant) throw new TrackerUnauthorisedError(NOT_CONNECTED);
@@ -78,9 +91,14 @@ export class JiraAuthService {
       return grant;
     } catch (error) {
       if (error instanceof TrackerUnauthorisedError) throw error;
-      // A refused refresh token will never work again; a transient failure leaves the grant for another try.
-      if (error instanceof UnauthorisedError && this.generation(login) === started) this.grants.delete(login);
-      throw new TrackerUnauthorisedError(CONNECT_AGAIN);
+      if (error instanceof UnauthorisedError) {
+        // A refused refresh token will never work again, so the grant goes (unless the person has replaced it since).
+        if (this.generation(login) === started) this.grants.delete(login);
+        throw new TrackerUnauthorisedError(CONNECT_AGAIN);
+      }
+      // Atlassian being down, rate limiting or unreachable says nothing about the grant, so it is kept and the caller sees the real failure.
+      this.log.warn({ err: error }, "jira token refresh failed");
+      throw error;
     }
   }
 

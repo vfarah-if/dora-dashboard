@@ -101,7 +101,7 @@ describe("AtlassianOAuth", () => {
     const { oauth } = build(() => json({ error_description: "Try later" }, 503));
     const failure = await oauth.exchange("c").catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(UpstreamError);
-    expect(failure).toMatchObject({ status: 503, message: "Try later" });
+    expect(failure).toMatchObject({ status: 503, message: "Atlassian sign-in failed. Try later" });
   });
 
   it("raises UpstreamError for an unreadable body and for a network failure", async () => {
@@ -111,6 +111,17 @@ describe("AtlassianOAuth", () => {
       throw new Error("socket hang up");
     });
     await expect(down.oauth.exchange("c")).rejects.toBeInstanceOf(UpstreamError);
+  });
+
+  it("keeps the network error as the cause and says which exchange could not reach Atlassian", async () => {
+    const socket = new Error("socket hang up");
+    const down = build(() => {
+      throw socket;
+    });
+    const signIn = await down.oauth.exchange("c").catch((e: unknown) => e);
+    const refresh = await down.oauth.refresh("r").catch((e: unknown) => e);
+    expect(signIn).toMatchObject({ status: 502, message: "Atlassian could not be reached during sign-in", cause: socket });
+    expect(refresh).toMatchObject({ message: "Atlassian could not be reached during refresh", cause: socket });
   });
 
   it("raises UpstreamError when a success carries no access token", async () => {

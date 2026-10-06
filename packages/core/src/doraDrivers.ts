@@ -28,7 +28,7 @@ export interface BandPosition {
   /** The next band's threshold, in the measure's unit (deploys per week, hours, or a rate from 0 to 1); null at elite. */
   threshold: number | null;
   /**
-   * How far the value must move to reach the next band, always positive, in the measure's unit; null at elite.
+   * How far the value must move to reach the next band, never negative, in the measure's unit; null at elite.
    * Strict thresholds (the durations) need the value to fall below the threshold, so the gap is to the threshold itself.
    */
   gap: number | null;
@@ -58,14 +58,14 @@ export interface DeployFrequencyDrivers {
   weeks: number;
   /** Complete weeks with no successful deploy; a partial week at either end is never counted. */
   weeksWithoutDeploy: number;
-  /** Pull requests shipped by each successful deploy that shipped any. */
+  /** Pull requests shipped by each successful deploy that shipped any, counting those with a readable lead time as `leadTimes` does. */
   prsPerDeploy: Summary;
 }
 
 export interface ChangeFailureDrivers {
   failed: number;
   total: number;
-  /** Failed production runs by workflow name, most first. */
+  /** Production runs by workflow name, with how many failed, most failures first and ties by name. */
   byWorkflow: { workflow: string; failed: number; total: number }[];
   /** Successful deploys that shipped a revert or hotfix pull request, out of successful deploys. */
   rework: { deploys: number; total: number } | null;

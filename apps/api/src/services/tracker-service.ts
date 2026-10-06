@@ -24,12 +24,17 @@ export interface SpaceListing {
   siteUrl: string;
   lastCrawledAt: string | null;
   crawlStatus: TrackerSpace["crawlStatus"];
+  /** Why the last crawl failed, or null. Fit to show to the person. */
+  crawlError: string | null;
   workItemCount: number;
   repos: { id: number; name: string }[];
 }
 
-/** A linked space with how many of its work items are stored. */
-export type LinkedSpace = TrackerSpace & { workItemCount: number };
+/**
+ * A linked space with how many of its work items are stored. It never carries assignee names (ADR 0008), and `never`
+ * makes spreading a whole space into one a compile error rather than a leak.
+ */
+export type LinkedSpace = Omit<TrackerSpace, "people"> & { workItemCount: number; people?: never };
 
 interface CachedSpaces {
   at: number;
@@ -61,6 +66,9 @@ export class TrackerService {
       return await read(token);
     } catch (error) {
       if (error instanceof UnauthorisedError && !(error instanceof TrackerUnauthorisedError)) {
+        // Jira has revoked this grant, so keeping it would leave the person shown as connected.
+        this.auth.disconnect(login);
+        this.log.warn({ err: error }, "jira rejected the grant; disconnected it");
         throw new TrackerUnauthorisedError("Jira refused the connection. Connect Jira again");
       }
       throw error;
@@ -104,6 +112,7 @@ export class TrackerService {
       siteUrl: space.siteUrl,
       lastCrawledAt: space.lastCrawledAt,
       crawlStatus: space.crawlStatus,
+      crawlError: space.crawlError,
       workItemCount: this.store.workItemCount(space.id),
       repos: this.store.reposForSpace(space.id).map((repo) => ({ id: repo.id, name: `${repo.owner}/${repo.name}` })),
     }));
@@ -134,27 +143,34 @@ export class TrackerService {
     const missing = wanted.filter((key) => !available.has(key));
     if (missing.length > 0) throw new NotFoundError(`Jira space not found: ${missing.join(", ")}`);
 
-    const linked = this.store.linkSpaces(
-      repoId,
-      siteId,
-      wanted.map((key) => ({ siteId, siteUrl: site.url, key, name: available.get(key)!.name })),
-    );
+    const links = wanted.map((key) => ({ siteId, siteUrl: site.url, key, name: available.get(key)!.name }));
+    let linked: TrackerSpace[];
+    try {
+      linked = this.store.linkSpaces(repoId, siteId, links);
+    } catch (error) {
+      // The repository can be deleted while Jira was being asked; the store then refuses the link.
+      this.requireRepo(repoId);
+      throw error;
+    }
     // A space already being crawled keeps its crawl; linking it again is not a failure.
     for (const space of linked) this.startCrawl(login, space.id, false);
-    // The crawls have already marked each space as crawling, so read the spaces back for their current state.
+    // Each crawl marks its space as crawling synchronously, before its first await, so reading back returns that state.
     return this.linkedSpaces(repoId);
   }
 
   /** Starts a crawl of a stored space in the background; its outcome is read back through the space's crawl state. */
   crawlSpace(login: string, spaceId: number, full: boolean): void {
     if (!this.store.getSpace(spaceId)) throw new NotFoundError(`Unknown space ${spaceId}`);
+    // Without a usable grant the crawl could only fail later, out of sight of the person who asked for it.
+    this.auth.requireUsableGrant(login);
     if (!this.startCrawl(login, spaceId, full)) throw new ConflictError("A crawl of this space is already running");
   }
 
   /** Whether a crawl started; false when the space is already being crawled. */
   private startCrawl(login: string, spaceId: number, full: boolean): boolean {
     if (this.crawler.isCrawling(spaceId)) return false;
-    this.crawler.crawl(login, spaceId, full).catch((err: unknown) => this.log.warn({ err, spaceId }, "space crawl failed"));
+    // The crawl logs its own failure and records it on the space, so there is nothing more to do with it here.
+    this.crawler.crawl(login, spaceId, full).catch(() => undefined);
     return true;
   }
 

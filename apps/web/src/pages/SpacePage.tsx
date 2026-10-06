@@ -2,7 +2,7 @@ import { Link, useParams } from "react-router";
 import type { SpaceReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
-import { useSpaceReport } from "../api/hooks";
+import { isRecordId, useSpaceReport } from "../api/hooks";
 import { copy } from "../copy";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DownloadReportButton } from "../components/DownloadReportButton";
@@ -135,18 +135,32 @@ function SpaceBody({ report, people }: { report: SpaceReport; people: boolean })
   );
 }
 
+function SpaceNotFound() {
+  return (
+    <div className="notice notice-info" role="status">
+      <p className="notice-title">{copy.space.notFoundTitle}</p>
+      <p>{copy.space.notFoundBody}</p>
+      <Link to="/spaces" className="button button-secondary">
+        {copy.space.toSpaces}
+      </Link>
+    </div>
+  );
+}
+
+/** Warns when the latest crawl failed, since the figures below then come from an earlier one. */
+function CrawlFailedNotice({ report }: { report: SpaceReport }) {
+  if (report.space.crawlStatus !== "failed") return null;
+  return (
+    <div className="notice notice-warning" role="alert">
+      <p className="notice-title">{copy.space.crawlFailedTitle}</p>
+      <p>{copy.space.crawlFailedBody}</p>
+      {report.space.crawlError && <p>{copy.space.crawlFailedReason(report.space.crawlError)}</p>}
+    </div>
+  );
+}
+
 function ReportState({ query, people }: { query: UseQueryResult<SpaceReport>; people: boolean }) {
-  if (query.isError && query.error instanceof ApiError && query.error.status === 404) {
-    return (
-      <div className="notice notice-info" role="status">
-        <p className="notice-title">{copy.space.notFoundTitle}</p>
-        <p>{copy.space.notFoundBody}</p>
-        <Link to="/spaces" className="button button-secondary">
-          {copy.space.toSpaces}
-        </Link>
-      </div>
-    );
-  }
+  if (query.isError && query.error instanceof ApiError && query.error.status === 404) return <SpaceNotFound />;
   return (
     <>
       {query.isPending && (
@@ -158,6 +172,7 @@ function ReportState({ query, people }: { query: UseQueryResult<SpaceReport>; pe
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
       {query.data && (
         <div className={query.isPlaceholderData ? "is-refreshing" : undefined} aria-busy={query.isFetching}>
+          <CrawlFailedNotice report={query.data} />
           <SpaceBody report={query.data} people={people} />
         </div>
       )}
@@ -166,8 +181,22 @@ function ReportState({ query, people }: { query: UseQueryResult<SpaceReport>; pe
 }
 
 export function SpacePage() {
-  const params = useParams();
-  const id = Number(params.id);
+  const id = Number(useParams().id);
+  // An address that does not name a space is answered here, without asking the API.
+  if (!isRecordId(id)) {
+    return (
+      <div className="page">
+        <Link to="/spaces" className="back-link">
+          {copy.common.backToSpaces}
+        </Link>
+        <SpaceNotFound />
+      </div>
+    );
+  }
+  return <SpaceView id={id} />;
+}
+
+function SpaceView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [people, setPeople] = useFlagParam("people");
   const report = useSpaceReport(id, { from: range.from, to: range.to }, people);

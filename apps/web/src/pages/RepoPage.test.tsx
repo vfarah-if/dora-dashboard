@@ -399,4 +399,15 @@ describe("RepoPage", () => {
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     expect(await screen.findByText("Unknown repository")).toBeInTheDocument();
   });
+
+  it("says so when the address does not name a repository, without asking the API", () => {
+    const fetchMock = mockFetch({});
+    for (const address of ["abc", "0", "1.5", "-3"]) {
+      const { unmount } = renderRoute(<RepoPage />, { path: "/repos/:id", route: `/repos/${address}` });
+      expect(screen.getByText(copy.repo.notFound)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: copy.repo.toRepos })).toHaveAttribute("href", "/repos");
+      unmount();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

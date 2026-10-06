@@ -1,10 +1,10 @@
 /** What an OAuth consent to a tracker yields. Held in process memory only (ADR 0004, ADR 0020). */
 export interface TrackerGrant {
-  accessToken: string;
+  readonly accessToken: string;
   /** Null when the tracker issued no refresh token, so the person must reconnect once the access token expires. */
-  refreshToken: string | null;
+  readonly refreshToken: string | null;
   /** Epoch milliseconds after which the access token is refused. */
-  expiresAt: number;
+  readonly expiresAt: number;
 }
 
 /**

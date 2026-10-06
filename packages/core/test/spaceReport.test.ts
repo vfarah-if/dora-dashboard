@@ -143,6 +143,8 @@ describe("buildSpaceReport", () => {
       name: "Widgets",
       siteUrl: "https://acme.example.net",
       lastCrawledAt: "2026-10-06T08:00:00Z",
+      crawlStatus: "idle",
+      crawlError: null,
     });
     expect(report.range).toEqual({ from: "2026-10-06", to: "2026-10-06" });
     expect(report.repos).toEqual([]);
@@ -265,7 +267,7 @@ describe("buildSpaceReport", () => {
       expect(report.issueLeadTime).toEqual({ count: 3, median: 24, p75: 48, mean: 35 });
     });
 
-    it("takes the last move to done, and only for items that are done now", () => {
+    it("takes the last move into done, and only for items that are done now", () => {
       const items = [
         workItem("WID-4", [
           ["2026-08-31T09:00:00Z", "To Do"],
@@ -288,20 +290,65 @@ describe("buildSpaceReport", () => {
       expect(report.issueLeadTime.median).toBe(120); // 31 Aug 09:00 to 5 Sep 09:00
     });
 
-    it("does not count an item as done when its history never moved it to done", () => {
-      // Done now, but only because its status was recategorised; the history holds no move to done.
-      const item = workItem(
-        "WID-6",
-        [
-          ["2026-09-01T09:00:00Z", "To Do"],
-          ["2026-09-02T09:00:00Z", "In Progress"],
-        ],
-        { statusCategory: "done" },
-      );
-      const report = buildSpaceReport(space, [item], [], SEPTEMBER);
+    it("counts an item done now from its last move when its history holds no move into done, or from creation without one", () => {
+      const items = [
+        // Done now only because its status was recategorised after the move; the history holds no move into done.
+        workItem(
+          "WID-6",
+          [
+            ["2026-09-01T09:00:00Z", "To Do"],
+            ["2026-09-02T09:00:00Z", "In Progress"],
+          ],
+          { statusCategory: "done" },
+        ),
+        // No history at all, so it has been in its current category since it was created.
+        workItem("WID-7", [], { status: "Done", statusCategory: "done", createdAt: "2026-09-05T09:00:00Z" }),
+      ];
+      const report = buildSpaceReport(space, items, [], SEPTEMBER);
 
-      expect(report.totals.done).toBe(0);
-      expect(report.issueLeadTime).toEqual(EMPTY_SUMMARY);
+      expect(report.totals.done).toBe(2);
+      // WID-6 started and finished at its last move, 2 Sep 09:00: cycle 0h. WID-7 never started.
+      expect(report.issueCycleTime).toEqual({ count: 1, median: 0, p75: 0, mean: 0 });
+      // WID-6 1 Sep 09:00 to 2 Sep 09:00 = 24h; WID-7 0h. [0, 24]: median 12, p75 = 0 + 24 * 0.75 = 18, mean 12
+      expect(report.issueLeadTime).toEqual({ count: 2, median: 12, p75: 18, mean: 12 });
+      expect(report.weekly[0]).toMatchObject({ week: "2026-08-31", done: 2 });
+      expect(keys(finding(report, "skipped_in_progress").items)).toEqual(["WID-7"]);
+    });
+
+    it("counts an item done now from its last move when the space no longer lists the status it moved to", () => {
+      const items = [
+        // The move to Shipped is the move into done: the space does not list Shipped, but the item is done now.
+        workItem(
+          "WID-91",
+          [
+            ["2026-09-01T09:00:00Z", "To Do"],
+            ["2026-09-02T09:00:00Z", "In Progress"],
+            ["2026-09-04T09:00:00Z", "Shipped", null],
+          ],
+          { statusCategory: "done" },
+        ),
+        // Done on 3 Sep, then moved to Shipped: a move between two done statuses, so neither a finish nor a reopen.
+        workItem(
+          "WID-92",
+          [
+            ["2026-09-01T09:00:00Z", "To Do"],
+            ["2026-09-02T09:00:00Z", "In Progress"],
+            ["2026-09-03T09:00:00Z", "Done"],
+            ["2026-09-10T09:00:00Z", "Shipped", null],
+          ],
+          { statusCategory: "done" },
+        ),
+      ];
+      const report = buildSpaceReport(space, items, [], SEPTEMBER);
+
+      expect(report.totals.done).toBe(2);
+      // WID-91 2 Sep 09:00 to 4 Sep 09:00 = 48h; WID-92 2 Sep 09:00 to 3 Sep 09:00 = 24h.
+      // [24, 48]: median 36, p75 = 24 + 24 * 0.75 = 42, mean 36
+      expect(report.issueCycleTime).toEqual({ count: 2, median: 36, p75: 42, mean: 36 });
+      // WID-91 1 Sep 09:00 to 4 Sep 09:00 = 72h; WID-92 1 Sep 09:00 to 3 Sep 09:00 = 48h.
+      // [48, 72]: median 60, p75 = 48 + 24 * 0.75 = 66, mean 60
+      expect(report.issueLeadTime).toEqual({ count: 2, median: 60, p75: 66, mean: 60 });
+      expect(finding(report, "reopened").count).toBe(0);
     });
 
     it("compares Jira and GitHub times as instants, not as text", () => {
@@ -363,6 +410,56 @@ describe("buildSpaceReport", () => {
       const report = buildSpaceReport(space, items, linked, { from: "2026-09-01", now: NOW });
 
       expect(report.ideaToProduction.toFirstPr).toEqual({ count: 1, median: 0, p75: 0, mean: 0 });
+    });
+  });
+
+  it("counts an item in progress now from its last move when the space no longer lists the status it moved to", () => {
+    const item = workItem(
+      "WID-95",
+      [
+        ["2026-08-25T09:00:00Z", "To Do"],
+        ["2026-08-26T09:00:00Z", "In Progress"],
+        ["2026-08-27T09:00:00Z", "Doing", null], // a status the space does not list, in progress by the item's own category
+      ],
+      { statusCategory: "in_progress" },
+    );
+    const report = buildSpaceReport(space, [item], [], SEPTEMBER);
+
+    // In progress at the end of every week and of the range, as the ageing list says it is now.
+    expect(report.totals.inProgress).toBe(1);
+    expect(report.weekly.map((w) => w.inProgress)).toEqual([1, 1, 1, 1, 1]);
+    expect(keys(report.ageing)).toEqual(["WID-95"]);
+  });
+
+  describe("moves between done statuses", () => {
+    // Five stories, each created in progress an hour after the one before and done 48 hours later on 3 Sep, then all
+    // moved from Done to Released within four minutes on Sunday 20 Sep.
+    const items = [1, 2, 3, 4, 5].map((n) =>
+      workItem(`WID-8${n}`, [
+        [`2026-09-01T0${n}:00:00Z`, "In Progress"],
+        [`2026-09-03T0${n}:00:00Z`, "Done"],
+        [`2026-09-20T10:0${n - 1}:00Z`, "Released", "done"],
+      ]),
+    );
+
+    it("measures done from the move into done, not a later move between done statuses", () => {
+      const report = buildSpaceReport(space, items, [], SEPTEMBER);
+
+      // Each item: 1 Sep 0n:00 to 3 Sep 0n:00 = 48h, from start and from creation alike. The move to Released counts for nothing.
+      expect(report.issueCycleTime).toEqual({ count: 5, median: 48, p75: 48, mean: 48 });
+      expect(report.issueLeadTime).toEqual({ count: 5, median: 48, p75: 48, mean: 48 });
+      expect(report.totals.done).toBe(5);
+      expect(report.weekly.find((w) => w.week === "2026-08-31")).toMatchObject({ done: 5, doneByType: { Story: 5 } });
+      expect(report.weekly.find((w) => w.week === "2026-09-14")).toMatchObject({ done: 0, doneByType: {} });
+      // All 48h of each item were in In Progress and none in Done, so every hour is active.
+      expect(report.columns).toEqual([{ column: "In Progress", meanHours: 48, medianHours: 48, items: 5 }]);
+      expect(report.flowEfficiency).toBe(1);
+      expect(finding(report, "reopened").count).toBe(0);
+    });
+
+    it("does not call a batch of moves between done statuses a bulk move", () => {
+      // The moves into done are an hour apart; only the moves to Released fall within ten minutes of each other.
+      expect(finding(buildSpaceReport(space, items, [], SEPTEMBER), "bulk_move")).toMatchObject({ count: 0, batches: [] });
     });
   });
 
@@ -445,9 +542,21 @@ describe("buildSpaceReport", () => {
       expect(report.columns).toEqual([
         { column: "In Progress", meanHours: 6, medianHours: 6, items: 2 }, // (8 + 4) / 2; median of [8, 4]
         { column: "Review", meanHours: 2, medianHours: 2, items: 2 }, // "in review" matches "In Review" ignoring case
-        { column: "Not on the board", meanHours: 0.5, medianHours: 1, items: 1 }, // 1h over 2 items
+        { column: null, meanHours: 0.5, medianHours: 1, items: 1 }, // on no column: 1h over 2 items
       ]);
       expect(report.issueCycleTime.mean).toBe(8.5);
+    });
+
+    it("keeps a board column that happens to be named Not on the board apart from time on no column", () => {
+      const board: TrackerSpace = { ...space, columns: [...space.columns, { name: "Not on the board", statusIds: ["6"] }] };
+
+      // Ready for QA (0.5h) is now on the board; Legacy Check (0.5h) is still on no column. Each is 0.5h over 2 items.
+      expect(buildSpaceReport(board, items, [], SEPTEMBER).columns).toEqual([
+        { column: "In Progress", meanHours: 6, medianHours: 6, items: 2 },
+        { column: "Review", meanHours: 2, medianHours: 2, items: 2 },
+        { column: "Not on the board", meanHours: 0.25, medianHours: 0.5, items: 1 },
+        { column: null, meanHours: 0.25, medianHours: 0.5, items: 1 },
+      ]);
     });
 
     it("uses status names as the columns when the space has no board, in the order of the space's statuses", () => {
@@ -506,6 +615,28 @@ describe("buildSpaceReport", () => {
       // WID-1 active: In Progress 4 + In Progress 2 + In Review 2 = 8 of 11 (Blocked, Ready for QA, Legacy Check wait).
       // WID-2 active: In Progress 4 + in review 2 = 6 of 6. (8 + 6) / (11 + 6) = 14 / 17.
       expect(buildSpaceReport(space, items, [], SEPTEMBER).flowEfficiency).toBeCloseTo(14 / 17, 10);
+    });
+
+    it.each([
+      ["Already in progress", "active"],
+      ["Blockchain spike", "active"],
+      ["Unblocked", "active"],
+      ["Threshold tuning", "active"],
+      ["Blocked", "waiting"],
+      ["On hold", "waiting"],
+      ["ON_HOLD", "waiting"],
+      ["Waiting for vendor", "waiting"],
+      ["Awaiting deploy", "waiting"],
+      ["Ready for QA", "waiting"],
+      ["Queued", "waiting"],
+    ])("reads time in %j as %s, taking a waiting word only where it stands alone", (status, reading) => {
+      // Two hours in the one status between start and done: 2 / 2 = 1 when active, 0 / 2 = 0 when waiting.
+      const item = workItem("WID-1", [
+        ["2026-09-01T08:00:00Z", "To Do"],
+        ["2026-09-01T09:00:00Z", status, "in_progress"],
+        ["2026-09-01T11:00:00Z", "Done"],
+      ]);
+      expect(buildSpaceReport(space, [item], [], SEPTEMBER).flowEfficiency).toBe(reading === "active" ? 1 : 0);
     });
 
     it("has no flow efficiency when the done items took no time", () => {
@@ -654,8 +785,8 @@ describe("buildSpaceReport", () => {
         count: 2,
         of: 3,
         items: [
-          { key: "WID-9", type: "Story", summary: "Summary of WID-9" },
-          { key: "WID-10", type: "Story", summary: "Summary of WID-10" },
+          { key: "WID-9", type: "Story", summary: "Summary of WID-9", assigned: true },
+          { key: "WID-10", type: "Story", summary: "Summary of WID-10", assigned: true },
         ],
         pullRequests: [],
       });
@@ -801,6 +932,23 @@ describe("buildSpaceReport", () => {
         expect(report.ageing.find((a) => a.key === "WID-55")!.assignee).toBeNull();
       });
 
+      it("says whether each item is assigned, with or without people, so a name not recorded is not read as nobody", () => {
+        // All three started on 2 Sep 09:00, so they age alike and are listed in key order.
+        const plain = buildSpaceReport(space, items, [], SEPTEMBER).ageing;
+        expect(plain.map((a) => [a.key, a.assigned, "assignee" in a])).toEqual([
+          ["WID-51", true, false],
+          ["WID-52", false, false],
+          ["WID-55", true, false],
+        ]);
+
+        const named = buildSpaceReport(space, items, [], { ...SEPTEMBER, people: true }).ageing;
+        expect(named.map((a) => [a.key, a.assigned, a.assignee])).toEqual([
+          ["WID-51", true, "Ada Lovelace"],
+          ["WID-52", false, null], // nobody assigned
+          ["WID-55", true, null], // assigned to acc-9, whose name the space does not hold
+        ]);
+      });
+
       it("reads only names the space holds, never one inherited by every object", () => {
         const items = [inProgress("WID-56", "2026-10-05T12:00:00Z", { assigneeId: "constructor" })];
         const report = buildSpaceReport(space, items, [], { ...SEPTEMBER, people: true });
@@ -838,6 +986,7 @@ describe("buildSpaceReport", () => {
         key: "WID-61",
         type: "Story",
         summary: "Summary of WID-61",
+        assigned: true,
         status: "In Review",
         startedAt: "2026-09-20T12:00:00Z",
         ageHours: 384,
@@ -847,6 +996,7 @@ describe("buildSpaceReport", () => {
         key: "WID-62",
         type: "Story",
         summary: "Summary of WID-62",
+        assigned: true,
         status: "In Progress",
         startedAt: "2026-09-30T12:00:00Z",
         ageHours: 144,
@@ -856,6 +1006,7 @@ describe("buildSpaceReport", () => {
         key: "WID-63",
         type: "Story",
         summary: "Summary of WID-63",
+        assigned: true,
         status: "Doing",
         startedAt: "2026-10-01T12:00:00.000Z",
         ageHours: 120,

@@ -55,7 +55,8 @@ function figure<M extends { band: Band }>(
 
 /**
  * Why time to restore is missing: no deploy runs at all, no failures to recover from, failures still open since a
- * date, or no recovery seen. Failures still open are the usual case, so the reason says since when and how many.
+ * date, or no recovery seen. When failures exist and none has recovered, the last streak is still open, so the reason
+ * says since when and how many; the generic reason remains for runs whose times cannot be read.
  */
 function restoreReason(report: RepoReport, noRunsReason: string): string {
   const cf = report.dora.changeFailure;

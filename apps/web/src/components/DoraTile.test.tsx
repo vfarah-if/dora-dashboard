@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DoraTile } from "./DoraTile";
@@ -158,9 +158,18 @@ describe("DoraTile", () => {
     });
 
     it("stops listening for print once removed", () => {
+      const added = vi.spyOn(window, "addEventListener");
+      const removed = vi.spyOn(window, "removeEventListener");
       const { unmount } = render(tile());
+      const listener = (type: string) => added.mock.calls.find((c) => c[0] === type)?.[1];
+      expect(listener("beforeprint")).toBeDefined();
+      expect(listener("afterprint")).toBeDefined();
       unmount();
-      expect(() => window.dispatchEvent(new Event("beforeprint"))).not.toThrow();
+      // The very functions that were added are the ones taken away again.
+      expect(removed).toHaveBeenCalledWith("beforeprint", listener("beforeprint"));
+      expect(removed).toHaveBeenCalledWith("afterprint", listener("afterprint"));
+      added.mockRestore();
+      removed.mockRestore();
     });
   });
 });

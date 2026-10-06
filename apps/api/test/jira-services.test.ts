@@ -1,8 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/core/config.js";
-import { ConflictError, NotFoundError, TrackerUnauthorisedError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
+import {
+  ConflictError,
+  NotFoundError,
+  RateLimitedError,
+  TrackerUnauthorisedError,
+  UnauthorisedError,
+  UpstreamError,
+} from "../src/core/errors.js";
 import { MemoryTrackerGrantStore } from "../src/infrastructure/auth/memory-tracker-grant-store.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
+import type { Logger } from "../src/interfaces/logger.js";
 import { JiraAuthService } from "../src/services/jira-auth-service.js";
 import { SPACE_LIST_TTL_MS, TrackerService } from "../src/services/tracker-service.js";
 import { WorkItemCrawlService } from "../src/services/work-item-crawl-service.js";
@@ -10,17 +18,35 @@ import { FakeTrackerAuthorisation, FakeWorkItemProvider, grant, settled, SITE, w
 
 const T0 = 1_000_000_000;
 
+interface Logged {
+  level: "warn" | "error";
+  context: Record<string, unknown>;
+  message: string;
+}
+
+/** Records what the services log, so a test can tell a failure was reported and with what. */
+function recordingLogger(): Logger & { logged: Logged[] } {
+  const logged: Logged[] = [];
+  return {
+    logged,
+    warn: (context, message) => void logged.push({ level: "warn", context: context as Record<string, unknown>, message }),
+    error: (context, message) => void logged.push({ level: "error", context: context as Record<string, unknown>, message }),
+  };
+}
+
 describe("JiraAuthService", () => {
   let auth: FakeTrackerAuthorisation;
   let grants: MemoryTrackerGrantStore;
   let now: number;
   let service: JiraAuthService;
+  let log: ReturnType<typeof recordingLogger>;
 
   beforeEach(() => {
     auth = new FakeTrackerAuthorisation();
     grants = new MemoryTrackerGrantStore();
     now = T0;
-    service = new JiraAuthService(auth, grants, () => now);
+    log = recordingLogger();
+    service = new JiraAuthService(auth, grants, () => now, log);
   });
 
   it("connects by exchanging the code and keeping the grant for that login only", async () => {
@@ -101,16 +127,67 @@ describe("JiraAuthService", () => {
     expect(service.isConnected("alice")).toBe(false);
   });
 
-  it("asks the person to connect again on a transient refresh failure but keeps the grant for another try", async () => {
+  it("does not forget a newer grant when a refresh is refused after the person connected again", async () => {
+    grants.set("alice", grant({ accessToken: "old", expiresAt: T0 - 1 }));
+    let release!: () => void;
+    auth.refreshGate = new Promise<void>((resolve) => (release = resolve));
+    auth.refreshFailWith = new UnauthorisedError("refused");
+
+    const caller = service.accessToken("alice");
+    auth.exchangeGrant = grant({ accessToken: "reconnected", expiresAt: T0 + 3_600_000 });
+    await service.connect("alice", "code");
+    release();
+
+    await expect(caller).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+    expect(grants.get("alice")!.accessToken).toBe("reconnected");
+  });
+
+  describe("a refresh that fails for another reason than a refused token", () => {
+    it.each([
+      ["an Atlassian outage", new UpstreamError("Atlassian is down", 503)],
+      ["rate limiting", new RateLimitedError("Slow down")],
+      ["a programming error", new TypeError("x is not a function")],
+    ])("rethrows %s unchanged, logs it and keeps the grant", async (_name, failure) => {
+      grants.set("alice", grant({ expiresAt: T0 - 1 }));
+      auth.refreshFailWith = failure;
+
+      await expect(service.accessToken("alice")).rejects.toBe(failure);
+
+      expect(service.isConnected("alice")).toBe(true);
+      expect(log.logged).toEqual([{ level: "warn", context: { err: failure }, message: "jira token refresh failed" }]);
+    });
+
+    it("lets a later attempt succeed once Atlassian is back", async () => {
+      grants.set("alice", grant({ expiresAt: T0 - 1 }));
+      auth.refreshFailWith = new UpstreamError("Atlassian is down", 503);
+      await expect(service.accessToken("alice")).rejects.toBeInstanceOf(UpstreamError);
+
+      auth.refreshFailWith = null;
+      expect(await service.accessToken("alice")).toBe("access-2");
+    });
+  });
+
+  it("logs nothing when the refresh token is refused, since the person is told to connect again", async () => {
     grants.set("alice", grant({ expiresAt: T0 - 1 }));
-    auth.refreshFailWith = new UpstreamError("Atlassian is down", 503);
-
+    auth.refreshFailWith = new UnauthorisedError("refused");
     await expect(service.accessToken("alice")).rejects.toBeInstanceOf(TrackerUnauthorisedError);
-    expect(service.isConnected("alice")).toBe(true);
+    expect(log.logged).toEqual([]);
+  });
 
-    // And a later attempt, once Atlassian is back, succeeds.
-    auth.refreshFailWith = null;
-    expect(await service.accessToken("alice")).toBe("access-2");
+  describe("requireUsableGrant", () => {
+    it("raises when there is no grant, or when it has expired with no refresh token", () => {
+      expect(() => service.requireUsableGrant("alice")).toThrow("Jira is not connected");
+      grants.set("alice", grant({ refreshToken: null, expiresAt: T0 }));
+      expect(() => service.requireUsableGrant("alice")).toThrow(TrackerUnauthorisedError);
+    });
+
+    it("accepts a live grant, and an expired one that can be refreshed, without calling Atlassian", () => {
+      grants.set("alice", grant({ refreshToken: null, expiresAt: T0 + 1 }));
+      expect(() => service.requireUsableGrant("alice")).not.toThrow();
+      grants.set("alice", grant({ refreshToken: "r", expiresAt: T0 - 1 }));
+      expect(() => service.requireUsableGrant("alice")).not.toThrow();
+      expect(auth.refreshTokens).toEqual([]);
+    });
   });
 
   it("raises once an access token with no refresh token has expired, but serves it until then", async () => {
@@ -157,17 +234,18 @@ describe("JiraAuthService", () => {
 });
 
 function setUp() {
+  const log = recordingLogger();
   const store = new SqliteRepoStore(":memory:");
   const provider = seededProvider();
   const auth = new FakeTrackerAuthorisation();
   const grants = new MemoryTrackerGrantStore();
   const state = { now: T0 };
-  const jira = new JiraAuthService(auth, grants, () => state.now);
+  const jira = new JiraAuthService(auth, grants, () => state.now, log);
   grants.set("alice", grant({ accessToken: "access-1", expiresAt: T0 + 120_000 }));
   const repoId = store.addRepo("acme", "widgets", [], "main").id;
   const [space] = store.linkSpaces(repoId, SITE.id, [{ siteId: SITE.id, siteUrl: SITE.url, key: "WID", name: "Widgets" }]);
-  const crawler = new WorkItemCrawlService(store, provider, jira);
-  return { store, provider, auth, grants, state, jira, repoId, space: space!, crawler };
+  const crawler = new WorkItemCrawlService(store, provider, jira, log);
+  return { store, provider, auth, grants, state, jira, repoId, space: space!, crawler, log };
 }
 
 function seededProvider() {
@@ -294,6 +372,56 @@ describe("WorkItemCrawlService", () => {
       crawlProgress: null,
     });
     expect(crawler.isCrawling()).toBe(false);
+  });
+
+  it("logs a failure it raised on purpose as a warning, once", async () => {
+    const { provider, space, crawler, log } = setUp();
+    const failure = new UpstreamError("Jira answered 503", 503);
+    provider.failWith = failure;
+
+    await expect(crawler.crawl("alice", space.id)).rejects.toBe(failure);
+
+    expect(log.logged).toEqual([{ level: "warn", context: { err: failure, spaceId: space.id }, message: "space crawl failed" }]);
+  });
+
+  it("stores a plain message, and logs the real error, when the crawl fails for an unplanned reason", async () => {
+    const { store, provider, space, crawler, log } = setUp();
+    const bug = new TypeError("Cannot read properties of undefined (reading 'x')");
+    provider.failWith = bug;
+
+    await expect(crawler.crawl("alice", space.id)).rejects.toBe(bug);
+
+    expect(store.getSpace(space.id)).toMatchObject({
+      crawlStatus: "failed",
+      crawlError: "The crawl failed unexpectedly. See the API log.",
+    });
+    expect(log.logged).toEqual([
+      { level: "error", context: { err: bug, spaceId: space.id }, message: "space crawl failed unexpectedly" },
+    ]);
+  });
+
+  it("stores a clear reason when Jira refuses the credential part way through a crawl", async () => {
+    const { store, provider, space, crawler } = setUp();
+    provider.failWith = new UnauthorisedError("Jira rejected the credential; reconnect Jira");
+    provider.failAfterPages = 1;
+
+    await expect(crawler.crawl("alice", space.id, true)).rejects.toBeInstanceOf(UnauthorisedError);
+
+    expect(store.getSpace(space.id)).toMatchObject({
+      crawlStatus: "failed",
+      crawlError: "Jira rejected the credential; reconnect Jira",
+    });
+  });
+
+  it("fails, and leaves the cursor alone, when the newest update time is not a date", async () => {
+    const { store, provider, space, crawler } = setUp();
+    provider.seedSpace(SITE.id, "WID", { name: "Widgets", items: [workItem({ key: "WID-1", updatedAt: "garbage" })] });
+
+    await expect(crawler.crawl("alice", space.id, true)).rejects.toThrow("not a date");
+
+    expect(store.spaceCrawlCursor(space.id)).toBeNull();
+    expect(store.getSpace(space.id)).toMatchObject({ crawlStatus: "failed" });
+    expect(store.getSpace(space.id)!.crawlError).toContain("not a date");
   });
 
   it("keeps what earlier pages stored and does not move the cursor when a later page fails", async () => {
@@ -552,7 +680,7 @@ describe("TrackerService", () => {
   function tracker(ttlMs?: number) {
     const base = setUp();
     const clock = { now: new Date("2026-09-10T10:00:00Z") };
-    const service = new TrackerService(base.store, base.provider, base.jira, base.crawler, () => clock.now, undefined, ttlMs);
+    const service = new TrackerService(base.store, base.provider, base.jira, base.crawler, () => clock.now, base.log, ttlMs);
     return { ...base, clock, service };
   }
 
@@ -617,6 +745,17 @@ describe("TrackerService", () => {
     await expect(service.listSites("alice")).rejects.toBeInstanceOf(TrackerUnauthorisedError);
   });
 
+  it("disconnects the person when Jira refuses the credential, so they are no longer shown as connected", async () => {
+    const { service, provider, jira } = tracker();
+    provider.failWith = new UnauthorisedError("Atlassian said 401");
+    expect(jira.isConnected("alice")).toBe(true);
+
+    await expect(service.listSites("alice")).rejects.toBeInstanceOf(TrackerUnauthorisedError);
+
+    expect(jira.isConnected("alice")).toBe(false);
+    await expect(service.listSites("alice")).rejects.toThrow("Jira is not connected");
+  });
+
   it("lets other tracker errors through unchanged", async () => {
     const { service, provider } = tracker();
     provider.failWith = new UpstreamError("Jira answered 500", 500);
@@ -665,6 +804,7 @@ describe("TrackerService", () => {
           siteUrl: "https://acme.example.test",
           lastCrawledAt: null,
           crawlStatus: "idle",
+          crawlError: null,
           workItemCount: 0,
           repos: [{ id: gadgets, name: "acme/gadgets" }],
         },
@@ -675,6 +815,7 @@ describe("TrackerService", () => {
           siteUrl: "https://acme.example.test",
           lastCrawledAt: store.getSpace(space.id)!.lastCrawledAt,
           crawlStatus: "idle",
+          crawlError: null,
           workItemCount: 1,
           repos: [
             { id: gadgets, name: "acme/gadgets" },
@@ -683,6 +824,15 @@ describe("TrackerService", () => {
         },
       ]);
       expect(JSON.stringify(listed)).not.toContain("Alex");
+    });
+
+    it("includes why the last crawl failed, so the spaces page can show it", async () => {
+      const { service, store, space } = tracker();
+      expect(service.trackedSpaces()[0]!.crawlError).toBeNull();
+
+      store.setSpaceCrawlState(space.id, "failed", null, "Jira answered 503");
+
+      expect(service.trackedSpaces()[0]).toMatchObject({ crawlStatus: "failed", crawlError: "Jira answered 503" });
     });
 
     it("keeps names of people out of a repository's linked spaces too", async () => {
@@ -705,6 +855,37 @@ describe("TrackerService", () => {
     await expect(service.linkSpaces("alice", repoId, "cloud-9", ["WID"])).rejects.toBeInstanceOf(NotFoundError);
     await expect(service.linkSpaces("alice", 999, SITE.id, ["WID"])).rejects.toBeInstanceOf(NotFoundError);
     expect(() => service.linkedSpaces(999)).toThrow(NotFoundError);
+  });
+
+  it("raises NotFoundError, not a raw store error, when the repository is deleted while Jira is being asked", async () => {
+    const { store, repoId, provider, jira, crawler } = tracker();
+    class Deleting extends FakeWorkItemProvider {
+      override async listSpaces(token: string, siteId: string) {
+        const spaces = await super.listSpaces(token, siteId);
+        store.deleteRepo(repoId);
+        return spaces;
+      }
+    }
+    const deleting = new Deleting();
+    deleting.seedSite(SITE);
+    deleting.seedSpace(SITE.id, "WID", { name: "Widgets" });
+    const service = new TrackerService(store, deleting, jira, crawler);
+    void provider;
+
+    await expect(service.linkSpaces("alice", repoId, SITE.id, ["WID"])).rejects.toBeInstanceOf(NotFoundError);
+    expect(store.listSpaces()).toEqual([]);
+  });
+
+  it("answers a crawl request with the connect-again error, and starts nothing, when there is no usable grant", async () => {
+    const { service, space, store, grants, provider } = tracker();
+    grants.delete("alice");
+
+    expect(() => service.crawlSpace("alice", space.id, true)).toThrow(TrackerUnauthorisedError);
+
+    grants.set("alice", grant({ refreshToken: null, expiresAt: T0 - 1 }));
+    expect(() => service.crawlSpace("alice", space.id, true)).toThrow("Connect Jira again");
+    expect(provider.calls).toEqual([]);
+    expect(store.getSpace(space.id)).toMatchObject({ crawlStatus: "idle", crawlError: null });
   });
 
   it("refuses a crawl request for a space already being crawled, with a ConflictError", async () => {
@@ -753,22 +934,23 @@ describe("TrackerService", () => {
     expect(() => service.crawlSpace("alice", 999, false)).toThrow(NotFoundError);
   });
 
-  it("records a failed background crawl on the space rather than raising", async () => {
-    const { service, space, store, crawler, grants } = tracker();
-    grants.delete("alice");
+  it("records a failed background crawl on the space rather than raising, and logs it once", async () => {
+    const { service, space, store, crawler, provider, log } = tracker();
+    provider.failWith = new UpstreamError("Jira answered 503", 503);
     service.crawlSpace("alice", space.id, false);
     await settledCrawls(crawler);
-    expect(store.getSpace(space.id)!.crawlStatus).toBe("failed");
+    expect(store.getSpace(space.id)).toMatchObject({ crawlStatus: "failed", crawlError: "Jira answered 503" });
+    expect(log.logged.filter((entry) => entry.message.includes("crawl failed"))).toHaveLength(1);
   });
 });
 
 const settledCrawls = (crawler: WorkItemCrawlService) => settled(() => crawler.isCrawling());
 
 describe("loadConfig for Jira", () => {
-  it("turns Jira on only when both the client id and secret are set", () => {
+  it("turns Jira on when both the client id and secret are set, and off when neither is, refusing just one", () => {
     expect(loadConfig({}).jiraEnabled).toBe(false);
-    expect(loadConfig({ ATLASSIAN_CLIENT_ID: "id" }).jiraEnabled).toBe(false);
-    expect(loadConfig({ ATLASSIAN_CLIENT_SECRET: "secret" }).jiraEnabled).toBe(false);
+    expect(() => loadConfig({ ATLASSIAN_CLIENT_ID: "id" })).toThrow("ATLASSIAN_CLIENT_SECRET");
+    expect(() => loadConfig({ ATLASSIAN_CLIENT_SECRET: "secret" })).toThrow("ATLASSIAN_CLIENT_ID");
     expect(loadConfig({ ATLASSIAN_CLIENT_ID: "id", ATLASSIAN_CLIENT_SECRET: "secret" })).toMatchObject({
       jiraEnabled: true,
       atlassianClientId: "id",

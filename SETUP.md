@@ -99,7 +99,7 @@ Jira Cloud is optional. When it is connected, issues from the Jira spaces you ch
 
 1. In the app's left-hand menu open **Permissions**, choose **Add** beside **Jira API**, then **Configure**. Add the classic scopes `read:jira-work` and `read:jira-user`, and the granular scopes `read:board-scope:jira-software`, `read:board-scope.admin:jira-software` and `read:project:jira`. If the board scopes are not listed there, add the **Jira Software API** in the same way and find them under it. Without the admin board scope a space's board columns read as empty rather than failing. The `offline_access` scope is requested when you connect and needs no tick.
 2. Open **Authorization**, choose **Add** beside **OAuth 2.0 (3LO)** and set the callback URL to exactly `http://localhost:5181/api/auth/jira/callback`, then save. This is the web address, which forwards `/api` to the API in the same way as the GitHub callback. In another deployment use the address the dashboard is served from, and set `ATLASSIAN_REDIRECT_URI` to match.
-3. Leave **Distribution** on **Not sharing**. An unshared app can still be used by its owner, which is all a local dashboard needs. Sharing asks for vendor details and a personal data declaration, and the honest answer to "Does your app store personal data?" is Yes, because the crawl keeps each issue's assignee account ID. Answering Yes commits you to polling Atlassian's personal data reporting API, which the dashboard does not yet do, so a teammate who needs Jira should register their own app instead.
+3. Leave **Distribution** on **Not sharing**. An unshared app can still be used by its owner, which is all a local dashboard needs. Sharing asks for vendor details and a personal data declaration, and the honest answer to "Does your app store personal data?" is Yes, because the crawl keeps each issue's assignee account ID and each space's assignee display names. Answering Yes commits you to polling Atlassian's personal data reporting API, which the dashboard does not yet do, so a teammate who needs Jira should register their own app instead.
 
 ### Add the credentials
 
@@ -110,7 +110,7 @@ ATLASSIAN_CLIENT_ID=<your client id>
 ATLASSIAN_CLIENT_SECRET=<your client secret>
 ```
 
-`ATLASSIAN_REDIRECT_URI` defaults to the callback above and is needed only when the dashboard is served from another address. Restart `make dev`; the API's start-up line ends with `jira on` when both values were read, and `jira off` otherwise.
+`ATLASSIAN_REDIRECT_URI` defaults to `WEB_ORIGIN` followed by `/api/auth/jira/callback`, which is the callback above, and is needed only when Atlassian holds a different address. Set both credentials or neither; the API stops at start-up if only one is set. Restart `make dev`; the API's start-up line includes `jira on` when both values were read, and `jira off` otherwise.
 
 ### Connect and choose spaces
 
@@ -129,6 +129,9 @@ The delivery measures need data that earlier crawls did not record, so after upg
 ### What to know
 
 - The Jira grant is held in memory only, so after the API restarts, or after you sign out, choose **Connect Jira** again. The terminal crawl (`make crawl`) cannot read Jira.
+- If Atlassian refuses to refresh the grant, or answers a request with 401, the grant is dropped and you connect again. If Atlassian is only unavailable or rate limiting, the grant is kept and the crawl reports the failure instead.
+- Declining consent on Atlassian's screen returns you to the page with `jira=denied`, and any other failure returns with `jira=error` and a reason in the API log.
+- The two consent routes, `/api/auth/jira/start` and `/api/auth/jira/callback`, allow 20 requests a minute from one client address (ADR 0023).
 - Linked spaces and their crawled issues, including summaries, are visible to everyone signed in to this dashboard, even if their own Jira account cannot see that space.
 - The dashboard reads the whole space, not one person's filtered view of a board.
 - The assignee's account ID is stored on each issue, and display names are stored per space so that the delivery page can list them behind **Show people**. An email address is never read (ADR 0008, ADR 0020). An incremental crawl adds or updates names, and **Full re-crawl** replaces them, so names of people no longer assigned are dropped.

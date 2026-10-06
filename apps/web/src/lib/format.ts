@@ -35,6 +35,7 @@ const tenths = (value: number) => {
  * A duration in a chosen unit, for sentences that set one duration against another. It writes each unit as
  * `formatDuration` does, except that a whole number of hours or days drops its ".0", so a threshold reads "24 h".
  * Passing the unit of the value a gap belongs to writes the gap to the same precision, so one can be read off the other.
+ * One day reads "1 day".
  */
 export function formatDurationIn(hours: number | null | undefined, unit?: DurationUnit): string {
   if (hours === null || hours === undefined || !Number.isFinite(hours)) return copy.common.notAvailable;

@@ -139,6 +139,9 @@ export const copy = {
     unauthorisedBody: "Connect Jira again to carry on reading spaces. Links you have already saved are kept.",
     connectFailedTitle: "Jira could not be connected",
     connectFailedBody: "Atlassian did not complete the sign-in. Try connecting again.",
+    deniedTitle: "Jira access was not allowed",
+    deniedBody:
+      "You chose not to allow access at Atlassian, so nothing has changed. You can connect Jira whenever you are ready.",
     dismiss: "Dismiss",
     loading: "Loading Jira",
     siteLabel: "Jira site",
@@ -146,7 +149,8 @@ export const copy = {
     noSites: "Your Jira account has no sites the dashboard can read.",
     searchLabel: "Search spaces by name or key",
     spacesLegend: "Spaces to link",
-    spacesHint: (max: number) => `Choose up to ${max} spaces. Saving replaces the spaces currently linked to this repository.`,
+    spacesHint: (max: number) =>
+      `Choose up to ${max} spaces on this site. Saving replaces this repository's spaces on this site and leaves spaces on other sites linked.`,
     loadingSpaces: "Loading spaces",
     noSpaces: "This site has no spaces you can read.",
     noMatches: "No spaces match your search.",
@@ -324,7 +328,7 @@ export const copy = {
         spread: (p75: string, size: string | null) =>
           size === null
             ? `One in four changes took ${p75} or longer from first commit to deploy.`
-            : `One in four changes took ${p75} or longer from first commit to deploy, and the median change was ${size} lines.`,
+            : `One in four changes took ${p75} or longer from first commit to deploy, and the median change was ${size} lines added or removed.`,
         fewDeploys: (deploys: number, tileWeeks: number, complete: number, without: number) =>
           `The tile divides ${deploys} successful ${deploys === 1 ? "deploy" : "deploys"} by ${tileWeeks} ${tileWeeks === 1 ? "week" : "weeks"}, counting every week the range touches, partial ones included. ` +
           (complete === 0
@@ -335,7 +339,7 @@ export const copy = {
         failures: (failed: number, total: number, rate: string) =>
           `${failed} of ${total} production deploys failed, which is ${rate}.`,
         worstWorkflow: (workflow: string, failed: number, total: number) =>
-          `Most failures came from the ${workflow} workflow, ${failed} of its ${total} runs.`,
+          `The ${workflow} workflow had the most failures, ${failed} of its ${total} runs.`,
         rework: (deploys: number, total: number) =>
           `${deploys} of ${total} successful deploys shipped a revert or hotfix pull request.`,
         streaks: (streaks: number, median: string | null, longest: string | null) =>
@@ -787,6 +791,7 @@ export const copy = {
       `Leaving out pull requests by ${new Intl.ListFormat("en-GB", { type: "conjunction" }).format(logins)}.`,
     crawlInProgress: "A crawl is in progress, so these figures may still change.",
     notFound: "This repository could not be found.",
+    toRepos: "Go to repositories",
   },
 
   spaces: {
@@ -798,13 +803,16 @@ export const copy = {
       "Open Configure deploy on a repository and link a space under Jira spaces. The space is crawled once it is linked, and it then appears here.",
     toRepos: "Go to repositories",
     offTitle: "Jira is not switched on",
-    offBody: "Add the Atlassian settings to the API's .env file and restart it, then connect Jira from a repository.",
+    offBody:
+      "Add the Atlassian settings to .env in the repository root and restart the API, then connect Jira from a repository.",
     site: "Site",
     issues: "Issues",
     lastCrawled: "Last crawled",
     neverCrawled: "Not crawled yet",
     linkedRepos: "Linked repositories",
     noLinkedRepos: "None linked",
+    crawlFailedTitle: "The last crawl of this space failed",
+    crawlFailedReason: (reason: string) => `The reason given was ${reason}`,
   },
 
   space: {
@@ -812,6 +820,9 @@ export const copy = {
     notFoundTitle: "This space could not be found",
     notFoundBody: "It may have been unlinked, or Jira may not be switched on for this dashboard.",
     toSpaces: "Go to Jira spaces",
+    crawlFailedTitle: "The latest crawl of this space failed",
+    crawlFailedBody: "These figures may be out of date, because they come from the last crawl that completed.",
+    crawlFailedReason: (reason: string) => `The reason given was ${reason}`,
     rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
     lastCrawled: (when: string) => `Last crawled ${when}`,
     showPeople: "Show people",
@@ -822,12 +833,12 @@ export const copy = {
 
     headline: {
       title: "Delivery from Jira",
-      lede: "Stories, bugs, tasks and features are counted. Sub-tasks roll up into their parent, and epics are shown apart rather than counted.",
+      lede: "Stories, bugs, tasks and features are counted. Sub-tasks are not counted, but a pull request that names a sub-task counts towards its parent, and epics are shown apart.",
       done: "Done",
       doneHint: (created: number) => `Items finished in this range, with ${created} created`,
       inProgress: "In progress",
       inProgressHint: (epics: number) =>
-        `At the end of the range, with ${epics} ${epics === 1 ? "epic" : "epics"} open and not counted`,
+        `At the end of the range. ${epics} ${epics === 1 ? "epic is" : "epics are"} open now and not counted`,
       cycle: "Issue cycle time",
       cycleHint: (p75: string) => `Median started to done, 75th percentile ${p75}`,
       lead: "Issue lead time",
@@ -843,14 +854,16 @@ export const copy = {
       lede: "How much work finishes each week, how much is under way at once, and what has been waiting longest.",
       throughput: {
         title: "Items done each week",
-        subtitle: "Delivery items finished each week, stacked by issue type. Weeks still running are left out.",
+        subtitle:
+          "Delivery items finished each week, stacked by issue type. Weeks cut short by the end of the range are left out.",
         total: "Total",
         /** The one series every issue type beyond story, bug, task and feature is folded into. */
         otherType: "Other",
       },
       wip: {
         title: "Work in progress",
-        subtitle: "Delivery items in an in-progress status at the end of each week. Weeks still running are left out.",
+        subtitle:
+          "Delivery items in an in-progress status at the end of each week. Weeks cut short by the end of the range are left out.",
         series: "In progress",
       },
       ageing: {
@@ -861,7 +874,7 @@ export const copy = {
         type: "Type",
         status: "Status",
         age: "Age",
-        empty: "Nothing is in progress at the end of this range.",
+        empty: "Nothing is in progress now.",
       },
     },
 
@@ -876,14 +889,14 @@ export const copy = {
       median: "Median",
       items: "Items",
       barLabel: "Mean time",
-      /** Time in statuses that no board column holds. */
+      /** The label for time in statuses that no board column holds, which the report gives as a column of null. */
       notOnBoard: "Not on the board",
     },
 
     idea: {
       title: "Idea to production",
       lede: (linked: number, of: number, share: string) =>
-        `Only done items with a linked pull request can be measured, so these figures cover ${linked} of ${of} done items (${share}). Work with no linked pull request is left out, which makes the times look better than the whole picture.`,
+        `Only done items with a linked pull request can be measured, so these figures cover at most ${linked} of ${of} done items (${share}), and issue to production covers fewer when a linked pull request has not shipped. Work with no linked pull request is left out, so the times may not represent the whole picture.`,
       toFirstPr: "Issue to first pull request",
       toFirstPrHint: (p75: string, count: number) =>
         `Median created to first pull request opened, 75th percentile ${p75}, across ${count} items`,
@@ -900,6 +913,8 @@ export const copy = {
       found: (count: number) => `${count} to check`,
       foundOf: (count: number, of: number, share: string) => `${count} of ${of} to check (${share})`,
       unassigned: "Unassigned",
+      /** Someone is assigned, but the space was crawled before names were recorded or holds no name for them. */
+      nameNotRecorded: "Assigned, name not recorded",
       movedTogether: (count: number, at: string) => `${count} moved to done at ${at}`,
       checks: {
         pr_without_key: {
@@ -923,11 +938,12 @@ export const copy = {
         },
         reopened: {
           title: "Reopened items",
-          explanation: "Items moved from done back into work, which is worth a look at what was missed the first time.",
+          explanation:
+            "Items moved from done back to a status that is not done, which is worth a look at what was missed the first time.",
         },
         stale_in_progress: {
           title: "Stale work in progress",
-          explanation: "Items in progress with no update in the seven days before the end of the range.",
+          explanation: "Items in progress now with no update in the last seven days.",
         },
         in_progress_unassigned: {
           title: "In progress with no assignee",

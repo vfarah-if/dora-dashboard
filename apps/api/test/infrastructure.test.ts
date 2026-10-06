@@ -395,6 +395,25 @@ describe("loadConfig", () => {
     expect(config.sessionSecret.length).toBeGreaterThan(20);
   });
 
+  it.each([
+    [{ ATLASSIAN_CLIENT_ID: "a" }],
+    [{ ATLASSIAN_CLIENT_SECRET: "b" }],
+    [{ ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "" }],
+  ])("refuses to start with only one Atlassian credential %j", (env) => {
+    expect(() => loadConfig(env)).toThrow("ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET");
+  });
+
+  it("derives the Jira callback from the web origin unless one is given", () => {
+    expect(loadConfig({}).atlassianRedirectUri).toBe("http://localhost:5181/api/auth/jira/callback");
+    expect(loadConfig({ WEB_ORIGIN: "https://dora.example.test" }).atlassianRedirectUri).toBe(
+      "https://dora.example.test/api/auth/jira/callback",
+    );
+    expect(
+      loadConfig({ WEB_ORIGIN: "https://dora.example.test", ATLASSIAN_REDIRECT_URI: "https://other.example.test/cb" })
+        .atlassianRedirectUri,
+    ).toBe("https://other.example.test/cb");
+  });
+
   it("treats blank values as unset", () => {
     expect(loadConfig({ PORT: "", DATABASE_PATH: "", AUTH_MODE: "" }).port).toBe(8787);
   });
@@ -569,5 +588,24 @@ describe("GitHubProvider open pull requests", () => {
       name: "UpstreamError",
       message: "API rate limit exceeded",
     });
+  });
+});
+
+describe("tracker and upstream errors", () => {
+  it("names a tracker authorisation failure for what it is while still being an unauthorised error", async () => {
+    const { TrackerUnauthorisedError, UnauthorisedError: Unauthorised } = await import("../src/core/errors.js");
+    const error = new TrackerUnauthorisedError("expired");
+    expect(error.name).toBe("TrackerUnauthorisedError");
+    expect(error).toBeInstanceOf(Unauthorised);
+    expect(new Unauthorised("x").name).toBe("UnauthorisedError");
+  });
+
+  it("lets an upstream error carry its cause, and works without one", async () => {
+    const { UpstreamError: Upstream } = await import("../src/core/errors.js");
+    const cause = new Error("socket closed");
+    expect(new Upstream("down", 502, { cause }).cause).toBe(cause);
+    const plain = new Upstream("down", 503);
+    expect(plain.status).toBe(503);
+    expect(plain.cause).toBeUndefined();
   });
 });

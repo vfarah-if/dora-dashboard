@@ -438,9 +438,41 @@ describe("fetchWorkItemPage", () => {
     });
   });
 
-  it("keeps an unparseable timestamp as sent", async () => {
-    const { provider } = build(search({ issues: [issue({ created: "not a date" })], isLast: true }), statusRoute, changelog({}));
-    expect((await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items[0]!.createdAt).toBe("not a date");
+  it.each([
+    ["created", { created: "not a date" }, "created date"],
+    ["updated", { updated: "yesterday-ish" }, "updated date"],
+    ["resolutiondate", { resolutiondate: "soon" }, "resolution date"],
+  ])("raises, naming the issue and the field, when %s is not a date", async (_field, over, label) => {
+    const { provider } = build(search({ issues: [issue(over)], isLast: true }), statusRoute, changelog({}));
+    const failure = await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(UpstreamError);
+    expect((failure as Error).message).toBe(`Jira sent a ${label} for WID-1 that is not a date`);
+  });
+
+  it("raises, naming the issue, when a changelog date is not a date", async () => {
+    const { provider } = build(
+      search({ issues: [issue()], isLast: true }),
+      statusRoute,
+      changelog({
+        issueChangeLogs: [{ issueId: "1001", changeHistories: [{ created: "later", items: [{ field: "status" }] }] }],
+      }),
+    );
+    await expect(provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).rejects.toThrow(
+      "Jira sent a changelog date for WID-1 that is not a date",
+    );
+  });
+
+  it("keeps a status name that has no toString or fromString rather than reading the inherited function", async () => {
+    // JSON.parse gives a plain object, whose missing `toString` is Object.prototype's function.
+    const body = JSON.parse(
+      '{"issueChangeLogs":[{"issueId":"1001","changeHistories":[{"created":"2024-05-02T08:00:00.000Z","items":[{"field":"status","from":"11","to":"12"}]}]}]}',
+    ) as unknown;
+    const { provider } = build(search({ issues: [issue()], isLast: true }), statusRoute, changelog(body));
+    const [item] = (await provider.fetchWorkItemPage(TOKEN, SITE, "WID", null, null)).items;
+    const moved = item!.transitions[1]!;
+    expect(moved.to).toBe("");
+    expect(moved.from).toBeNull();
+    expect([moved.fromCategory, moved.toCategory]).toEqual(["in_progress", "done"]);
   });
 
   it("returns the next token, sends the cursor and follows the changelog's pages", async () => {
@@ -540,6 +572,42 @@ describe("error mapping", () => {
       .catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(UpstreamError);
     expect(failure).toMatchObject({ status });
+  });
+
+  it("names the endpoint, without its query, and Jira's first reason in a status it does not map", async () => {
+    const failure = (await build(() => json({ errorMessages: ["The value 'x' is not valid.", "Second"], errors: {} }, 400))
+      .provider.listSpaces(TOKEN, SITE)
+      .catch((e: unknown) => e)) as Error;
+    expect(failure.message).toBe(`Jira answered 400 for /ex/jira/${SITE}/rest/api/3/project/search. The value 'x' is not valid.`);
+    expect(failure.message).not.toContain("startAt");
+    expect(failure.message).not.toContain(TOKEN);
+  });
+
+  it("falls back to the first field error, cuts a long reason and copes with a body that is not JSON", async () => {
+    const field = await build(() => json({ errors: { jql: "Field 'x' does not exist." } }, 400))
+      .provider.listSpaces(TOKEN, SITE)
+      .catch((e: unknown) => e);
+    expect((field as Error).message).toMatch(/\. Field 'x' does not exist\.$/);
+
+    const long = await build(() => json({ errorMessages: ["y".repeat(5000)] }, 500))
+      .provider.listSpaces(TOKEN, SITE)
+      .catch((e: unknown) => e);
+    expect((long as Error).message.length).toBeLessThan(300);
+
+    const html = await build(() => new Response("<html>", { status: 502 }))
+      .provider.listSpaces(TOKEN, SITE)
+      .catch((e: unknown) => e);
+    expect((html as Error).message).toBe(`Jira answered 502 for /ex/jira/${SITE}/rest/api/3/project/search`);
+  });
+
+  it("keeps the network error as the cause", async () => {
+    const offline = new Error("offline");
+    const failure = await build(() => {
+      throw offline;
+    })
+      .provider.listSites(TOKEN)
+      .catch((e: unknown) => e);
+    expect(failure).toMatchObject({ status: 502, cause: offline });
   });
 
   it("maps an unreadable body and a network failure to UpstreamError", async () => {

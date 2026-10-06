@@ -29,6 +29,12 @@ function SpaceRow({ space }: { space: SpaceListItem }) {
             <dd>{space.repos.length ? space.repos.map((r) => r.name).join(", ") : copy.spaces.noLinkedRepos}</dd>
           </div>
         </dl>
+        {space.crawlStatus === "failed" && (
+          <div className="notice notice-error" role="alert">
+            <p className="notice-title">{copy.spaces.crawlFailedTitle}</p>
+            {space.crawlError && <p>{copy.spaces.crawlFailedReason(space.crawlError)}</p>}
+          </div>
+        )}
       </div>
     </li>
   );
@@ -66,7 +72,10 @@ function SpaceList() {
   );
 }
 
-/** The spaces tracked from Jira. When the server has Jira off the list is never asked for. */
+/**
+ * The spaces tracked from Jira. The list is asked for only once the server says Jira is on. When that answer cannot be
+ * read, the page says so with a retry rather than guessing, because Jira may well be on.
+ */
 export function SpacesPage() {
   const health = useHealth();
   const off = health.isSuccess && health.data.jira !== true;
@@ -79,7 +88,8 @@ export function SpacesPage() {
           <p>{copy.spaces.offBody}</p>
         </EmptyState>
       )}
-      {!health.isPending && !off && <SpaceList />}
+      {health.isError && <ErrorState error={health.error} onRetry={() => void health.refetch()} />}
+      {health.isSuccess && !off && <SpaceList />}
     </div>
   );
 }

@@ -140,7 +140,7 @@ describe("tooling in the code health service", () => {
       checkout,
       new FakeCodeAnalyser(),
       () => new Date((tick += 60_000)),
-      { warn: (_c, message) => void logged.push(message) },
+      { warn: (_c, message) => void logged.push(message), error: () => undefined },
       reader,
     );
     repoId = store.addRepo("acme", "widgets", [], "main").id;

@@ -2,7 +2,7 @@ import type { StatusCategory } from "@dora-dashboard/core";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
-import { UnauthorisedError } from "../src/core/errors.js";
+import { RateLimitedError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { MemorySessionStore } from "../src/infrastructure/auth/memory-session-store.js";
 import { MemoryTrackerGrantStore } from "../src/infrastructure/auth/memory-tracker-grant-store.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
@@ -228,10 +228,15 @@ describe("Jira routes", () => {
       expect(res.headers.location).toBe(`${WEB}/repos?jira=error`);
     });
 
-    it("redirects with jira=error when the person declined at Atlassian", async () => {
+    it("redirects with jira=denied when the person declined at Atlassian", async () => {
       const res = await callbackAfterStart("/repos/1", (state) => ({ error: "access_denied", state }));
-      expect(res.headers.location).toBe(`${WEB}/repos/1?jira=error`);
+      expect(res.headers.location).toBe(`${WEB}/repos/1?jira=denied`);
       expect(authorisation.codes).toEqual([]);
+    });
+
+    it("redirects with jira=error for any other error Atlassian reports", async () => {
+      const res = await callbackAfterStart("/repos/1", (state) => ({ error: "server_error", state }));
+      expect(res.headers.location).toBe(`${WEB}/repos/1?jira=error`);
     });
 
     it("redirects with jira=error when no code came back", async () => {
@@ -247,11 +252,39 @@ describe("Jira routes", () => {
     });
 
     it("appends jira=error with & when the return path already has a query", async () => {
-      const res = await callbackAfterStart("/repos/1?tab=jira", () => ({ error: "access_denied" }));
+      const res = await callbackAfterStart("/repos/1?tab=jira", () => ({ error: "server_error" }));
       expect(res.headers.location).toBe(`${WEB}/repos/1?tab=jira&jira=error`);
     });
 
-    it("rejects a state cookie reused once it has been cleared by an earlier callback", async () => {
+    it("replaces a jira=error already on the return path rather than repeating it, keeping the other parameters in order", async () => {
+      const res = await callbackAfterStart("/repos/1?a=1&jira=error&b=2", (state) => ({ error: "server_error", state }));
+      expect(res.headers.location).toBe(`${WEB}/repos/1?a=1&b=2&jira=error`);
+    });
+
+    it("replaces an earlier jira=error with jira=denied when the person declines", async () => {
+      const res = await callbackAfterStart("/repos/1?jira=error", (state) => ({ error: "access_denied", state }));
+      expect(res.headers.location).toBe(`${WEB}/repos/1?jira=denied`);
+    });
+
+    it("drops a stale jira=error from the return path after a successful connection", async () => {
+      const res = await callbackAfterStart("/repos/1?jira=error&tab=jira", (state) => ({ code: "c", state }));
+      expect(res.headers.location).toBe(`${WEB}/repos/1?tab=jira`);
+    });
+
+    it("puts the jira outcome before a fragment on the return path, never inside it", async () => {
+      const failed = await callbackAfterStart("/repos/1?a=1#flow", (state) => ({ error: "server_error", state }));
+      expect(failed.headers.location).toBe(`${WEB}/repos/1?a=1&jira=error#flow`);
+
+      const connected = await callbackAfterStart("/repos/1?jira=error#flow", (state) => ({ code: "c", state }));
+      expect(connected.headers.location).toBe(`${WEB}/repos/1#flow`);
+    });
+
+    it("leaves a return path with no jira parameter untouched after a successful connection", async () => {
+      const res = await callbackAfterStart("/repos/1", (state) => ({ code: "c", state }));
+      expect(res.headers.location).toBe(`${WEB}/repos/1`);
+    });
+
+    it("clears the state cookie after a callback, so a second callback without it fails", async () => {
       const start = await app.inject("/api/auth/jira/start");
       const state = new URL(start.headers.location as string).searchParams.get("state")!;
       const headers = { cookie: cookieHeader(start, "dora_jira_state") };
@@ -260,6 +293,32 @@ describe("Jira routes", () => {
       // The browser honours the clearing cookie, so a replay carries none.
       const replay = await app.inject({ method: "GET", url: "/api/auth/jira/callback", query: { code: "c", state } });
       expect(replay.headers.location).toBe(`${WEB}/repos?jira=error`);
+    });
+  });
+
+  describe("rate limiting", () => {
+    it("answers 429 in the usual error body once the consent routes are used more than 20 times a minute", async () => {
+      for (let i = 0; i < 20; i++) {
+        expect((await app.inject("/api/auth/jira/start")).statusCode).toBe(302);
+      }
+      const res = await app.inject("/api/auth/jira/start");
+      expect(res.statusCode).toBe(429);
+      expect(res.json()).toEqual({ error: "Too many requests. Please wait a moment and try again." });
+      expect(res.headers["retry-after"]).toBeDefined();
+    });
+
+    it("limits the callback in the same way", async () => {
+      for (let i = 0; i < 20; i++) await app.inject("/api/auth/jira/callback");
+      const res = await app.inject("/api/auth/jira/callback");
+      expect(res.statusCode).toBe(429);
+      expect(res.json()).toEqual({ error: "Too many requests. Please wait a moment and try again." });
+    });
+
+    it("does not limit other routes", async () => {
+      for (let i = 0; i < 30; i++) {
+        expect((await app.inject("/api/health")).statusCode).toBe(200);
+        expect((await app.inject("/api/spaces")).statusCode).toBe(200);
+      }
     });
   });
 
@@ -279,6 +338,20 @@ describe("Jira routes", () => {
       grants.set("local-dev", grant({ expiresAt: 0 }));
       authorisation.refreshFailWith = new UnauthorisedError("refused");
       expect((await app.inject("/api/jira")).json()).toEqual({ enabled: true, connected: false, sites: [] });
+    });
+
+    it("answers 502, not not-connected, when the refresh fails because Atlassian is unavailable", async () => {
+      grants.set("local-dev", grant({ expiresAt: 0 }));
+      authorisation.refreshFailWith = new UpstreamError("Atlassian answered 503", 503);
+      const res = await app.inject("/api/jira");
+      expect(res.statusCode).toBe(502);
+      expect(res.json()).toEqual({ error: "Atlassian answered 503" });
+    });
+
+    it("answers 429 when the refresh is rate limited", async () => {
+      grants.set("local-dev", grant({ expiresAt: 0 }));
+      authorisation.refreshFailWith = new RateLimitedError("Atlassian is rate limiting");
+      expect((await app.inject("/api/jira")).statusCode).toBe(429);
     });
 
     it("passes other failures on rather than hide them as not connected", async () => {
@@ -483,6 +556,7 @@ describe("Jira routes", () => {
           siteUrl: "https://acme.example.test",
           lastCrawledAt: expect.any(String),
           crawlStatus: "idle",
+          crawlError: null,
           workItemCount: 0,
           repos: [{ id: repoId, name: "acme/widgets" }],
         },
@@ -493,6 +567,7 @@ describe("Jira routes", () => {
           siteUrl: "https://acme.example.test",
           lastCrawledAt: expect.any(String),
           crawlStatus: "idle",
+          crawlError: null,
           workItemCount: 2,
           repos: [{ id: repoId, name: "acme/widgets" }],
         },
@@ -638,15 +713,17 @@ describe("Jira routes", () => {
       expect(asked).toEqual(["2026-09-02T11:55:00.000Z"]);
     });
 
-    it("records a failed crawl on the space, readably, when Jira is disconnected", async () => {
+    it("refuses to start a crawl when Jira is disconnected, so the page can offer to connect again", async () => {
       const id = await linked();
+      const before = store.getSpace(id);
       grants.delete("local-dev");
-      expect((await app.inject({ method: "POST", url: `/api/spaces/${id}/crawl` })).statusCode).toBe(202);
-      await settled(() => workItemCrawler.isCrawling());
-      expect(store.getSpace(id)).toMatchObject({
-        crawlStatus: "failed",
-        crawlError: "Jira is not connected. Connect Jira first",
-      });
+
+      const res = await app.inject({ method: "POST", url: `/api/spaces/${id}/crawl` });
+
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ error: "jira_unauthorised" });
+      expect(workItemCrawler.isCrawling()).toBe(false);
+      expect(store.getSpace(id)).toMatchObject({ crawlStatus: before?.crawlStatus, crawlError: before?.crawlError ?? null });
     });
 
     it("answers 404 for an unknown space and 400 for a bad id or query", async () => {

@@ -2,9 +2,9 @@ import { UnauthorisedError, UpstreamError } from "../../core/errors.js";
 import type { TrackerAuthorisation, TrackerGrant } from "../../interfaces/tracker-authorisation.js";
 
 /**
- * Scopes requested at consent (confirmed against Atlassian's published API specifications).
+ * Scopes requested at consent.
  * - `read:jira-work` covers project, status, issue search and changelog reads on the platform API.
- * - `read:jira-user` is requested for parity with the plan; the adapter reads account ids only.
+ * - `read:jira-user` lets the adapter read each assignee's account id and display name from the issue search, and never an email address.
  * - `offline_access` yields the rotating refresh token.
  * - The three granular scopes serve the Jira Software board endpoints: the board list needs
  *   `read:board-scope:jira-software` and `read:project:jira`, and the board configuration needs
@@ -56,14 +56,15 @@ export class AtlassianOAuth implements TrackerAuthorisation {
   }
 
   exchange(code: string): Promise<TrackerGrant> {
-    return this.token({ grant_type: "authorization_code", code, redirect_uri: this.redirectUri });
+    return this.token("sign-in", { grant_type: "authorization_code", code, redirect_uri: this.redirectUri });
   }
 
   refresh(refreshToken: string): Promise<TrackerGrant> {
-    return this.token({ grant_type: "refresh_token", refresh_token: refreshToken });
+    return this.token("refresh", { grant_type: "refresh_token", refresh_token: refreshToken });
   }
 
-  private async token(grant: Record<string, string>): Promise<TrackerGrant> {
+  /** `step` names the exchange in any error, so a log says which one failed. */
+  private async token(step: "sign-in" | "refresh", grant: Record<string, string>): Promise<TrackerGrant> {
     let response: Response;
     try {
       response = await this.http(`${this.authBase}/oauth/token`, {
@@ -71,14 +72,14 @@ export class AtlassianOAuth implements TrackerAuthorisation {
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ ...grant, client_id: this.clientId, client_secret: this.clientSecret }),
       });
-    } catch {
-      throw new UpstreamError("Atlassian could not be reached", 502);
+    } catch (cause) {
+      throw new UpstreamError(`Atlassian could not be reached during ${step}`, 502, { cause });
     }
     let body: TokenBody;
     try {
       body = (await response.json()) as TokenBody;
     } catch {
-      throw new UpstreamError("Atlassian sent an unreadable sign-in response", response.status);
+      throw new UpstreamError(`Atlassian sent an unreadable ${step} response`, response.status);
     }
     if (response.ok && body.access_token) {
       return {
@@ -88,7 +89,7 @@ export class AtlassianOAuth implements TrackerAuthorisation {
       };
     }
     const reason = body.error_description ?? body.error ?? "Atlassian did not issue a token";
-    if (REFUSED.has(response.status)) throw new UnauthorisedError(`Atlassian refused the grant: ${reason}`);
-    throw new UpstreamError(reason, response.status);
+    if (REFUSED.has(response.status)) throw new UnauthorisedError(`Atlassian refused the ${step}. ${reason}`);
+    throw new UpstreamError(`Atlassian ${step} failed. ${reason}`, response.status);
   }
 }

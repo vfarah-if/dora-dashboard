@@ -14,6 +14,7 @@ import {
 } from "../api/hooks";
 import { errorText } from "../api/client";
 import { copy } from "../copy";
+import { ErrorState } from "./States";
 import { formatDateTime, formatNumber } from "../lib/format";
 import {
   MAX_LINKED_SPACES,
@@ -24,6 +25,7 @@ import {
   isJiraUnauthorised,
   jiraConnectUrl,
   linkedKeysForSite,
+  returnPath,
   toggleKey,
 } from "../lib/jira";
 
@@ -31,7 +33,7 @@ const ERROR_PARAM = "jira";
 
 function ConnectButton({ label, primary = true }: { label: string; primary?: boolean }) {
   const location = useLocation();
-  const connect = () => window.location.assign(jiraConnectUrl(`${location.pathname}${location.search}`));
+  const connect = () => window.location.assign(jiraConnectUrl(returnPath(location.pathname, location.search)));
   return (
     <button type="button" className={`button ${primary ? "button-primary" : "button-secondary"}`} onClick={connect}>
       {label}
@@ -45,6 +47,18 @@ function ReconnectNotice() {
       <p className="notice-title">{copy.jira.unauthorisedTitle}</p>
       <p>{copy.jira.unauthorisedBody}</p>
       <ConnectButton label={copy.jira.connectAgain} />
+    </div>
+  );
+}
+
+function ConnectDeniedNotice({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div className="notice notice-info" role="status">
+      <p className="notice-title">{copy.jira.deniedTitle}</p>
+      <p>{copy.jira.deniedBody}</p>
+      <button type="button" className="button button-ghost" onClick={onDismiss}>
+        {copy.jira.dismiss}
+      </button>
     </div>
   );
 }
@@ -390,7 +404,7 @@ function JiraConnected({ repoId, sites }: { repoId: number; sites: TrackerSite[]
 
 /**
  * Links Jira spaces to a repository so their issues can be joined to its pull requests. It renders nothing
- * unless the server has Jira switched on.
+ * when the server says Jira is off, and an error with a retry when the server could not be asked.
  */
 export function JiraSpacesPanel({ repoId }: { repoId: number }) {
   const health = useHealth();
@@ -399,9 +413,10 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
   const [params, setParams] = useSearchParams();
   const titleId = useId();
 
+  if (health.isError) return <ErrorState error={health.error} onRetry={() => void health.refetch()} />;
   if (!enabled) return null;
 
-  const failed = params.get(ERROR_PARAM) === "error";
+  const outcome = params.get(ERROR_PARAM);
   const dismiss = () => {
     const next = new URLSearchParams(params);
     next.delete(ERROR_PARAM);
@@ -414,9 +429,7 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
     body = isJiraUnauthorised(jira.error) ? (
       <ReconnectNotice />
     ) : (
-      <p className="notice notice-error" role="alert">
-        {errorText(jira.error)}
-      </p>
+      <ErrorState error={jira.error} onRetry={() => void jira.refetch()} />
     );
   } else if (!jira.data.connected) {
     body = (
@@ -433,7 +446,8 @@ export function JiraSpacesPanel({ repoId }: { repoId: number }) {
         {copy.jira.title}
       </h3>
       <p className="field-hint">{copy.jira.lede}</p>
-      {failed && <ConnectFailedNotice onDismiss={dismiss} />}
+      {outcome === "error" && <ConnectFailedNotice onDismiss={dismiss} />}
+      {outcome === "denied" && <ConnectDeniedNotice onDismiss={dismiss} />}
       {body}
     </section>
   );

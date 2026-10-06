@@ -1,7 +1,7 @@
 import type { ItemRef, JiraHygieneFinding } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatPercent, formatTime } from "../lib/format";
-import { groupByAssignee, HYGIENE_ORDER, limitGroups, shareOf, browseUrl } from "../lib/space";
+import { assigneeLabel, groupByAssignee, HYGIENE_ORDER, limitGroups, shareOf, browseUrl } from "../lib/space";
 import { ExternalLink } from "./ExternalLink";
 import { ShowAllList } from "./ShowAllList";
 
@@ -27,10 +27,11 @@ function IssueList({ items, siteUrl, people }: { items: readonly ItemRef[]; site
   return (
     <ShowAllList total={items.length}>
       {(limit) => {
-        const groups = limitGroups(people ? groupByAssignee(items) : [{ name: null, items: [...items] }], limit);
+        const all = { id: "all", name: null, assigned: false, items: [...items] };
+        const groups = limitGroups(people ? groupByAssignee(items) : [all], limit);
         return groups.map((group) => (
-          <div key={group.name ?? "none"} className="hygiene-group">
-            {people && <h4 className="hygiene-person">{group.name ?? copy.space.hygiene.unassigned}</h4>}
+          <div key={group.id} className="hygiene-group">
+            {people && <h4 className="hygiene-person">{assigneeLabel(group)}</h4>}
             <ul className="hygiene-list">
               {group.items.map((item) => (
                 <IssueLine key={item.key} item={item} siteUrl={siteUrl} />

@@ -67,6 +67,7 @@ export interface RepoStore {
   setSpacePeople(id: number, people: Record<string, string>): void;
   setSpaceDetails(id: number, statuses: TrackerStatus[], columns: BoardColumn[]): void;
   setSpaceCrawlState(id: number, status: TrackerSpace["crawlStatus"], progress: string | null, error?: string | null): void;
+  /** Marks the crawl complete. A null `cursor` keeps the cursor already stored rather than clearing it. */
   finishSpaceCrawl(id: number, cursor: string | null): void;
   /** The point a complete crawl leaves for the next: the newest `updatedAt` it saw less a small overlap. An incremental crawl stops once it reaches it. */
   spaceCrawlCursor(id: number): string | null;

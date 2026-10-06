@@ -268,7 +268,7 @@ describe("explainDora lead time", () => {
     expect(result.findings).toEqual([
       "Coding is the largest part of lead time, averaging 18 h, or 50% of the 36 h mean. The tile shows the median, so the parts add up to the mean rather than to the tile.",
       "Waiting for review comes next, averaging 9 h, or 25% of the mean.",
-      "One in four changes took 2 days or longer from first commit to deploy, and the median change was 40 lines.",
+      "One in four changes took 2 days or longer from first commit to deploy, and the median change was 40 lines added or removed.",
     ]);
   });
 
@@ -445,10 +445,10 @@ describe("explainDora change failure", () => {
       ],
       rework: { deploys: 2, total: 5 },
     });
-    // 3 of 8 is 37.5 percent, which rounds to 38.
+    // 3 of 8 is 37.5 per cent, which rounds to 38.
     expect(result.findings).toEqual([
       "3 of 8 production deploys failed, which is 38%.",
-      "Most failures came from the release.yml workflow, 2 of its 3 runs.",
+      "The release.yml workflow had the most failures, 2 of its 3 runs.",
       "2 of 5 successful deploys shipped a revert or hotfix pull request.",
     ]);
     expect(result.practices.map((p) => p.name)).toEqual(["Test automation", "Continuous integration", "Code maintainability"]);

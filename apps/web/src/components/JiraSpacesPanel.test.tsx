@@ -77,10 +77,41 @@ describe("JiraSpacesPanel", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("renders nothing when the health check fails", async () => {
-    mockFetch({ "GET /api/health": { status: 500, body: { error: "boom" } } });
-    const { container } = renderRoute(<JiraSpacesPanel repoId={1} />);
-    await waitFor(() => expect(container).toBeEmptyDOMElement());
+  it("shows an error with a retry when the health check fails, and recovers on retry", async () => {
+    const user = userEvent.setup();
+    let healthy = false;
+    mockFetch(
+      baseRoutes({
+        "GET /api/health": () => (healthy ? { body: { jira: true } } : { status: 500, body: { error: "boom" } }),
+        "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } },
+      }),
+    );
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    healthy = true;
+    await user.click(screen.getByRole("button", { name: copy.common.retry }));
+    expect(await screen.findByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
+  });
+
+  it("drops a stale jira outcome from the path it asks to return to", async () => {
+    const user = userEvent.setup();
+    mockFetch({ ...baseRoutes(), "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } });
+    renderRoute(<JiraSpacesPanel repoId={1} />, { path: "/repos", route: "/repos?x=1&jira=error" });
+    await user.click(await screen.findByRole("button", { name: copy.jira.connect }));
+    expect(assign).toHaveBeenCalledWith("/api/auth/jira/start?returnTo=%2Frepos%3Fx%3D1");
+  });
+
+  it("shows a calm, dismissible notice when the person declined access at Atlassian", async () => {
+    const user = userEvent.setup();
+    mockFetch({ ...baseRoutes(), "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } } });
+    renderRoute(<JiraSpacesPanel repoId={1} />, { path: "/repos", route: "/repos?jira=denied" });
+    expect(await screen.findByText(copy.jira.deniedTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.jira.deniedBody)).toBeInTheDocument();
+    expect(screen.queryByText(copy.jira.connectFailedTitle)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: copy.jira.dismiss }));
+    expect(screen.queryByText(copy.jira.deniedTitle)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
   });
 
   it("offers to connect and navigates to the start route with the current path", async () => {
@@ -286,6 +317,68 @@ describe("JiraSpacesPanel", () => {
     renderRoute(<JiraSpacesPanel repoId={1} />);
     await user.click(await screen.findByRole("button", { name: copy.jira.recrawlLabel("Widgets") }));
     expect(await screen.findAllByRole("button", { name: copy.jira.connectAgain })).not.toHaveLength(0);
+  });
+
+  it("shows the reconnect notice, not the list, when the crawl route refuses with jira_unauthorised", async () => {
+    const user = userEvent.setup();
+    mockFetch(
+      baseRoutes({
+        "GET /api/repos/1/spaces": { body: [linked()] },
+        "POST /api/spaces/7/crawl": { status: 401, body: { error: "jira_unauthorised" } },
+      }),
+    );
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    await user.click(await screen.findByRole("button", { name: copy.jira.recrawlLabel("Widgets") }));
+    expect(await screen.findByText(copy.jira.unauthorisedTitle)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.jira.recrawlLabel("Widgets") })).not.toBeInTheDocument();
+  });
+
+  it("shows the failure message when a re-crawl answers 404", async () => {
+    const user = userEvent.setup();
+    mockFetch(
+      baseRoutes({
+        "GET /api/repos/1/spaces": { body: [linked()] },
+        "POST /api/spaces/7/crawl": { status: 404, body: { error: "Space not found" } },
+      }),
+    );
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    await user.click(await screen.findByRole("button", { name: copy.jira.recrawlLabel("Widgets") }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Space not found");
+  });
+
+  it("shows the rate limit message and a disabled Save when the space list answers 429", async () => {
+    mockFetch(baseRoutes({ "GET /api/jira/sites/cloud-1/spaces": { status: 429, body: { error: "Jira rate limit reached" } } }));
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Jira rate limit reached");
+    expect(screen.getByRole("button", { name: copy.jira.saveLinks })).toBeDisabled();
+  });
+
+  it("offers to connect again when a space's flow answers 401", async () => {
+    const user = userEvent.setup();
+    mockFetch(baseRoutes({ "GET /api/jira/sites/cloud-1/spaces/WID": unauthorised }));
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    await user.click(await screen.findByRole("checkbox", { name: /Widgets/ }));
+    await user.click(screen.getByRole("button", { name: copy.jira.flowToggleLabel("Widgets") }));
+    expect(await screen.findByRole("button", { name: copy.jira.connectAgain })).toBeInTheDocument();
+  });
+
+  it("shows an error with a retry, not the Connect button, when Atlassian is unavailable", async () => {
+    const user = userEvent.setup();
+    let up = false;
+    mockFetch(
+      baseRoutes({
+        "GET /api/jira": () =>
+          up
+            ? { body: { enabled: true, connected: false, sites: [] } }
+            : { status: 502, body: { error: "Atlassian is unavailable" } },
+      }),
+    );
+    renderRoute(<JiraSpacesPanel repoId={1} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Atlassian is unavailable");
+    expect(screen.queryByRole("button", { name: copy.jira.connect })).not.toBeInTheDocument();
+    up = true;
+    await user.click(screen.getByRole("button", { name: copy.common.retry }));
+    expect(await screen.findByRole("button", { name: copy.jira.connect })).toBeInTheDocument();
   });
 
   it("shows a friendly notice, not an error, when the space is already being crawled", async () => {

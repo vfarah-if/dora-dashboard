@@ -14,12 +14,13 @@ export interface WorkItemPage {
 
 /**
  * An issue tracker the dashboard can crawl. Jira Cloud is the first implementation (ADR 0020); a
- * Jira Data Center or Linear adapter implements the same port so services never learn which
+ * Jira Data Center or Linear adapter would implement the same port so services never learn which
  * tracker they are reading.
  *
  * Contract every implementation must honour, because the crawl service relies on it:
- * - `fetchWorkItemPage` returns items updated at or after `updatedSince` (all items when null),
- *   ordered by `updatedAt` descending, each with its full status history oldest first.
+ * - `fetchWorkItemPage` returns at least every item updated at or after `updatedSince` (all when null), ordered by
+ *   `updatedAt` descending. Each item's history starts with an entry at its creation for the status it was created in
+ *   (from null), followed by every status change, oldest first.
  * - Each item's `level` comes from the issue type's hierarchy level, and is left unset when the tracker does not say.
  * - `fetchBoardColumns` returns an empty list when the space has no board, never an error.
  * - A site or space the credential cannot see raises `NotFoundError`, never an empty result. A 403 raises it too,

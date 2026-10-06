@@ -32,10 +32,31 @@ export interface JiraRouteDeps {
   spaceReports: SpaceReportService;
 }
 
-/** Appends a query parameter to a path that may already carry a query string. */
-function withParam(path: string, name: string, value: string): string {
-  return `${path}${path.includes("?") ? "&" : "?"}${name}=${value}`;
+/**
+ * Sets a query parameter on a path that may already carry a query string and a fragment, replacing any earlier value
+ * of it; `null` removes it. The fragment stays last, so the parameter never lands inside it.
+ */
+function withParam(path: string, name: string, value: string | null): string {
+  const hash = path.indexOf("#");
+  const fragment = hash === -1 ? "" : path.slice(hash);
+  const beforeFragment = hash === -1 ? path : path.slice(0, hash);
+  const at = beforeFragment.indexOf("?");
+  const base = at === -1 ? beforeFragment : beforeFragment.slice(0, at);
+  const kept =
+    at === -1
+      ? []
+      : beforeFragment
+          .slice(at + 1)
+          .split("&")
+          .filter((pair) => pair !== "" && pair.split("=")[0] !== name);
+  const pairs = value === null ? kept : [...kept, `${name}=${value}`];
+  return `${pairs.length === 0 ? base : `${base}?${pairs.join("&")}`}${fragment}`;
 }
+
+/** At most 20 requests a minute from one client to a route that starts or finishes a consent. */
+const CONSENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" };
+
+type CallbackFailure = "provider_error" | "missing_code" | "state_missing" | "state_mismatch" | "exchange_failed";
 
 /** Compares two secrets without leaking, through timing, how much of them matched. */
 function sameSecret(a: string, b: string): boolean {
@@ -68,7 +89,7 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
 
   app.get<{ Querystring: { returnTo?: string } }>(
     "/api/auth/jira/start",
-    { preHandler: guard, schema: { querystring: jiraStartQuery } },
+    { preHandler: guard, schema: { querystring: jiraStartQuery }, config: { rateLimit: CONSENT_RATE_LIMIT } },
     async (request, reply) => {
       const state = randomBytes(16).toString("hex");
       reply.setCookie(STATE_COOKIE, state, cookie);
@@ -81,22 +102,29 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
 
   app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
     "/api/auth/jira/callback",
-    { preHandler: guard, schema: { querystring: jiraCallbackQuery } },
+    { preHandler: guard, schema: { querystring: jiraCallbackQuery }, config: { rateLimit: CONSENT_RATE_LIMIT } },
     async (request, reply) => {
       const expected = signedCookie(request, STATE_COOKIE);
       const returnTo = safeReturnTo(signedCookie(request, RETURN_COOKIE)) ?? DEFAULT_RETURN;
       reply.clearCookie(STATE_COOKIE, { path: "/" });
       reply.clearCookie(RETURN_COOKIE, { path: "/" });
       const { code, state, error } = request.query;
-      const failed = () => reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", "error")}`);
-      if (error || !code || !state || !expected || !sameSecret(expected, state)) return failed();
+      const failed = (reason: CallbackFailure, outcome = "error", detail?: Record<string, unknown>) => {
+        // Never the code, the state or a token; only why it failed.
+        request.log.warn({ reason, ...detail }, "jira connection failed");
+        return reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", outcome)}`);
+      };
+      if (error) return failed("provider_error", error === "access_denied" ? "denied" : "error", { providerError: error });
+      if (!code) return failed("missing_code");
+      if (!state || !expected) return failed("state_missing");
+      if (!sameSecret(expected, state)) return failed("state_mismatch");
       try {
         await auth.connect(request.session!.login, code);
       } catch (err) {
-        request.log.warn({ err }, "jira connection failed");
-        return failed();
+        return failed("exchange_failed", "error", { err });
       }
-      return reply.redirect(`${config.webOrigin}${returnTo}`);
+      // A path that still carries an earlier jira=error would keep showing the failure banner after a success.
+      return reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", null)}`);
     },
   );
 

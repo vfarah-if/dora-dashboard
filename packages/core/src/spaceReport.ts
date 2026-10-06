@@ -15,7 +15,8 @@ import type {
 
 /**
  * Delivery measured from a tracker space (ADR 0021). Every figure counts delivery items only: standard issues
- * such as stories, bugs, tasks and features. Sub-tasks roll up into their parent and epics are not counted.
+ * such as stories, bugs, tasks and features. A sub-task is not counted, but a pull request naming it links to its
+ * parent, and epics are not counted.
  * Names are distinct from DORA lead time on purpose (ADR 0020).
  */
 
@@ -42,7 +43,13 @@ export interface ItemRef {
   key: string;
   type: string;
   summary: string;
-  /** Present only when `people` was asked for and the name is known. */
+  /** Whether anyone is assigned. It names nobody, so it is always present, with or without `people`. */
+  assigned: boolean;
+  /**
+   * Present only when `people` was asked for: the assignee's display name, or null when nobody is assigned or the
+   * space holds no name for the assignee, as for a space crawled before names were recorded. `assigned` tells the two
+   * apart.
+   */
   assignee?: string | null;
 }
 
@@ -52,18 +59,19 @@ export interface SpaceWeekRow {
   /** Delivery items done that week, by type name. */
   doneByType: Record<string, number>;
   done: number;
-  /** Delivery items in an in-progress status at the end of the week. */
+  /** Delivery items in an in-progress status at the last millisecond of the week, or at the end of the range when that is earlier. */
   inProgress: number;
   /** True when the week runs past the end of the range. */
   partial: boolean;
 }
 
 export interface ColumnTime {
-  /** A board column's name, or "Not on the board" for statuses that map to no column. */
-  column: string;
+  /** A board column's name, or null for time in statuses that map to no column of the board. */
+  column: string | null;
   /** Mean hours per done item, so columns add up across the cycle. */
   meanHours: number;
-  medianHours: number | null;
+  /** Median hours over the items that spent time in the column; a column is listed only when at least one did. */
+  medianHours: number;
   /** Done items that spent any time in this column. */
   items: number;
 }
@@ -97,7 +105,8 @@ export interface JiraHygieneFinding {
 }
 
 export interface SpaceReport {
-  space: Pick<TrackerSpace, "id" | "key" | "name" | "siteUrl" | "lastCrawledAt">;
+  /** The space, with how its latest crawl went, so a page can say when the figures come from an older crawl. */
+  space: Pick<TrackerSpace, "id" | "key" | "name" | "siteUrl" | "lastCrawledAt" | "crawlStatus" | "crawlError">;
   range: { from: string; to: string };
   repos: { id: number; name: string }[];
   totals: {
@@ -107,7 +116,7 @@ export interface SpaceReport {
     inProgress: number;
     /** Delivery items created in the range. */
     created: number;
-    /** Epics, shown apart. */
+    /** Epics whose current category is not done, as of now rather than the end of the range; shown apart, never counted. */
     epicsOpen: number;
   };
   /** Started to done, hours. */
@@ -123,7 +132,7 @@ export interface SpaceReport {
   ideaToProduction: {
     /** Created to the first linked pull request opened, hours. */
     toFirstPr: Summary;
-    /** Created to the deploy that shipped the last linked pull request, hours. */
+    /** Created to the latest deploy among those that shipped its merged linked pull requests, hours; an item counts only when every one has shipped. */
     toProduction: Summary;
     /** Done delivery items with at least one linked pull request, out of all done delivery items. */
     linked: number;
@@ -135,14 +144,18 @@ export interface SpaceReport {
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
-/** A bulk move is this many distinct items moved to done within the window of the first move (ADR 0021). */
+/** A bulk move is this many distinct items moved into done within the window of the first move (ADR 0021). */
 const BULK_MIN_ITEMS = 5;
 const BULK_WINDOW_MS = 10 * 60_000;
 /** Work in progress with no update for longer than this is stale. */
 const STALE_MS = 7 * DAY_MS;
-const NOT_ON_BOARD = "Not on the board";
-/** In-progress statuses whose names say the item is waiting rather than being worked on. */
-const WAITING = /block|hold|wait|ready|queue/i;
+/**
+ * In-progress statuses whose names say the item is waiting rather than being worked on. Each word must stand alone,
+ * so "Blocked", "On hold", "Waiting for QA", "Ready for QA" and "Queued" match, while "Already in progress" and
+ * "Blockchain" do not. Anything other than a letter separates words, so "ON_HOLD" matches too.
+ */
+const WAITING =
+  /(?<![a-z])(?:block(?:ed|ers?|s)?|hold(?:ing|s)?|held|a?wait(?:ed|ing|s)?|ready|queue(?:d|s|ing)?|queuing)(?![a-z])/i;
 
 /** Jira writes `.000Z` and GitHub does not, so instants are always compared as numbers, never as text. */
 const instant = (iso: string) => Date.parse(iso);
@@ -160,17 +173,29 @@ function levelOf(item: WorkItem): WorkItemLevel {
 /** A delivery item with its history in time order and the two moments every measure starts from. */
 interface Tracked {
   item: WorkItem;
+  /** In time order. The last move carries the item's own category when the space does not know the status it reached. */
   history: WorkItemTransition[];
   /** The first move into an in-progress status. */
   startedAt: string | null;
-  /** The last move into done, for an item that is done now. */
+  /** The start of the final stretch in done, for an item that is done now. */
   doneAt: string | null;
 }
 
+/** A move into done from a status that is not done. A move between two done statuses, such as Done to Released, is not. */
+const entersDone = (t: WorkItemTransition) => t.toCategory === "done" && t.fromCategory !== "done";
+/** A move out of done, the mirror of `entersDone`: to any status that is not done, including one of unknown category. */
+const leavesDone = (t: WorkItemTransition) => t.fromCategory === "done" && t.toCategory !== "done";
+
 function track(item: WorkItem): Tracked {
   const history = [...item.transitions].sort((a, b) => instant(a.at) - instant(b.at));
+  // The last move reached the item's current status, so when the space no longer lists that status, the category the
+  // item carries now is the category of where it moved to.
+  const last = history.at(-1);
+  if (last && last.toCategory === null) history[history.length - 1] = { ...last, toCategory: item.statusCategory };
   const startedAt = history.find((t) => t.toCategory === "in_progress")?.at ?? null;
-  const doneAt = item.statusCategory === "done" ? (history.findLast((t) => t.toCategory === "done")?.at ?? null) : null;
+  // Done now with no move into done in the history, as when a status was recategorised as done after the move: counted
+  // from the last move, or from creation without any history, rather than left out of every done figure.
+  const doneAt = item.statusCategory === "done" ? (history.findLast(entersDone)?.at ?? last?.at ?? item.createdAt) : null;
   return { item, history, startedAt, doneAt };
 }
 
@@ -285,8 +310,11 @@ function segmentsOf({ history, startedAt, doneAt }: Tracked): Segment[] {
   });
 }
 
-/** How a status name becomes a column, and the order columns are shown in. */
-function columnsOf(space: TrackerSpace) {
+/**
+ * How a status name becomes a column, and the order columns are shown in. On a board, a status that no column holds
+ * becomes null, shown last. Without a board every status is its own column, so null never appears.
+ */
+function columnsOf(space: TrackerSpace): { nameOf: (status: string) => string | null; order: (string | null)[] } {
   const statusNamed = (name: string) =>
     space.statuses.find((s) => s.name === name) ?? space.statuses.find((s) => s.name.toLowerCase() === name.toLowerCase());
   if (space.columns.length === 0) {
@@ -294,29 +322,31 @@ function columnsOf(space: TrackerSpace) {
   }
   const nameOf = (status: string) => {
     const id = statusNamed(status)?.id;
-    return space.columns.find((c) => id !== undefined && c.statusIds.includes(id))?.name ?? NOT_ON_BOARD;
+    return space.columns.find((c) => id !== undefined && c.statusIds.includes(id))?.name ?? null;
   };
-  return { nameOf, order: [...space.columns.map((c) => c.name), NOT_ON_BOARD] };
+  return { nameOf, order: [...space.columns.map((c) => c.name), null] };
 }
 
 function columnTimes(space: TrackerSpace, walked: readonly Tracked[]): ColumnTime[] {
   const { nameOf, order } = columnsOf(space);
-  const perColumn = new Map<string, number[]>();
+  const perColumn = new Map<string | null, number[]>();
   for (const tracked of walked) {
-    const hoursIn = new Map<string, number>();
+    const hoursIn = new Map<string | null, number>();
     for (const { status, hours } of segmentsOf(tracked)) {
       const column = nameOf(status);
       hoursIn.set(column, (hoursIn.get(column) ?? 0) + hours);
     }
     for (const [column, hours] of hoursIn) perColumn.set(column, [...(perColumn.get(column) ?? []), hours]);
   }
-  const rank = (column: string) => (order.includes(column) ? order.indexOf(column) : order.length);
+  const rank = (column: string | null) => (order.includes(column) ? order.indexOf(column) : order.length);
+  // Only unknown statuses on a space with no board share a rank, and those always have a name to sort by.
   return [...perColumn]
-    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .sort(([a], [b]) => rank(a) - rank(b) || String(a).localeCompare(String(b)))
     .map(([column, hours]) => ({
       column,
       meanHours: hours.reduce((sum, h) => sum + h, 0) / walked.length,
-      medianHours: median(hours),
+      // Every listed column holds at least one item's hours, so there is always a median.
+      medianHours: median(hours)!,
       items: hours.length,
     }));
 }
@@ -353,15 +383,13 @@ function weeklyRows(range: Range, delivery: readonly Tracked[], doneItems: reado
 }
 
 /**
- * Batches of moves to done, each taking every move within the window of its first, kept at five items or more.
- * A batch may start at any move: when a window holds too few, the next move is tried; when it holds enough,
- * the search carries on after the batch.
+ * Batches of moves into done, each taking every move within the window of its first, kept at five items or more.
+ * A move between two done statuses is not one of them. A batch may start at any move: when a window holds too few,
+ * the next move is tried; when it holds enough, the search carries on after the batch.
  */
 function bulkMoves(delivery: readonly Tracked[], inRange: (iso: string) => boolean) {
   const moves = delivery
-    .flatMap((tracked) =>
-      tracked.history.filter((t) => t.toCategory === "done" && inRange(t.at)).map((t) => ({ tracked, at: t.at })),
-    )
+    .flatMap((tracked) => tracked.history.filter((t) => entersDone(t) && inRange(t.at)).map((t) => ({ tracked, at: t.at })))
     .sort((a, b) => instant(a.at) - instant(b.at) || byKey(a.tracked.item.key, b.tracked.item.key));
   const batches: { at: string; keys: string[] }[] = [];
   const moved = new Map<string, Tracked>();
@@ -390,7 +418,7 @@ export function buildSpaceReport(
   const range = rangeOf(items, options);
   const inRange = (iso: string) => instant(iso) >= range.start && instant(iso) <= range.end;
   const refOf = (item: WorkItem): ItemRef => {
-    const ref: ItemRef = { key: item.key, type: item.type, summary: item.summary };
+    const ref: ItemRef = { key: item.key, type: item.type, summary: item.summary, assigned: item.assigneeId !== null };
     if (options.people) ref.assignee = nameOf(space.people, item.assigneeId);
     return ref;
   };
@@ -416,12 +444,18 @@ export function buildSpaceReport(
     .filter((p) => p.keys.length === 0)
     .sort((a, b) => a.repo.localeCompare(b.repo) || a.pr.number - b.pr.number);
   const bulk = bulkMoves(delivery, inRange);
-  const reopened = delivery.filter((t) =>
-    t.history.some((s) => s.fromCategory === "done" && s.toCategory !== "done" && inRange(s.at)),
-  );
+  const reopened = delivery.filter((t) => t.history.some((s) => leavesDone(s) && inRange(s.at)));
 
   return {
-    space: { id: space.id, key: space.key, name: space.name, siteUrl: space.siteUrl, lastCrawledAt: space.lastCrawledAt },
+    space: {
+      id: space.id,
+      key: space.key,
+      name: space.name,
+      siteUrl: space.siteUrl,
+      lastCrawledAt: space.lastCrawledAt,
+      crawlStatus: space.crawlStatus,
+      crawlError: space.crawlError,
+    },
     range: { from: range.from, to: range.to },
     repos: linked.map(({ repo }) => ({ id: repo.id, name: `${repo.owner}/${repo.name}` })),
     totals: {

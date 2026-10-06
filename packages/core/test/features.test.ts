@@ -52,6 +52,27 @@ describe("issueKeysOf", () => {
   it("does not match lower-case or single-letter prefixes", () => {
     expect(issueKeysOf({ title: "wid-12 and A-1", headRef: "x" })).toEqual([]);
   });
+
+  it.each([
+    ["WID-12_add_widget", "a key followed by an underscore"],
+    ["feature_WID-12", "a key after an underscore"],
+    ["feature/WID-12_add_widget", "a key between a slash and an underscore"],
+  ])("finds the key in %s, %s", (headRef) => {
+    expect(issueKeysOf({ title: "Add widgets", headRef })).toEqual(["WID-12"]);
+  });
+
+  it("accepts a project key with underscores after its first letter, as Jira allows", () => {
+    expect(issueKeysOf({ title: "MY_PROJ-7 tidy", headRef: "feature/MY_PROJ2-8" })).toEqual(["MY_PROJ-7", "MY_PROJ2-8"]);
+  });
+
+  it("does not start a key inside a word or a number, nor end one inside a number", () => {
+    expect(issueKeysOf({ title: "xWID-12 and 9GAD-7", headRef: "_1-2" })).toEqual([]);
+    expect(issueKeysOf({ title: "WID-123", headRef: null })).toEqual(["WID-123"]);
+  });
+
+  it("still ignores lookalikes beside underscores", () => {
+    expect(issueKeysOf({ title: "Switch", headRef: "utf_UTF-8_SHA-256" })).toEqual([]);
+  });
 });
 
 describe("groupFeatures", () => {

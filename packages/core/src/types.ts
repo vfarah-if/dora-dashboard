@@ -251,7 +251,8 @@ export interface TrackerSpace {
   crawlError: string | null;
   crawlProgress: string | null;
   /**
-   * Assignee display names by account id, read on the last crawl. Shown only behind "Show people" (ADR 0008,
+   * Assignee display names by account id, as of the last full crawl plus any that incremental crawls have added or
+   * updated since. Shown only behind "Show people" (ADR 0008,
    * ADR 0021). Absent on spaces crawled before names were recorded.
    */
   people?: Record<string, string>;

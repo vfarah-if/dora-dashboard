@@ -346,18 +346,29 @@ const hygiene = (check: JiraHygieneCheck, overrides: Partial<JiraHygieneFinding>
   ...overrides,
 });
 
-const issue = (key: string, assignee?: string | null): ItemRef => ({
+const issue = (key: string, assigned: boolean, assignee?: string | null): ItemRef => ({
   key,
   type: "Story",
   summary: `Summary of ${key}`,
+  assigned,
   ...(assignee === undefined ? {} : { assignee }),
 });
 
 /** A space report for the space WID on https://acme.example.test (ADR 0009). Names appear only when asked for. */
 export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
-  const named = (key: string, name: string | null) => issue(key, options.people ? name : undefined);
+  /** Assigned unless the name is null; pass `assigned` for someone assigned whose name was not recorded. */
+  const named = (key: string, name: string | null, assigned = name !== null) =>
+    issue(key, assigned, options.people ? name : undefined);
   return {
-    space: { id: 7, key: "WID", name: "Widgets", siteUrl: "https://acme.example.test", lastCrawledAt: "2026-03-01T10:00:00Z" },
+    space: {
+      id: 7,
+      key: "WID",
+      name: "Widgets",
+      siteUrl: "https://acme.example.test",
+      lastCrawledAt: "2026-03-01T10:00:00Z",
+      crawlStatus: "idle",
+      crawlError: null,
+    },
     range: { from: "2026-01-05", to: "2026-01-25" },
     repos: [{ id: 1, name: "acme/widgets" }],
     totals: { done: 12, inProgress: 3, created: 15, epicsOpen: 2 },
@@ -369,11 +380,20 @@ export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
       { week: "2026-01-19", doneByType: { Story: 5 }, done: 5, inProgress: 3, partial: true },
     ],
     ageing: [
-      { key: "WID-9", type: "Bug", summary: "Oldest bug", status: "In review", startedAt: "2026-01-01T09:00:00Z", ageHours: 240 },
+      {
+        key: "WID-9",
+        type: "Bug",
+        summary: "Oldest bug",
+        assigned: true,
+        status: "In review",
+        startedAt: "2026-01-01T09:00:00Z",
+        ageHours: 240,
+      },
       {
         key: "WID-10",
         type: "Story",
         summary: "Newer story",
+        assigned: true,
         status: "In progress",
         startedAt: "2026-01-10T09:00:00Z",
         ageHours: 24,
@@ -382,7 +402,7 @@ export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
     columns: [
       { column: "In progress", meanHours: 20, medianHours: 18, items: 10 },
       { column: "In review", meanHours: 10, medianHours: 6, items: 9 },
-      { column: "Not on the board", meanHours: 2, medianHours: 1, items: 2 },
+      { column: null, meanHours: 2, medianHours: 1, items: 2 },
     ],
     flowEfficiency: 0.4,
     ideaToProduction: {
@@ -413,7 +433,8 @@ export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
         items: [],
         batches: [{ at: "2026-01-16T15:00:00Z", keys: ["WID-1", "WID-2", "WID-3", "WID-4", "WID-5"] }],
       }),
-      hygiene("reopened", { count: 1, items: [named("WID-30", "Ann Example")] }),
+      // WID-31 is assigned, but to someone whose name the space did not record.
+      hygiene("reopened", { count: 2, items: [named("WID-30", "Ann Example"), named("WID-31", null, true)] }),
       hygiene("stale_in_progress", {
         count: 12,
         items: Array.from({ length: 12 }, (_, i) => named(`WID-${100 + i}`, "Ann Example")),

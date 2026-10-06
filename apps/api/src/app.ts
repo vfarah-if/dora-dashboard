@@ -1,6 +1,8 @@
 import cookie from "@fastify/cookie";
+import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { Config } from "./core/config.js";
+import { RateLimitedError } from "./core/errors.js";
 import type { DeviceAuthorisation } from "./interfaces/device-authorisation.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
@@ -51,12 +53,12 @@ export interface AppDeps {
   logger?: boolean | { stream: NodeJS.WritableStream };
 }
 
-/** The OAuth callback's query carries a one-time code and the state, so request logs keep only its path. */
-export function loggedUrl(url: string): string {
-  return url.startsWith(JIRA_CALLBACK_PATH) ? JIRA_CALLBACK_PATH : url;
-}
+const OAUTH_CALLBACK_PATHS = ["/api/auth/jira/callback", "/api/auth/github/callback"];
 
-const JIRA_CALLBACK_PATH = "/api/auth/jira/callback";
+/** An OAuth callback's query carries a one-time code and the state, so request logs keep only its path. */
+export function loggedUrl(url: string): string {
+  return OAUTH_CALLBACK_PATHS.find((path) => url.startsWith(path)) ?? url;
+}
 
 function loggerOptions(logger: AppDeps["logger"]) {
   if (!logger) return false;
@@ -112,7 +114,7 @@ function registerRoutes(
   crawler: CrawlService,
   codeHealth: CodeHealthService,
 ): WorkItemCrawlService | undefined {
-  const jiraAuth = deps.jira && new JiraAuthService(deps.jira.auth, deps.jira.grants, deps.now);
+  const jiraAuth = deps.jira && new JiraAuthService(deps.jira.auth, deps.jira.grants, deps.now, app.log);
   const auth = {
     config: deps.config,
     provider: deps.provider,
@@ -153,6 +155,12 @@ export async function buildApp(deps: AppDeps): Promise<{
 }> {
   const app = createApp(deps);
   await app.register(cookie, { secret: deps.config.sessionSecret });
+  // Opt-in per route, so only the routes that name a limit are limited. The plugin throws what the builder returns,
+  // which the app's error handler turns into the usual 429 body.
+  await app.register(rateLimit, {
+    global: false,
+    errorResponseBuilder: () => new RateLimitedError("Too many requests. Please wait a moment and try again."),
+  });
   registerErrorHandler(app);
 
   const codeHealth = createCodeHealth(deps, app);
