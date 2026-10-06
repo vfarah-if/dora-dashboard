@@ -10,9 +10,59 @@ const numberFormat = (digits: number) =>
 export function formatDuration(hours: number | null | undefined): string {
   if (hours === null || hours === undefined || !Number.isFinite(hours)) return copy.common.notAvailable;
   const h = Math.max(0, hours);
-  if (h < 1) return `${Math.round(h * 60)} min`;
-  if (h < 48) return `${h.toFixed(1)} h`;
+  const unit = durationUnit(h);
+  if (unit === "min") return `${Math.round(h * 60)} min`;
+  if (unit === "h") return `${h.toFixed(1)} h`;
   return `${(h / 24).toFixed(1)} days`;
+}
+
+export type DurationUnit = "min" | "h" | "days";
+
+/** The unit `formatDuration` writes a number of hours in. */
+export function durationUnit(hours: number): DurationUnit {
+  const h = Math.max(0, hours);
+  if (h < 1) return "min";
+  return h < 48 ? "h" : "days";
+}
+
+/** A number to one decimal place, without the decimal when it is zero. */
+const tenths = (value: number) => {
+  const fixed = value.toFixed(1);
+  return fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed;
+};
+
+/**
+ * A duration in a chosen unit, for sentences that set one duration against another. It writes each unit as
+ * `formatDuration` does, except that a whole number of hours or days drops its ".0", so a threshold reads "24 h".
+ * Passing the unit of the value a gap belongs to writes the gap to the same precision, so one can be read off the other.
+ */
+export function formatDurationIn(hours: number | null | undefined, unit?: DurationUnit): string {
+  if (hours === null || hours === undefined || !Number.isFinite(hours)) return copy.common.notAvailable;
+  const h = Math.max(0, hours);
+  switch (unit ?? durationUnit(h)) {
+    case "min":
+      return `${Math.round(h * 60)} min`;
+    case "h":
+      return `${tenths(h)} h`;
+    case "days": {
+      const days = tenths(h / 24);
+      return days === "1" ? "1 day" : `${days} days`;
+    }
+  }
+}
+
+/**
+ * The fewest decimal places, from `min` up, that write a number as exactly as `max` places would, so 9.4 needs one
+ * and 10.0 needs none. A number that is not zero but would show as zero at `max` places takes more, until it does not.
+ */
+export function placesNeeded(value: number, min: number, max: number): number {
+  const at = (places: number) => Math.round(value * 10 ** places) / 10 ** places;
+  for (let places = min; places < max; places++) {
+    if (at(places) === at(max) && (at(places) !== 0 || value === 0)) return places;
+  }
+  let places = Math.max(min, max);
+  while (at(places) === 0 && value !== 0) places++;
+  return places;
 }
 
 /** A share between 0 and 1 as a whole percentage. */

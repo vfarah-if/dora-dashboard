@@ -1,4 +1,5 @@
-import { Link, useParams } from "react-router";
+import { useEffect } from "react";
+import { Link, useLocation, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useRepos, useReport, type ReportRange } from "../api/hooks";
@@ -74,6 +75,11 @@ interface ReportBodyProps {
 }
 
 function ReportBody({ report, repoId, range }: ReportBodyProps) {
+  const { hash } = useLocation();
+  // The report arrives after the page loads, so a link to a section has nothing to land on until now.
+  useEffect(() => {
+    if (hash) document.getElementById(hash.slice(1))?.scrollIntoView?.();
+  }, [hash]);
   return (
     <>
       <section aria-labelledby="dora-title" className="section">
@@ -93,6 +99,7 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
               detail={figure.detail}
               reason={figure.reason}
               noBandNote={figure.noBandNote}
+              explanation={figure.explanation}
             />
           ))}
         </div>

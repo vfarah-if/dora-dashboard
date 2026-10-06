@@ -75,6 +75,34 @@ For each cohort the report gives the number of pull requests, the median and 75t
 
 Deploy measures are not split by cohort, because a single deploy ships a mixture of both kinds of work. Labels rely on team discipline, and AI use that is not marked by a label, a trailer or a bot author counts as unassisted, so the assisted cohort is a floor and not a total. The default patterns are a convention, so an assistant that signs with another name is missed until the patterns are extended. The decision is recorded in ADR 0016.
 
+### Explaining a band
+
+Each DORA tile on a repository's page can be opened to explain its band. Every figure in the explanation is measured over the same range and filters as the tile, and none of them names a person. The rules and the practices each driver links to are in ADR 0022.
+
+**The gap to the next band** is in the measure's own unit and uses the same comparison as the grade. For deployment frequency it is the deploys a week still needed, and reaching the next threshold is enough. For change failure rate it is the fall in the rate still needed, and reaching the threshold is enough. For lead time and time to restore it is the hours above the next threshold, and the figure must fall below that threshold, so a gap of zero means the figure sits exactly on it. An elite figure has no gap, and the explanation says how far inside the elite threshold it is. The gap is written to the same precision as the value beside it so one can be read off the other: a duration and its gap share a unit and drop a trailing ".0" (24 h, 1.3 days), deploys a week take one decimal place, and a change failure rate takes one decimal place only when the gap needs it (24.4%, 9.4 percentage points).
+
+The findings below are shown at every band, so an elite figure says why it holds. Practices to try are offered only below elite.
+
+**Lead time** is split into five parts, measured for each shipped pull request and averaged.
+
+| Part               | From                            | To                                          |
+| ------------------ | ------------------------------- | ------------------------------------------- |
+| Coding             | First commit                    | PR ready for review                         |
+| Waiting for review | PR ready for review             | First review by someone else, or the merge  |
+| In review          | First review                    | First approval                              |
+| To merge           | First approval, or first review | Merged                                      |
+| To deploy          | Merged                          | End of the first successful deploy after it |
+
+The parts are means, so they add up to the mean lead time, while the tile shows the median, and the two can differ a good deal when a few pull requests take much longer than the rest. Draft time, from opening a pull request to marking it ready for review, counts as coding, so waiting for review starts where time to first review does and a long draft is not read as a slow review. The cycle time stage chart above is unchanged and still counts draft time as waiting for review. A pull request merged without a review by someone else counts all of its time from ready for review to merge as waiting for review. The largest part is named first, and on a tie the earlier part wins. The 75th percentile of lead time and the median size of the shipped pull requests are shown beside the parts.
+
+**Deployment frequency** first states the tile's own figures, the successful deploys and every week the range touches, partial weeks included, so a reader can divide one by the other and reach the tile. It then gives the complete weeks and how many of those had no successful deploy. A week is complete only when it lies wholly inside the range, so a range that starts mid-week leaves its first week partial just as one that ends mid-week leaves its last, and a partial week is never counted as a week without a deploy. It also gives the median number of pull requests each successful deploy shipped, counting only deploys that shipped at least one, which is the batch size of a deploy. A pull request ships with the first successful deploy created at or after its merge, the same pairing lead time uses.
+
+**Change failure rate** gives the failed and total deploy runs, the same runs broken down by workflow with the most failures first, and the share of successful deploys that shipped a revert or hotfix (the rework rate above).
+
+**Time to restore** gives the number of failure streaks that recovered, the median number of failed runs in a streak, and the longest restore. A streak is one or more failed deploy runs in a row followed by a success. A streak still failing at the end of the range is reported first, with when it began and how many runs have failed, because the median only counts streaks that recovered. When no streak has recovered at all, the tile is not measured and its reason gives the same date and count.
+
+The 2023 Accelerate State of DevOps Report renamed the restore measure **failed deployment recovery time**, to separate failures caused by a deployment from other outages. This dashboard measures from the first failed deploy run to the next successful one, which already fits the narrower definition, so only the label differs.
+
 ## Review queue
 
 The review queue reads open pull requests live from the code host (cached for about a minute) rather than from the last crawl, so it shows the state of the repositories now. Nothing on it is stored. The decision is recorded in ADR 0017.

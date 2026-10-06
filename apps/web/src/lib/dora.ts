@@ -1,6 +1,7 @@
 import type { Band, RepoReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { formatDuration, formatNumber, formatPercent } from "./format";
+import { explainDora, type DoraExplanation } from "./doraExplain";
+import { formatDate, formatDuration, formatNumber, formatPercent } from "./format";
 
 type BandedId = "deploymentFrequency" | "leadTime" | "changeFailure" | "timeToRestore";
 
@@ -14,6 +15,8 @@ export interface DoraFigure {
   reason?: string;
   /** Why the figure has no band, for a measure DORA publishes none for. */
   noBandNote?: string;
+  /** Why this band and how to move up; absent for a figure that is missing or has no band. */
+  explanation?: DoraExplanation | null;
 }
 
 /** The rework rate as a figure with no band, because DORA publishes none (ADR 0016). */
@@ -41,19 +44,25 @@ function figure<M extends { band: Band }>(
   measure: M | null | undefined,
   parts: (m: M) => FigureParts,
   reason: string,
+  explanation: DoraExplanation | null,
 ): DoraFigure {
   const title = copy.dora[id];
   const definition = copy.dora[`${id}Definition`];
   if (!measure) return { id, title, definition, value: null, band: null, reason };
   const { value, detail } = parts(measure);
-  return { id, title, definition, value, band: measure.band, detail, reason };
+  return { id, title, definition, value, band: measure.band, detail, reason, explanation };
 }
 
-/** Why time to restore is missing: no failures to recover from, no recovery seen, or no deploy runs at all. */
+/**
+ * Why time to restore is missing: no deploy runs at all, no failures to recover from, failures still open since a
+ * date, or no recovery seen. Failures still open are the usual case, so the reason says since when and how many.
+ */
 function restoreReason(report: RepoReport, noRunsReason: string): string {
   const cf = report.dora.changeFailure;
   if (!cf) return noRunsReason;
-  return cf.failed === 0 ? copy.dora.reasons.noFailures : copy.dora.reasons.noRecovery;
+  if (cf.failed === 0) return copy.dora.reasons.noFailures;
+  const open = report.doraDrivers.timeToRestore.unrecovered;
+  return open ? copy.dora.reasons.unrecovered(formatDate(open.since), open.failedRuns) : copy.dora.reasons.noRecovery;
 }
 
 /** The four DORA measures of a report as display figures, each with the reason it is missing when it is. */
@@ -61,6 +70,7 @@ export function doraFigures(report: RepoReport): DoraFigure[] {
   const { dora, repo } = report;
   const noWorkflow = repo.deployWorkflows.length === 0;
   const noRunsReason = noWorkflow ? copy.dora.reasons.noWorkflow : copy.dora.reasons.noRuns(repo.deployBranch);
+  const explanations = explainDora(report);
 
   return [
     figure(
@@ -68,24 +78,42 @@ export function doraFigures(report: RepoReport): DoraFigure[] {
       dora.deploymentFrequency,
       (m) => ({ value: copy.dora.perWeek(formatNumber(m.perWeek, 1)), detail: copy.dora.deploysCount(m.total, m.weeks) }),
       noRunsReason,
+      explanations.deploymentFrequency,
     ),
     figure(
       "leadTime",
       dora.leadTime,
       (m) => ({ value: formatDuration(m.medianHours), detail: copy.dora.leadCount(m.count) }),
       dora.deploymentFrequency ? copy.dora.reasons.noShipped : noRunsReason,
+      explanations.leadTime,
     ),
     figure(
       "changeFailure",
       dora.changeFailure,
       (m) => ({ value: formatPercent(m.rate), detail: copy.dora.failureCount(m.failed, m.total) }),
       noRunsReason,
+      explanations.changeFailure,
     ),
     figure(
       "timeToRestore",
       dora.timeToRestore,
       (m) => ({ value: formatDuration(m.medianHours), detail: copy.dora.restoreCount(m.count) }),
       restoreReason(report, noRunsReason),
+      explanations.timeToRestore,
     ),
   ];
+}
+
+/** The repository page, anchored at its DORA section and carrying the range, so a comparison can point at the explanations. */
+export function repoDoraHref(
+  repoId: number,
+  range: { from: string | null; to: string | null; includeBots?: boolean; profile?: string | null },
+): string {
+  const params = new URLSearchParams();
+  if (range.from) params.set("from", range.from);
+  if (range.to) params.set("to", range.to);
+  if (range.includeBots) params.set("bots", "1");
+  if (range.profile) params.set("profile", range.profile);
+  const query = params.toString();
+  return `/repos/${repoId}${query ? `?${query}` : ""}#dora-title`;
 }

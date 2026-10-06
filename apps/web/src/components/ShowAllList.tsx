@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { copy } from "../copy";
+import { usePrinting } from "../lib/print";
 import { LIST_LIMIT } from "../lib/space";
 
 interface ShowAllListProps {
@@ -12,11 +13,13 @@ interface ShowAllListProps {
 
 /**
  * Shows the first entries of a long list and offers the rest behind a button. The label changes to say what the
- * next press does, so the button carries no aria-expanded, which would announce the same thing twice.
+ * next press does, so the button carries no aria-expanded, which would announce the same thing twice. The printed
+ * report carries every entry and no button, since a reader of the PDF cannot press it.
  */
 export function ShowAllList({ total, children, limit = LIST_LIMIT }: ShowAllListProps) {
   const [all, setAll] = useState(false);
-  const collapsible = total > limit;
+  const printing = usePrinting();
+  const collapsible = total > limit && !printing;
   return (
     <>
       {children(all || !collapsible ? total : limit)}

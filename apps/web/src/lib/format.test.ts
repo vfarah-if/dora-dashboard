@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent, formatWeek, isoDaysAgo } from "./format";
+import {
+  durationUnit,
+  formatDate,
+  formatDateTime,
+  formatDuration,
+  formatDurationIn,
+  formatNumber,
+  formatPercent,
+  formatWeek,
+  isoDaysAgo,
+  placesNeeded,
+} from "./format";
 import { copy } from "../copy";
 
 describe("formatDuration", () => {
@@ -25,6 +36,55 @@ describe("formatDuration", () => {
     expect(formatDuration(undefined)).toBe(copy.common.notAvailable);
     expect(formatDuration(Number.NaN)).toBe(copy.common.notAvailable);
     expect(formatDuration(-3)).toBe("0 min");
+  });
+});
+
+describe("durationUnit", () => {
+  it("chooses the unit formatDuration writes a value in", () => {
+    expect(durationUnit(0.5)).toBe("min");
+    expect(durationUnit(1)).toBe("h");
+    expect(durationUnit(47.9)).toBe("h");
+    expect(durationUnit(48)).toBe("days");
+    expect(durationUnit(-2)).toBe("min");
+  });
+});
+
+describe("formatDurationIn", () => {
+  it("writes whole hours and whole days without a trailing .0", () => {
+    expect(formatDurationIn(24)).toBe("24 h");
+    expect(formatDurationIn(1)).toBe("1 h");
+    expect(formatDurationIn(168)).toBe("7 days");
+    expect(formatDurationIn(30.5)).toBe("30.5 h");
+    expect(formatDurationIn(200)).toBe("8.3 days"); // 200 / 24 = 8.33
+    expect(formatDurationIn(0.5)).toBe("30 min");
+  });
+
+  it("writes an amount in the unit it is given, so a gap matches its value", () => {
+    expect(formatDurationIn(32, "days")).toBe("1.3 days"); // 32 / 24 = 1.33
+    expect(formatDurationIn(24, "days")).toBe("1 day");
+    expect(formatDurationIn(0.5, "h")).toBe("0.5 h");
+    expect(formatDurationIn(0.25, "min")).toBe("15 min");
+  });
+
+  it("treats a missing or invalid value as no data and clamps negatives", () => {
+    expect(formatDurationIn(null)).toBe(copy.common.notAvailable);
+    expect(formatDurationIn(Number.NaN, "h")).toBe(copy.common.notAvailable);
+    expect(formatDurationIn(-3)).toBe("0 min");
+  });
+});
+
+describe("placesNeeded", () => {
+  it.each([
+    [9.4, 0, 1, 1], // a tenth matters
+    [10, 0, 1, 0],
+    [9.999999999999998, 0, 1, 0], // 0.25 - 0.15 in floating point, which is 10 to one place
+    [5.17, 1, 1, 1],
+    [3, 1, 2, 1], // never fewer than the minimum
+    [0.02, 1, 1, 2], // one place would show zero, so it takes another
+    [0.0001, 0, 1, 4],
+    [0, 0, 1, 0],
+  ])("needs the right places for %s between %s and %s", (value, min, max, expected) => {
+    expect(placesNeeded(value, min, max)).toBe(expected);
   });
 });
 

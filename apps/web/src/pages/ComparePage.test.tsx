@@ -39,6 +39,23 @@ describe("ComparePage", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("ids=1%2C2");
   });
 
+  it("links each repository's column to the DORA section of its own page, carrying the range", async () => {
+    renderCompare("/compare?ids=1,2&from=2026-01-05&to=2026-01-25&bots=1");
+    const table = await screen.findByRole("table", { name: copy.compare.headline.title });
+    const row = within(table).getByRole("row", { name: new RegExp(copy.dora.explain.whyBandRow) });
+    const links = within(row).getAllByRole("link", { name: /Why this band/ });
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAccessibleName(copy.dora.explain.whyBandLabel("acme/widgets"));
+    expect(links[0]).toHaveAttribute("href", "/repos/1?from=2026-01-05&to=2026-01-25&bots=1#dora-title");
+    expect(links[1]).toHaveAttribute("href", "/repos/2?from=2026-01-05&to=2026-01-25&bots=1#dora-title");
+  });
+
+  it("does not repeat the explanations on the comparison", async () => {
+    renderCompare();
+    await screen.findByRole("table", { name: copy.compare.headline.title });
+    expect(screen.queryByText(copy.dora.explain.summary)).not.toBeInTheDocument();
+  });
+
   it("states the profile once above the headline when every repository shares it", async () => {
     renderCompare();
     const link = await screen.findByRole("link", { name: /DORA 2023/ });

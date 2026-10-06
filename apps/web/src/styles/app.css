@@ -1301,6 +1301,51 @@ a:hover {
   margin-bottom: 8px;
 }
 
+.dora-explain {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+}
+
+.dora-explain summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dora-explain-body h4 {
+  margin: 12px 0 4px;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.dora-explain-body p,
+.dora-explain-body li {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.dora-explain-body ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dora-explain-body a {
+  color: var(--accent);
+}
+
+.dora-explain-quote {
+  margin: 8px 0 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong, var(--border));
+}
+
+.dora-explain-note {
+  margin-top: 12px;
+  font-style: italic;
+}
+
 .batch-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
@@ -1542,7 +1587,7 @@ a:hover {
   .range-controls,
   .toggle-row,
   .chart-toolbar .toggle,
-  .table-disclosure,
+  .table-disclosure:not(.dora-explain),
   .author-filter,
   .pager,
   .sort-indicator,
@@ -1848,6 +1893,33 @@ a:hover {
 .home-h2 {
   font-size: clamp(1.35rem, 1.1rem + 0.9vw, 1.75rem);
   letter-spacing: -0.02em;
+}
+
+.home-h3 {
+  margin-top: 8px;
+  font-size: 1.125rem;
+}
+
+.band-meanings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.band-meanings dd {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.practice h4 {
+  font-size: 1.0625rem;
+}
+
+.home-quote {
+  max-width: 70ch;
+  color: var(--text-muted);
 }
 
 .home-section {

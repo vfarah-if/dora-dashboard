@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
@@ -15,7 +15,15 @@ const manyPrs = Array.from({ length: 25 }, (_, i) => ({
   size: i * 10,
 }));
 
+/** jsdom has no scrollIntoView, so a test stubs it; this puts the prototype back however that test ends. */
+const realScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+
 describe("RepoPage", () => {
+  afterEach(() => {
+    if (realScrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", realScrollIntoView);
+    else delete (Element.prototype as Partial<Element>).scrollIntoView;
+  });
+
   it("offers a PDF report named after the repository once the report has loaded", async () => {
     const user = userEvent.setup();
     let printedAs = "";
@@ -81,6 +89,57 @@ describe("RepoPage", () => {
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
     expect(await screen.findAllByText(copy.dora.notMeasured)).toHaveLength(5);
     expect(screen.getAllByText(copy.dora.reasons.noWorkflow)).toHaveLength(4);
+  });
+
+  it("explains each measured DORA tile, and only those", async () => {
+    const base = report();
+    mockFetch({
+      "GET /api/repos/1/report": {
+        body: { ...base, dora: { ...base.dora, leadTime: null, timeToRestore: null } },
+      },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const frequency = (await screen.findByRole("heading", { name: copy.dora.deploymentFrequency })).closest("article")!;
+    expect(within(frequency).getByText(copy.dora.explain.summary)).toBeInTheDocument();
+    const failure = screen.getByRole("heading", { name: copy.dora.changeFailure }).closest("article")!;
+    expect(within(failure).getByText(copy.dora.explain.summary)).toBeInTheDocument();
+    for (const title of [copy.dora.leadTime, copy.dora.timeToRestore, copy.dora.rework]) {
+      const tile = screen.getByRole("heading", { name: title }).closest("article")!;
+      expect(within(tile).queryByText(copy.dora.explain.summary)).not.toBeInTheDocument();
+    }
+    expect(screen.getAllByText(copy.dora.explain.summary)).toHaveLength(2);
+  });
+
+  it("shows the gap and a practice link when a tile's explanation is opened", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    const failure = (await screen.findByRole("heading", { name: copy.dora.changeFailure })).closest("article")!;
+    await user.click(within(failure).getByText(copy.dora.explain.summary));
+    expect(within(failure).getByText(/25% of deploys failed\. The Medium band needs 15% or less/)).toBeInTheDocument();
+    expect(within(failure).getByRole("link", { name: /Test automation/ })).toHaveAttribute(
+      "href",
+      "https://dora.dev/capabilities/test-automation/",
+    );
+  });
+
+  it("scrolls to the DORA section when the address names it", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1#dora-title" });
+    await screen.findByRole("heading", { name: copy.dora.title });
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
   });
 
   it("names the profile with a link to its source that opens in a new tab", async () => {

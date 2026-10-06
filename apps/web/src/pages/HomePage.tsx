@@ -164,7 +164,64 @@ function Bands() {
           </tbody>
         </table>
       </div>
+      <BandMeanings />
+      <MoveUp />
     </section>
+  );
+}
+
+const MEASURES = ["deploymentFrequency", "leadTime", "changeFailure", "timeToRestore"] as const;
+
+function BandMeanings() {
+  const text = copy.dora.explain;
+  return (
+    <>
+      <h3 className="home-h3">{text.meaningTitle}</h3>
+      <p className="home-section-lede">
+        {text.meaningLede} <ExternalLink href={text.source.href}>{text.source.label}</ExternalLink>
+      </p>
+      <ul className="practice-grid">
+        {MEASURES.map((measure) => (
+          <li key={measure} className="practice">
+            <h4>{copy.dora[measure]}</h4>
+            <dl className="band-meanings">
+              {BANDS.map((band) => (
+                <div key={band}>
+                  <dt>
+                    <BandLabel band={band} />
+                  </dt>
+                  <dd>{text.meaning[measure][band]}</dd>
+                </div>
+              ))}
+            </dl>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function MoveUp() {
+  const text = copy.dora.explain;
+  return (
+    <>
+      <h3 className="home-h3">{text.moveUp.title}</h3>
+      <p className="home-section-lede">{text.moveUp.body}</p>
+      <p className="home-section-lede">
+        {text.moveUp.linksLead}{" "}
+        {text.moveUp.links.map((key, i) => (
+          <span key={key}>
+            {i > 0 && (i === text.moveUp.links.length - 1 ? ` ${copy.common.and} ` : ", ")}
+            <ExternalLink href={text.practices[key].href}>{text.practices[key].name}</ExternalLink>
+          </span>
+        ))}
+        .
+      </p>
+      <blockquote className="dora-explain-quote home-quote">
+        <p>{text.system.quote}</p>
+        <ExternalLink href={text.system.href}>{text.system.label}</ExternalLink>
+      </blockquote>
+    </>
   );
 }
 

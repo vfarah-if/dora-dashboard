@@ -77,3 +77,18 @@ export function weekRange(firstWeek: string, lastWeek: string): string[] {
   }
   return weeks;
 }
+
+/**
+ * True when the instant falls inside the range, both ends included. The comparison is on the ISO strings, exactly
+ * as the report scopes pull requests and runs, so every figure built from a range counts the same items.
+ */
+export function isWithin(iso: string | null, from: string, to: string): iso is string {
+  return iso !== null && iso >= from && iso <= to;
+}
+
+const WEEK_MS = 7 * DAY_MS;
+
+/** True for a week, given by its Monday, that had not finished by `to`, the last second of a range. */
+export function isPartialWeek(week: string, to: string): boolean {
+  return Date.parse(week) + WEEK_MS > Date.parse(to) + 1000;
+}

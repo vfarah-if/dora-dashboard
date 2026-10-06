@@ -97,6 +97,36 @@ export function report(
       changeFailure: { rate: 0.25, failed: 1, total: 4, band: "low", revertPrs: 0, rework: { rate: 0.25, deploys: 1, total: 4 } },
       timeToRestore: { medianHours: 2, count: 1, band: "high" },
     },
+    doraDrivers: {
+      position: {
+        deploymentFrequency: { band: "high", next: "elite", threshold: 7, gap: 6 },
+        leadTime: { band: "high", next: "elite", threshold: 24, gap: 6 },
+        changeFailure: { band: "low", next: "medium", threshold: 0.15, gap: 0.1 },
+        timeToRestore: { band: "high", next: "elite", threshold: 1, gap: 1 },
+      },
+      leadTime: {
+        count: 4,
+        meanHours: 36,
+        p75Hours: 48,
+        // Shares of the 36 hour mean: 18 / 36, 9 / 36, 4.5 / 36 twice.
+        parts: [
+          { part: "coding", meanHours: 18, share: 0.5 },
+          { part: "waitingForReview", meanHours: 9, share: 0.25 },
+          { part: "inReview", meanHours: 4.5, share: 0.125 },
+          { part: "toMerge", meanHours: 4.5, share: 0.125 },
+          { part: "toDeploy", meanHours: 0, share: 0 },
+        ],
+        size: summary(40),
+      },
+      deploymentFrequency: { deploys: 3, weeks: 3, weeksWithoutDeploy: 0, prsPerDeploy: summary(2) },
+      changeFailure: {
+        failed: 1,
+        total: 4,
+        byWorkflow: [{ workflow: "deploy.yml", failed: 1, total: 4 }],
+        rework: { deploys: 1, total: 4 },
+      },
+      timeToRestore: { streaks: 1, failedRunsPerStreak: summary(1), longestHours: 2, unrecovered: null },
+    },
     aiCohorts: {
       assisted: { prs: 2, medianCycleHours: 4, p75CycleHours: 6, medianSize: 30, reviewedShare: 1, revertShare: 0 },
       unassisted: { prs: 4, medianCycleHours: 10, p75CycleHours: 20, medianSize: 50, reviewedShare: 0.5, revertShare: 0.25 },

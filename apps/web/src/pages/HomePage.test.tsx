@@ -25,6 +25,37 @@ describe("HomePage", () => {
     expect(within(row).getByText("5% or less")).toBeInTheDocument();
   });
 
+  it("gives one line for every band of every measure, each beside its band name", () => {
+    renderRoute(<HomePage />);
+    const heading = screen.getByRole("heading", { level: 3, name: copy.dora.explain.meaningTitle });
+    const section = heading.closest("section")!;
+    for (const measure of ["deploymentFrequency", "leadTime", "changeFailure", "timeToRestore"] as const) {
+      const card = within(section).getByRole("heading", { level: 4, name: copy.dora[measure] }).closest("li")!;
+      for (const band of ["elite", "high", "medium", "low"] as const) {
+        const term = within(card).getByText(copy.dora.band[band]).closest("div")!;
+        expect(term).toHaveTextContent(copy.dora.explain.meaning[measure][band]);
+      }
+    }
+  });
+
+  it("explains how teams move up with practice links and says the measures describe a system", () => {
+    renderRoute(<HomePage />);
+    expect(screen.getByRole("heading", { level: 3, name: copy.dora.explain.moveUp.title })).toBeInTheDocument();
+    expect(screen.getByText(copy.dora.explain.moveUp.body)).toBeInTheDocument();
+    const lead = screen.getByText(copy.dora.explain.moveUp.linksLead, { exact: false });
+    expect(within(lead).getByRole("link", { name: /Working in small batches/ })).toHaveAttribute(
+      "href",
+      "https://dora.dev/capabilities/working-in-small-batches/",
+    );
+    expect(within(lead).getByRole("link", { name: /Continuous delivery/ })).toHaveAttribute("target", "_blank");
+    expect(within(lead).getByRole("link", { name: /Test automation/ })).toBeInTheDocument();
+    expect(lead).toHaveTextContent(/Continuous delivery \(opens in a new tab\) and Test automation/);
+    const quote = screen.getByText(copy.dora.explain.system.quote);
+    expect(
+      within(quote.closest("blockquote")!).getByRole("link", { name: new RegExp(copy.dora.explain.system.label) }),
+    ).toHaveAttribute("href", "https://dora.dev/guides/how-to-empower-software-delivery-teams/");
+  });
+
   it("names the profile and cites the 2023 report, with the corrected deployment frequency row", () => {
     renderRoute(<HomePage />);
     expect(screen.getByRole("table", { name: /DORA 2023 profile/ })).toBeInTheDocument();

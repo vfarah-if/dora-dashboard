@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link } from "react-router";
 import { SpacePage } from "./SpacePage";
@@ -153,6 +153,21 @@ describe("SpacePage", () => {
     expect(fewer).not.toHaveAttribute("aria-expanded");
     await user.click(fewer);
     expect(within(stale).getAllByRole("link")).toHaveLength(10);
+  });
+
+  it("prints every entry of a long list without the button, then collapses again", async () => {
+    mockReport();
+    renderRoute(<SpacePage />, route());
+    const stale = await screen.findByRole("region", { name: copy.space.hygiene.checks.stale_in_progress.title });
+    expect(within(stale).getAllByRole("link")).toHaveLength(10);
+
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    expect(within(stale).getAllByRole("link")).toHaveLength(12);
+    expect(within(stale).queryByRole("button")).not.toBeInTheDocument();
+
+    act(() => void window.dispatchEvent(new Event("afterprint")));
+    expect(within(stale).getAllByRole("link")).toHaveLength(10);
+    expect(within(stale).getByRole("button", { name: copy.space.showAll(12) })).toBeInTheDocument();
   });
 
   it("leaves names out by default and does not ask for them", async () => {

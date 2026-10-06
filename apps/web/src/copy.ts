@@ -10,6 +10,7 @@ export const copy = {
     loading: "Loading",
     retry: "Try again",
     notAvailable: "No data",
+    and: "and",
     cancel: "Cancel",
     save: "Save",
     saving: "Saving",
@@ -234,11 +235,187 @@ export const copy = {
       noShipped: "No merged pull request was shipped by an observed deploy in this range.",
       noFailures: "No failed deploys in this range, so there was nothing to restore.",
       noRecovery: "No failed deploy has been followed by a successful one yet.",
+      unrecovered: (since: string, runs: number) =>
+        `Failures have not been put right since ${since}. ${runs} failed ${runs === 1 ? "run has" : "runs have"} had no successful deploy after ${runs === 1 ? "it" : "them"}.`,
     },
     deploysCount: (total: number, weeks: number) => `${total} successful deploys over ${weeks} weeks`,
     leadCount: (count: number) => `Across ${count} shipped pull requests`,
     failureCount: (failed: number, total: number) => `${failed} of ${total} deploys failed`,
     restoreCount: (count: number) => `Across ${count} recoveries`,
+    explain: {
+      summary: "Why this band, and how to move up",
+      /** Read after the summary by assistive technology only, so each tile's disclosure names its measure. */
+      summaryMeasure: (measure: string) => `, ${measure}`,
+      meaningHeading: "What the band means",
+      gapHeading: "How far to the next band",
+      findingsHeading: "What drives this figure",
+      practicesHeading: "Practices to try",
+      systemNote: "These explanations describe stages, batches and workflows, never individual people.",
+      source: {
+        label: "2023 Accelerate State of DevOps Report, performance levels",
+        href: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf#page=12",
+      },
+      meaning: {
+        deploymentFrequency: {
+          elite:
+            "Changes reach production on demand, whenever one is ready, which is the pace DORA's 2023 report gives for its elite cluster.",
+          high: "The team deploys between once a day and once a week, the pace of DORA's high cluster.",
+          medium: "The team deploys between once a week and once a month, the pace of DORA's medium cluster.",
+          low: "The team deploys less often than once every four weeks, which is slower than any range DORA's 2023 report gives for its medium cluster.",
+        },
+        leadTime: {
+          elite: "A typical change reaches production less than a day after it is committed, as in DORA's elite cluster.",
+          high: "A typical change takes between one day and one week to reach production, as in DORA's high cluster.",
+          medium: "A typical change takes between one week and one month to reach production, as in DORA's medium cluster.",
+          low: "A typical change takes longer than a month to reach production, which is slower than any range DORA's 2023 report gives for its medium cluster.",
+        },
+        changeFailure: {
+          elite:
+            "About one deployment in twenty or fewer needs immediate intervention, matching the 5% DORA reports for its elite cluster.",
+          high: "About one deployment in ten or fewer needs immediate intervention, matching the 10% DORA reports for its high cluster.",
+          medium:
+            "Up to about one deployment in seven needs immediate intervention, matching the 15% DORA reports for its medium cluster.",
+          low: "More than 15% of deployments need immediate intervention; DORA's 2023 low cluster reported 64%.",
+        },
+        timeToRestore: {
+          elite: "A failed deployment is typically put right in less than an hour, as in DORA's elite cluster.",
+          high: "A failed deployment is typically put right in less than a day, as in DORA's high cluster.",
+          medium: "A failed deployment typically takes between one day and one week to put right, as in DORA's medium cluster.",
+          low: "A failed deployment typically takes longer than a week to put right; DORA's 2023 low cluster reported between one month and six months.",
+        },
+      },
+      restoreRename:
+        "DORA's 2023 report calls this measure failed deployment recovery time. This dashboard keeps the label time to restore.",
+      reviewQuote: {
+        text: "Speeding up code reviews is one of the most effective paths to improving software delivery performance. Teams with faster code reviews have 50% higher software delivery performance.",
+        label: "2023 report, executive summary",
+        href: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf#page=5",
+      },
+      gap: {
+        raise: (value: string, band: string, requirement: string, by: string) =>
+          `Deployments run at ${value}. The ${band} band needs ${requirement}, which is ${by} more than now.`,
+        lowerRate: (value: string, band: string, requirement: string, by: string) =>
+          `${value} of deploys failed. The ${band} band needs ${requirement}, which is ${by} lower than now.`,
+        lowerDuration: (value: string, band: string, requirement: string, by: string) =>
+          `The median is ${value}. The ${band} band needs ${requirement}, which is ${by} shorter than now.`,
+        onLimit: (value: string, band: string, requirement: string) =>
+          `The median is ${value}, which sits exactly on the limit for the ${band} band. That band needs ${requirement}, so the figure must fall below the limit to qualify.`,
+        holds: (value: string, requirement: string, margin: string) =>
+          `At ${value} the figure is ${margin} inside the elite requirement of ${requirement}, which keeps it in the elite band.`,
+        holdsOnLimit: (value: string, requirement: string) =>
+          `At ${value} the figure sits exactly on the elite requirement of ${requirement}, and that limit itself counts, so it stays in the elite band.`,
+        atLeast: (value: string) => `at least ${value}`,
+        atMost: (value: string) => `${value} or less`,
+        under: (value: string) => `under ${value}`,
+        points: (value: string) => `${value} ${value === "1" ? "percentage point" : "percentage points"}`,
+      },
+      parts: {
+        coding: "Coding",
+        waitingForReview: "Waiting for review",
+        inReview: "In review",
+        toMerge: "Approval to merge",
+        toDeploy: "Merge to deploy",
+      },
+      findings: {
+        largestPart: (part: string, hours: string, share: string, mean: string) =>
+          `${part} is the largest part of lead time, averaging ${hours}, or ${share} of the ${mean} mean. The tile shows the median, so the parts add up to the mean rather than to the tile.`,
+        nextPart: (part: string, hours: string, share: string) =>
+          `${part} comes next, averaging ${hours}, or ${share} of the mean.`,
+        spread: (p75: string, size: string | null) =>
+          size === null
+            ? `One in four changes took ${p75} or longer from first commit to deploy.`
+            : `One in four changes took ${p75} or longer from first commit to deploy, and the median change was ${size} lines.`,
+        fewDeploys: (deploys: number, tileWeeks: number, complete: number, without: number) =>
+          `The tile divides ${deploys} successful ${deploys === 1 ? "deploy" : "deploys"} by ${tileWeeks} ${tileWeeks === 1 ? "week" : "weeks"}, counting every week the range touches, partial ones included. ` +
+          (complete === 0
+            ? "None of those weeks was complete, so none is counted as a week without a deploy."
+            : `Of the ${complete} complete ${complete === 1 ? "week" : "weeks"}, ${without} had no deploy.`),
+        largeBatches: (median: string) =>
+          `The median deploy shipped ${median} pull requests, so changes are released in batches.`,
+        failures: (failed: number, total: number, rate: string) =>
+          `${failed} of ${total} production deploys failed, which is ${rate}.`,
+        worstWorkflow: (workflow: string, failed: number, total: number) =>
+          `Most failures came from the ${workflow} workflow, ${failed} of its ${total} runs.`,
+        rework: (deploys: number, total: number) =>
+          `${deploys} of ${total} successful deploys shipped a revert or hotfix pull request.`,
+        streaks: (streaks: number, median: string | null, longest: string | null) =>
+          `${streaks} failure ${streaks === 1 ? "streak was" : "streaks were"} put right` +
+          (median === null ? "" : `, with a median of ${median} failed ${median === "1" ? "run" : "runs"} per streak`) +
+          (longest === null ? "" : `, and the longest took ${longest}`) +
+          ".",
+        unrecovered: (since: string, runs: number) =>
+          `${runs} failed ${runs === 1 ? "run has" : "runs have"} had no successful deploy after ${runs === 1 ? "it" : "them"} since ${since}.`,
+      },
+      practices: {
+        workingInSmallBatches: {
+          name: "Working in small batches",
+          href: "https://dora.dev/capabilities/working-in-small-batches/",
+          why: "Smaller pieces of work get feedback sooner and are easier to triage and fix, and the 2023 report names reducing batch size as a common way to improve all four measures.",
+        },
+        trunkBasedDevelopment: {
+          name: "Trunk-based development",
+          href: "https://dora.dev/capabilities/trunk-based-development/",
+          why: "Merging small changes into trunk at least daily, on branches that last hours rather than days, keeps merges simple, and the page advises making review synchronous or a priority.",
+        },
+        streamliningChangeApproval: {
+          name: "Streamlining change approval",
+          href: "https://dora.dev/capabilities/streamlining-change-approval/",
+          why: "DORA found that peer review inside the development process, backed by automated checks, works better than approval from outside the team, which slows delivery and enlarges batches.",
+        },
+        deploymentAutomation: {
+          name: "Deployment automation",
+          href: "https://dora.dev/capabilities/deployment-automation/",
+          why: "A push-button deploy that works the same way in every environment lowers the risk of each deployment and lets anyone with the right access deploy any version on demand, including a known good one.",
+        },
+        continuousDelivery: {
+          name: "Continuous delivery",
+          href: "https://dora.dev/capabilities/continuous-delivery/",
+          why: "Keeping the software deployable at all times means a change can be released on demand, and DORA reports that doing this well improves all four key metrics.",
+        },
+        continuousIntegration: {
+          name: "Continuous integration",
+          href: "https://dora.dev/capabilities/continuous-integration/",
+          why: "Integrating into trunk at least daily, with automated tests on every commit, keeps the software working and branches close to trunk.",
+        },
+        testAutomation: {
+          name: "Test automation",
+          href: "https://dora.dev/capabilities/test-automation/",
+          why: "Tests that run on every change give fast feedback, and DORA's research links this to better software stability and a short lead time from check-in to release.",
+        },
+        codeMaintainability: {
+          name: "Code maintainability",
+          href: "https://dora.dev/capabilities/code-maintainability/",
+          why: "Code that is easy to find, reuse and change, with stable dependencies, lets a team change any part of the codebase quickly when an incident needs it.",
+        },
+        monitoringAndObservability: {
+          name: "Monitoring and observability",
+          href: "https://dora.dev/capabilities/monitoring-and-observability/",
+          why: 'Tooling that shows the health of the system and lets the team debug production contributes to continuous delivery, and the page calls time to restore "the key metric in the event of an outage or service degradation".',
+        },
+        proactiveFailureNotification: {
+          name: "Proactive failure notification",
+          href: "https://dora.dev/capabilities/proactive-failure-notification/",
+          why: "Alerting when monitored values approach a known failure threshold, rather than hearing about a failure from users, lets a team diagnose and solve problems quickly.",
+        },
+      },
+      moveUp: {
+        title: "How teams move up",
+        body: 'DORA\'s research treats these measures as a baseline rather than a target. Its 2023 report says they "are not the means by which a team will improve"; a team improves by finding the capability that is holding it back, giving itself time to experiment, and checking again. The change DORA most often recommends is to make each change smaller, because "smaller changes are easier to reason about and to move through the delivery process" and are "easy to recover from if there\'s a failure". Each explanation on a repository\'s page names the largest driver in the team\'s own data and links to the DORA capabilities that address it. The fairest comparison is the same repository over time, since DORA warns that comparing different applications "discards the context of each application".',
+        linksLead: "Good places to start are",
+        links: ["workingInSmallBatches", "continuousDelivery", "testAutomation"] as const,
+      },
+      system: {
+        quote:
+          "Software delivery performance is not an individual measure; it measures your ability to change and update an application, and this can only be done by teams.",
+        label: "DORA, how to empower software delivery teams",
+        href: "https://dora.dev/guides/how-to-empower-software-delivery-teams/",
+      },
+      meaningTitle: "What each band means",
+      meaningLede: "One line for each band, following the performance levels in DORA's 2023 report.",
+      whyBand: "Why this band",
+      whyBandRow: "Why each band",
+      whyBandLabel: (repo: string) => `Why this band, ${repo}`,
+    },
   },
 
   aiCohorts: {
