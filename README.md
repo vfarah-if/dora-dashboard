@@ -96,7 +96,7 @@ docs/           metrics reference and architecture decision records
 ## Contributing
 
 - `make quality` must pass: formatting, the private-name guard, typecheck and coverage floors.
-- Take dependency updates with `make upgrade`, which offers them under the same cooldown and rules as Dependabot and runs every gate before you commit (ADR 0024). `make upgrade-check` lists what is available without changing anything.
+- Take dependency updates with `make upgrade`, which offers them under the same cooldown and rules as Dependabot and runs every gate before you commit (ADR 0024). `make upgrade-check` lists what is available without changing anything, `target=minor` or `target=patch` narrows the choice, and `cooldown=0` lets an urgent fix through the week's wait.
 - New external systems (GitLab, Jira and so on) go behind a port; see `.claude/skills/source-provider/SKILL.md`.
 - Significant decisions get an ADR in `docs/architecture/decisions/`.
 - Never commit a real company, client or private repository name. List names you must protect in `.private-names` (gitignored) and `make check-names` will catch them.

@@ -6,7 +6,7 @@ const VITEST_GROUP = "Vitest (take all of these or none)";
 export default {
   // A release must be a week old before it is offered, so a compromised publish is usually caught first.
   // Dependabot waits fourteen days for a major; ncu cannot tell the two apart, so majors are never pre-selected.
-  // Keep it a whole number of days: the Makefile passes it to npm install as --min-release-age.
+  // Keep it a whole number of days, because the Makefile also passes it to npm install as --min-release-age.
   cooldown: 7,
 
   // Offer only versions that every installed package's peer ranges accept.

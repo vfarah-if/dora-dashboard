@@ -34,3 +34,4 @@ CI ran formatting, lint, typecheck and coverage on a single Node version, never 
 ## Revision History
 
 - 2026-10-06: Added a `vitest` group to `.github/dependabot.yml` covering `vitest` and `@vitest/*` for every update type. Dependabot raised the Vitest 5 major on its own and left `@vitest/coverage-v8` on 3.x, whose exact peer on `vitest@3` stopped npm hoisting Vitest to the root. Each workspace then held its own copy, the `@testing-library/jest-dom` type augmentation at the root no longer reached the copy in `apps/web`, and the web typecheck failed on every DOM matcher.
+- 2026-10-06: The npm rules above now also govern dependency updates taken by hand through `make upgrade`, which reads them from `.ncurc.mjs` (ADR 0024).
