@@ -140,14 +140,21 @@ crawl-all: ## Crawl every repository listed in repos.local.json
 # live in .ncurc.mjs and mirror .github/dependabot.yml (ADR 0024).
 NCU         := npx --yes npm-check-updates@23.1.0
 MANIFESTS   := package.json $(wildcard apps/*/package.json packages/*/package.json)
+LOCKFILE    := package-lock.json
+NCU_OPTIONS  = --cooldown $$cooldown $(if $(target),--target $(target))
 
-# Days a release must age before it is used: cooldown= on the command line, otherwise the figure in .ncurc.mjs.
-# npm install gets it too, because ncu only writes the range and npm would fill it with whatever is newest.
-COOLDOWN    = $(or $(cooldown),$(shell node --input-type=module -e 'console.log((await import("./.ncurc.mjs")).default.cooldown)'))
-NCU_OPTIONS = --cooldown $(COOLDOWN) $(if $(target),--target $(target))
+# Sets $cooldown in the recipe's shell to the days a release must age before it is used, taken from cooldown= on
+# the command line or else from .ncurc.mjs. npm install gets it too, because ncu only writes the range and npm
+# would fill it with whatever is newest. Both tools need whole days, so anything else, including a figure node could
+# not read, stops the run rather than quietly dropping the check.
+define read_cooldown
+cooldown=$(or $(cooldown),$$(node --input-type=module -e 'console.log((await import("./.ncurc.mjs")).default.cooldown)')); \
+case "$$cooldown" in ''|*[!0-9]*) printf '%b\n' "$(YELLOW)The cooldown must be a whole number of days, not '$$cooldown'.$(RESET)"; exit 2;; esac
+endef
 
 upgrade-check: ## List the updates each workspace could take, changing nothing [target=minor|patch] [cooldown=days]
-	@$(NCU) --workspaces --root --format group,cooldown $(NCU_OPTIONS)
+	@$(read_cooldown); \
+	$(NCU) --workspaces --root --format group,cooldown $(NCU_OPTIONS)
 	@printf '%b\n' "" "Run $(CYAN)make upgrade$(RESET) to choose from these and prove them."
 
 upgrade: ## Choose updates for every workspace, like yarn upgrade-interactive, then run every CI gate
@@ -165,21 +172,29 @@ upgrade-api: ## The same for apps/api alone
 upgrade-web: ## The same for apps/web alone
 	@$(call upgrade_interactively,--workspace $(WEB_WS) --no-root)
 
-# $(1) picks the manifests: --workspaces --root for all of them, --workspace <name> --no-root for one, nothing
-# for the root. Choosing nothing stops before anything is installed. Otherwise the lockfile is refreshed inside
+# $(1) picks the manifests, with --workspaces --root for all of them, --workspace <name> --no-root for one and
+# nothing for the root. It refuses to start before anything is offered when npm is too old to honour the cooldown, or
+# when the manifests or lockfile already differ from HEAD, so the way back it prints undoes the upgrade and
+# nothing else. Choosing nothing stops before anything is installed. Otherwise the lockfile is refreshed inside
 # the cooldown, and the installed tree is checked with peer dependencies enforced whatever ~/.npmrc says, so a
 # pair such as vitest and @vitest/coverage-v8 bumped apart fails here (ADR 0018). Then every CI gate and the build.
 define upgrade_interactively
+$(read_cooldown); \
+if [ "$$(npm config get min-release-age)" = undefined ]; then \
+	printf '%b\n' "$(YELLOW)npm $$(npm --version) cannot hold an install to the cooldown (min-release-age); upgrade npm first.$(RESET)"; exit 2; fi; \
+git diff --quiet HEAD -- $(MANIFESTS) $(LOCKFILE) 2>/dev/null; \
+if [ $$? -eq 1 ]; then \
+	printf '%b\n' "$(YELLOW)Commit or stash the changes to the manifests and lockfile first, so this upgrade can be reviewed and undone on its own.$(RESET)"; exit 2; fi; \
 before=$$(cat $(MANIFESTS) | cksum); \
 $(NCU) --interactive --install never $(NCU_OPTIONS) $(1) || exit $$?; \
 if [ "$$(cat $(MANIFESTS) | cksum)" = "$$before" ]; then printf '%b\n' "$(YELLOW)Nothing chosen, so nothing changed.$(RESET)"; exit 0; fi; \
-npm install --no-audit --no-fund --min-release-age=$(COOLDOWN) \
+npm install --no-audit --no-fund --min-release-age=$$cooldown \
 	&& npm ls --all --legacy-peer-deps=false > /dev/null \
 	&& $(MAKE) --no-print-directory quality build \
-	|| { printf '%b\n' "" "$(YELLOW)The upgrade broke a gate above. Fix it, or discard every uncommitted change to the manifests with:$(RESET)" \
-		"  git checkout -- $(MANIFESTS) package-lock.json && make install"; exit 1; }; \
+	|| { printf '%b\n' "" "$(YELLOW)The upgrade did not pass. Fix what failed above, or undo the upgrade with:$(RESET)" \
+		"  git checkout -- $(MANIFESTS) $(LOCKFILE) && make install"; exit 1; }; \
 printf '%b\n' "" "$(BOLD)What changed$(RESET)"; \
-git --no-pager diff --stat -- $(MANIFESTS) package-lock.json; \
+git --no-pager diff --stat -- $(MANIFESTS) $(LOCKFILE); \
 printf '%b\n' "" "$(BOLD)Install scripts$(RESET) (approve a new version with npm approve-scripts <pkg>)"; \
 npm approve-scripts --allow-scripts-pending; \
 printf '%b\n' "" "$(GREEN)Every gate passed.$(RESET) Read the diff and the changelogs of any major, then commit as chore(deps)."
