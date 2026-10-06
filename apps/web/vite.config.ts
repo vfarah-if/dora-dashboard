@@ -11,9 +11,19 @@ export default defineConfig({
   },
   preview: { port: 5181, strictPort: true },
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks: { charts: ["recharts"], vendor: ["react", "react-dom", "react-router", "@tanstack/react-query"] },
+        // Vendor outranks charts so React stays in vendor rather than following Recharts into charts.
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor",
+              test: /[\\/]node_modules[\\/](react|react-dom|react-router|@tanstack[\\/](react-query|query-core))[\\/]/,
+              priority: 2,
+            },
+            { name: "charts", test: /[\\/]node_modules[\\/]recharts[\\/]/, priority: 1 },
+          ],
+        },
       },
     },
   },
