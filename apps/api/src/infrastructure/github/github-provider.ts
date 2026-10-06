@@ -34,7 +34,7 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
       totalCount
       nodes {
         number title url state createdAt publishedAt mergedAt closedAt updatedAt
-        additions deletions baseRefName
+        additions deletions baseRefName headRefName
         author { login __typename }
         mergedBy { login }
         commits(first: 1) { nodes { commit { authoredDate committedDate } } }
@@ -81,6 +81,7 @@ interface GqlPullRequest {
   additions: number;
   deletions: number;
   baseRefName: string;
+  headRefName?: string;
   author: { login: string; __typename: string } | null;
   mergedBy: { login: string } | null;
   commits: { nodes: { commit: { authoredDate: string; committedDate: string } }[] };
@@ -94,7 +95,6 @@ interface GqlPullRequest {
 
 interface GqlOpenPullRequest extends GqlPullRequest {
   changedFiles?: number;
-  headRefName?: string;
   isDraft?: boolean;
   body?: string | null;
   latest?: { nodes: ({ commit: { statusCheckRollup: { state: string } | null } } | null)[] } | null;
@@ -165,6 +165,7 @@ function toPullRequest(node: GqlPullRequest): PullRequest {
     deletions: node.deletions,
     firstCommitAt,
     baseRef: node.baseRefName,
+    headRef: node.headRefName ?? null,
     reviews: node.reviews.nodes.map((r) => ({
       author: r.author?.login ?? null,
       state: r.state,

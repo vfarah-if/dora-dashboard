@@ -31,3 +31,7 @@ Every adapter follows the `source-provider` skill, and every real hostname or pr
 
 - Credentials per repository and per instance need somewhere to live that is not process memory, which reopens ADR 0004's decision for shared deployments.
 - Jira status names differ per project, so "in progress" needs a mapping each team configures; there is no default that is right for everyone.
+
+## Revision History
+
+- 2026-10-06: Step 2 (Jira) is decided by [ADR 0020](0020-jira-through-oauth-3lo.md), which chooses OAuth 2.0 (3LO) and holds grants in memory only, with the measures in [ADR 0021](0021-delivery-measures-from-jira.md). Jira's three status categories are the default rule, so a team's own mapping is an override. The other steps remain proposed.

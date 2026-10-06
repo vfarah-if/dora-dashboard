@@ -8,6 +8,8 @@ import { HomePage } from "./pages/HomePage";
 import { ReposPage } from "./pages/ReposPage";
 import { RepoPage } from "./pages/RepoPage";
 import { ComparePage } from "./pages/ComparePage";
+import { SpacePage } from "./pages/SpacePage";
+import { SpacesPage } from "./pages/SpacesPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
 
 export function App() {
@@ -24,6 +26,8 @@ export function App() {
         <Route path="/repos" element={<ReposPage />} />
         <Route path="/repos/:id" element={<RepoPage />} />
         <Route path="/compare" element={<ComparePage />} />
+        <Route path="/spaces" element={<SpacesPage />} />
+        <Route path="/spaces/:id" element={<SpacePage />} />
         <Route path="/review-queue" element={<ReviewQueuePage />} />
         <Route path="*" element={<ReposPage />} />
       </Routes>

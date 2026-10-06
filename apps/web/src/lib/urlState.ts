@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router";
 import type { ReportRange } from "../api/hooks";
+import { isoDaysAgo } from "./format";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const validDate = (value: string | null) => (value && DATE.test(value) ? value : null);
@@ -8,8 +9,11 @@ const validDate = (value: string | null) => (value && DATE.test(value) ? value :
 /** The date range, bots flag and DORA profile held in the address, so a view can be shared as a link. */
 export function useRangeParams(): [ReportRange, (next: ReportRange) => void] {
   const [params, setParams] = useSearchParams();
-  const from = validDate(params.get("from"));
-  const to = validDate(params.get("to"));
+  // The API refuses a range that starts after today, so a later date in a shared link becomes today.
+  const today = isoDaysAgo(0);
+  const notFuture = (value: string | null) => (value !== null && value > today ? today : value);
+  const from = notFuture(validDate(params.get("from")));
+  const to = notFuture(validDate(params.get("to")));
   const includeBots = params.get("bots") === "1";
   const profile = params.get("profile") || null;
   const range = useMemo(() => ({ from, to, includeBots, profile }), [from, to, includeBots, profile]);

@@ -1,4 +1,13 @@
-import type { QueueEntry, RepoReport, ReviewQueue, WeekRow } from "@dora-dashboard/core";
+import type {
+  ItemRef,
+  SpaceHygieneItemCheck,
+  SpaceHygieneItemFinding,
+  QueueEntry,
+  RepoReport,
+  ReviewQueue,
+  SpaceReport,
+  WeekRow,
+} from "@dora-dashboard/core";
 import type { RepoWithCounts } from "../api/hooks";
 
 export function week(overrides: Partial<WeekRow> & Pick<WeekRow, "week" | "weekIndex">): WeekRow {
@@ -87,6 +96,36 @@ export function report(
       leadTime: { medianHours: 30, count: 4, band: "high" },
       changeFailure: { rate: 0.25, failed: 1, total: 4, band: "low", revertPrs: 0, rework: { rate: 0.25, deploys: 1, total: 4 } },
       timeToRestore: { medianHours: 2, count: 1, band: "high" },
+    },
+    doraDrivers: {
+      position: {
+        deploymentFrequency: { band: "high", next: "elite", threshold: 7, gap: 6 },
+        leadTime: { band: "high", next: "elite", threshold: 24, gap: 6 },
+        changeFailure: { band: "low", next: "medium", threshold: 0.15, gap: 0.1 },
+        timeToRestore: { band: "high", next: "elite", threshold: 1, gap: 1 },
+      },
+      leadTime: {
+        count: 4,
+        meanHours: 36,
+        p75Hours: 48,
+        // Shares of the 36 hour mean: 18 / 36, 9 / 36, 4.5 / 36 twice.
+        parts: [
+          { part: "coding", meanHours: 18, share: 0.5 },
+          { part: "waitingForReview", meanHours: 9, share: 0.25 },
+          { part: "inReview", meanHours: 4.5, share: 0.125 },
+          { part: "toMerge", meanHours: 4.5, share: 0.125 },
+          { part: "toDeploy", meanHours: 0, share: 0 },
+        ],
+        size: summary(40),
+      },
+      deploymentFrequency: { deploys: 3, completeWeeks: 3, weeksWithoutDeploy: 0, prsPerDeploy: summary(2) },
+      changeFailure: {
+        failed: 1,
+        total: 4,
+        byWorkflow: [{ workflow: "deploy.yml", failed: 1, total: 4 }],
+        rework: { deploys: 1, total: 4 },
+      },
+      timeToRestore: { streaks: 1, failedRunsPerStreak: summary(1), longestHours: 2, unrecovered: null },
     },
     aiCohorts: {
       assisted: { prs: 2, medianCycleHours: 4, p75CycleHours: 6, medianSize: 30, reviewedShare: 1, revertShare: 0 },
@@ -295,5 +334,114 @@ export function reviewQueue(overrides: Partial<ReviewQueue> = {}): ReviewQueue {
     errors: [],
     warnings: [],
     ...overrides,
+  };
+}
+
+/** A finding for a check that lists delivery items; pull request and bulk move findings are written out in full. */
+const hygiene = (check: SpaceHygieneItemCheck, overrides: Partial<SpaceHygieneItemFinding> = {}): SpaceHygieneItemFinding => ({
+  check,
+  count: 0,
+  of: null,
+  items: [],
+  ...overrides,
+});
+
+const issue = (key: string, assigned: boolean, assignee?: string | null): ItemRef => ({
+  key,
+  type: "Story",
+  summary: `Summary of ${key}`,
+  assigned,
+  ...(assignee === undefined ? {} : { assignee }),
+});
+
+/** A space report for the space WID on https://acme.example.test (ADR 0009). Names appear only when asked for. */
+export function spaceReport(options: { people?: boolean } = {}): SpaceReport {
+  /** Assigned unless the name is null; pass `assigned` for someone assigned whose name was not recorded. */
+  const named = (key: string, name: string | null, assigned = name !== null) =>
+    issue(key, assigned, options.people ? name : undefined);
+  return {
+    space: {
+      id: 7,
+      key: "WID",
+      name: "Widgets",
+      siteUrl: "https://acme.example.test",
+      lastCrawledAt: "2026-03-01T10:00:00Z",
+      crawlStatus: "idle",
+      crawlError: null,
+      board: "read",
+    },
+    range: { from: "2026-01-05", to: "2026-01-25" },
+    repos: [{ id: 1, name: "acme/widgets" }],
+    totals: { done: 12, inProgress: 3, created: 15, epicsOpen: 2 },
+    issueCycleTime: { count: 10, median: 30, p75: 60, mean: 40 },
+    issueLeadTime: { count: 12, median: 72, p75: 120, mean: 90 },
+    weekly: [
+      { week: "2026-01-05", doneByType: { Story: 3, Bug: 1 }, done: 4, inProgress: 2, partial: false },
+      { week: "2026-01-12", doneByType: { Story: 2, Task: 1 }, done: 3, inProgress: 3, partial: false },
+      { week: "2026-01-19", doneByType: { Story: 5 }, done: 5, inProgress: 3, partial: true },
+    ],
+    ageing: [
+      {
+        key: "WID-9",
+        type: "Bug",
+        summary: "Oldest bug",
+        assigned: true,
+        status: "In review",
+        startedAt: "2026-01-01T09:00:00Z",
+        ageHours: 240,
+      },
+      {
+        key: "WID-10",
+        type: "Story",
+        summary: "Newer story",
+        assigned: true,
+        status: "In progress",
+        startedAt: "2026-01-10T09:00:00Z",
+        ageHours: 24,
+      },
+    ],
+    columns: [
+      { column: "In progress", meanHours: 20, medianHours: 18, items: 10 },
+      { column: "In review", meanHours: 10, medianHours: 6, items: 9 },
+      { column: null, meanHours: 2, medianHours: 1, items: 2 },
+    ],
+    flowEfficiency: 0.4,
+    ideaToProduction: {
+      toFirstPr: { count: 8, median: 50, p75: 90, mean: 60 },
+      toProduction: { count: 7, median: 100, p75: 200, mean: 120 },
+      linked: 8,
+      of: 12,
+    },
+    hygiene: [
+      hygiene("in_progress_unassigned", { count: 1, items: [named("WID-20", null)] }),
+      {
+        check: "pr_without_key",
+        count: 2,
+        of: 8,
+        pullRequests: [
+          { repo: "acme/widgets", number: 5, title: "Tidy the readme", url: "https://github.com/acme/widgets/pull/5" },
+          { repo: "acme/widgets", number: 6, title: "Bump deps", url: "https://github.com/acme/widgets/pull/6" },
+        ],
+      },
+      hygiene("done_without_pr", {
+        count: 3,
+        of: 12,
+        items: [named("WID-1", "Zoe Example"), named("WID-2", "Ann Example"), named("WID-3", "Ann Example")],
+      }),
+      hygiene("skipped_in_progress"),
+      {
+        check: "bulk_move",
+        count: 5,
+        of: 12,
+        items: [],
+        batches: [{ at: "2026-01-16T15:00:00Z", keys: ["WID-1", "WID-2", "WID-3", "WID-4", "WID-5"] }],
+      },
+      // WID-31 is assigned, but to someone whose name the space did not record.
+      hygiene("reopened", { count: 2, items: [named("WID-30", "Ann Example"), named("WID-31", null, true)] }),
+      hygiene("stale_in_progress", {
+        count: 12,
+        items: Array.from({ length: 12 }, (_, i) => named(`WID-${100 + i}`, "Ann Example")),
+      }),
+    ],
   };
 }

@@ -1,6 +1,17 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CodeHealthResponse, Repo, RepoReport, ReviewQueue } from "@dora-dashboard/core";
+import type {
+  CodeHealthResponse,
+  JiraConnection,
+  LinkedSpace,
+  Repo,
+  RepoReport,
+  ReviewQueue,
+  SpaceDescription,
+  SpaceListing,
+  SpaceReport,
+  TrackerSpaceSummary,
+} from "@dora-dashboard/core";
 import { apiRequest } from "./client";
 
 export interface AuthUser {
@@ -69,7 +80,17 @@ export const queryKeys = {
     range ? (["code-health", id, range] as const) : (["code-health", id] as const),
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
   reviewQueue: (ids: readonly number[], names = false) => ["review-queue", ids, names] as const,
+  health: ["health"] as const,
+  jira: ["jira"] as const,
+  jiraSpaces: (siteId: string) => ["jira", "sites", siteId, "spaces"] as const,
+  jiraSpace: (siteId: string, key: string) => ["jira", "sites", siteId, "spaces", key] as const,
+  linkedSpaces: (repoId: number) => ["repos", repoId, "spaces"] as const,
+  spaces: ["spaces"] as const,
+  spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
 };
+
+/** The part of the page range a space report reads. Bots do not apply to issues. */
+export type SpaceRange = Pick<ReportRange, "from" | "to">;
 
 export function rangeQuery(range: ReportRange): string {
   const params = new URLSearchParams();
@@ -149,6 +170,9 @@ export function useWorkflows(id: number, enabled: boolean) {
   });
 }
 
+/** True for a whole number above zero, the only kind of id the API hands out. An address like /spaces/abc is not one. */
+export const isRecordId = (id: number): boolean => Number.isInteger(id) && id > 0;
+
 /** One repository's report. Excluded authors' pull requests are left out of every figure by the API. */
 export function useReport(id: number, range: ReportRange, excludeAuthors: readonly string[] = []) {
   return useQuery({
@@ -158,7 +182,7 @@ export function useReport(id: number, range: ReportRange, excludeAuthors: readon
       if (excludeAuthors.length) params.set("excludeAuthors", excludeAuthors.join(","));
       return apiRequest<RepoReport>(withQuery(`/api/repos/${id}/report`, params.toString()), { signal });
     },
-    enabled: Number.isFinite(id),
+    enabled: isRecordId(id),
     placeholderData: keepPreviousData,
   });
 }
@@ -196,7 +220,7 @@ export function useCodeHealth(id: number, range: CodeHealthRange = { from: null,
   return useQuery({
     queryKey: queryKeys.codeHealth(id, { from: range.from, to: range.to }),
     queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(withQuery(`/api/repos/${id}/code-health`, query), { signal }),
-    enabled: Number.isFinite(id),
+    enabled: isRecordId(id),
     placeholderData: keepPreviousData,
   });
 }
@@ -248,4 +272,136 @@ export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions =
     refreshing: refresh.isPending,
     refreshFailed: refresh.isError,
   };
+}
+
+export interface Health {
+  /** True when Jira is configured on the server. Treat as false when absent. */
+  jira?: boolean;
+}
+
+/** Whether optional features, Jira among them, are switched on. */
+export function useHealth() {
+  return useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => apiRequest<Health>("/api/health"),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useJira(enabled: boolean) {
+  return useQuery({ queryKey: queryKeys.jira, queryFn: () => apiRequest<JiraConnection>("/api/jira"), enabled });
+}
+
+/** Revokes the stored Jira grant and invalidates every query under the `jira` key, so the connection and live space lists are read again. */
+export function useDisconnectJira() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiRequest<void>("/api/jira", { method: "DELETE" }),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.jira }),
+  });
+}
+
+/** Every space on a site, read live from Jira, so the list can run to hundreds. */
+export function useJiraSpaces(siteId: string) {
+  return useQuery({
+    queryKey: queryKeys.jiraSpaces(siteId),
+    queryFn: ({ signal }) =>
+      apiRequest<TrackerSpaceSummary[]>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces`, { signal }),
+    enabled: siteId !== "",
+    retry: false,
+  });
+}
+
+/** One space's statuses and board columns, read when someone asks how it flows. */
+export function useJiraSpaceDetail(siteId: string, key: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.jiraSpace(siteId, key),
+    queryFn: ({ signal }) =>
+      apiRequest<SpaceDescription>(`/api/jira/sites/${encodeURIComponent(siteId)}/spaces/${encodeURIComponent(key)}`, {
+        signal,
+      }),
+    enabled,
+    retry: false,
+  });
+}
+
+/**
+ * The spaces linked to a repository, polled every `CRAWL_POLL_MS` while any is crawling. When a space moves into
+ * failed from any other status, including idle, the Jira connection is read again, since a crawl that Jira refused drops the grant.
+ */
+export function useLinkedSpaces(repoId: number, enabled: boolean) {
+  const client = useQueryClient();
+  const query = useQuery({
+    queryKey: queryKeys.linkedSpaces(repoId),
+    queryFn: () => apiRequest<LinkedSpace[]>(`/api/repos/${repoId}/spaces`),
+    enabled,
+    refetchInterval: (q) => (q.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
+  });
+  const seen = useRef<Map<number, LinkedSpace["crawlStatus"]> | null>(null);
+  const data = query.data;
+  useEffect(() => {
+    if (!data) return;
+    const before = seen.current;
+    seen.current = new Map(data.map((s) => [s.id, s.crawlStatus]));
+    if (before && data.some((s) => s.crawlStatus === "failed" && before.has(s.id) && before.get(s.id) !== "failed")) {
+      void client.invalidateQueries({ queryKey: queryKeys.jira });
+    }
+  }, [data, client]);
+  return query;
+}
+
+/** Replaces the repository's linked spaces on one site; spaces on other sites stay linked. An empty list unlinks only that site's. */
+export function useLinkSpaces(repoId: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { siteId: string; keys: string[] }) =>
+      apiRequest<LinkedSpace[]>(`/api/repos/${repoId}/spaces`, { method: "PUT", body }),
+    onSuccess: (linked) => {
+      client.setQueryData(queryKeys.linkedSpaces(repoId), linked);
+      return client.invalidateQueries({ queryKey: queryKeys.linkedSpaces(repoId) });
+    },
+  });
+}
+
+export function useCrawlSpace(repoId: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, full }: { id: number; full: boolean }) =>
+      apiRequest<unknown>(withQuery(`/api/spaces/${id}/crawl`, full ? "full=1" : ""), { method: "POST" }),
+    // A refused crawl (already running) still means the list is out of date, so refresh on either outcome.
+    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.linkedSpaces(repoId) }),
+  });
+}
+
+/** Every tracked space. Only asked for when Jira is switched on, since the route is absent otherwise. */
+export function useSpaces(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.spaces,
+    queryFn: ({ signal }) => apiRequest<SpaceListing[]>("/api/spaces", { signal }),
+    enabled,
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.some((s) => s.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
+  });
+}
+
+/** One space's delivery report. Names are asked for only when `people` is true (ADR 0008). */
+export function useSpaceReport(id: number, range: SpaceRange, people: boolean) {
+  return useQuery({
+    queryKey: queryKeys.spaceReport(id, range, people),
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams();
+      if (range.from) params.set("from", range.from);
+      if (range.to) params.set("to", range.to);
+      if (people) params.set("people", "1");
+      return apiRequest<SpaceReport>(withQuery(`/api/spaces/${id}/report`, params.toString()), { signal });
+    },
+    enabled: isRecordId(id),
+    retry: false,
+    // A range change keeps the old figures on screen. Moving to another space never does, so one space's report is
+    // not shown under the next one's address; nor does turning names on or off, so a report fetched without names
+    // is not shown as "unassigned" while the one with names loads.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === id && previousQuery.queryKey[4] === people ? previous : undefined,
+  });
 }

@@ -1,16 +1,32 @@
-import type { FeatureGroup, FeatureMember, OpenPullRequest, QueueEntry, Repo, ReviewLane } from "./types.js";
+import type { FeatureGroup, FeatureMember, OpenPullRequest, PullRequest, QueueEntry, Repo, ReviewLane } from "./types.js";
 
-const TICKET_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+/**
+ * A ticket key such as `ABC-123` or `MY_PROJ-7`: a capital letter, then capitals, digits or underscores, a hyphen and a
+ * number. Lookarounds stand in for word boundaries, because an underscore is a word character: the key must not follow
+ * a letter or digit and its number must not run on into another digit, so `WID-12_add_widget` and `feature_WID-12`
+ * both yield `WID-12`.
+ */
+const TICKET_KEY = /(?<![A-Za-z0-9])[A-Z][A-Z0-9_]+-\d+(?!\d)/g;
 /** Look like ticket keys but are not. */
 const NOT_TICKETS = new Set(["UTF", "SHA", "ISO", "HTTP", "RFC", "CVE", "MD", "TLS", "SSL", "AES", "RSA"]);
 /** Branches that many unrelated pull requests are opened from or against. */
 const SHARED_BRANCHES = new Set(["main", "master", "develop", "dev", "trunk"]);
 
-/** Ticket keys such as `ABC-123` in the title, branch name and linked issues, in order of appearance, without repeats. */
-export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "linkedIssues">): string[] {
-  const text = [pr.title, pr.headRef, ...pr.linkedIssues].join(" ");
+/** The distinct, non-lookalike ticket keys in the given pieces of text, in order of appearance. */
+function keysIn(parts: (string | null | undefined)[]): string[] {
+  const text = parts.filter(Boolean).join(" ");
   const keys = (text.match(TICKET_KEY) ?? []).filter((key) => !NOT_TICKETS.has(key.slice(0, key.lastIndexOf("-"))));
   return [...new Set(keys)];
+}
+
+/** Issue keys such as `ABC-123` in a pull request's title and branch name, in order of appearance, without repeats. */
+export function issueKeysOf(pr: Pick<PullRequest, "title" | "headRef">): string[] {
+  return keysIn([pr.title, pr.headRef]);
+}
+
+/** Ticket keys such as `ABC-123` in the title, branch name and linked issues, in order of appearance, without repeats. */
+export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "linkedIssues">): string[] {
+  return keysIn([pr.title, pr.headRef, ...pr.linkedIssues]);
 }
 
 /** Pull requests named on a `Related:` line of the body: `owner/name#12`, a pull request link, or `#12` in the same repository. */

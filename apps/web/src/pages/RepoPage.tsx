@@ -1,7 +1,8 @@
-import { Link, useParams } from "react-router";
+import { useEffect } from "react";
+import { Link, useLocation, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useRepos, useReport, type ReportRange } from "../api/hooks";
+import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
 import { copy } from "../copy";
 import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
@@ -74,6 +75,11 @@ interface ReportBodyProps {
 }
 
 function ReportBody({ report, repoId, range }: ReportBodyProps) {
+  const { hash } = useLocation();
+  // The report arrives after the page loads, so a link to a section has nothing to land on until now.
+  useEffect(() => {
+    if (hash) document.getElementById(hash.slice(1))?.scrollIntoView?.();
+  }, [hash]);
   return (
     <>
       <section aria-labelledby="dora-title" className="section">
@@ -93,6 +99,7 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
               detail={figure.detail}
               reason={figure.reason}
               noBandNote={figure.noBandNote}
+              explanation={figure.explanation}
             />
           ))}
         </div>
@@ -174,8 +181,27 @@ function ReportState({ query, repoId, range }: ReportStateProps) {
 }
 
 export function RepoPage() {
-  const params = useParams();
-  const id = Number(params.id);
+  const id = Number(useParams().id);
+  // An address that does not name a repository is answered here, without asking the API.
+  if (!isRecordId(id)) {
+    return (
+      <div className="page">
+        <Link to="/repos" className="back-link">
+          {copy.common.backToRepos}
+        </Link>
+        <div className="notice notice-info" role="status">
+          <p className="notice-title">{copy.repo.notFound}</p>
+          <Link to="/repos" className="button button-secondary">
+            {copy.repo.toRepos}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+  return <RepoView id={id} />;
+}
+
+function RepoView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [excluded, setExcluded] = useListParam("exclude");
   const report = useReport(id, range, excluded);

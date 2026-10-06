@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import type { Band, RepoReport } from "@dora-dashboard/core";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { useCompare } from "../api/hooks";
+import { useCompare, type ReportRange } from "../api/hooks";
 import { copy } from "../copy";
 import { AuthorsTable } from "../components/AuthorsTable";
 import { BandLabel } from "../components/BandLabel";
@@ -29,8 +29,9 @@ import {
   type ChartRow,
   type WeeklySeries,
 } from "../lib/compare";
+import { repoDoraHref } from "../lib/dora";
 import { formatDuration, formatNumber, formatPercent, formatWeek } from "../lib/format";
-import { MAX_SERIES, seriesFor, type SeriesMeta } from "../lib/series";
+import { MAX_SERIES, repoName, seriesFor, type SeriesMeta } from "../lib/series";
 import { parseIds, useFlagParam, useRangeParams } from "../lib/urlState";
 
 const STAGE_LABEL = {
@@ -114,7 +115,15 @@ const HEADLINE: HeadlineRow[] = [
   },
 ];
 
-function HeadlineTable({ reports, series }: { reports: readonly RepoReport[]; series: readonly SeriesMeta[] }) {
+function HeadlineTable({
+  reports,
+  series,
+  range,
+}: {
+  reports: readonly RepoReport[];
+  series: readonly SeriesMeta[];
+  range: ReportRange;
+}) {
   return (
     <section className="card section" aria-labelledby="headline-title">
       <h2 id="headline-title" className="chart-title">
@@ -153,6 +162,19 @@ function HeadlineTable({ reports, series }: { reports: readonly RepoReport[]; se
                 ))}
               </tr>
             ))}
+            <tr>
+              <th scope="row">{copy.dora.explain.whyBandRow}</th>
+              {reports.map((report) => (
+                <td key={report.repo.id}>
+                  <Link
+                    to={repoDoraHref(report.repo.id, range)}
+                    aria-label={copy.dora.explain.whyBandLabel(repoName(report.repo))}
+                  >
+                    {copy.dora.explain.whyBand}
+                  </Link>
+                </td>
+              ))}
+            </tr>
           </tbody>
         </table>
       </div>
@@ -354,7 +376,7 @@ export function ComparePage() {
       {compare.data && reports.length > 0 && (
         <div className={`compare-layout${compare.isPlaceholderData ? " is-refreshing" : ""}`} aria-busy={compare.isFetching}>
           <div className="compare-main">
-            <HeadlineTable reports={reports} series={series} />
+            <HeadlineTable reports={reports} series={series} range={range} />
 
             <div className="chart-grid">
               <ChartCard

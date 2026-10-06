@@ -25,6 +25,37 @@ describe("HomePage", () => {
     expect(within(row).getByText("5% or less")).toBeInTheDocument();
   });
 
+  it("gives one line for every band of every measure, each beside its band name", () => {
+    renderRoute(<HomePage />);
+    const heading = screen.getByRole("heading", { level: 3, name: copy.dora.explain.meaningTitle });
+    const section = heading.closest("section")!;
+    for (const measure of ["deploymentFrequency", "leadTime", "changeFailure", "timeToRestore"] as const) {
+      const card = within(section).getByRole("heading", { level: 4, name: copy.dora[measure] }).closest("li")!;
+      for (const band of ["elite", "high", "medium", "low"] as const) {
+        const term = within(card).getByText(copy.dora.band[band]).closest("div")!;
+        expect(term).toHaveTextContent(copy.dora.explain.meaning[measure][band]);
+      }
+    }
+  });
+
+  it("explains how teams move up with practice links and says the measures describe a system", () => {
+    renderRoute(<HomePage />);
+    expect(screen.getByRole("heading", { level: 3, name: copy.dora.explain.moveUp.title })).toBeInTheDocument();
+    expect(screen.getByText(copy.dora.explain.moveUp.body)).toBeInTheDocument();
+    const lead = screen.getByText(copy.dora.explain.moveUp.linksLead, { exact: false });
+    expect(within(lead).getByRole("link", { name: /Working in small batches/ })).toHaveAttribute(
+      "href",
+      "https://dora.dev/capabilities/working-in-small-batches/",
+    );
+    expect(within(lead).getByRole("link", { name: /Continuous delivery/ })).toHaveAttribute("target", "_blank");
+    expect(within(lead).getByRole("link", { name: /Test automation/ })).toBeInTheDocument();
+    expect(lead).toHaveTextContent(/Continuous delivery \(opens in a new tab\) and Test automation/);
+    const quote = screen.getByText(copy.dora.explain.system.quote);
+    expect(
+      within(quote.closest("blockquote")!).getByRole("link", { name: new RegExp(copy.dora.explain.system.label) }),
+    ).toHaveAttribute("href", "https://dora.dev/guides/how-to-empower-software-delivery-teams/");
+  });
+
   it("names the profile and cites the 2023 report, with the corrected deployment frequency row", () => {
     renderRoute(<HomePage />);
     expect(screen.getByRole("table", { name: /DORA 2023 profile/ })).toBeInTheDocument();
@@ -61,5 +92,25 @@ describe("HomePage", () => {
     const links = screen.getAllByRole("link", { name: copy.home.toRepos });
     expect(links).toHaveLength(2);
     for (const link of links) expect(link).toHaveAttribute("href", "/repos");
+  });
+
+  it("explains delivery from Jira with a line for each measure and says people are hidden", () => {
+    renderRoute(<HomePage />);
+    const section = screen.getByRole("region", { name: copy.home.jira.title });
+    const names = within(section)
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(names).toEqual([
+      "Issue cycle time",
+      "Issue lead time",
+      "Throughput",
+      "Work in progress and ageing work",
+      "Time per column",
+      "Flow efficiency",
+      "Issue to first pull request and to production",
+      "Hygiene checks",
+    ]);
+    expect(within(section).getByText(/prompts to tidy rather than a score/)).toBeInTheDocument();
+    expect(within(section).getByText(copy.home.jira.people)).toBeInTheDocument();
   });
 });

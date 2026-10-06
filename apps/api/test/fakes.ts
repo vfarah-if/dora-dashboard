@@ -1,4 +1,15 @@
-import type { DeployRun, FunctionMetrics, OpenPullRequest, PullRequest } from "@dora-dashboard/core";
+import type {
+  BoardAccess,
+  BoardColumn,
+  DeployRun,
+  FunctionMetrics,
+  OpenPullRequest,
+  PullRequest,
+  TrackerSite,
+  TrackerSpaceSummary,
+  TrackerStatus,
+  WorkItem,
+} from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
@@ -7,6 +18,8 @@ import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
 import type { DeviceAuthorisation, DeviceCode, DevicePoll } from "../src/interfaces/device-authorisation.js";
 import type { CliTokenSource, Session } from "../src/interfaces/token-source.js";
+import type { TrackerAuthorisation, TrackerGrant } from "../src/interfaces/tracker-authorisation.js";
+import type { BoardRead, WorkItemPage, WorkItemPageRequest, WorkItemProvider } from "../src/interfaces/work-item-provider.js";
 
 export function pr(overrides: Partial<PullRequest> & { number: number }): PullRequest {
   return {
@@ -29,6 +42,26 @@ export function pr(overrides: Partial<PullRequest> & { number: number }): PullRe
     ...overrides,
   };
 }
+
+export function workItem(overrides: Partial<WorkItem> & { key: string }): WorkItem {
+  return {
+    spaceKey: "WID",
+    type: "Story",
+    summary: `Work item ${overrides.key}`,
+    status: "Done",
+    statusCategory: "done",
+    createdAt: "2026-09-01T09:00:00Z",
+    updatedAt: "2026-09-01T12:00:00Z",
+    resolvedAt: "2026-09-01T12:00:00Z",
+    assigneeId: "account-1",
+    parentKey: null,
+    labels: [],
+    transitions: [],
+    ...overrides,
+  };
+}
+
+export const SITE: TrackerSite = { id: "cloud-1", url: "https://acme.example.test", name: "Acme" };
 
 export function openPr(overrides: Partial<OpenPullRequest> & { number: number }): OpenPullRequest {
   return {
@@ -133,6 +166,166 @@ export class FakeProvider implements SourceProvider {
 
   async fetchViewer(token: string): Promise<Viewer> {
     return { login: `user-of-${token}`, avatarUrl: "https://example.test/avatar.png" };
+  }
+}
+
+interface FakeSpace {
+  summary: TrackerSpaceSummary;
+  statuses: TrackerStatus[];
+  columns: BoardColumn[];
+  /** What reading the board comes to; defaults to "read" when columns are given, else "none". */
+  board: BoardAccess;
+  items: WorkItem[];
+  /** Display names by account id; a page returns the names of the assignees on it. */
+  people: Record<string, string>;
+}
+
+/** One recorded call on a FakeWorkItemProvider, with the token it carried. */
+export interface WorkItemCall {
+  method: "listSites" | "listSpaces" | "fetchStatuses" | "fetchBoardColumns" | "fetchWorkItemPage";
+  token: string;
+  siteId?: string;
+  spaceKey?: string;
+  updatedSince?: string | null;
+  cursor?: string | null;
+}
+
+/**
+ * An in-memory issue tracker honouring the WorkItemProvider contract: pages ordered by updatedAt descending, items
+ * no older than `updatedSince`, and an unseen site or space raising NotFoundError.
+ */
+export class FakeWorkItemProvider implements WorkItemProvider {
+  readonly kind = "fake";
+  pageSize = 2;
+  pagesServed = 0;
+  /** Serve every item whatever `updatedSince` says, to prove the crawl service stops on its own. */
+  ignoreUpdatedSince = false;
+  failWith: Error | null = null;
+  /** Serve this many work item pages, then fail the next one with `failWith`. */
+  failAfterPages: number | null = null;
+  /** Runs before each work item page is served, so a test can move a clock on mid-crawl. */
+  onPage: (() => void) | null = null;
+  readonly calls: WorkItemCall[] = [];
+  readonly sites: TrackerSite[] = [];
+  private readonly spaces = new Map<string, FakeSpace>();
+
+  get tokens(): string[] {
+    return this.calls.map((call) => call.token);
+  }
+
+  seedSite(site: TrackerSite = SITE): void {
+    this.sites.push(site);
+  }
+
+  seedSpace(
+    siteId: string,
+    key: string,
+    data: Partial<Omit<FakeSpace, "summary">> & { name?: string; type?: string | null } = {},
+  ): void {
+    this.spaces.set(`${siteId}/${key}`, {
+      summary: { key, name: data.name ?? `Space ${key}`, type: data.type ?? "software" },
+      statuses: data.statuses ?? [],
+      columns: data.columns ?? [],
+      board: data.board ?? (data.columns?.length ? "read" : "none"),
+      items: data.items ?? [],
+      people: data.people ?? {},
+    });
+  }
+
+  /** Every call but a work item page fails whenever `failWith` is set, unless `failAfterPages` is limiting it to pages. */
+  private fail(): void {
+    if (this.failWith && this.failAfterPages === null) throw this.failWith;
+  }
+
+  private space(siteId: string, key: string): FakeSpace {
+    const space = this.spaces.get(`${siteId}/${key}`);
+    if (!space) throw new NotFoundError(`${key} was not found on ${siteId}`);
+    return space;
+  }
+
+  async listSites(token: string): Promise<TrackerSite[]> {
+    this.calls.push({ method: "listSites", token });
+    this.fail();
+    return [...this.sites];
+  }
+
+  async listSpaces(token: string, siteId: string): Promise<TrackerSpaceSummary[]> {
+    this.calls.push({ method: "listSpaces", token, siteId });
+    this.fail();
+    if (!this.sites.some((site) => site.id === siteId)) throw new NotFoundError(`${siteId} was not found`);
+    return [...this.spaces].filter(([id]) => id.startsWith(`${siteId}/`)).map(([, space]) => space.summary);
+  }
+
+  async fetchStatuses(token: string, siteId: string, spaceKey: string): Promise<TrackerStatus[]> {
+    this.calls.push({ method: "fetchStatuses", token, siteId, spaceKey });
+    this.fail();
+    return this.space(siteId, spaceKey).statuses;
+  }
+
+  async fetchBoardColumns(token: string, siteId: string, spaceKey: string): Promise<BoardRead> {
+    this.calls.push({ method: "fetchBoardColumns", token, siteId, spaceKey });
+    this.fail();
+    const { board, columns } = this.space(siteId, spaceKey);
+    return { board, columns };
+  }
+
+  async fetchWorkItemPage(
+    token: string,
+    siteId: string,
+    spaceKey: string,
+    { updatedSince, cursor }: WorkItemPageRequest,
+  ): Promise<WorkItemPage> {
+    this.calls.push({ method: "fetchWorkItemPage", token, siteId, spaceKey, updatedSince, cursor });
+    this.onPage?.();
+    if (this.failWith && (this.failAfterPages === null || this.pagesServed >= this.failAfterPages)) throw this.failWith;
+    this.pagesServed++;
+    const space = this.space(siteId, spaceKey);
+    const sorted = space.items
+      .filter((item) => this.ignoreUpdatedSince || !updatedSince || item.updatedAt >= updatedSince)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const start = cursor ? Number(cursor) : 0;
+    const end = start + this.pageSize;
+    const items = sorted.slice(start, end);
+    // Built as data properties from the space's own names, so an account id such as "__proto__" is kept as a name.
+    const people: Record<string, string> = Object.fromEntries(
+      items.flatMap(({ assigneeId: id }) => (id !== null && Object.hasOwn(space.people, id) ? [[id, space.people[id]!]] : [])),
+    );
+    return { items, nextCursor: end < sorted.length ? String(end) : null, people };
+  }
+}
+
+/** The grant a test gets from `exchange` unless it sets another: valid for a long time, so no refresh is due. */
+export function grant(overrides: Partial<TrackerGrant> = {}): TrackerGrant {
+  return { accessToken: "access-1", refreshToken: "refresh-1", expiresAt: Number.MAX_SAFE_INTEGER, ...overrides };
+}
+
+/** Scripted tracker consent: `exchange` yields `exchangeGrant`, and `refresh` serves `refreshGrants` in order, the last repeating. */
+export class FakeTrackerAuthorisation implements TrackerAuthorisation {
+  readonly kind = "fake";
+  exchangeGrant: TrackerGrant = grant();
+  refreshGrants: TrackerGrant[] = [grant({ accessToken: "access-2", refreshToken: "refresh-2" })];
+  exchangeFailWith: Error | null = null;
+  refreshFailWith: Error | null = null;
+  /** When set, `refresh` waits for it, so a test can hold several callers on one refresh. */
+  refreshGate: Promise<void> | null = null;
+  readonly codes: string[] = [];
+  readonly refreshTokens: string[] = [];
+
+  authoriseUrl(state: string): string {
+    return `https://auth.example.test/authorize?state=${state}`;
+  }
+
+  async exchange(code: string): Promise<TrackerGrant> {
+    this.codes.push(code);
+    if (this.exchangeFailWith) throw this.exchangeFailWith;
+    return this.exchangeGrant;
+  }
+
+  async refresh(refreshToken: string): Promise<TrackerGrant> {
+    this.refreshTokens.push(refreshToken);
+    await this.refreshGate;
+    if (this.refreshFailWith) throw this.refreshFailWith;
+    return this.refreshGrants.length > 1 ? this.refreshGrants.shift()! : this.refreshGrants[0]!;
   }
 }
 
@@ -253,6 +446,11 @@ export function config(overrides: Partial<Config> = {}): Config {
     databasePath: ":memory:",
     webOrigin: "http://localhost:5181",
     codeAnalysis: true,
+    jira: {
+      clientId: "atlassian-client-id",
+      clientSecret: "atlassian-client-secret",
+      redirectUri: "http://localhost:5181/api/auth/jira/callback",
+    },
     ...overrides,
   };
 }

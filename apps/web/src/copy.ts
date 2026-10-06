@@ -8,14 +8,17 @@ export const copy = {
 
   common: {
     loading: "Loading",
+    unreadableResponse: "The server sent a reply that could not be read. Try again in a moment.",
     retry: "Try again",
     notAvailable: "No data",
+    and: "and",
     cancel: "Cancel",
     save: "Save",
     saving: "Saving",
     close: "Close",
     viewAsTable: "View as table",
     backToRepos: "Back to repositories",
+    backToSpaces: "Back to Jira spaces",
     requestFailed: (status: number) => `The request failed with status ${status}.`,
     networkFailed: "The dashboard could not reach its API. Check that the API is running and try again.",
     errorTitle: "Something went wrong",
@@ -68,6 +71,7 @@ export const copy = {
     home: "Why it matters",
     repositories: "Repositories",
     reviewQueue: "Review queue",
+    jira: "Jira",
   },
 
   repos: {
@@ -124,6 +128,106 @@ export const copy = {
     saved: "Deploy settings saved. Re-crawl to pick up runs from newly ticked workflows.",
   },
 
+  jira: {
+    title: "Jira spaces",
+    lede: "Jira issues are linked to this repository's pull requests by the issue key in the pull request title or branch name.",
+    notConnectedTitle: "Jira is not connected",
+    connect: "Connect Jira",
+    connectAgain: "Connect Jira again",
+    disconnect: "Disconnect Jira",
+    disconnecting: "Disconnecting",
+    lapsed: {
+      idle: {
+        title: "Your Jira connection was closed after a period of inactivity",
+        body: "Jira was not used for more than 8 hours, which is the length of a dashboard session, so the connection was closed. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+      refused: {
+        title: "Jira turned the connection down",
+        body: "Jira or Atlassian refused the connection, for example because access was revoked. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+      expired: {
+        title: "Your Jira connection ran out",
+        body: "The access it was given ran out and could not be renewed. Connect Jira again to carry on. Links you have already saved are kept.",
+      },
+    },
+    unauthorisedTitle: "Your Jira connection has expired or is missing",
+    unauthorisedBody: "Connect Jira again to carry on reading spaces. Links you have already saved are kept.",
+    outcomes: {
+      denied: {
+        title: "Jira access was not allowed",
+        body: "You chose not to allow access at Atlassian, so nothing has changed. You can connect Jira whenever you are ready.",
+      },
+      error: {
+        title: "Jira could not be connected",
+        body: "The connection could not be completed. Try connecting again, and if it keeps failing, the dashboard's API log says why.",
+      },
+      expired: {
+        title: "The Jira sign-in took too long or was lost",
+        body: "The request lapsed because consent took more than 10 minutes, consent was started again in another tab, the dashboard was restarted, or the page was opened at a different address from the one the dashboard is set up with. Connect Jira again, and if this keeps happening, open the dashboard at the address set as WEB_ORIGIN.",
+      },
+      misconfigured: {
+        title: "Atlassian refused the dashboard's own settings",
+        body: "Whoever runs the dashboard should check ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET and the callback URL in .env against the app in the Atlassian developer console. Trying again will not help until they are corrected.",
+      },
+      rate_limited: {
+        title: "Too many Jira sign-in attempts",
+        body: "More than 20 attempts were made in a minute. Wait a minute and then try again.",
+      },
+    },
+    dismiss: "Dismiss",
+    loading: "Loading Jira",
+    siteLabel: "Jira site",
+    sitePlaceholder: "Choose a site",
+    noSites: "Your Jira account has no sites the dashboard can read.",
+    searchLabel: "Search spaces by name or key",
+    spacesLegend: "Spaces to link",
+    spacesHint: (max: number) =>
+      `Choose up to ${max} spaces on this site. Saving replaces this repository's spaces on this site and leaves spaces on other sites linked.`,
+    loadingSpaces: "Loading spaces",
+    noSpaces: "This site has no spaces you can read.",
+    noMatches: "No spaces match your search.",
+    showing: (shown: number, total: number) => `Showing ${shown} of ${total} spaces`,
+    selectedCount: (count: number) => (count === 1 ? "1 space selected" : `${count} spaces selected`),
+    limitReached: (max: number) => `You have reached the limit of ${max} spaces.`,
+    saveLinks: "Save links",
+    savingLinks: "Saving links",
+    linksSaved: "Links saved. The spaces are being crawled now.",
+    linkedTitle: "Linked spaces",
+    noLinked: "No spaces are linked to this repository yet.",
+    loadingLinked: "Loading linked spaces",
+    siteHeading: "Site",
+    workItems: "Work items",
+    lastCrawled: "Last crawled",
+    neverCrawled: "Not crawled yet",
+    status: {
+      idle: "Up to date",
+      crawling: "Crawling",
+      failed: "Crawl failed",
+    },
+    crawlingFallback: "Starting crawl",
+    crawlAlreadyRunning: "This space is already being crawled. Its progress is shown above and will update on its own.",
+    recrawl: "Re-crawl",
+    fullRecrawl: "Full re-crawl",
+    recrawlLabel: (name: string) => `Re-crawl ${name}`,
+    fullRecrawlLabel: (name: string) => `Full re-crawl ${name}`,
+    flowToggle: "How this space flows",
+    flowToggleLabel: (name: string) => `How the ${name} space flows`,
+    loadingFlow: "Loading statuses and columns",
+    columnsTitle: "Board columns, left to right",
+    noBoard: "This space has no board, so only its statuses are shown.",
+    boardForbiddenTitle: "Jira refused access to this space's board",
+    boardForbidden:
+      "The board columns are unknown, so only the statuses are shown. Add the read:board-scope.admin:jira-software scope to the app in the Atlassian developer console and connect Jira again, or check that your account can see the board.",
+    noColumnStatuses: "No statuses",
+    categoriesTitle: "Statuses by category",
+    categories: {
+      todo: "To do",
+      in_progress: "In progress",
+      done: "Done",
+    },
+    noStatuses: "This space has no statuses the dashboard can read.",
+  },
+
   range: {
     legend: "Date range",
     from: "From",
@@ -170,11 +274,187 @@ export const copy = {
       noShipped: "No merged pull request was shipped by an observed deploy in this range.",
       noFailures: "No failed deploys in this range, so there was nothing to restore.",
       noRecovery: "No failed deploy has been followed by a successful one yet.",
+      unrecovered: (since: string, runs: number) =>
+        `Failures have not been put right since ${since}. ${runs} failed ${runs === 1 ? "run has" : "runs have"} had no successful deploy after ${runs === 1 ? "it" : "them"}.`,
     },
     deploysCount: (total: number, weeks: number) => `${total} successful deploys over ${weeks} weeks`,
     leadCount: (count: number) => `Across ${count} shipped pull requests`,
     failureCount: (failed: number, total: number) => `${failed} of ${total} deploys failed`,
     restoreCount: (count: number) => `Across ${count} recoveries`,
+    explain: {
+      summary: "Why this band, and how to move up",
+      /** Read after the summary by assistive technology only, so each tile's disclosure names its measure. */
+      summaryMeasure: (measure: string) => `, ${measure}`,
+      meaningHeading: "What the band means",
+      gapHeading: "How far to the next band",
+      findingsHeading: "What drives this figure",
+      practicesHeading: "Practices to try",
+      systemNote: "These explanations describe stages, batches and workflows, never individual people.",
+      source: {
+        label: "2023 Accelerate State of DevOps Report, performance levels",
+        href: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf#page=12",
+      },
+      meaning: {
+        deploymentFrequency: {
+          elite:
+            "Changes reach production on demand, whenever one is ready, which is the pace DORA's 2023 report gives for its elite cluster.",
+          high: "The team deploys between once a day and once a week, the pace of DORA's high cluster.",
+          medium: "The team deploys between once a week and once a month, the pace of DORA's medium cluster.",
+          low: "The team deploys less often than once every four weeks, which is slower than any range DORA's 2023 report gives for its medium cluster.",
+        },
+        leadTime: {
+          elite: "A typical change reaches production less than a day after it is committed, as in DORA's elite cluster.",
+          high: "A typical change takes between one day and one week to reach production, as in DORA's high cluster.",
+          medium: "A typical change takes between one week and one month to reach production, as in DORA's medium cluster.",
+          low: "A typical change takes longer than a month to reach production, which is slower than any range DORA's 2023 report gives for its medium cluster.",
+        },
+        changeFailure: {
+          elite:
+            "About one deployment in twenty or fewer needs immediate intervention, matching the 5% DORA reports for its elite cluster.",
+          high: "About one deployment in ten or fewer needs immediate intervention, matching the 10% DORA reports for its high cluster.",
+          medium:
+            "Up to about one deployment in seven needs immediate intervention, matching the 15% DORA reports for its medium cluster.",
+          low: "More than 15% of deployments need immediate intervention; DORA's 2023 low cluster reported 64%.",
+        },
+        timeToRestore: {
+          elite: "A failed deployment is typically put right in less than an hour, as in DORA's elite cluster.",
+          high: "A failed deployment is typically put right in less than a day, as in DORA's high cluster.",
+          medium: "A failed deployment typically takes between one day and one week to put right, as in DORA's medium cluster.",
+          low: "A failed deployment typically takes longer than a week to put right; DORA's 2023 low cluster reported between one month and six months.",
+        },
+      },
+      restoreRename:
+        "DORA's 2023 report calls this measure failed deployment recovery time. This dashboard keeps the label time to restore.",
+      reviewQuote: {
+        text: "Speeding up code reviews is one of the most effective paths to improving software delivery performance. Teams with faster code reviews have 50% higher software delivery performance.",
+        label: "2023 report, executive summary",
+        href: "https://dora.dev/research/2023/dora-report/2023-dora-accelerate-state-of-devops-report.pdf#page=5",
+      },
+      gap: {
+        raise: (value: string, band: string, requirement: string, by: string) =>
+          `Deployments run at ${value}. The ${band} band needs ${requirement}, which is ${by} more than now.`,
+        lowerRate: (value: string, band: string, requirement: string, by: string) =>
+          `${value} of deploys failed. The ${band} band needs ${requirement}, which is ${by} lower than now.`,
+        lowerDuration: (value: string, band: string, requirement: string, by: string) =>
+          `The median is ${value}. The ${band} band needs ${requirement}, which is ${by} shorter than now.`,
+        onLimit: (value: string, band: string, requirement: string) =>
+          `The median is ${value}, which sits exactly on the limit for the ${band} band. That band needs ${requirement}, so the figure must fall below the limit to qualify.`,
+        holds: (value: string, requirement: string, margin: string) =>
+          `At ${value} the figure is ${margin} inside the elite requirement of ${requirement}, which keeps it in the elite band.`,
+        holdsOnLimit: (value: string, requirement: string) =>
+          `At ${value} the figure sits exactly on the elite requirement of ${requirement}, and that limit itself counts, so it stays in the elite band.`,
+        atLeast: (value: string) => `at least ${value}`,
+        atMost: (value: string) => `${value} or less`,
+        under: (value: string) => `under ${value}`,
+        points: (value: string) => `${value} ${value === "1" ? "percentage point" : "percentage points"}`,
+      },
+      parts: {
+        coding: "Coding",
+        waitingForReview: "Waiting for review",
+        inReview: "In review",
+        toMerge: "Approval to merge",
+        toDeploy: "Merge to deploy",
+      },
+      findings: {
+        largestPart: (part: string, hours: string, share: string, mean: string) =>
+          `${part} is the largest part of lead time, averaging ${hours}, or ${share} of the ${mean} mean. The tile shows the median, so the parts add up to the mean rather than to the tile.`,
+        nextPart: (part: string, hours: string, share: string) =>
+          `${part} comes next, averaging ${hours}, or ${share} of the mean.`,
+        spread: (p75: string, size: string | null) =>
+          size === null
+            ? `One in four changes took ${p75} or longer from first commit to deploy.`
+            : `One in four changes took ${p75} or longer from first commit to deploy, and the median change was ${size} lines added or removed.`,
+        fewDeploys: (deploys: number, tileWeeks: number, complete: number, without: number) =>
+          `The tile divides ${deploys} successful ${deploys === 1 ? "deploy" : "deploys"} by ${tileWeeks} ${tileWeeks === 1 ? "week" : "weeks"}, counting every week the range touches, partial ones included. ` +
+          (complete === 0
+            ? "None of those weeks was complete, so none is counted as a week without a deploy."
+            : `Of the ${complete} complete ${complete === 1 ? "week" : "weeks"}, ${without} had no deploy.`),
+        largeBatches: (median: string) =>
+          `The median deploy shipped ${median} pull requests, so changes are released in batches.`,
+        failures: (failed: number, total: number, rate: string) =>
+          `${failed} of ${total} production deploys failed, which is ${rate}.`,
+        worstWorkflow: (workflow: string, failed: number, total: number) =>
+          `The ${workflow} workflow had the most failures, ${failed} of its ${total} runs.`,
+        rework: (deploys: number, total: number) =>
+          `${deploys} of ${total} successful deploys shipped a revert or hotfix pull request.`,
+        streaks: (streaks: number, median: string | null, longest: string | null) =>
+          `${streaks} failure ${streaks === 1 ? "streak was" : "streaks were"} put right` +
+          (median === null ? "" : `, with a median of ${median} failed ${median === "1" ? "run" : "runs"} per streak`) +
+          (longest === null ? "" : `, and the longest took ${longest}`) +
+          ".",
+        unrecovered: (since: string, runs: number) =>
+          `${runs} failed ${runs === 1 ? "run has" : "runs have"} had no successful deploy after ${runs === 1 ? "it" : "them"} since ${since}.`,
+      },
+      practices: {
+        workingInSmallBatches: {
+          name: "Working in small batches",
+          href: "https://dora.dev/capabilities/working-in-small-batches/",
+          why: "Smaller pieces of work get feedback sooner and are easier to triage and fix, and the 2023 report names reducing batch size as a common way to improve all four measures.",
+        },
+        trunkBasedDevelopment: {
+          name: "Trunk-based development",
+          href: "https://dora.dev/capabilities/trunk-based-development/",
+          why: "Merging small changes into trunk at least daily, on branches that last hours rather than days, keeps merges simple, and the page advises making review synchronous or a priority.",
+        },
+        streamliningChangeApproval: {
+          name: "Streamlining change approval",
+          href: "https://dora.dev/capabilities/streamlining-change-approval/",
+          why: "DORA found that peer review inside the development process, backed by automated checks, works better than approval from outside the team, which slows delivery and enlarges batches.",
+        },
+        deploymentAutomation: {
+          name: "Deployment automation",
+          href: "https://dora.dev/capabilities/deployment-automation/",
+          why: "A push-button deploy that works the same way in every environment lowers the risk of each deployment and lets anyone with the right access deploy any version on demand, including a known good one.",
+        },
+        continuousDelivery: {
+          name: "Continuous delivery",
+          href: "https://dora.dev/capabilities/continuous-delivery/",
+          why: "Keeping the software deployable at all times means a change can be released on demand, and DORA reports that doing this well improves all four key metrics.",
+        },
+        continuousIntegration: {
+          name: "Continuous integration",
+          href: "https://dora.dev/capabilities/continuous-integration/",
+          why: "Integrating into trunk at least daily, with automated tests on every commit, keeps the software working and branches close to trunk.",
+        },
+        testAutomation: {
+          name: "Test automation",
+          href: "https://dora.dev/capabilities/test-automation/",
+          why: "Tests that run on every change give fast feedback, and DORA's research links this to better software stability and a short lead time from check-in to release.",
+        },
+        codeMaintainability: {
+          name: "Code maintainability",
+          href: "https://dora.dev/capabilities/code-maintainability/",
+          why: "Code that is easy to find, reuse and change, with stable dependencies, lets a team change any part of the codebase quickly when an incident needs it.",
+        },
+        monitoringAndObservability: {
+          name: "Monitoring and observability",
+          href: "https://dora.dev/capabilities/monitoring-and-observability/",
+          why: 'Tooling that shows the health of the system and lets the team debug production contributes to continuous delivery, and the page calls time to restore "the key metric in the event of an outage or service degradation".',
+        },
+        proactiveFailureNotification: {
+          name: "Proactive failure notification",
+          href: "https://dora.dev/capabilities/proactive-failure-notification/",
+          why: "Alerting when monitored values approach a known failure threshold, rather than hearing about a failure from users, lets a team diagnose and solve problems quickly.",
+        },
+      },
+      moveUp: {
+        title: "How teams move up",
+        body: 'DORA\'s research treats these measures as a baseline rather than a target. Its 2023 report says they "are not the means by which a team will improve"; a team improves by finding the capability that is holding it back, giving itself time to experiment, and checking again. The change DORA most often recommends is to make each change smaller, because "smaller changes are easier to reason about and to move through the delivery process" and are "easy to recover from if there\'s a failure". Each explanation on a repository\'s page names the largest driver in the team\'s own data and links to the DORA capabilities that address it. The fairest comparison is the same repository over time, since DORA warns that comparing different applications "discards the context of each application".',
+        linksLead: "Good places to start are",
+        links: ["workingInSmallBatches", "continuousDelivery", "testAutomation"] as const,
+      },
+      system: {
+        quote:
+          "Software delivery performance is not an individual measure; it measures your ability to change and update an application, and this can only be done by teams.",
+        label: "DORA, how to empower software delivery teams",
+        href: "https://dora.dev/guides/how-to-empower-software-delivery-teams/",
+      },
+      meaningTitle: "What each band means",
+      meaningLede: "One line for each band, following the performance levels in DORA's 2023 report.",
+      whyBand: "Why this band",
+      whyBandRow: "Why each band",
+      whyBandLabel: (repo: string) => `Why this band, ${repo}`,
+    },
   },
 
   aiCohorts: {
@@ -546,6 +826,170 @@ export const copy = {
       `Leaving out pull requests by ${new Intl.ListFormat("en-GB", { type: "conjunction" }).format(logins)}.`,
     crawlInProgress: "A crawl is in progress, so these figures may still change.",
     notFound: "This repository could not be found.",
+    toRepos: "Go to repositories",
+  },
+
+  spaces: {
+    title: "Jira spaces",
+    lede: "The spaces the dashboard has crawled from Jira. Open one to see how its work flows from idea to production.",
+    loading: "Loading Jira spaces",
+    emptyTitle: "No Jira spaces are tracked yet",
+    emptyBody:
+      "Open Configure deploy on a repository and link a space under Jira spaces. The space is crawled once it is linked, and it then appears here.",
+    toRepos: "Go to repositories",
+    offTitle: "Jira is not switched on",
+    offBody:
+      "Add the Atlassian settings to .env in the repository root and restart the API, then connect Jira from a repository.",
+    site: "Site",
+    issues: "Issues",
+    lastCrawled: "Last crawled",
+    neverCrawled: "Not crawled yet",
+    linkedRepos: "Linked repositories",
+    noLinkedRepos: "None linked",
+    crawlFailedTitle: "The last crawl of this space failed",
+    crawlFailedReason: (reason: string) => `The reason given was ${reason}`,
+  },
+
+  space: {
+    loadingTitle: "Loading space",
+    notFoundTitle: "This space could not be found",
+    notFoundBody: "It may have been unlinked, or Jira may not be switched on for this dashboard.",
+    toSpaces: "Go to Jira spaces",
+    crawlFailedTitle: "The latest crawl of this space failed",
+    crawlFailedBody: "These figures may be out of date, because they come from the last crawl that completed.",
+    crawlFailedReason: (reason: string) => `The reason given was ${reason}`,
+    rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
+    lastCrawled: (when: string) => `Last crawled ${when}`,
+    showPeople: "Show people",
+    showPeopleHint: "Group the hygiene lists by assignee name. Names never appear in charts or tiles.",
+    showAll: (count: number) => `Show all ${count}`,
+    showFewer: "Show fewer",
+    openInJira: "(opens in Jira)",
+
+    headline: {
+      title: "Delivery from Jira",
+      lede: "Stories, bugs, tasks and features are counted. Sub-tasks are not counted, but a pull request that names a sub-task counts towards its parent, and epics are shown apart.",
+      done: "Done",
+      doneHint: (created: number) => `Items finished in this range, with ${created} created`,
+      inProgress: "In progress",
+      inProgressHint: (epics: number) =>
+        `At the end of the range. ${epics} ${epics === 1 ? "epic is" : "epics are"} open now and not counted`,
+      cycle: "Issue cycle time",
+      cycleHint: (p75: string) => `Median started to done, 75th percentile ${p75}`,
+      lead: "Issue lead time",
+      leadHint: (p75: string) => `Median created to done, 75th percentile ${p75}`,
+      flowEfficiency: "Flow efficiency",
+      flowEfficiencyHint: "Time spent actively worked as a share of started to done",
+      linked: "Linked to a pull request",
+      linkedHint: (linked: number, of: number) => `${linked} of ${of} done items have at least one pull request`,
+    },
+
+    flow: {
+      title: "Flow",
+      lede: "How much work finishes each week, how much is under way at once, and what has been waiting longest.",
+      throughput: {
+        title: "Items done each week",
+        subtitle:
+          "Delivery items finished each week, stacked by issue type. Weeks cut short by the end of the range are left out.",
+        total: "Total",
+        /** The one series every issue type beyond story, bug, task and feature is folded into. */
+        otherType: "Other",
+      },
+      wip: {
+        title: "Work in progress",
+        subtitle:
+          "Delivery items in an in-progress status at the end of each week. Weeks cut short by the end of the range are left out.",
+        series: "In progress",
+      },
+      ageing: {
+        title: "Ageing work",
+        subtitle: "Items in progress now, oldest first, with the time since they started.",
+        key: "Issue",
+        summary: "Summary",
+        type: "Type",
+        status: "Status",
+        age: "Age",
+        empty: "Nothing is in progress now.",
+      },
+    },
+
+    columns: {
+      title: "Time per column",
+      lede: "Where finished work spent its time on the board.",
+      chartTitle: "Mean time in each board column",
+      subtitle:
+        "Mean hours per done item in each column, from started to done, so the columns add up to the mean issue cycle time.",
+      column: "Column",
+      mean: "Mean",
+      median: "Median",
+      items: "Items",
+      barLabel: "Mean time",
+      /** The label for time in statuses that no board column holds, which the report gives as a column of null. */
+      notOnBoard: "Not on the board",
+      noBoardNote: "This space has no board, so each status is shown as its own column.",
+      forbiddenTitle: "The board could not be read",
+      forbiddenNote:
+        "Jira refused access to this space's board, so each status is shown as its own column. Add the read:board-scope.admin:jira-software scope to the app in the Atlassian developer console and connect Jira again, or check that your account has permission to see the board.",
+    },
+
+    idea: {
+      title: "Idea to production",
+      lede: (linked: number, of: number, share: string) =>
+        `Only done items with a linked pull request can be measured, so these figures cover at most ${linked} of ${of} done items (${share}), and issue to production covers fewer when a linked pull request has not shipped. Work with no linked pull request is left out, so the times may not represent the whole picture.`,
+      toFirstPr: "Issue to first pull request",
+      toFirstPrHint: (p75: string, count: number) =>
+        `Median created to first pull request opened, 75th percentile ${p75}, across ${count} items`,
+      toProduction: "Issue to production",
+      toProductionHint: (p75: string, count: number) =>
+        `Median created to the deploy that shipped the last pull request, 75th percentile ${p75}, across ${count} items`,
+    },
+
+    hygiene: {
+      title: "Jira hygiene",
+      lede: "Prompts to tidy the board so the figures above can be trusted. They are not a score, and some work genuinely needs no code.",
+      checkThese: "Check these",
+      none: "Nothing to check here.",
+      found: (count: number) => `${count} to check`,
+      foundOf: (count: number, of: number, share: string) => `${count} of ${of} to check (${share})`,
+      unassigned: "Unassigned",
+      /** Someone is assigned, but the space was crawled before names were recorded or holds no name for them. */
+      nameNotRecorded: "Assigned, name not recorded",
+      movedTogether: (count: number, at: string) => `${count} moved to done at ${at}`,
+      checks: {
+        pr_without_key: {
+          title: "Pull requests with no issue key",
+          explanation:
+            "Merged pull requests whose title or branch names no Jira issue, so their work cannot be traced back to the board.",
+        },
+        done_without_pr: {
+          title: "Done items with no pull request",
+          explanation:
+            "Items marked done that no pull request mentions. Some work needs no code, so check whether a key is missing.",
+        },
+        skipped_in_progress: {
+          title: "Done items that skipped in progress",
+          explanation: "Items that went straight to done without being started, which hides how long the work really took.",
+        },
+        bulk_move: {
+          title: "Items closed together",
+          explanation:
+            "Five or more items moved to done within ten minutes, which usually means the board was tidied rather than updated as work finished.",
+        },
+        reopened: {
+          title: "Reopened items",
+          explanation:
+            "Items moved from done back to a status that is not done, which is worth a look at what was missed the first time.",
+        },
+        stale_in_progress: {
+          title: "Stale work in progress",
+          explanation: "Items in progress now with no update in the last seven days.",
+        },
+        in_progress_unassigned: {
+          title: "In progress with no assignee",
+          explanation: "Items being worked on that nobody is shown as owning.",
+        },
+      },
+    },
   },
 
   compare: {
@@ -877,6 +1321,56 @@ export const copy = {
         by: "Nicole Forsgren, Jez Humble and Gene Kim, on the science behind high-performing technology organisations.",
       },
     ],
+
+    jira: {
+      eyebrow: "Delivery from Jira",
+      title: "Seeing the whole journey, from idea to production",
+      lede: "Pull requests show how code moves, but they do not show how work moves. Measuring delivery from the tracker as well shows how work flows from idea to production, where it waits on the way, and whether the board tells the truth about what is happening. Each figure describes the team's system of work, and the dashboard hides people by default.",
+      measures: [
+        {
+          name: "Issue cycle time",
+          reveals:
+            "How long finished work took from the day it was started to the day it was done, which shows how quickly a team can complete what it begins.",
+        },
+        {
+          name: "Issue lead time",
+          reveals:
+            "How long a request waited from the day it was raised to the day it was done, which includes the time it sat before anyone began.",
+        },
+        {
+          name: "Throughput",
+          reveals:
+            "How many items finish each week and of which type, which shows the steady rhythm of the team and any shift towards bugs or tasks.",
+        },
+        {
+          name: "Work in progress and ageing work",
+          reveals:
+            "How much is under way at once and which items have been open longest, because work that is started but not finished is the usual place for delay to build up.",
+        },
+        {
+          name: "Time per column",
+          reveals:
+            "Where finished items spent their time on the board, so a queue such as waiting for review can be seen and shortened by agreement.",
+        },
+        {
+          name: "Flow efficiency",
+          reveals:
+            "How much of the time between started and done was spent actively worked rather than waiting, which is often lower than a team expects.",
+        },
+        {
+          name: "Issue to first pull request and to production",
+          reveals:
+            "How long it takes for an idea to become code and then to reach users, measured only for items linked to a pull request.",
+        },
+        {
+          name: "Hygiene checks",
+          reveals:
+            "Whether the board matches reality, for example whether pull requests name their issue and whether cards move when work starts. They make the other figures trustworthy, and they are prompts to tidy rather than a score.",
+        },
+      ],
+      people:
+        "People are hidden by default. A Show people switch on the page groups the hygiene lists by assignee name, and names never appear in charts or tiles.",
+    },
 
     ctaTitle: "Put it into practice",
     ctaBody:

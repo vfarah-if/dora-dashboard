@@ -139,4 +139,24 @@ describe("ReposPage", () => {
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByText("Sign in with GitHub first")).toBeInTheDocument();
   });
+
+  it.each(["denied", "error", "expired", "misconfigured", "rate_limited"] as const)(
+    "shows the Jira %s outcome when the sign-in lands on the repositories page, and clears it when dismissed",
+    async (outcome) => {
+      const user = userEvent.setup();
+      mockFetch({ "GET /api/repos": { body: [] }, "GET /api/health": { body: { jira: true } } });
+      renderRoute(<ReposPage />, { route: `/?jira=${outcome}` });
+      expect(await screen.findByText(copy.jira.outcomes[outcome].title)).toBeInTheDocument();
+      expect(screen.getByText(copy.jira.outcomes[outcome].body)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: copy.jira.dismiss }));
+      expect(screen.queryByText(copy.jira.outcomes[outcome].title)).not.toBeInTheDocument();
+    },
+  );
+
+  it("shows no Jira outcome when Jira is switched off", async () => {
+    mockFetch({ "GET /api/repos": { body: [] }, "GET /api/health": { body: { jira: false } } });
+    renderRoute(<ReposPage />, { route: "/?jira=error" });
+    expect(await screen.findByText(copy.repos.emptyTitle)).toBeInTheDocument();
+    expect(screen.queryByText(copy.jira.outcomes.error.title)).not.toBeInTheDocument();
+  });
 });

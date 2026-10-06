@@ -20,6 +20,8 @@ export interface AuthDeps {
   exchangeCode: (code: string) => Promise<string>;
   /** The device flow fallback for gh-cli mode. Left out, or with no client ID configured, the routes are not registered. */
   deviceSignIn?: DeviceSignInService;
+  /** Runs when a signed-in person signs out, so anything held for their login (a Jira grant) goes too. */
+  onSignOut?: (login: string) => void;
 }
 
 /** Where a request's session came from, reported on `/api/auth/me`. */
@@ -48,7 +50,7 @@ export function githubCodeExchange(config: Config, http: typeof fetch = fetch) {
   };
 }
 
-function signedCookie(request: FastifyRequest, name: string): string | null {
+export function signedCookie(request: FastifyRequest, name: string): string | null {
   const raw = request.cookies[name];
   if (!raw) return null;
   const unsigned = request.unsignCookie(raw);
@@ -73,7 +75,7 @@ async function resolveSession(
 }
 
 /** Rejects a browser request from another origin. A missing Origin (non-browser clients) is allowed. */
-function requireSameOrigin(config: Config) {
+export function requireSameOrigin(config: Config) {
   return async (request: FastifyRequest) => {
     const origin = request.headers.origin;
     if (origin !== undefined && origin !== config.webOrigin)
@@ -123,7 +125,9 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
 
   app.post("/api/auth/logout", { preHandler: requireSameOrigin(config) }, async (request, reply) => {
     const id = signedCookie(request, SESSION_COOKIE);
+    const session = id ? deps.sessions.get(id) : null;
     if (id) deps.sessions.delete(id);
+    if (session) deps.onSignOut?.(session.login);
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     return { ok: true };
   });

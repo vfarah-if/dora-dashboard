@@ -20,6 +20,17 @@ export interface Config {
   webOrigin: string;
   /** Clone and analyse each repository's code during a crawl. `CODE_ANALYSIS=off` disables it. */
   codeAnalysis: boolean;
+  /**
+   * The Atlassian OAuth 2.0 (3LO) app, or null when Jira is off. Both credentials are set or both are empty; one alone
+   * fails at start-up (ADR 0020).
+   */
+  jira: JiraConfig | null;
+}
+
+export interface JiraConfig {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
 }
 
 const PLACEHOLDER_SESSION_SECRET = "change-me-to-a-long-random-string";
@@ -35,6 +46,13 @@ function readAuthMode(env: NodeJS.ProcessEnv): AuthMode {
 function requireOAuthCredentials(clientId: string, clientSecret: string): void {
   if (!clientId || !clientSecret) {
     throw new Error("AUTH_MODE=oauth needs GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET; see .env.example");
+  }
+}
+
+/** Half a pair of Atlassian credentials is a mistake, so it fails at start-up rather than quietly leaving Jira off. */
+function requireBothAtlassianCredentials(clientId: string, clientSecret: string): void {
+  if ((clientId === "") !== (clientSecret === "")) {
+    throw new Error("Jira needs both ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET; set both, or neither to leave it off");
   }
 }
 
@@ -61,12 +79,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const githubClientId = env.GITHUB_CLIENT_ID ?? "";
   const githubClientSecret = env.GITHUB_CLIENT_SECRET ?? "";
   if (authMode === "oauth") requireOAuthCredentials(githubClientId, githubClientSecret);
+  const atlassianClientId = env.ATLASSIAN_CLIENT_ID ?? "";
+  const atlassianClientSecret = env.ATLASSIAN_CLIENT_SECRET ?? "";
+  requireBothAtlassianCredentials(atlassianClientId, atlassianClientSecret);
+  const server = readServerSettings(env);
   return {
     authMode,
     githubClientId,
     githubClientSecret,
     deviceClientId: env.GITHUB_DEVICE_CLIENT_ID || PUBLISHED_DEVICE_CLIENT_ID,
     sessionSecret: sessionSecretFor(authMode, env.SESSION_SECRET ?? ""),
-    ...readServerSettings(env),
+    ...server,
+    jira:
+      atlassianClientId === ""
+        ? null
+        : {
+            clientId: atlassianClientId,
+            clientSecret: atlassianClientSecret,
+            redirectUri: env.ATLASSIAN_REDIRECT_URI || `${server.webOrigin}/api/auth/jira/callback`,
+          },
   };
 }

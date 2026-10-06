@@ -1,9 +1,10 @@
 import type { DeployRun, PullRequest, Repo } from "./types.js";
 import { doraSummary, productionRuns, type DoraSummary } from "./dora.js";
+import { doraDrivers, type DoraDrivers } from "./doraDrivers.js";
 import { DEFAULT_DORA_PROFILE, doraProfile } from "./doraProfiles.js";
 import { aiCohorts, type AiCohorts } from "./aiAssisted.js";
 import { isBot, mergeDistribution, prTimings, type PrTimings } from "./pullRequests.js";
-import { mean, median, summarise, weekRange, weekStart, type Summary } from "./stats.js";
+import { isPartialWeek, isWithin, mean, median, summarise, weekRange, weekStart, type Summary } from "./stats.js";
 
 export interface ReportOptions {
   from?: string;
@@ -82,6 +83,8 @@ export interface RepoReport {
     size: Summary;
   };
   dora: DoraSummary;
+  /** Why each DORA figure is what it is, over the same pull requests, runs and range as `dora` (ADR 0022). */
+  doraDrivers: DoraDrivers;
   /** PRs merged in the range, split by whether they were marked as AI-assisted (ADR 0016). */
   aiCohorts: AiCohorts;
   weekly: WeekRow[];
@@ -92,7 +95,6 @@ export interface RepoReport {
   prs: PrTimings[];
 }
 
-const within = (iso: string | null, from: string, to: string) => iso !== null && iso >= from && iso <= to;
 const authorOf = (pr: Pick<PullRequest, "author">) => pr.author ?? "unknown";
 /** `part` over `whole`, or null when there is nothing to divide by. */
 const share = (part: number, whole: number) => (whole ? part / whole : null);
@@ -113,7 +115,7 @@ function reportScope(allPrs: PullRequest[], options: ReportOptions) {
 function applyAuthorFilter(humansOrAll: PullRequest[], excludeAuthors: readonly string[], from: string, to: string) {
   const excluded = new Set(excludeAuthors);
   const openedCounts = new Map<string, number>();
-  for (const p of humansOrAll.filter((p) => within(p.createdAt, from, to))) {
+  for (const p of humansOrAll.filter((p) => isWithin(p.createdAt, from, to))) {
     openedCounts.set(authorOf(p), (openedCounts.get(authorOf(p)) ?? 0) + 1);
   }
   const authorChoices: AuthorChoice[] = [...openedCounts]
@@ -148,7 +150,6 @@ interface WeeklyInputs {
 function weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, production }: WeeklyInputs): WeekRow[] {
   const weeks = weekRange(weekStart(from), weekStart(to));
   const projectWeek = projectStart ? weekStart(projectStart) : weeks[0]!;
-  const rangeEndMs = Date.parse(to) + 1000; // `to` is the last second of the range
 
   return weeks.map((week) => {
     const openedThisWeek = opened.filter((p) => weekStart(p.createdAt) === week);
@@ -165,7 +166,7 @@ function weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, pro
       medianOpenToMergeHours: median(mergedThisWeek.map((t) => t.openToMergeHours!)),
       medianCodingHours: median(mergedThisWeek.map((t) => t.codingHours).filter((h) => h !== null)),
       stages: stageMeans(mergedThisWeek.map((t) => t.stages).filter((s) => s !== null)),
-      partial: Date.parse(week) + WEEK_MS > rangeEndMs,
+      partial: isPartialWeek(week, to),
       deploys: deploysThisWeek.filter((r) => r.conclusion === "success").length,
       deployFailures: deploysThisWeek.filter((r) => r.conclusion === "failure").length,
       linesMerged: mergedThisWeek.reduce((sum, t) => sum + t.size, 0),
@@ -177,7 +178,7 @@ function weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, pro
 function reviewsGivenBy(prs: PullRequest[], from: string, to: string): Map<string, number> {
   const given = new Map<string, number>();
   for (const pr of prs) {
-    const counted = pr.reviews.filter((r) => r.author && r.author !== pr.author && within(r.submittedAt, from, to));
+    const counted = pr.reviews.filter((r) => r.author && r.author !== pr.author && isWithin(r.submittedAt, from, to));
     for (const r of counted) given.set(r.author!, (given.get(r.author!) ?? 0) + 1);
   }
   return given;
@@ -250,11 +251,11 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
   const { humansOrAll, projectStart, from, to } = reportScope(allPrs, options);
   const { authorChoices, prs } = applyAuthorFilter(humansOrAll, options.excludeAuthors ?? [], from, to);
 
-  const opened = prs.filter((p) => within(p.createdAt, from, to));
-  const merged = prs.filter((p) => within(p.mergedAt, from, to));
+  const opened = prs.filter((p) => isWithin(p.createdAt, from, to));
+  const merged = prs.filter((p) => isWithin(p.mergedAt, from, to));
   const timingsByNumber = new Map(prs.map((p) => [p.number, prTimings(p)]));
   const mergedTimings = merged.map((p) => timingsByNumber.get(p.number)!);
-  const production = productionRuns(runs, repo.deployBranch).filter((r) => within(r.createdAt, from, to));
+  const production = productionRuns(runs, repo.deployBranch).filter((r) => isWithin(r.createdAt, from, to));
   const weekly = weeklyRows({ from, to, projectStart, opened, merged, mergedTimings, production });
   const authorNames = new Set(opened.map(authorOf));
 
@@ -272,6 +273,7 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     totals: totalsOf(opened, merged, mergedTimings, weekly, authorNames.size),
     summary: summaryOf(mergedTimings),
     dora: doraSummary(merged, production, repo.deployBranch, weekly.length, profile),
+    doraDrivers: doraDrivers(merged, production, repo.deployBranch, { from, to }, profile),
     aiCohorts: aiCohorts(merged),
     weekly,
     distribution: mergeDistribution(mergedTimings.map((t) => t.openToMergeHours!)),

@@ -1,26 +1,38 @@
+import type { ApiErrorBody, ApiErrorCode } from "@dora-dashboard/core";
 import { copy } from "../copy";
 
-/** An API failure carrying the HTTP status and the API's own `{ error }` message where it gave one. */
+/**
+ * An API failure carrying the HTTP status, a message fit to show (the API's own `error` where it gave one) and the
+ * API's stable `code` for an error the page acts on, or null.
+ */
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: ApiErrorCode | null;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code: ApiErrorCode | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
-function errorMessage(body: unknown, status: number): string {
-  if (body && typeof body === "object" && "error" in body) {
-    const { error } = body as { error: unknown };
-    if (typeof error === "string" && error.trim()) return error;
-  }
-  return copy.common.requestFailed(status);
+/** Every code the API can send. A record rather than a list, so a code added in core must be added here too. */
+const API_ERROR_CODES: Record<ApiErrorCode, true> = { jira_unauthorised: true };
+
+const isApiErrorCode = (value: unknown): value is ApiErrorCode =>
+  typeof value === "string" && Object.hasOwn(API_ERROR_CODES, value);
+
+/** The error a failed response stands for. A body that is not an `ApiErrorBody` still gives a readable message. */
+function errorFrom(body: unknown, status: number): ApiError {
+  const { error, code } = (body && typeof body === "object" ? body : {}) as Partial<Record<keyof ApiErrorBody, unknown>>;
+  const message = typeof error === "string" && error.trim() ? error : copy.common.requestFailed(status);
+  // A code this build does not know, from a newer API, is treated as none, so the plain message is shown.
+  return new ApiError(status, message, isApiErrorCode(code) ? code : null);
 }
 
 export interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -52,10 +64,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     try {
       body = JSON.parse(text);
     } catch {
+      if (response.ok) throw new ApiError(response.status, copy.common.unreadableResponse);
       body = null;
     }
   }
-  if (!response.ok) throw new ApiError(response.status, errorMessage(body, response.status));
+  if (!response.ok) throw errorFrom(body, response.status);
   return body as T;
 }
 

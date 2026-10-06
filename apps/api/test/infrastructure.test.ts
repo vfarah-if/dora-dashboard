@@ -25,6 +25,7 @@ const gqlNode = {
   additions: 5,
   deletions: 1,
   baseRefName: "main",
+  headRefName: "feature/WID-12-widgets",
   author: { login: "renovate", __typename: "Bot" },
   mergedBy: null,
   commits: { nodes: [{ commit: { authoredDate: "2026-09-01T08:00:00Z", committedDate: "2026-09-01T09:30:00Z" } }] },
@@ -111,10 +112,29 @@ describe("GitHubProvider", () => {
       authorIsBot: true,
       mergedBy: null,
       firstCommitAt: "2026-09-01T08:00:00Z",
+      headRef: "feature/WID-12-widgets",
       reviews: [{ author: null, state: "APPROVED" }],
     });
     const [, init] = http.mock.calls[0] as unknown as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer t");
+  });
+
+  it("asks for the head branch name and records null when GitHub sent none", async () => {
+    const respond = (node: object) =>
+      vi.fn(async () =>
+        json({
+          data: {
+            repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [node] } },
+          },
+        }),
+      );
+    const { headRefName: _omitted, ...withoutHead } = gqlNode;
+    const http = respond(withoutHead);
+    const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+    expect(mapped.headRef).toBeNull();
+    const [, init] = http.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.body as string).toContain("headRefName");
   });
 
   it("records the changed file paths, and leaves files absent when GitHub sent none", async () => {
@@ -375,6 +395,32 @@ describe("loadConfig", () => {
     expect(config.sessionSecret.length).toBeGreaterThan(20);
   });
 
+  it.each([
+    [{ ATLASSIAN_CLIENT_ID: "a" }],
+    [{ ATLASSIAN_CLIENT_SECRET: "b" }],
+    [{ ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "" }],
+  ])("refuses to start with only one Atlassian credential %j", (env) => {
+    expect(() => loadConfig(env)).toThrow("ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET");
+  });
+
+  it("derives the Jira callback from the web origin unless one is given", () => {
+    expect(loadConfig({ ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "b" }).jira?.redirectUri).toBe(
+      "http://localhost:5181/api/auth/jira/callback",
+    );
+    expect(
+      loadConfig({ WEB_ORIGIN: "https://dora.example.test", ATLASSIAN_CLIENT_ID: "a", ATLASSIAN_CLIENT_SECRET: "b" }).jira
+        ?.redirectUri,
+    ).toBe("https://dora.example.test/api/auth/jira/callback");
+    expect(
+      loadConfig({
+        WEB_ORIGIN: "https://dora.example.test",
+        ATLASSIAN_REDIRECT_URI: "https://other.example.test/cb",
+        ATLASSIAN_CLIENT_ID: "a",
+        ATLASSIAN_CLIENT_SECRET: "b",
+      }).jira?.redirectUri,
+    ).toBe("https://other.example.test/cb");
+  });
+
   it("treats blank values as unset", () => {
     expect(loadConfig({ PORT: "", DATABASE_PATH: "", AUTH_MODE: "" }).port).toBe(8787);
   });
@@ -458,7 +504,8 @@ describe("GitHubProvider open pull requests", () => {
   });
 
   it("copes with a pull request that reports no optional fields", async () => {
-    const http = vi.fn(async () => json(connection([{ ...gqlNode, state: "OPEN" }])));
+    const { headRefName: _head, ...bare } = gqlNode;
+    const http = vi.fn(async () => json(connection([{ ...bare, state: "OPEN" }])));
     const [mapped] = (await new GitHubProvider(http).fetchOpenPullRequests("t", "acme", "widgets")).pullRequests;
     expect(mapped).toMatchObject({
       isDraft: false,
@@ -548,5 +595,24 @@ describe("GitHubProvider open pull requests", () => {
       name: "UpstreamError",
       message: "API rate limit exceeded",
     });
+  });
+});
+
+describe("tracker and upstream errors", () => {
+  it("names a tracker authorisation failure for what it is while still being an unauthorised error", async () => {
+    const { TrackerUnauthorisedError, UnauthorisedError: Unauthorised } = await import("../src/core/errors.js");
+    const error = new TrackerUnauthorisedError("expired");
+    expect(error.name).toBe("TrackerUnauthorisedError");
+    expect(error).toBeInstanceOf(Unauthorised);
+    expect(new Unauthorised("x").name).toBe("UnauthorisedError");
+  });
+
+  it("lets an upstream error carry its cause, and works without one", async () => {
+    const { UpstreamError: Upstream } = await import("../src/core/errors.js");
+    const cause = new Error("socket closed");
+    expect(new Upstream("down", 502, { cause }).cause).toBe(cause);
+    const plain = new Upstream("down", 503);
+    expect(plain.status).toBe(503);
+    expect(plain.cause).toBeUndefined();
   });
 });

@@ -1301,6 +1301,51 @@ a:hover {
   margin-bottom: 8px;
 }
 
+.dora-explain {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+}
+
+.dora-explain summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dora-explain-body h4 {
+  margin: 12px 0 4px;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.dora-explain-body p,
+.dora-explain-body li {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.dora-explain-body ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dora-explain-body a {
+  color: var(--accent);
+}
+
+.dora-explain-quote {
+  margin: 8px 0 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong, var(--border));
+}
+
+.dora-explain-note {
+  margin-top: 12px;
+  font-style: italic;
+}
+
 .batch-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
@@ -1542,7 +1587,7 @@ a:hover {
   .range-controls,
   .toggle-row,
   .chart-toolbar .toggle,
-  .table-disclosure,
+  .table-disclosure:not(.dora-explain),
   .author-filter,
   .pager,
   .sort-indicator,
@@ -1848,6 +1893,33 @@ a:hover {
 .home-h2 {
   font-size: clamp(1.35rem, 1.1rem + 0.9vw, 1.75rem);
   letter-spacing: -0.02em;
+}
+
+.home-h3 {
+  margin-top: 8px;
+  font-size: 1.125rem;
+}
+
+.band-meanings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.band-meanings dd {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.practice h4 {
+  font-size: 1.0625rem;
+}
+
+.home-quote {
+  max-width: 70ch;
+  color: var(--text-muted);
 }
 
 .home-section {
@@ -2876,4 +2948,213 @@ a:hover {
 .device-waiting {
   margin: 0;
   color: var(--text-muted);
+}
+
+/* Jira spaces */
+
+.jira-panel {
+  max-width: 720px;
+}
+
+.jira-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.jira-picker {
+  min-width: 0;
+}
+
+.jira-space-list,
+.jira-linked,
+.jira-columns,
+.jira-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.jira-space-list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.jira-space {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.jira-space:last-child {
+  border-bottom: 0;
+}
+
+.jira-subtitle {
+  font-size: 0.9375rem;
+  margin-bottom: 8px;
+}
+
+.jira-linked {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.jira-linked-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.jira-flow-heading {
+  font-size: 0.8125rem;
+  font-weight: 650;
+  margin: 8px 0 4px;
+}
+
+.jira-columns {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.jira-column {
+  flex: 0 0 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--lane-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.jira-column-name {
+  font-weight: 650;
+  font-size: 0.8125rem;
+}
+
+.jira-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.jira-chip {
+  padding: 1px 8px;
+  font-size: 0.8125rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+
+.jira-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.jira-category {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.jira-category dt {
+  font-weight: 650;
+  font-size: 0.8125rem;
+  min-width: 90px;
+}
+
+.jira-category dd {
+  margin: 0;
+}
+
+/* Jira hygiene on the space page. Lists wrap long issue summaries and never push the page wider. */
+.hygiene-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+}
+
+.hygiene-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hygiene-count {
+  font-weight: 650;
+}
+
+.hygiene-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.hygiene-heading,
+.hygiene-person {
+  font-size: 0.8125rem;
+  line-height: inherit;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.hygiene-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.hygiene-list,
+.hygiene-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hygiene-keys {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.hygiene-summary {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.space-ageing {
+  margin-top: 4px;
+}
+
+@media print {
+  .hygiene-card {
+    break-inside: avoid;
+  }
 }

@@ -160,7 +160,7 @@ describe("repository and report routes (gh-cli mode)", () => {
   });
 
   it("answers health with the auth mode and provider", async () => {
-    expect((await app.inject("/api/health")).json()).toEqual({ ok: true, authMode: "gh-cli", provider: "fake" });
+    expect((await app.inject("/api/health")).json()).toEqual({ ok: true, authMode: "gh-cli", provider: "fake", jira: false });
   });
 });
 

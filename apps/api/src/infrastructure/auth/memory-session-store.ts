@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { Session, SessionStore } from "../../interfaces/token-source.js";
 
-const EIGHT_HOURS_MS = 8 * 3_600_000;
+/** How long a dashboard session lasts; a tracker grant idle for this long is dropped too. */
+export const EIGHT_HOURS_MS = 8 * 3_600_000;
 
 /**
  * Tokens live in this process's memory only, keyed by a random id the browser holds in a signed,
