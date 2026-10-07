@@ -787,8 +787,14 @@ export const copy = {
     partly: {
       title: "Some functions may not have been measured",
       body: (count: number) =>
-        `The analyser, lizard, may have skipped some functions in ${count === 1 ? "this file" : `these ${count} files`} because of JSX spread attributes such as {...props}, so the figures can read better than the code is.`,
+        `${count === 1 ? "This JavaScript or TypeScript file" : `These ${count} JavaScript or TypeScript files`} could not be read in full, either because ${count === 1 ? "it has" : "they have"} a syntax error or because ${count === 1 ? "it is" : "they are"} larger than 2 MiB, so some or all of ${count === 1 ? "its" : "their"} functions may be missing and the figures can read better than the code is.`,
       more: (count: number) => `and ${count} more`,
+    },
+
+    unmeasured: {
+      title: "Some source files were not measured",
+      body: (count: number) =>
+        `Lizard is not installed on the machine that runs the API, so ${count === 1 ? "1 source file" : `${count} source files`} in languages other than JavaScript and TypeScript ${count === 1 ? "was" : "were"} not measured and ${count === 1 ? "is" : "are"} not in any figure. Installing lizard and crawling this repository again will add ${count === 1 ? "it" : "them"}.`,
     },
 
     none: {
@@ -802,7 +808,8 @@ export const copy = {
 
     install: {
       title: "Install lizard on the machine that runs the API",
-      intro: "Choose whichever of these suits the machine. Each installs the same tool.",
+      intro:
+        "Lizard measures the languages other than JavaScript and TypeScript, which are always measured without it. Choose whichever of these suits the machine. Each installs the same tool.",
       options: [
         { label: "Any platform, if you already use uv", commands: ["uv tool install lizard"] },
         { label: "Any platform, if you already use pipx", commands: ["pipx install lizard"] },

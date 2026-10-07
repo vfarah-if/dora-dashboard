@@ -405,6 +405,7 @@ export class FakeCodeAnalyser implements CodeAnalyser {
   failWith: Error | null = null;
   functions: FunctionMetrics[] = [fn()];
   partlyMeasured: string[] = [];
+  unmeasuredFiles = 0;
   readonly analysed: string[] = [];
 
   async available(): Promise<boolean> {
@@ -414,11 +415,11 @@ export class FakeCodeAnalyser implements CodeAnalyser {
   async analyse(dir: string): Promise<CodeAnalysis> {
     this.analysed.push(dir);
     if (this.failWith) throw this.failWith;
-    return { functions: this.functions, partlyMeasured: this.partlyMeasured };
+    return { functions: this.functions, partlyMeasured: this.partlyMeasured, unmeasuredFiles: this.unmeasuredFiles };
   }
 }
 
-/** Serves files from a map instead of a disk, and records what was read. */
+/** Serves files from a map instead of a disk, and records what was read. A file over `maxBytes` reads as null, as on disk. */
 export class FakeWorkspaceReader implements WorkspaceReader {
   files = new Map<string, string>();
   listFailWith: Error | null = null;
@@ -429,9 +430,10 @@ export class FakeWorkspaceReader implements WorkspaceReader {
     return [...this.files.keys()];
   }
 
-  async read(_dir: string, path: string): Promise<string | null> {
+  async read(_dir: string, path: string, maxBytes: number): Promise<string | null> {
     this.reads.push(path);
-    return this.files.get(path) ?? null;
+    const content = this.files.get(path);
+    return content === undefined || Buffer.byteLength(content) > maxBytes ? null : content;
   }
 }
 

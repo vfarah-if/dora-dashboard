@@ -4,6 +4,9 @@
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "./core/config.js";
+import { CombinedAnalyser } from "./infrastructure/analysis/combined-analyser.js";
+import { SCRIPT_EXTENSIONS } from "./infrastructure/analysis/languages.js";
+import { BabelAnalyser } from "./infrastructure/babel/babel-analyser.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
@@ -52,7 +55,14 @@ const timer = setInterval(() => {
 const reader = new FsWorkspaceReader();
 try {
   const codeHealth = config.codeAnalysis
-    ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser(reader), undefined, undefined, reader)
+    ? new CodeHealthService(
+        store,
+        new GitCheckout(),
+        new CombinedAnalyser(new BabelAnalyser(reader), new LizardAnalyser(SCRIPT_EXTENSIONS), reader),
+        undefined,
+        undefined,
+        reader,
+      )
     : undefined;
   await new CrawlService(store, provider, codeHealth).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));

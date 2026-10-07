@@ -1,6 +1,9 @@
 /** Composition root: the only file that chooses concrete adapters. */
 import { buildApp } from "./app.js";
 import { loadConfig } from "./core/config.js";
+import { CombinedAnalyser } from "./infrastructure/analysis/combined-analyser.js";
+import { SCRIPT_EXTENSIONS } from "./infrastructure/analysis/languages.js";
+import { BabelAnalyser } from "./infrastructure/babel/babel-analyser.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { MemorySessionStore } from "./infrastructure/auth/memory-session-store.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
@@ -37,7 +40,7 @@ const { app } = await buildApp({
   exchangeCode: githubCodeExchange(config),
   deviceAuth: new GitHubDeviceFlow(config.deviceClientId),
   checkout,
-  analyser: new LizardAnalyser(reader),
+  analyser: new CombinedAnalyser(new BabelAnalyser(reader), new LizardAnalyser(SCRIPT_EXTENSIONS), reader),
   reader,
   jira: config.jira
     ? {

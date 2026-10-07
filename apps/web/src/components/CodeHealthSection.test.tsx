@@ -59,6 +59,7 @@ const ok: CodeHealthReport = {
     lines: 130,
   },
   partlyMeasured: [],
+  unmeasuredFiles: 0,
   tests: { functions: 35, nloc: 2000 },
   maintainability: { linesAboveWarn: 0.08, linesAboveHigh: 0.04, longFunctions: 0.1, manyParams: 0.01 },
   testing: { testRatio: 0.45, prsWithTests: { share: 0.25, withTests: 9, total: 36 }, ciRunsTests: true, coverageFloor: 40 },
@@ -364,6 +365,27 @@ describe("CodeHealthSection", () => {
     show(ok);
     await screen.findByText(copy.codeHealth.verdict.title);
     expect(screen.queryByText(copy.codeHealth.partly.title)).not.toBeInTheDocument();
+  });
+
+  it("says how many files were not measured and shows how to install lizard", async () => {
+    show({ ...ok, unmeasuredFiles: 3 });
+    const notice = (await screen.findByText(copy.codeHealth.unmeasured.title)).closest("aside")!;
+    expect(notice).toHaveTextContent(copy.codeHealth.unmeasured.body(3));
+    expect(screen.getByRole("heading", { name: copy.codeHealth.install.title })).toBeInTheDocument();
+    expect(screen.getByText("uv tool install lizard")).toBeInTheDocument();
+  });
+
+  it("uses the singular when one file was not measured", async () => {
+    show({ ...ok, unmeasuredFiles: 1 });
+    const notice = (await screen.findByText(copy.codeHealth.unmeasured.title)).closest("aside")!;
+    expect(notice).toHaveTextContent("1 source file in languages other than JavaScript and TypeScript was not measured");
+  });
+
+  it("shows no unmeasured notice or install commands when every file was measured", async () => {
+    show(ok);
+    await screen.findByText(copy.codeHealth.verdict.title);
+    expect(screen.queryByText(copy.codeHealth.unmeasured.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.codeHealth.install.title)).not.toBeInTheDocument();
   });
 
   it("says when there are no functions to list", async () => {

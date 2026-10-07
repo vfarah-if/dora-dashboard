@@ -103,7 +103,7 @@ export class CodeHealthService {
 
       const checkout = await this.checkout.checkout(token, owner, name, branch);
       try {
-        const { functions, partlyMeasured } = await this.analyser.analyse(checkout.dir);
+        const { functions, partlyMeasured, unmeasuredFiles } = await this.analyser.analyse(checkout.dir);
         const tooling = await this.readTooling(checkout.dir, repoId);
         return {
           snapshot: {
@@ -111,6 +111,7 @@ export class CodeHealthService {
             analysedAt: this.now().toISOString(),
             functions,
             partlyMeasured,
+            unmeasuredFiles,
             error: null,
             tooling,
             snapshotVersion: CODE_SNAPSHOT_VERSION,

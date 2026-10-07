@@ -30,9 +30,9 @@ Or add repositories from the web app by pasting `owner/name` or a GitHub URL.
 
 ### Code health (optional)
 
-Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). This needs `git` and [lizard](https://github.com/terryyin/lizard) on the host.
+Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). JavaScript and TypeScript are measured in process from a syntax tree (ADR 0025), so they need only `git` on the host. Every other language needs [lizard](https://github.com/terryyin/lizard), and a repository that holds only JavaScript and TypeScript does not need it at all.
 
-Install lizard with whichever of these suits the machine that runs the API:
+To measure other languages, install lizard with whichever of these suits the machine that runs the API:
 
 ```bash
 # Any platform, with uv or pipx
@@ -54,9 +54,9 @@ py -m pipx ensurepath
 py -m pipx install lizard
 ```
 
-Open a new terminal and check that `lizard --version` works. If the API was already running, restart it so it can find lizard on its PATH, then crawl again. The repository page shows the same commands when the API cannot find lizard.
+Open a new terminal and check that `lizard --version` works. If the API was already running, restart it so it can find lizard on its PATH, then crawl again. The repository page shows the same commands, with a count of the files left unmeasured, when the API cannot find lizard.
 
-Without lizard, or if an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
+Without lizard the JavaScript and TypeScript are still measured and the page counts the files in other languages that were not. If an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
 
 ## Signing in
 

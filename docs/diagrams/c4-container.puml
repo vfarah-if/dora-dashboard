@@ -25,7 +25,7 @@ System_Ext(github, "GitHub", "GraphQL and REST APIs, OAuth and git over HTTPS.")
 Boundary(host, "Operator's machine", "host tooling") {
   System_Ext(ghcli, "GitHub CLI", "The operator's local GitHub login.")
   System_Ext(git, "git", "Makes the shallow clone.")
-  System_Ext(lizard, "lizard", "Measures complexity per function. Optional; code health is skipped without it.")
+  System_Ext(lizard, "lizard", "Measures complexity per function for languages other than JavaScript and TypeScript, which the API measures itself (ADR 0025). Optional.")
 }
 
 Lay_R(reader, operator)
@@ -53,8 +53,8 @@ Rel(api, ghcli, "Reads a token when AUTH_MODE is gh-cli", "subprocess")
 Rel(cli, ghcli, "Reads a token", "subprocess")
 Rel(api, git, "Clones the deploy branch into the shallow clone", "subprocess")
 Rel(cli, git, "Clones the deploy branch", "subprocess")
-Rel(api, lizard, "Measures the shallow clone", "subprocess")
-Rel(cli, lizard, "Measures the shallow clone", "subprocess")
+Rel(api, lizard, "Measures the non-script files of the shallow clone", "subprocess")
+Rel(cli, lizard, "Measures the non-script files of the shallow clone", "subprocess")
 Rel(git, github, "Fetches the deploy branch", "git over HTTPS")
 
 SHOW_LEGEND()

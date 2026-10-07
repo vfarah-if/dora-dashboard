@@ -42,3 +42,7 @@ The report gains advice that uses the figures and limits of ADR 0013, and none o
 - The heuristic has both false positives and false negatives, so the notice is a prompt to look and not a finding.
 - Functions lizard drops stay unmeasured. The notice warns about the gap without closing it.
 - Older snapshots are analysed again after an upgrade, which costs one clone and analysis per repository.
+
+## Revision History
+
+- 2026-10-07: The JSX spread heuristic is removed (ADR 0025). `partlyMeasured` now lists files that failed to parse cleanly or were too large to read, and no longer files that merely hold a JSX spread attribute. The next band advice and the hotspot shapes are unchanged.

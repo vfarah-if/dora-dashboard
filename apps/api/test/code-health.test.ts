@@ -10,30 +10,18 @@ import { loadConfig } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import { MemorySessionStore } from "../src/infrastructure/auth/memory-session-store.js";
 import { GitCheckout, type Exec as GitExec, type ExecOptions as GitExecOptions } from "../src/infrastructure/git/git-checkout.js";
+import { languageOf } from "../src/infrastructure/analysis/languages.js";
 import {
   LizardAnalyser,
-  languageOf,
   parseLizardCsv,
   type ExecOptions as LizardExecOptions,
-  hasJsxSpread,
 } from "../src/infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { RepoService } from "../src/services/repo-service.js";
 import { isSafeBranch, parseRepoRef } from "../src/services/repo-ref.js";
 import { ANALYSER_MISSING, ANALYSIS_OFF, CodeHealthService } from "../src/services/code-health-service.js";
 import { CrawlService } from "../src/services/crawl-service.js";
-import {
-  config,
-  FakeCli,
-  FakeCodeAnalyser,
-  FakeProvider,
-  FakeSourceCheckout,
-  FakeWorkspaceReader,
-  fn,
-  pr,
-  run,
-  settled,
-} from "./fakes.js";
+import { config, FakeCli, FakeCodeAnalyser, FakeProvider, FakeSourceCheckout, fn, pr, run, settled } from "./fakes.js";
 
 const NOW = new Date("2026-09-29T10:00:00Z");
 
@@ -83,11 +71,20 @@ describe("code health during a crawl", () => {
     expect(service.report(repoId)).toMatchObject({ partlyMeasured: ["src/Tile.tsx"] });
   });
 
+  it("stores how many source files no installed tool could read", async () => {
+    analyser.unmeasuredFiles = 3;
+
+    const snapshot = await service.analyse("token", repoId);
+
+    expect(snapshot.unmeasuredFiles).toBe(3);
+    expect(service.report(repoId)).toMatchObject({ unmeasuredFiles: 3 });
+  });
+
   it("shows the progress message while analysing", async () => {
     const seen: (string | null)[] = [];
     analyser.analyse = async () => {
       seen.push(store.getRepo(repoId)!.crawlProgress);
-      return { functions: [], partlyMeasured: [] };
+      return { functions: [], partlyMeasured: [], unmeasuredFiles: 0 };
     };
 
     await crawler.crawl("token", repoId);
@@ -351,89 +348,16 @@ describe("parseLizardCsv", () => {
     ["lib/b.cpp", "C++"],
     ["c.zzz", "ZZZ"],
     ["Makefile", "Other"],
+    ["lib.d/Makefile", "Other"],
   ])("infers the language of %s as %s", (file, language) => {
     expect(languageOf(file)).toBe(language);
-  });
-});
-
-describe("hasJsxSpread", () => {
-  it("does not flag destructuring after const, let or var", () => {
-    expect(hasJsxSpread("const { ...rest } = props;")).toBe(false);
-    expect(hasJsxSpread("let {...a} = b;")).toBe(false);
-    expect(hasJsxSpread("for (var { ...x } of list) {}")).toBe(false);
-  });
-
-  it("flags a spread in JSX inside a ternary", () => {
-    expect(hasJsxSpread("const el = cond ? <A {...p} /> : null;")).toBe(true);
-  });
-
-  it.each([
-    ["<X {...p} />"],
-    ['<X a="1" {...p}>'],
-    ["<div { ...props }>"],
-    ["<X a={1} {...p} />"],
-    ["<X\n  a={1}\n  {...p}\n/>"],
-    ["export const Tile = (p) => <div {...p}>hi</div>;"],
-  ])("flags %j", (source) => {
-    expect(hasJsxSpread(source)).toBe(true);
-  });
-
-  it.each([
-    ["const a = {...b}"],
-    ["f({...b})"],
-    ["return {...b}"],
-    ["const g = () => ({...b})"],
-    ["const g = () => {...b}"],
-    ["const a = [1, {...b}]"],
-    ["const a = { k: {...b} }"],
-    ["const a = c ? {...b} : {...d}"],
-    ["const a = { x, ...b }"],
-    ["const a = [...b]"],
-    ["const a = c && {...b}"],
-    ["export default {...b}"],
-    ["const s = '<X {...p} />'"],
-    ['const s = "<X {...p} />"'],
-    ["const s = `<X {...p} />`"],
-    ["// <X {...p} />"],
-    ["/* <X\n {...p} /> */"],
-    ["const a = 1"],
-  ])("does not flag %j", (source) => {
-    expect(hasJsxSpread(source)).toBe(false);
-  });
-
-  it("is not thrown off by an apostrophe in JSX text or an unterminated comment", () => {
-    expect(hasJsxSpread("<p>don't</p>;\nconst a = <X {...p} />;")).toBe(true);
-    expect(hasJsxSpread("/* never closed <X {...p} />")).toBe(false);
-    expect(hasJsxSpread("const s = 'a\\'b'; <X {...p} />")).toBe(true);
-  });
-});
-
-describe("LizardAnalyser partly measured files", () => {
-  it("reads only .tsx and .jsx files and lists those with a JSX spread", async () => {
-    const reader = new FakeWorkspaceReader();
-    reader.files.set("src/Tile.tsx", "const T = (p) => <div {...p} />;");
-    reader.files.set("src/Plain.tsx", "const P = () => <div />;");
-    reader.files.set("src/Old.jsx", "const O = (p) => <a {...p} />;");
-    reader.files.set("src/util.ts", "const u = <X {...p} />;");
-    const analyser = new LizardAnalyser(reader, async () => ({ stdout: "" }));
-
-    const result = await analyser.analyse("/work/clone");
-
-    expect(result.partlyMeasured).toEqual(["src/Old.jsx", "src/Tile.tsx"]);
-    expect(reader.reads.sort()).toEqual(["src/Old.jsx", "src/Plain.tsx", "src/Tile.tsx"]);
-  });
-
-  it("finds nothing in a clone with no readable files", async () => {
-    const analyser = new LizardAnalyser(new FakeWorkspaceReader(), async () => ({ stdout: "" }));
-
-    expect(await analyser.analyse("/no/such/clone")).toEqual({ functions: [], partlyMeasured: [] });
   });
 });
 
 describe("LizardAnalyser", () => {
   it("runs lizard inside the clone with the exclusions and parses its output", async () => {
     const calls: { file: string; args: string[]; cwd?: string }[] = [];
-    const analyser = new LizardAnalyser(new FakeWorkspaceReader(), async (file, args, options) => {
+    const analyser = new LizardAnalyser([], async (file, args, options) => {
       calls.push({ file, args, cwd: options.cwd });
       return { stdout: '5,2,30,1,6,"add@1-6@./a.ts","./a.ts","add","add( a )",1,6\n' };
     });
@@ -448,8 +372,23 @@ describe("LizardAnalyser", () => {
     });
   });
 
+  it("leaves the extensions it is told to skip to another analyser, and reports nothing as partly measured", async () => {
+    const calls: string[][] = [];
+    const analyser = new LizardAnalyser(["ts", "tsx"], async (_file, args) => {
+      calls.push(args);
+      return { stdout: "" };
+    });
+
+    expect(await analyser.analyse("/work/clone")).toEqual({ functions: [], partlyMeasured: [], unmeasuredFiles: 0 });
+    expect(calls[0]).toEqual([
+      "--csv",
+      ...["*/node_modules/*", "*/vendor/*", "*/dist/*", "*/build/*", "*.min.js", "*.ts", "*.tsx"].flatMap((x) => ["-x", x]),
+      ".",
+    ]);
+  });
+
   it("turns an output overflow into a clear error that does not quote the buffer", async () => {
-    const overflow = new LizardAnalyser(new FakeWorkspaceReader(), async () => {
+    const overflow = new LizardAnalyser([], async () => {
       throw Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
     });
 
@@ -458,7 +397,7 @@ describe("LizardAnalyser", () => {
 
   it("stops after ten minutes, with SIGKILL and a 64 MiB buffer, and says so", async () => {
     let options: LizardExecOptions | undefined;
-    const hung = new LizardAnalyser(new FakeWorkspaceReader(), async (_f, _a, o) => {
+    const hung = new LizardAnalyser([], async (_f, _a, o) => {
       options = o;
       throw Object.assign(new Error("timed out"), { killed: true });
     });
@@ -468,7 +407,7 @@ describe("LizardAnalyser", () => {
   });
 
   it("passes other failures through", async () => {
-    const broken = new LizardAnalyser(new FakeWorkspaceReader(), async () => {
+    const broken = new LizardAnalyser([], async () => {
       throw new Error("lizard exploded");
     });
 
@@ -476,9 +415,9 @@ describe("LizardAnalyser", () => {
   });
 
   it("is available only when `lizard --version` succeeds", async () => {
-    expect(await new LizardAnalyser(new FakeWorkspaceReader(), async () => ({ stdout: "1.17" })).available()).toBe(true);
+    expect(await new LizardAnalyser([], async () => ({ stdout: "1.17" })).available()).toBe(true);
     expect(
-      await new LizardAnalyser(new FakeWorkspaceReader(), async () => {
+      await new LizardAnalyser([], async () => {
         throw new Error("ENOENT");
       }).available(),
     ).toBe(false);

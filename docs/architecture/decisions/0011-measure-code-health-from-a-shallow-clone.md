@@ -49,3 +49,7 @@ The new port pair follows ADR 0003, and only `main.ts` names the concrete adapte
 - The host needs `git` and, for this feature, Python with lizard installed, which is a step the rest of the tool does not ask for.
 - The view is a single point in time at the tip of the deploy branch, with no trend yet, and it says nothing about test coverage or code that has since changed.
 - CCN counts paths through a function and is a proxy for risk, not a measure of quality. Generated code that is not in an excluded directory will inflate the figures.
+
+## Revision History
+
+- 2026-10-07: Lizard no longer reads JavaScript or TypeScript. The syntax tree alternative rejected above is now taken for those languages, and lizard remains the analyser for every other language and is optional for a repository that holds only scripts (ADR 0025).

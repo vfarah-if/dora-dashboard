@@ -13,6 +13,8 @@
     "crawl": "tsx --env-file-if-exists=../../.env src/cli.ts"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.9",
+    "@babel/types": "^7.29.8",
     "@dora-dashboard/core": "*",
     "@fastify/cookie": "^11.1.2",
     "@fastify/rate-limit": "^11.2.0",

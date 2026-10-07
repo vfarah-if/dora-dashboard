@@ -17,7 +17,7 @@ System_Ext(github, "GitHub", "Pull requests, reviews and Actions workflow runs t
 
 Boundary(host, "Operator's machine", "host tooling") {
   System_Ext(ghcli, "GitHub CLI", "Holds the operator's local GitHub login and hands out its token.")
-  System_Ext(tooling, "git and lizard", "git makes a shallow clone of the deploy branch. lizard measures cyclomatic complexity per function.")
+  System_Ext(tooling, "git and lizard", "git makes a shallow clone of the deploy branch. lizard measures cyclomatic complexity per function for languages other than JavaScript and TypeScript, which the API reads itself.")
 }
 
 Rel(reader, dashboard, "Views reports, comparisons and the review queue", "web browser")

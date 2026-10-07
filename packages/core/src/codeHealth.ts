@@ -35,9 +35,10 @@ export interface FunctionMetrics {
  * Bumped whenever a snapshot gains data, so that older snapshots are analysed again even when the branch has
  * not moved. Version 1 (no number stored) had no tooling facts; version 3 read CI and coverage configuration more
  * strictly (comments, `continue-on-error`, installs), so version 2 tooling facts may differ. Version 4 records
- * the files the analyser may have read only in part.
+ * the files the analyser may have read only in part. Version 5 measures JavaScript and TypeScript from a syntax tree
+ * rather than with lizard (ADR 0025), so their figures differ, and records source files no installed tool reads.
  */
-export const CODE_SNAPSHOT_VERSION = 4;
+export const CODE_SNAPSHOT_VERSION = 5;
 
 /** What one analysis of one commit found. `error` is set, with no functions, when the analysis could not run. */
 export interface CodeSnapshot {
@@ -50,10 +51,13 @@ export interface CodeSnapshot {
   /** Absent means version 1. */
   snapshotVersion?: number;
   /**
-   * Files the analyser may have read only in part, so some of their functions can be missing from `functions`.
-   * Absent before version 4.
+   * Files the analyser could not read in full, so some of their functions can be missing from `functions`. Absent
+   * before version 4. In version 4 these were files lizard may have misread; from version 5 they are files that failed
+   * to parse cleanly or were too large to read.
    */
   partlyMeasured?: string[];
+  /** Source files in a language no installed tool reads, such as Python when lizard is missing. Absent before version 5. */
+  unmeasuredFiles?: number;
 }
 
 export interface CodeHealthThresholds {
@@ -113,8 +117,10 @@ export interface CodeHealthReport {
   hotspots: Hotspot[];
   /** The fewest functions to simplify for maintainability to reach the next band; null when elite or empty. */
   nextBand: NextBand | null;
-  /** Source files the analyser may have read only in part, sorted. Empty when none, or before snapshot version 4. */
+  /** Source files the analyser could not read in full, sorted. Empty when none, or before snapshot version 4. */
   partlyMeasured: string[];
+  /** Source files in a language no installed tool reads, so none of their functions are counted. 0 before version 5. */
+  unmeasuredFiles: number;
   tests: { functions: number; nloc: number };
   maintainability: MaintainabilityFigures;
   testing: { testRatio: number; prsWithTests: PrsWithTests | null; ciRunsTests: boolean | null; coverageFloor: number | null };
@@ -340,6 +346,7 @@ export function codeHealth(
     hotspots: describeHotspots(byComplexity.slice(0, HOTSPOT_COUNT), nloc, path),
     nextBand: path,
     partlyMeasured: (snapshot.partlyMeasured ?? []).filter((f) => !isTestPath(f)).sort(),
+    unmeasuredFiles: snapshot.unmeasuredFiles ?? 0,
     tests: { functions: testFns.length, nloc: testNloc },
     maintainability,
     testing: testingFigures(testRatio, withTests, tooling),
