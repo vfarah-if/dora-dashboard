@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
+
 export interface StatTileProps {
   label: string;
   value: string;
-  hint?: string;
+  hint?: ReactNode;
   /** "danger" outlines the tile. The hint must still say what is wrong, so colour is never the only signal. */
   tone?: "danger";
 }

@@ -1064,6 +1064,7 @@ a:hover {
   padding-top: 6px;
   font-size: 0.8125rem;
   color: var(--text-subtle);
+  overflow-wrap: anywhere;
 }
 
 .dora-tile.is-unmeasured {
@@ -1601,6 +1602,11 @@ a:hover {
     font-size: 0.875rem;
   }
 
+  /* As "Download PDF report" sets it, so the browser's own Print lays the page out the same way. */
+  .app-main {
+    padding: 0;
+  }
+
   .controls-bar {
     padding: 0;
     border: 0;
@@ -1617,6 +1623,7 @@ a:hover {
   .tile,
   .chart-card,
   .fair-panel,
+  .findings-grid > .card,
   .data-table tr {
     break-inside: avoid;
   }
@@ -1634,8 +1641,9 @@ a:hover {
     table-layout: fixed;
   }
 
+  /* At 8.5pt on A4 the name column holds a function name of about 20 characters before it has to break it. */
   .hotspots-table th:nth-child(1) {
-    width: 20%;
+    width: 24%;
   }
 
   .hotspots-table th:nth-child(2) {
@@ -1643,7 +1651,7 @@ a:hover {
   }
 
   .hotspots-table th:nth-child(3) {
-    width: 12%;
+    width: 10%;
   }
 
   .hotspots-table th:nth-child(4) {
@@ -1651,7 +1659,7 @@ a:hover {
   }
 
   .hotspots-table th:nth-child(5) {
-    width: 28%;
+    width: 26%;
   }
 
   .hotspots-table thead th {
@@ -1755,9 +1763,11 @@ a:hover {
   content: "\2022";
 }
 
+/* Labels keep to one line where there is room but never take more than 45%, or a narrow card shows its values
+   one word to a line. */
 .fact-list {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
   gap: 6px 16px;
   margin: 0;
 }
