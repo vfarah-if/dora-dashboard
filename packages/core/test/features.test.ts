@@ -17,8 +17,25 @@ function candidate(
 
 describe("ticketKeysOf", () => {
   it("finds keys in the title, branch and linked issues once each", () => {
-    const pr = open({ number: 1, title: "WID-12 add widgets", headRef: "feature/WID-12-and-GAD-7", linkedIssues: ["#3"] });
-    expect(ticketKeysOf(pr)).toEqual(["WID-12", "GAD-7"]);
+    const pr = open({
+      number: 1,
+      title: "WID-12 add widgets",
+      headRef: "feature/WID-12-and-GAD-7",
+      linkedIssues: ["acme/widgets#3"],
+    });
+    expect(ticketKeysOf(pr)).toEqual(["WID-12", "GAD-7", "acme/widgets#3"]);
+  });
+
+  it("drops an unqualified linked issue, which could belong to any repository", () => {
+    expect(ticketKeysOf(open({ number: 1, linkedIssues: ["#12"] }))).toEqual([]);
+  });
+
+  it("does not read a Jira-looking key out of a qualified reference", () => {
+    expect(ticketKeysOf(open({ number: 1, linkedIssues: ["acme/API-2#5"] }))).toEqual(["acme/API-2#5"]);
+  });
+
+  it("keeps an issue from another repository under its own name", () => {
+    expect(ticketKeysOf(open({ number: 1, linkedIssues: ["acme/gadgets#5"] }))).toEqual(["acme/gadgets#5"]);
   });
 
   it("ignores lookalikes such as UTF-8 and SHA-256", () => {
@@ -78,6 +95,31 @@ describe("issueKeysOf", () => {
 describe("groupFeatures", () => {
   it("returns nothing when no pull requests are related", () => {
     expect(groupFeatures([candidate({ number: 1 }), candidate({ number: 2 })])).toEqual([]);
+  });
+
+  it("joins two pull requests that close the same qualified issue", () => {
+    const groups = groupFeatures([
+      candidate({ number: 1, headRef: "a", linkedIssues: ["acme/widgets#12"] }, widgets),
+      candidate({ number: 2, headRef: "b", linkedIssues: ["acme/widgets#12"] }, gadgets),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ evidence: ["ticket"], ticketKeys: ["acme/widgets#12"] });
+  });
+
+  it("keeps two repositories' issue 12 apart", () => {
+    const groups = groupFeatures([
+      candidate({ number: 1, headRef: "a", linkedIssues: ["acme/widgets#12"] }, widgets),
+      candidate({ number: 2, headRef: "b", linkedIssues: ["acme/gadgets#12"] }, gadgets),
+    ]);
+    expect(groups).toEqual([]);
+  });
+
+  it("does not group pull requests that link an unqualified #12", () => {
+    const groups = groupFeatures([
+      candidate({ number: 1, headRef: "a", linkedIssues: ["#12"] }, widgets),
+      candidate({ number: 2, headRef: "b", linkedIssues: ["#12"] }, gadgets),
+    ]);
+    expect(groups).toEqual([]);
   });
 
   it("joins pull requests sharing a ticket key, across repositories", () => {

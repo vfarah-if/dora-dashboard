@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { Config } from "./core/config.js";
 import { RateLimitedError } from "./core/errors.js";
 import type { DeviceAuthorisation } from "./interfaces/device-authorisation.js";
+import type { IssueProvider } from "./interfaces/issue-provider.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
 import type { WorkspaceReader } from "./interfaces/workspace-reader.js";
@@ -15,12 +16,15 @@ import type { WorkItemProvider } from "./interfaces/work-item-provider.js";
 import type { CliTokenSource, SessionStore } from "./interfaces/token-source.js";
 import { registerAuthRoutes, requireSession } from "./routes/auth.js";
 import { registerErrorHandler } from "./routes/errors.js";
+import { registerIssueRoutes } from "./routes/issues.js";
 import { registerJiraRoutes } from "./routes/jira.js";
 import { registerRepoRoutes } from "./routes/repos.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
 import { DeviceSignInService } from "./services/device-sign-in-service.js";
 import { CodeHealthService } from "./services/code-health-service.js";
 import { CrawlService } from "./services/crawl-service.js";
+import { IssueCrawlService } from "./services/issue-crawl-service.js";
+import { IssueReportService } from "./services/issue-report-service.js";
 import { JiraAuthService } from "./services/jira-auth-service.js";
 import { RepoService } from "./services/repo-service.js";
 import { ReportService } from "./services/report-service.js";
@@ -47,6 +51,8 @@ export interface AppDeps {
   reader?: WorkspaceReader;
   /** The time source for review waits and the review queue cache; tests pass a fixed one. */
   clock?: () => Date;
+  /** GitHub Issues, read during the crawl. Leave it out and a crawl reads no issues; stored ones and the label route still work. */
+  issues?: IssueProvider;
   /** Jira, through OAuth 2.0 (3LO). Used only when `config.jira` is set; otherwise the Jira routes are not registered and answer 404 (ADR 0020). */
   jira?: { provider: WorkItemProvider; auth: TrackerAuthorisation; grants: TrackerGrantStore };
   /** `true` logs to stdout; a stream lets a test read the log lines. */
@@ -85,7 +91,8 @@ function createCodeHealth(deps: AppDeps, app: FastifyInstance): CodeHealthServic
 function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHealthService): CrawlService {
   // With analysis off the crawl never clones, but earlier snapshots can still be read back.
   const analyseDuringCrawl = deps.config.codeAnalysis && deps.checkout && deps.analyser;
-  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log);
+  const issues = deps.issues && new IssueCrawlService(deps.store, deps.issues, app.log);
+  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log, issues);
 }
 
 /** Jira is on only when the config carries the Atlassian app (ADR 0020) and the adapters were handed in. */
@@ -132,12 +139,19 @@ function registerRoutes(
     ...(jiraAuth ? { onSignOut: (login: string) => jiraAuth.disconnect(login) } : {}),
   };
   registerAuthRoutes(app, auth);
+  const repos = new RepoService(deps.store, deps.provider);
   registerRepoRoutes(app, {
     guard: requireSession(auth),
-    repos: new RepoService(deps.store, deps.provider),
+    repos,
     crawler,
     reports: new ReportService(deps.store, deps.clock),
     codeHealth,
+  });
+  registerIssueRoutes(app, {
+    guard: requireSession(auth),
+    config: deps.config,
+    repos,
+    reports: new IssueReportService(deps.store, deps.clock),
   });
   registerReviewQueueRoutes(app, {
     guard: requireSession(auth),

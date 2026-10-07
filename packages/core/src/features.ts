@@ -7,6 +7,8 @@ import type { FeatureGroup, FeatureMember, OpenPullRequest, PullRequest, QueueEn
  * both yield `WID-12`.
  */
 const TICKET_KEY = /(?<![A-Za-z0-9])[A-Z][A-Z0-9_]+-\d+(?!\d)/g;
+/** A linked issue qualified by its repository, such as `acme/widgets#12`. */
+const QUALIFIED_ISSUE = /^[\w.-]+\/[\w.-]+#\d+$/;
 /** Look like ticket keys but are not. */
 const NOT_TICKETS = new Set(["UTF", "SHA", "ISO", "HTTP", "RFC", "CVE", "MD", "TLS", "SSL", "AES", "RSA"]);
 /** Branches that many unrelated pull requests are opened from or against. */
@@ -24,9 +26,14 @@ export function issueKeysOf(pr: Pick<PullRequest, "title" | "headRef">): string[
   return keysIn([pr.title, pr.headRef]);
 }
 
-/** Ticket keys such as `ABC-123` in the title, branch name and linked issues, in order of appearance, without repeats. */
+/**
+ * Ticket keys such as `ABC-123` in the title and branch name only, then linked issues qualified by repository
+ * such as `acme/widgets#12`, without repeats. A qualified reference such as `acme/API-2#5` is not searched for keys, so it yields no phantom `API-2`. An unqualified `#12` is dropped, because it would join two repositories'
+ * issue 12 (ADR 0017).
+ */
 export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "linkedIssues">): string[] {
-  return keysIn([pr.title, pr.headRef, ...pr.linkedIssues]);
+  const linked = pr.linkedIssues.filter((ref) => QUALIFIED_ISSUE.test(ref));
+  return [...new Set([...keysIn([pr.title, pr.headRef]), ...linked])];
 }
 
 /** Pull requests named on a `Related:` line of the body: `owner/name#12`, a pull request link, or `#12` in the same repository. */

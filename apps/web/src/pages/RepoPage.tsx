@@ -149,10 +149,9 @@ function InfoNotice({ text }: { text: string }) {
   );
 }
 
-/** True while the crawler is fetching this repository, from the repository list. */
-function useIsCrawling(id: number): boolean {
-  const repos = useRepos();
-  return repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
+/** This repository's row in the repository list, once the list has loaded. */
+function useListing(id: number) {
+  return useRepos().data?.find((r) => r.id === id);
 }
 
 interface ReportStateProps {
@@ -206,7 +205,9 @@ function RepoView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [excluded, setExcluded] = useListParam("exclude");
   const report = useReport(id, range, excluded);
-  const crawling = useIsCrawling(id);
+  const listing = useListing(id);
+  const crawling = listing?.crawlStatus === "crawling";
+  const issueCount = listing?.issues ?? 0;
   const choices = report.data?.authorChoices ?? [];
   const leftOut = excludedInRange(choices, excluded);
 
@@ -217,6 +218,13 @@ function RepoView({ id }: { id: number }) {
           {copy.common.backToRepos}
         </Link>
         <RepoHeader report={report.data} leftOut={leftOut} />
+        {issueCount > 0 && (
+          <p>
+            <Link to={`/issues/${id}`} className="button button-secondary">
+              {copy.repo.issuesLink}
+            </Link>
+          </p>
+        )}
 
         <div className="controls-bar">
           <DateRangeControls value={range} onChange={setRange} />

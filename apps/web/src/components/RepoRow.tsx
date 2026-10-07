@@ -1,12 +1,14 @@
 import { useId, useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { useCrawl, useDeleteRepo, useUpdateRepo, useWorkflows, type RepoWithCounts } from "../api/hooks";
+import type { RepoListing } from "@dora-dashboard/core";
+import { useCrawl, useDeleteRepo, useUpdateRepo, useWorkflows } from "../api/hooks";
 import { errorText } from "../api/client";
 import { copy } from "../copy";
+import { IssueLabelsPanel } from "./IssueLabelsPanel";
 import { JiraSpacesPanel } from "./JiraSpacesPanel";
 import { formatDateTime, formatNumber } from "../lib/format";
 
-function ConfigureDeploy({ repo, onDone }: { repo: RepoWithCounts; onDone: () => void }) {
+function ConfigureDeploy({ repo, onDone }: { repo: RepoListing; onDone: () => void }) {
   const name = `${repo.owner}/${repo.name}`;
   const workflows = useWorkflows(repo.id, true);
   const update = useUpdateRepo(repo.id);
@@ -81,19 +83,19 @@ function ConfigureDeploy({ repo, onDone }: { repo: RepoWithCounts; onDone: () =>
 }
 
 export interface RepoRowProps {
-  repo: RepoWithCounts;
+  repo: RepoListing;
   selected: boolean;
   selectable: boolean;
   onSelect: (selected: boolean) => void;
 }
 
-function deployDescription(repo: RepoWithCounts): string {
+function deployDescription(repo: RepoListing): string {
   return repo.deployWorkflows.length
     ? copy.repos.deployDescription(repo.deployWorkflows.join(", "), repo.deployBranch)
     : copy.repos.noDeployWorkflow;
 }
 
-function RepoFacts({ repo }: { repo: RepoWithCounts }) {
+function RepoFacts({ repo }: { repo: RepoListing }) {
   const hasWorkflows = repo.deployWorkflows.length > 0;
   return (
     <dl className="repo-facts">
@@ -117,7 +119,7 @@ function RepoFacts({ repo }: { repo: RepoWithCounts }) {
   );
 }
 
-function CrawlStatus({ repo }: { repo: RepoWithCounts }) {
+function CrawlStatus({ repo }: { repo: RepoListing }) {
   const crawling = repo.crawlStatus === "crawling";
   return (
     <div className="repo-status" role="status" aria-live="polite">
@@ -222,6 +224,7 @@ export function RepoRow({ repo, selected, selectable, onSelect }: RepoRowProps) 
       />
       {configuring && <ConfigureDeploy repo={repo} onDone={() => setConfiguring(false)} />}
       {configuring && <JiraSpacesPanel repoId={repo.id} />}
+      {configuring && repo.issues > 0 && <IssueLabelsPanel repo={repo} />}
     </li>
   );
 }

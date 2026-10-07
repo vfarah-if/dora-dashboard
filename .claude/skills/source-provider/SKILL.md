@@ -35,6 +35,10 @@ A tracker is a **different port**, not a `SourceProvider`: it yields work items,
 4. Jira Cloud authenticates with an API token and email, or OAuth 2.0 (3LO). Never a password. Store nothing on disk; follow the session pattern in ADR 0004.
 5. Write an ADR before starting; the status-history mapping (which statuses mean "in progress") differs per project and needs a stated rule.
 
+## An issue tracker on the code host (GitHub Issues)
+
+An issue tracker that lives on the code host is not a `WorkItemProvider` either. It has its own port, `IssueProvider` in `interfaces/issue-provider.ts`, because it has no site, space or per-person grant. It is read during the repository crawl with the code host's own token, through `IssueCrawlService`, and a failure there is stored as the repository's issue error and never fails the crawl. Read its contract before writing an adapter, and see ADR 0028. Keep external trackers such as Jira on `WorkItemProvider`, with their own credentials, as above.
+
 ## Deployed sites and publishing
 
 ADR 0010 sets the order and names two further ports: `DeploymentSignalProvider` (release and outage events read from a live site) and `ReportPublisher` (a comparison rendered into Confluence or similar, written only on request). Treat each like a code host: a port, an adapter taking `fetch` and a base URL, recorded-response tests and an ADR.

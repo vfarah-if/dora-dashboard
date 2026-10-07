@@ -89,7 +89,7 @@ export interface OpenPullRequest extends PullRequest {
   headRef: string;
   /** State of the newest commit's checks: "none" when the repository reports no checks. */
   checks: "passing" | "failing" | "pending" | "none";
-  /** Issues the pull request is set to close, as `#12`. */
+  /** Issues the pull request is set to close, as `owner/name#12`, qualified by the issue's own repository. */
   linkedIssues: string[];
   /** Number of files changed, as reported by the host. */
   changedFiles: number;
@@ -370,4 +370,81 @@ export type ApiErrorCode = "jira_unauthorised";
 export interface ApiErrorBody {
   error: string;
   code?: ApiErrorCode;
+}
+
+/** What sort of work a GitHub issue is, decided from its native type, its labels or its title prefix (ADR 0028). */
+export type IssueKind = "bug" | "feature" | "maintenance" | "incident" | "security" | "epic" | "other";
+
+/** How urgent a GitHub issue is, from a label or a title prefix; P0 is the most urgent. */
+export type IssuePriority = "P0" | "P1" | "P2" | "P3" | "P4";
+
+/**
+ * Why a GitHub issue was closed. A closed issue GitHub recorded no reason for counts as completed, because closing
+ * without a reason was the only way to finish an issue before reasons existed.
+ */
+export type IssueCloseReason = "completed" | "not_planned" | "duplicate";
+
+/** One close or reopen in an issue's history. */
+export interface IssueEvent {
+  at: string;
+  type: "closed" | "reopened";
+  /** Only a close carries a reason; null on a reopen, or when the host gave none. */
+  reason: IssueCloseReason | null;
+}
+
+/** A pull request an issue names as closing it, qualified by its repository so two repositories' #12 never meet. */
+export interface IssueReference {
+  /** "owner/name". */
+  repo: string;
+  number: number;
+}
+
+/** An issue read from a code host's own issue tracker, such as GitHub Issues. Pull requests are never issues here. */
+export interface RepoIssue {
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed";
+  /** Null while the issue is open. */
+  closeReason: IssueCloseReason | null;
+  createdAt: string;
+  updatedAt: string;
+  /** When the issue was last closed; null while it is open. */
+  closedAt: string | null;
+  /** Login of whoever opened it; null when the account has been deleted. Shown only behind the people toggle (ADR 0008). */
+  author: string | null;
+  /** Logins; shown only behind the people toggle (ADR 0008). */
+  assignees: string[];
+  labels: string[];
+  /** The host's native issue type, such as "Bug"; null when none is set. */
+  issueType: string | null;
+  /** Pull requests that close this issue through a closing keyword or a manual link, in any repository. */
+  closedBy: IssueReference[];
+  /** Closes and reopens, oldest first. */
+  events: IssueEvent[];
+  /** True when the host had older closes or reopens than were read; the open spans then fall back to the dates. */
+  eventsTruncated?: boolean;
+}
+
+/**
+ * A repository's override of which label names mean which kind and priority. Each key named replaces the default list
+ * for that key only; keys left out keep their defaults. Names are compared without case.
+ */
+export interface IssueLabelRules {
+  kinds?: Partial<Record<Exclude<IssueKind, "other">, string[]>>;
+  priorities?: Partial<Record<IssuePriority, string[]>>;
+}
+
+/** A repository as the repositories list shows it, with how much has been crawled from it. */
+export interface RepoListing extends Repo {
+  pullRequests: number;
+  deployRuns: number;
+  /** Issues stored for the repository; the GitHub Issues page appears only when some repository has more than none. */
+  issues: number;
+  /** Whether the host reported issues switched on at the last crawl; null before issues were first read. */
+  issuesEnabled: boolean | null;
+  /** The repository's label override; null when the defaults apply. */
+  issueLabels: IssueLabelRules | null;
+  /** Why the last issue read failed; null when it succeeded or never ran. The rest of the crawl is unaffected. */
+  issueError: string | null;
 }

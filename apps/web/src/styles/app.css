@@ -2625,6 +2625,7 @@ a:hover {
 
 .feature-title {
   font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 
 .feature-card {
@@ -2640,6 +2641,7 @@ a:hover {
 }
 
 .feature-members {
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: 6px;

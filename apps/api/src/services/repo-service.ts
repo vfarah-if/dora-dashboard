@@ -1,6 +1,6 @@
-import type { Repo } from "@dora-dashboard/core";
+import type { IssueLabelRules, Repo, RepoListing } from "@dora-dashboard/core";
 import { ConflictError, NotFoundError, ValidationError } from "../core/errors.js";
-import type { RepoCounts, RepoStore } from "../interfaces/repo-store.js";
+import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
 import { isSafeBranch, parseRepoRef } from "./repo-ref.js";
 
@@ -13,16 +13,30 @@ export interface AddRepoInput {
   deployBranch?: string;
 }
 
-export type RepoWithCounts = Repo & RepoCounts;
-
 export class RepoService {
   constructor(
     private readonly store: RepoStore,
     private readonly provider: SourceProvider,
   ) {}
 
-  list(): RepoWithCounts[] {
-    return this.store.listRepos().map((repo) => ({ ...repo, ...this.store.counts(repo.id) }));
+  list(): RepoListing[] {
+    return this.store.listRepos().map((repo) => this.listing(repo));
+  }
+
+  private listing(repo: Repo): RepoListing {
+    const { enabled, labels, error } = this.store.issueState(repo.id);
+    return { ...repo, ...this.store.counts(repo.id), issuesEnabled: enabled, issueLabels: labels, issueError: error };
+  }
+
+  /**
+   * Saves the repository's label override and returns its listing row. Names are trimmed, blanks and repeats (without
+   * case) dropped, keys left with no names dropped, and an override with nothing left is the defaults again (null).
+   * The rules are read at report time, so this starts no crawl.
+   */
+  setIssueLabels(id: number, rules: IssueLabelRules | null): RepoListing {
+    const repo = this.get(id);
+    this.store.setIssueLabels(id, cleanRules(rules));
+    return this.listing(repo);
   }
 
   get(id: number): Repo {
@@ -69,3 +83,32 @@ const cleanBranch = (branch: string | undefined) => {
   if (branch !== undefined && !isSafeBranch(branch.trim())) throw new ValidationError("That is not a usable branch name");
   return branch?.trim() || "main";
 };
+
+/** The names trimmed, with blanks and repeats (compared without case) dropped; the first spelling of a repeat is kept. */
+function cleanNames(names: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const name of names.map((n) => n.trim())) {
+    const key = name.toLowerCase();
+    if (name === "" || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(name);
+  }
+  return kept;
+}
+
+function cleanGroup<K extends string>(group: Partial<Record<K, string[]>> | undefined): Partial<Record<K, string[]>> | null {
+  const kept: Partial<Record<K, string[]>> = {};
+  for (const [key, names] of Object.entries(group ?? {}) as [K, string[] | undefined][]) {
+    const clean = cleanNames(names ?? []);
+    if (clean.length > 0) kept[key] = clean;
+  }
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
+function cleanRules(rules: IssueLabelRules | null): IssueLabelRules | null {
+  if (rules === null) return null;
+  const kinds = cleanGroup(rules.kinds);
+  const priorities = cleanGroup(rules.priorities);
+  return kinds || priorities ? { ...(kinds ? { kinds } : {}), ...(priorities ? { priorities } : {}) } : null;
+}

@@ -1,3 +1,4 @@
+import { instant, rangeOf, sinceCreated, toFirstPr, toProduction, type Range } from "./delivery.js";
 import { shippedPrs } from "./dora.js";
 import { issueKeysOf } from "./features.js";
 import { isBot } from "./pullRequests.js";
@@ -179,9 +180,6 @@ const STALE_MS = 7 * DAY_MS;
 const WAITING =
   /(?<![a-z])(?:block(?:ed|ers?|s)?|hold(?:ing|s)?|held|a?wait(?:ed|ing|s)?|ready|queue(?:d|s|ing)?|queuing)(?![a-z])/i;
 
-/** Jira writes `.000Z` and GitHub does not, so instants are always compared as numbers, never as text. */
-const instant = (iso: string) => Date.parse(iso);
-const dateOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 /** Keys in natural order, so WID-2 comes before WID-10. */
 const byKey = new Intl.Collator("en", { numeric: true }).compare;
 
@@ -232,23 +230,6 @@ function categoryAt({ item, history }: Tracked, ms: number): StatusCategory | nu
   return category;
 }
 
-interface Range {
-  from: string;
-  to: string;
-  start: number;
-  /** The last millisecond of the `to` date, or now when that is earlier. */
-  end: number;
-  now: number;
-}
-
-function rangeOf(items: readonly WorkItem[], options: SpaceReportOptions): Range {
-  const now = instant(options.now);
-  const earliest = items.reduce((min, item) => Math.min(min, instant(item.createdAt)), Infinity);
-  const from = options.from?.slice(0, 10) ?? dateOf(items.length ? earliest : now);
-  const end = Math.min(instant(`${options.to?.slice(0, 10) ?? dateOf(now)}T23:59:59.999Z`), now);
-  return { from, to: dateOf(end), start: instant(`${from}T00:00:00Z`), end, now };
-}
-
 /** A pull request from a linked repository, with the keys it names and when it reached production. */
 interface LinkedPr {
   repo: string;
@@ -288,30 +269,10 @@ function prsByItem(items: readonly WorkItem[], delivery: readonly Tracked[], prs
   );
 }
 
-/** Hours from an issue's creation, never below zero: a ticket raised after the work started waited no time (ADR 0021). */
-function sinceCreated(item: WorkItem, iso: string): number {
-  return Math.max(0, hoursBetween(item.createdAt, iso)!);
-}
-
 /** An assignee's display name, read only from the space's own entries so a key such as `constructor` finds nothing. */
 function nameOf(people: TrackerSpace["people"], accountId: string | null): string | null {
   if (accountId === null || !people || !Object.hasOwn(people, accountId)) return null;
   return people[accountId]!;
-}
-
-/** Created to the first linked pull request opened, in hours; null without one. */
-function toFirstPr(item: WorkItem, prs: readonly LinkedPr[]): number | null {
-  if (prs.length === 0) return null;
-  const first = prs.reduce((a, b) => (instant(b.pr.createdAt) < instant(a.pr.createdAt) ? b : a));
-  return sinceCreated(item, first.pr.createdAt);
-}
-
-/** Created to the deploy that shipped the last merged linked pull request; null unless every merged one shipped. */
-function toProduction(item: WorkItem, prs: readonly LinkedPr[]): number | null {
-  const merged = prs.filter((p) => p.pr.mergedAt !== null);
-  if (merged.length === 0 || merged.some((p) => p.deployedAt === null)) return null;
-  const last = merged.map((p) => p.deployedAt!).sort((a, b) => instant(b) - instant(a))[0]!;
-  return sinceCreated(item, last);
 }
 
 interface Segment {

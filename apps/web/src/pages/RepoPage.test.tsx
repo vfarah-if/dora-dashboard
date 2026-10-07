@@ -522,3 +522,26 @@ describe("RepoPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("RepoPage GitHub Issues link", () => {
+  const open = async (listing: ReturnType<typeof repo>) => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [listing] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
+  };
+
+  it("links to the repository's GitHub Issues page when it has issues", async () => {
+    await open(repo({ issues: 12 }));
+    expect(await screen.findByRole("link", { name: copy.repo.issuesLink })).toHaveAttribute("href", "/issues/1");
+  });
+
+  it("leaves the link out when the repository has no issues", async () => {
+    await open(repo({ issues: 0 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: copy.report.download })).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: copy.repo.issuesLink })).not.toBeInTheDocument();
+  });
+});

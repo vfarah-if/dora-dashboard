@@ -459,11 +459,11 @@ describe("SqliteRepoStore", () => {
 
     expect(store.findRepo("ACME", "WIDGETS")?.id).toBe(repo.id);
     expect(store.pullRequests(repo.id).find((p) => p.number === 1)?.title).toBe("edited");
-    expect(store.counts(repo.id)).toEqual({ pullRequests: 2, deployRuns: 2 });
+    expect(store.counts(repo.id)).toEqual({ pullRequests: 2, deployRuns: 2, issues: 0 });
 
     store.deleteRepo(repo.id);
     expect(store.getRepo(repo.id)).toBeNull();
-    expect(store.counts(repo.id)).toEqual({ pullRequests: 0, deployRuns: 0 });
+    expect(store.counts(repo.id)).toEqual({ pullRequests: 0, deployRuns: 0, issues: 0 });
   });
 
   it("tracks crawl state and keeps the previous cursor when a crawl saw nothing", () => {
@@ -597,7 +597,14 @@ describe("GitHubProvider open pull requests", () => {
         null,
       ],
     },
-    closingIssuesReferences: { nodes: [{ number: 12 }, null] },
+    closingIssuesReferences: {
+      nodes: [
+        { number: 12, repository: { nameWithOwner: "acme/widgets" } },
+        { number: 7, repository: { nameWithOwner: "acme/gadgets" } },
+        { number: 9 },
+        null,
+      ],
+    },
     labels: { nodes: [{ name: "on hold" }] },
   };
   const connection = (nodes: unknown[], next: string | null = null) => ({
@@ -622,7 +629,7 @@ describe("GitHubProvider open pull requests", () => {
       checks: "failing",
       changedFiles: 7,
       body: "Related: #4",
-      linkedIssues: ["#12"],
+      linkedIssues: ["acme/widgets#12", "acme/gadgets#7", "acme/widgets#9"],
       labels: ["on hold"],
       requestedReviewers: [
         { name: "bob", isTeam: false },

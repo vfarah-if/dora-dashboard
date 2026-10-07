@@ -1,13 +1,9 @@
-import type {
-  ItemRef,
-  SpaceHygieneBulkMoveFinding,
-  SpaceHygieneFinding,
-  SpaceHygienePullRequestFinding,
-} from "@dora-dashboard/core";
+import type { ItemRef, SpaceHygieneBulkMoveFinding, SpaceHygieneFinding } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatPercent, formatTime } from "../lib/format";
-import { assigneeLabel, groupByAssignee, HYGIENE_ORDER, limitGroups, shareOf, browseUrl } from "../lib/space";
+import { HYGIENE_ORDER, shareOf, browseUrl } from "../lib/space";
 import { ExternalLink } from "./ExternalLink";
+import { GroupedItemList, HygieneLine, PullRequestList } from "./HygieneLists";
 import { ShowAllList } from "./ShowAllList";
 
 interface FindingProps {
@@ -16,53 +12,14 @@ interface FindingProps {
   people: boolean;
 }
 
-function IssueLine({ item, siteUrl }: { item: ItemRef; siteUrl: string }) {
-  return (
-    <li className="hygiene-item">
-      <ExternalLink href={browseUrl(siteUrl, item.key)} className="mono">
-        {item.key}
-      </ExternalLink>{" "}
-      <span className="hygiene-summary">{item.summary}</span>
-    </li>
-  );
-}
-
-/** Issue keys, in one list or grouped under each assignee's name when people are shown. */
 function IssueList({ items, siteUrl, people }: { items: readonly ItemRef[]; siteUrl: string; people: boolean }) {
   return (
-    <ShowAllList total={items.length}>
-      {(limit) => {
-        const all = { id: "all", name: null, assigned: false, items: [...items] };
-        const groups = limitGroups(people ? groupByAssignee(items) : [all], limit);
-        return groups.map((group) => (
-          <div key={group.id} className="hygiene-group">
-            {people && <h4 className="hygiene-person">{assigneeLabel(group)}</h4>}
-            <ul className="hygiene-list">
-              {group.items.map((item) => (
-                <IssueLine key={item.key} item={item} siteUrl={siteUrl} />
-              ))}
-            </ul>
-          </div>
-        ));
-      }}
-    </ShowAllList>
-  );
-}
-
-function PullRequestList({ pullRequests }: { pullRequests: SpaceHygienePullRequestFinding["pullRequests"] }) {
-  return (
-    <ShowAllList total={pullRequests.length}>
-      {(limit) => (
-        <ul className="hygiene-list">
-          {pullRequests.slice(0, limit).map((pr) => (
-            <li key={`${pr.repo}#${pr.number}`} className="hygiene-item">
-              <ExternalLink href={pr.url} className="mono">{`${pr.repo}#${pr.number}`}</ExternalLink>{" "}
-              <span className="hygiene-summary">{pr.title}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </ShowAllList>
+    <GroupedItemList
+      items={items}
+      people={people}
+      itemKey={(item) => item.key}
+      renderItem={(item) => <HygieneLine href={browseUrl(siteUrl, item.key)} label={item.key} summary={item.summary} />}
+    />
   );
 }
 

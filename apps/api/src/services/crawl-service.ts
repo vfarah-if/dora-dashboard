@@ -1,10 +1,14 @@
 import type { DeployRun } from "@dora-dashboard/core";
-import { NotFoundError } from "../core/errors.js";
+import { AppError, NotFoundError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
 import type { CodeHealthService } from "./code-health-service.js";
+import type { IssueCrawlService } from "./issue-crawl-service.js";
+
+/** Stored in place of a failure's own message when it is not one the person can act on; the detail is in the log. */
+const UNEXPECTED_ISSUE_FAILURE = "Reading issues failed unexpectedly. See the API log.";
 
 type CrawledRepo = NonNullable<ReturnType<RepoStore["getRepo"]>>;
 
@@ -24,6 +28,7 @@ export class CrawlService {
     private readonly provider: SourceProvider,
     private readonly codeHealth?: CodeHealthService,
     private readonly log: Logger = noopLogger,
+    private readonly issues?: IssueCrawlService,
   ) {}
 
   isCrawling(repoId: number): boolean {
@@ -41,6 +46,21 @@ export class CrawlService {
     }
   }
 
+  /**
+   * Issues are a bonus too: a failure is stored on the repository as its issue error and logged, the issue cursor is
+   * left where the last complete read put it, and the pull request crawl still finishes.
+   */
+  private async readIssues(token: string, repo: CrawledRepo, full: boolean): Promise<void> {
+    if (!this.issues) return;
+    try {
+      await this.issues.read(token, repo, full);
+    } catch (err) {
+      if (err instanceof AppError) this.log.warn({ err, repoId: repo.id }, "issue step failed");
+      else this.log.error({ err, repoId: repo.id }, "issue step failed unexpectedly");
+      this.store.failIssueCrawl(repo.id, err instanceof AppError ? err.message : UNEXPECTED_ISSUE_FAILURE);
+    }
+  }
+
   async crawl(token: string, repoId: number, full = false): Promise<void> {
     if (this.running.has(repoId)) return;
     const repo = this.store.getRepo(repoId);
@@ -51,6 +71,7 @@ export class CrawlService {
       if (full) this.store.resetCrawlCursor(repoId);
       const newest = await this.readPullRequests(token, repoId, repo);
       await this.readDeployRuns(token, repoId, repo);
+      await this.readIssues(token, repo, full);
       await this.analyseCode(token, repoId, full);
       this.store.finishCrawl(repoId, newest);
     } catch (error) {

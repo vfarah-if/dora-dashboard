@@ -108,3 +108,31 @@ export const linkSpacesBody = {
   additionalProperties: false,
   properties: { siteId, keys: { type: "array", items: spaceKey, maxItems: 20 } },
 } as const;
+
+/** A label name: 1 to 100 characters, none of them a control character. */
+const labelName = { type: "string", minLength: 1, maxLength: 100, pattern: "^[^\\u0000-\\u001f\\u007f]+$" } as const;
+const labelNames = { type: "array", items: labelName, maxItems: 30 } as const;
+
+const keyed = <const K extends string>(keys: readonly K[]) =>
+  ({
+    type: "object",
+    additionalProperties: false,
+    properties: Object.fromEntries(keys.map((key) => [key, labelNames])) as Record<K, typeof labelNames>,
+  }) as const;
+
+/** `labels: null` returns the repository to the default label names; each key named replaces that key's defaults. */
+export const issueLabelsBody = {
+  type: "object",
+  required: ["labels"],
+  additionalProperties: false,
+  properties: {
+    labels: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      properties: {
+        kinds: keyed(["bug", "feature", "maintenance", "incident", "security", "epic"]),
+        priorities: keyed(["P0", "P1", "P2", "P3", "P4"]),
+      },
+    },
+  },
+} as const;
