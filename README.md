@@ -58,6 +58,8 @@ Open a new terminal and check that `lizard --version` works. If the API was alre
 
 Without lizard the JavaScript and TypeScript are still measured and the page shows a notice counting the files in other languages that were not. A lizard that is found but does not run, or that times out, fails the analysis. If an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
 
+The first analysis after upgrading to syntax tree measurement can lower a JavaScript or TypeScript repository's grade with no change to its code. Lizard used to drop or cut short functions it could not follow, often the largest components, so their lines and branches were never counted. On one private repository this hid 44% of the code inside functions and turned a high maintainability band into a medium one. The bands are unchanged and the lower grade is the accurate one (ADR 0026).
+
 ## Signing in
 
 GitHub no longer accepts passwords over its API, so there is no username and password box. Choose one of two modes in `.env`:

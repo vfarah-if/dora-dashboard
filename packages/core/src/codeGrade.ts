@@ -9,7 +9,10 @@ export const HIGH_CCN = 20;
 export const LONG_FUNCTION_NLOC = 60;
 export const MANY_PARAMS = 5;
 
-/** Upper limits, exclusive, for elite, high and medium. At or above the last one is low. */
+/**
+ * Upper limits, exclusive, for elite, high and medium. At or above the last one is low. Do not loosen them to win back
+ * a grade that a more complete analyser lowered (ADR 0026).
+ */
 export const MAINTAINABILITY_LIMITS = {
   linesAboveWarn: [0.05, 0.1, 0.2],
   linesAboveHigh: [0.01, 0.03, 0.08],

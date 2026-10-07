@@ -41,4 +41,4 @@ Alternatives were weighed briefly. Keeping lizard with the heuristic costs nothi
 - CCN has a second implementation to keep in step with lizard's by hand, and three counts differ from lizard on purpose, namely `??` and `??=`, the TypeScript `this` parameter, and the parameters of anonymous arrow functions. Lizard counts `a ?? b` twice and `a??b` once, whereas this analyser counts each once.
 - `.vue` files still go through lizard and can still be misread, and a file mixing parameter decorators with standard decorator syntax is still read only in part.
 - Parsing runs on the API's own thread, so one large file blocks it briefly and the deadline is checked only between files. A worker thread is the remedy if that matters.
-- Figures from before and after this change are not comparable, and the Babel 7 dependency waits on the Node floor.
+- Figures from before and after this change are not comparable, and a grade can fall with no change to the code because lizard was missing code (ADR 0026). The Babel 7 dependency waits on the Node floor.
