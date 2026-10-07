@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { RepoReport } from "@dora-dashboard/core";
 import {
+  compareWeekly,
   completeWeeks,
+  compositionRows,
   cumulative,
+  distributionRows,
   endLabelOffsets,
   lastValueIndex,
   meanStages,
@@ -9,6 +13,7 @@ import {
   overlappingRange,
   positiveOnly,
   shortestHistory,
+  someValue,
   stageShares,
   throughput,
   type WeeklySeries,
@@ -190,5 +195,128 @@ describe("endLabelOffsets", () => {
 
   it("does nothing for a single series", () => {
     expect(endLabelOffsets([{ x: 1, a: 5 }], ["a"], 200)).toEqual({ a: 0 });
+  });
+});
+
+describe("compareWeekly", () => {
+  const a: WeeklySeries = {
+    key: "a",
+    weekly: [
+      week({ week: "2026-01-05", weekIndex: 0, merged: 4, activeAuthors: 2, medianOpenToMergeHours: 6, deploys: 3 }),
+      week({
+        week: "2026-01-12",
+        weekIndex: 1,
+        merged: 2,
+        activeAuthors: 1,
+        medianOpenToMergeHours: 10,
+        deploys: 1,
+        partial: true,
+      }),
+    ],
+  };
+  const b: WeeklySeries = {
+    key: "b",
+    weekly: [week({ week: "2026-01-12", weekIndex: 0, merged: 5, activeAuthors: 5, medianOpenToMergeHours: 1, deploys: 2 })],
+  };
+
+  it("keeps the part-finished week in the running total and leaves it off the weekly rates", () => {
+    const weekly = compareWeekly([a, b], { aligned: false, perContributor: false });
+    // a merged 4 then 2 in a week still running, so its total reaches 6 while its rate stops at the finished week.
+    expect(weekly.cumulative).toEqual([
+      { x: "2026-01-05", a: 4, b: null },
+      { x: "2026-01-12", a: 6, b: 5 },
+    ]);
+    expect(weekly.throughput).toEqual([
+      { x: "2026-01-05", a: 4, b: null },
+      { x: "2026-01-12", a: null, b: 5 },
+    ]);
+    expect(weekly.openToMerge).toEqual([
+      { x: "2026-01-05", a: 6, b: null },
+      { x: "2026-01-12", a: null, b: 1 },
+    ]);
+    expect(weekly.deploys).toEqual([
+      { x: "2026-01-05", a: 3, b: null },
+      { x: "2026-01-12", a: null, b: 2 },
+    ]);
+    expect(weekly.clippedTo).toBeNull();
+  });
+
+  it("divides by active authors per contributor and clips aligned rates to the shortest finished history", () => {
+    const weekly = compareWeekly([a, b], { aligned: true, perContributor: true });
+    // Without its running week a has one finished week, as b does, so the rates stop after week 0: 4 / 2 and 5 / 5.
+    expect(weekly.throughput).toEqual([{ x: 0, a: 2, b: 1 }]);
+    expect(weekly.cumulative).toEqual([{ x: 0, a: 4, b: 5 }]);
+    expect(weekly.clippedTo).toBe(1);
+  });
+});
+
+describe("someValue", () => {
+  it("finds a number under any key, or one that passes the test given", () => {
+    const rows = [
+      { x: 1, a: null, b: 0 },
+      { x: 2, a: null, b: null },
+    ];
+    expect(someValue(rows, ["a", "b"])).toBe(true);
+    expect(someValue(rows, ["a", "b"], (v) => v > 0)).toBe(false);
+    expect(someValue(rows, ["a"])).toBe(false);
+    expect(someValue([], ["a"])).toBe(false);
+  });
+});
+
+describe("distributionRows", () => {
+  it("turns each bucket's shares into percentages in the first report's order, a missing bucket counting as 0", () => {
+    const first: Pick<RepoReport, "distribution"> = {
+      distribution: [
+        { key: "lt1h", label: "< 1 hour", short: "< 1h", count: 1, share: 0.25 },
+        { key: "1to4h", label: "1 to 4 hours", short: "1 to 4h", count: 1, share: 0.25 },
+        { key: "4to24h", label: "4 to 24 hours", short: "4 to 24h", count: 2, share: 0.5 },
+      ],
+    };
+    const second: Pick<RepoReport, "distribution"> = {
+      distribution: [{ key: "lt1h", label: "< 1 hour", short: "< 1h", count: 1, share: 0.5 }],
+    };
+    expect(distributionRows([first, second], ["a", "b"])).toEqual([
+      { x: "< 1h", a: 25, b: 50 },
+      { x: "1 to 4h", a: 25, b: 0 },
+      { x: "4 to 24h", a: 50, b: 0 },
+    ]);
+    expect(distributionRows([], [])).toEqual([]);
+  });
+});
+
+describe("compositionRows", () => {
+  it("gives each repository its stage shares and mean hours, or nulls when it has no stage data", () => {
+    const staged = {
+      weekly: [
+        week({ week: "w1", weekIndex: 0, stages: { coding: 1, waitingForReview: 2, inReview: 1, toMerge: 0 } }),
+        week({ week: "w2", weekIndex: 1, stages: { coding: 3, waitingForReview: 2, inReview: 3, toMerge: 4 } }),
+      ],
+    };
+    const unstaged = { weekly: [week({ week: "w1", weekIndex: 0, stages: null })] };
+    // Each stage averages 2 hours over the two weeks, so each is a quarter of the 8 hour whole.
+    expect(compositionRows([staged, unstaged], ["widgets", "gadgets"])).toEqual([
+      {
+        name: "widgets",
+        coding: 0.25,
+        waitingForReview: 0.25,
+        inReview: 0.25,
+        toMerge: 0.25,
+        codingHours: 2,
+        waitingForReviewHours: 2,
+        inReviewHours: 2,
+        toMergeHours: 2,
+      },
+      {
+        name: "gadgets",
+        coding: null,
+        waitingForReview: null,
+        inReview: null,
+        toMerge: null,
+        codingHours: null,
+        waitingForReviewHours: null,
+        inReviewHours: null,
+        toMergeHours: null,
+      },
+    ]);
   });
 });

@@ -1,4 +1,4 @@
-import type { WeekRow } from "@dora-dashboard/core";
+import type { RepoReport, WeekRow } from "@dora-dashboard/core";
 
 /**
  * Pure transforms that turn several repositories' weekly rows into chart rows. Each output row carries an
@@ -93,6 +93,77 @@ export function cumulative(rows: readonly ChartRow[], keys: readonly string[]): 
       next[key] = total;
     }
     return next;
+  });
+}
+
+/** The weekly line charts on the comparison, and the weeks an aligned view was clipped to. */
+export interface CompareWeekly {
+  cumulative: ChartRow[];
+  throughput: ChartRow[];
+  openToMerge: ChartRow[];
+  deploys: ChartRow[];
+  clippedTo: number | null;
+}
+
+/** Every weekly chart's rows from one set of series. Weekly rates leave off the part-finished current week; the running total keeps it. */
+export function compareWeekly(
+  series: readonly WeeklySeries[],
+  options: { aligned: boolean; perContributor: boolean },
+): CompareWeekly {
+  const { aligned, perContributor } = options;
+  const complete = completeWeeks(series);
+  const rates = mergeWeekly(complete, { aligned, value: (w) => throughput(w, perContributor) });
+  const keys = series.map((s) => s.key);
+  return {
+    cumulative: cumulative(mergeWeekly(series, { aligned, value: (w) => w.merged }).rows, keys),
+    throughput: rates.rows,
+    openToMerge: mergeWeekly(complete, { aligned, value: (w) => w.medianOpenToMergeHours }).rows,
+    deploys: mergeWeekly(complete, { aligned, value: (w) => w.deploys }).rows,
+    clippedTo: rates.clippedTo,
+  };
+}
+
+/** True when any row holds a number under any key that `accept` allows, so a chart of nothing can say so instead. */
+export function someValue(
+  rows: readonly ChartRow[],
+  keys: readonly string[],
+  accept: (value: number) => boolean = () => true,
+): boolean {
+  return rows.some((row) =>
+    keys.some((key) => {
+      const value = row[key];
+      return typeof value === "number" && accept(value);
+    }),
+  );
+}
+
+/**
+ * One row per time-to-merge bucket, in the first report's bucket order, holding each repository's share as a
+ * percentage under its series key. A report without a bucket counts as 0.
+ */
+export function distributionRows(reports: readonly Pick<RepoReport, "distribution">[], keys: readonly string[]): ChartRow[] {
+  return (reports[0]?.distribution ?? []).map((bucket, b) => {
+    const row: ChartRow = { x: bucket.short };
+    reports.forEach((r, i) => {
+      row[keys[i]!] = (r.distribution[b]?.share ?? 0) * 100;
+    });
+    return row;
+  });
+}
+
+/** One repository's stage shares under each stage key and mean hours under `<stage>Hours`; null where it has no stage data. */
+export type CompositionRow = { name: string } & Record<string, string | number | null>;
+
+export function compositionRows(reports: readonly Pick<RepoReport, "weekly">[], names: readonly string[]): CompositionRow[] {
+  return reports.map((r, i) => {
+    const means = meanStages(r.weekly);
+    const shares = stageShares(means);
+    const row: CompositionRow = { name: names[i]! };
+    for (const key of STAGE_KEYS) {
+      row[key] = shares ? shares[key] : null;
+      row[`${key}Hours`] = means ? means[key] : null;
+    }
+    return row;
   });
 }
 

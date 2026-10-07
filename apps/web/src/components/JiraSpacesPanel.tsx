@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { Link } from "react-router";
-import type { LinkedSpace, TrackerSite, TrackerSpaceSummary } from "@dora-dashboard/core";
+import type { LinkedSpace, SpaceDescription, TrackerSite, TrackerSpaceSummary, TrackerStatus } from "@dora-dashboard/core";
 import {
   useCrawlSpace,
   useDisconnectJira,
@@ -48,12 +48,92 @@ function ReconnectNotice() {
   );
 }
 
+/** An error from Jira, or the way back in when the grant was refused. */
+function JiraError({ error }: { error: unknown }) {
+  if (isJiraUnauthorised(error)) return <ReconnectNotice />;
+  return (
+    <p className="notice notice-error" role="alert">
+      {errorText(error)}
+    </p>
+  );
+}
+
+function StatusChips({ statuses }: { statuses: readonly TrackerStatus[] }) {
+  return (
+    <ul className="jira-chips">
+      {statuses.map((status) => (
+        <li key={status.id} className="jira-chip">
+          {status.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function BoardColumns({ detail }: { detail: SpaceDescription }) {
+  if (detail.board === "forbidden") {
+    return (
+      <div className="notice notice-warning" role="status">
+        <p className="notice-title">{copy.jira.boardForbiddenTitle}</p>
+        <p>{copy.jira.boardForbidden}</p>
+      </div>
+    );
+  }
+  if (detail.columns.length === 0) return <p className="field-hint">{copy.jira.noBoard}</p>;
+  return (
+    <ol className="jira-columns">
+      {columnsWithStatuses(detail.columns, detail.statuses).map((column, index) => (
+        <li key={`${index}-${column.name}`} className="jira-column">
+          <span className="jira-column-name">{column.name}</span>
+          {column.statuses.length === 0 ? (
+            <span className="text-muted">{copy.jira.noColumnStatuses}</span>
+          ) : (
+            <StatusChips statuses={column.statuses} />
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StatusCategories({ statuses }: { statuses: readonly TrackerStatus[] }) {
+  if (statuses.length === 0) return <p className="field-hint">{copy.jira.noStatuses}</p>;
+  return (
+    <dl className="jira-categories">
+      {groupStatusesByCategory(statuses).map((group) => (
+        <div key={group.category} className={`jira-category jira-category-${group.category}`}>
+          <dt>{copy.jira.categories[group.category]}</dt>
+          <dd>
+            <StatusChips statuses={group.statuses} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SpaceFlowDetail({ detail }: { detail: ReturnType<typeof useJiraSpaceDetail> }) {
+  return (
+    <>
+      {detail.isPending && <p role="status">{copy.jira.loadingFlow}</p>}
+      {detail.isError && <JiraError error={detail.error} />}
+      {detail.data && (
+        <div className="jira-flow-body">
+          <h5 className="jira-flow-heading">{copy.jira.columnsTitle}</h5>
+          <BoardColumns detail={detail.data} />
+          <h5 className="jira-flow-heading">{copy.jira.categoriesTitle}</h5>
+          <StatusCategories statuses={detail.data.statuses} />
+        </div>
+      )}
+    </>
+  );
+}
+
 /** A space's statuses grouped by category and its board columns, so someone can judge it before linking. */
 function SpaceFlow({ siteId, spaceKey, name }: { siteId: string; spaceKey: string; name: string }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const detail = useJiraSpaceDetail(siteId, spaceKey, open);
-  const data = detail.data;
   return (
     <div className="jira-flow">
       <button
@@ -67,72 +147,125 @@ function SpaceFlow({ siteId, spaceKey, name }: { siteId: string; spaceKey: strin
         {copy.jira.flowToggle}
       </button>
       <div id={panelId} hidden={!open}>
-        {open && detail.isPending && <p role="status">{copy.jira.loadingFlow}</p>}
-        {open &&
-          detail.isError &&
-          (isJiraUnauthorised(detail.error) ? (
-            <ReconnectNotice />
-          ) : (
-            <p className="notice notice-error" role="alert">
-              {errorText(detail.error)}
-            </p>
-          ))}
-        {open && data && (
-          <div className="jira-flow-body">
-            <h5 className="jira-flow-heading">{copy.jira.columnsTitle}</h5>
-            {data.board === "forbidden" && (
-              <div className="notice notice-warning" role="status">
-                <p className="notice-title">{copy.jira.boardForbiddenTitle}</p>
-                <p>{copy.jira.boardForbidden}</p>
-              </div>
-            )}
-            {data.board === "forbidden" ? null : data.columns.length === 0 ? (
-              <p className="field-hint">{copy.jira.noBoard}</p>
-            ) : (
-              <ol className="jira-columns">
-                {columnsWithStatuses(data.columns, data.statuses).map((column, index) => (
-                  <li key={`${index}-${column.name}`} className="jira-column">
-                    <span className="jira-column-name">{column.name}</span>
-                    {column.statuses.length === 0 ? (
-                      <span className="text-muted">{copy.jira.noColumnStatuses}</span>
-                    ) : (
-                      <ul className="jira-chips">
-                        {column.statuses.map((status) => (
-                          <li key={status.id} className="jira-chip">
-                            {status.name}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            )}
-            <h5 className="jira-flow-heading">{copy.jira.categoriesTitle}</h5>
-            {data.statuses.length === 0 ? (
-              <p className="field-hint">{copy.jira.noStatuses}</p>
-            ) : (
-              <dl className="jira-categories">
-                {groupStatusesByCategory(data.statuses).map((group) => (
-                  <div key={group.category} className={`jira-category jira-category-${group.category}`}>
-                    <dt>{copy.jira.categories[group.category]}</dt>
-                    <dd>
-                      <ul className="jira-chips">
-                        {group.statuses.map((status) => (
-                          <li key={status.id} className="jira-chip">
-                            {status.name}
-                          </li>
-                        ))}
-                      </ul>
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-          </div>
-        )}
+        {open && <SpaceFlowDetail detail={detail} />}
       </div>
     </div>
+  );
+}
+
+interface SpaceChoiceProps {
+  siteId: string;
+  space: TrackerSpaceSummary;
+  checked: boolean;
+  atLimit: boolean;
+  onToggle: (checked: boolean) => void;
+}
+
+function SpaceChoice({ siteId, space, checked, atLimit, onToggle }: SpaceChoiceProps) {
+  return (
+    <li className="jira-space">
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={!checked && atLimit}
+          onChange={(event) => onToggle(event.target.checked)}
+        />
+        <span>
+          {space.name} <span className="mono text-muted">{space.key}</span>
+        </span>
+      </label>
+      {checked && <SpaceFlow siteId={siteId} spaceKey={space.key} name={space.name} />}
+    </li>
+  );
+}
+
+function SpaceSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const searchId = useId();
+  return (
+    <div className="field">
+      <label htmlFor={searchId}>{copy.jira.searchLabel}</label>
+      <input
+        id={searchId}
+        type="search"
+        className="input"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        autoComplete="off"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+interface SpaceChoicesProps {
+  siteId: string;
+  spaces: TrackerSpaceSummary[];
+  search: string;
+  selected: string[];
+  onChange: (selected: string[]) => void;
+}
+
+/** A site's spaces that match the search, capped at `MAX_LINKED_SPACES` ticked. */
+function SpaceChoices({ siteId, spaces, search, selected, onChange }: SpaceChoicesProps) {
+  const visible = filterSpaces(spaces, search);
+  const atLimit = selected.length >= MAX_LINKED_SPACES;
+  return (
+    <>
+      <p className="field-hint" role="status">
+        {copy.jira.showing(visible.length, spaces.length)}. {copy.jira.selectedCount(selected.length)}.
+        {atLimit ? ` ${copy.jira.limitReached(MAX_LINKED_SPACES)}` : ""}
+      </p>
+      {visible.length === 0 && <p>{copy.jira.noMatches}</p>}
+      <ul className="jira-space-list">
+        {visible.map((space) => (
+          <SpaceChoice
+            key={space.key}
+            siteId={siteId}
+            space={space}
+            checked={selected.includes(space.key)}
+            atLimit={atLimit}
+            onToggle={(checked) => onChange(toggleKey(selected, space.key, checked))}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function SpacesStatus({ spaces }: { spaces: ReturnType<typeof useJiraSpaces> }) {
+  return (
+    <>
+      {spaces.isPending && <p role="status">{copy.jira.loadingSpaces}</p>}
+      {spaces.isError && <JiraError error={spaces.error} />}
+      {spaces.isSuccess && spaces.data.length === 0 && <p>{copy.jira.noSpaces}</p>}
+    </>
+  );
+}
+
+interface SaveLinksProps {
+  link: ReturnType<typeof useLinkSpaces>;
+  /** True once the last save succeeded and nothing has been ticked or unticked since. */
+  saved: boolean;
+  ready: boolean;
+  onSave: () => void;
+}
+
+function SaveLinks({ link, saved, ready, onSave }: SaveLinksProps) {
+  return (
+    <>
+      {link.isError && <JiraError error={link.error} />}
+      {saved && (
+        <p className="notice notice-info" role="status">
+          {copy.jira.linksSaved}
+        </p>
+      )}
+      <div className="form-actions">
+        <button type="button" className="button button-primary" disabled={link.isPending || !ready} onClick={onSave}>
+          {link.isPending ? copy.jira.savingLinks : copy.jira.saveLinks}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -145,17 +278,14 @@ interface SpacePickerProps {
 function SpacePicker({ repoId, site, linked }: SpacePickerProps) {
   const spaces = useJiraSpaces(site.id);
   const link = useLinkSpaces(repoId);
+  // Held here rather than in SpaceChoices, so a search survives the list unmounting while a refused grant or no spaces are shown.
   const [search, setSearch] = useState("");
   const [edit, setEdit] = useState<string[] | null>(null);
-  const searchId = useId();
 
   const selected = edit ?? linkedKeysForSite(linked, site.id);
   const all: TrackerSpaceSummary[] = spaces.data ?? [];
-  const visible = filterSpaces(all, search);
-  const atLimit = selected.length >= MAX_LINKED_SPACES;
-  const unauthorised = isJiraUnauthorised(spaces.error) || isJiraUnauthorised(link.error);
 
-  if (unauthorised) return <ReconnectNotice />;
+  if (isJiraUnauthorised(spaces.error) || isJiraUnauthorised(link.error)) return <ReconnectNotice />;
 
   const save = () => link.mutate({ siteId: site.id, keys: selected }, { onSuccess: () => setEdit(null) });
 
@@ -163,70 +293,14 @@ function SpacePicker({ repoId, site, linked }: SpacePickerProps) {
     <fieldset className="checkbox-group jira-picker">
       <legend>{copy.jira.spacesLegend}</legend>
       <p className="field-hint">{copy.jira.spacesHint(MAX_LINKED_SPACES)}</p>
-      {spaces.isPending && <p role="status">{copy.jira.loadingSpaces}</p>}
-      {spaces.isError && (
-        <p className="notice notice-error" role="alert">
-          {errorText(spaces.error)}
-        </p>
-      )}
-      {spaces.isSuccess && all.length === 0 && <p>{copy.jira.noSpaces}</p>}
+      <SpacesStatus spaces={spaces} />
       {all.length > 0 && (
         <>
-          <div className="field">
-            <label htmlFor={searchId}>{copy.jira.searchLabel}</label>
-            <input
-              id={searchId}
-              type="search"
-              className="input"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </div>
-          <p className="field-hint" role="status">
-            {copy.jira.showing(visible.length, all.length)}. {copy.jira.selectedCount(selected.length)}.
-            {atLimit ? ` ${copy.jira.limitReached(MAX_LINKED_SPACES)}` : ""}
-          </p>
-          {visible.length === 0 && <p>{copy.jira.noMatches}</p>}
-          <ul className="jira-space-list">
-            {visible.map((space) => {
-              const checked = selected.includes(space.key);
-              return (
-                <li key={space.key} className="jira-space">
-                  <label className="checkbox">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={!checked && atLimit}
-                      onChange={(event) => setEdit(toggleKey(selected, space.key, event.target.checked))}
-                    />
-                    <span>
-                      {space.name} <span className="mono text-muted">{space.key}</span>
-                    </span>
-                  </label>
-                  {checked && <SpaceFlow siteId={site.id} spaceKey={space.key} name={space.name} />}
-                </li>
-              );
-            })}
-          </ul>
+          <SpaceSearch value={search} onChange={setSearch} />
+          <SpaceChoices siteId={site.id} spaces={all} search={search} selected={selected} onChange={setEdit} />
         </>
       )}
-      {link.isError && (
-        <p className="notice notice-error" role="alert">
-          {errorText(link.error)}
-        </p>
-      )}
-      {link.isSuccess && edit === null && (
-        <p className="notice notice-info" role="status">
-          {copy.jira.linksSaved}
-        </p>
-      )}
-      <div className="form-actions">
-        <button type="button" className="button button-primary" disabled={link.isPending || !spaces.isSuccess} onClick={save}>
-          {link.isPending ? copy.jira.savingLinks : copy.jira.saveLinks}
-        </button>
-      </div>
+      <SaveLinks link={link} saved={link.isSuccess && edit === null} ready={spaces.isSuccess} onSave={save} />
     </fieldset>
   );
 }

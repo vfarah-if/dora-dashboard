@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReviewQueuePage } from "./ReviewQueuePage";
 import { mockFetch, renderRoute } from "../test/render";
-import { reviewQueue } from "../test/fixtures";
+import { queueEntry, reviewQueue } from "../test/fixtures";
 import { copy } from "../copy";
 
 const text = copy.reviewQueue;
@@ -107,6 +107,29 @@ describe("ReviewQueuePage", () => {
     await user.click(screen.getByRole("switch", { name: text.controls.names }));
     await user.selectOptions(screen.getByLabelText(text.controls.waitingOn), "robin");
     expect(screen.queryByText("Tidy docs")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Add export").length).toBeGreaterThan(0);
+  });
+
+  it("narrows the queue to the repositories ticked and widens it again when unticked", async () => {
+    const user = userEvent.setup();
+    const base = reviewQueue();
+    const gadget = queueEntry({ repoId: 2, repo: "acme/gadgets", number: 20, title: "Gadget fix" });
+    renderQueue({
+      ...base,
+      entries: [...base.entries, gadget],
+      repos: [...base.repos, { ...base.repos[0]!, repoId: 2, repo: "acme/gadgets", open: 1 }],
+    });
+    const gadgets = await screen.findByRole("checkbox", { name: "acme/gadgets" });
+    expect(screen.getByRole("checkbox", { name: "acme/widgets" })).not.toBeChecked();
+    expect(screen.getAllByText("Add export").length).toBeGreaterThan(0);
+
+    await user.click(gadgets);
+    expect(gadgets).toBeChecked();
+    expect(screen.getByText("Gadget fix")).toBeInTheDocument();
+    expect(screen.queryByText("Add export")).not.toBeInTheDocument();
+
+    await user.click(gadgets);
+    expect(gadgets).not.toBeChecked();
     expect(screen.getAllByText("Add export").length).toBeGreaterThan(0);
   });
 
