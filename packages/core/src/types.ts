@@ -47,7 +47,10 @@ export interface PullRequest {
   /** The branch the pull request was opened from. Absent on pull requests crawled before it was recorded. */
   headRef?: string | null;
   reviews: Review[];
-  /** Paths of the files changed, capped at 100. Absent on pull requests crawled before this was recorded. */
+  /**
+   * Paths of the files changed, as many as the host lists (about 3000 on GitHub). Absent on pull requests crawled before
+   * this was recorded.
+   */
   files?: string[] | null;
   /** True when the pull request changed more files than were recorded, so `files` is only the first part. */
   filesTruncated?: boolean;

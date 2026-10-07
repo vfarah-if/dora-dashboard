@@ -164,8 +164,13 @@ describe("GitHubProvider", () => {
           },
         }),
       );
-    const fetchOne = async (files: object) =>
-      (await new GitHubProvider(page({ ...gqlNode, files })).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+    const calls: number[] = [];
+    const fetchOne = async (files: object) => {
+      const http = page({ ...gqlNode, files });
+      const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+      calls.push(http.mock.calls.length);
+      return mapped;
+    };
     const paths = Array.from({ length: 100 }, (_, i) => ({ path: `src/f${i}.ts` }));
 
     const over = await fetchOne({ totalCount: 101, nodes: paths });
@@ -174,6 +179,140 @@ describe("GitHubProvider", () => {
     expect(over.filesTruncated).toBe(true);
     expect(over.files).toHaveLength(100);
     expect("filesTruncated" in exactly).toBe(false);
+    // Without a cursor to follow, nothing more is asked for.
+    expect(calls).toEqual([1, 1]);
+  });
+
+  describe("a pull request with more than 100 changed files", () => {
+    const paths = (from: number, count: number) => Array.from({ length: count }, (_, i) => ({ path: `src/f${from + i}.ts` }));
+    const listPage = (files: object) =>
+      json({
+        data: {
+          repository: {
+            pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [{ ...gqlNode, files }] },
+          },
+        },
+      });
+    const filesPage = (files: object | null) => json({ data: { repository: { pullRequest: files && { files } } } });
+    const more = (cursor: string | null) => ({ hasNextPage: cursor !== null, endCursor: cursor });
+    const variablesOf = (http: ReturnType<typeof vi.fn>) =>
+      http.mock.calls.slice(1).map(([, init]) => JSON.parse((init as RequestInit).body as string).variables);
+
+    it("reads the rest of the list 100 at a time from where the first page stopped", async () => {
+      const http = vi
+        .fn()
+        .mockResolvedValueOnce(listPage({ totalCount: 250, pageInfo: more("c1"), nodes: paths(0, 100) }))
+        .mockResolvedValueOnce(filesPage({ totalCount: 250, pageInfo: more("c2"), nodes: paths(100, 100) }))
+        .mockResolvedValueOnce(filesPage({ totalCount: 250, pageInfo: more(null), nodes: paths(200, 50) }));
+      const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+      expect(mapped.files).toHaveLength(250);
+      expect(mapped.files![249]).toBe("src/f249.ts");
+      expect("filesTruncated" in mapped).toBe(false);
+      expect(variablesOf(http)).toEqual([
+        { owner: "acme", name: "widgets", number: 12, cursor: "c1" },
+        { owner: "acme", name: "widgets", number: 12, cursor: "c2" },
+      ]);
+      const [, init] = http.mock.calls[1] as unknown as [string, RequestInit];
+      expect(JSON.parse(init.body as string).query).toContain("pullRequest(number: $number)");
+    });
+
+    it("stops at 3000 files and keeps the pull request marked as cut", async () => {
+      let next = 100;
+      const http = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        if (!(init?.body as string).includes("pullRequest(number")) {
+          return listPage({ totalCount: 3500, pageInfo: more("c100"), nodes: paths(0, 100) });
+        }
+        next += 100;
+        return filesPage({ totalCount: 3500, pageInfo: more(`c${next}`), nodes: paths(next - 100, 100) });
+      });
+      const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+      // The first page and 29 more of 100 make 3000.
+      expect(http).toHaveBeenCalledTimes(30);
+      expect(mapped.files).toHaveLength(3000);
+      expect(mapped.filesTruncated).toBe(true);
+    });
+
+    it("keeps the pull request marked as cut when GitHub ends the list short of its total or loses the pull request", async () => {
+      const short = vi
+        .fn()
+        .mockResolvedValueOnce(listPage({ totalCount: 250, pageInfo: more("c1"), nodes: paths(0, 100) }))
+        .mockResolvedValueOnce(filesPage({ totalCount: 250, pageInfo: more(null), nodes: paths(100, 100) }));
+      const lost = vi
+        .fn()
+        .mockResolvedValueOnce(listPage({ totalCount: 250, pageInfo: more("c1"), nodes: paths(0, 100) }))
+        .mockResolvedValueOnce(filesPage(null));
+
+      const shortPr = (await new GitHubProvider(short).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+      const lostPr = (await new GitHubProvider(lost).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+      expect([shortPr.files?.length, shortPr.filesTruncated]).toEqual([200, true]);
+      expect([lostPr.files?.length, lostPr.filesTruncated]).toEqual([100, true]);
+    });
+
+    const fetchWith = async (...answers: Response[]) => {
+      const http = vi.fn();
+      http.mockResolvedValueOnce(listPage({ totalCount: 250, pageInfo: more("c1"), nodes: paths(0, 100) }));
+      for (const answer of answers) http.mockResolvedValueOnce(answer);
+      const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+      return { mapped, http };
+    };
+
+    it("keeps the paths already read and marks the list as cut when a file request fails upstream", async () => {
+      const gateway = await fetchWith(
+        filesPage({ totalCount: 250, pageInfo: more("c2"), nodes: paths(100, 100) }),
+        new Response("bad gateway", { status: 502 }),
+      );
+      const refused = await fetchWith(json({ errors: [{ message: "API rate limit exceeded" }] }));
+
+      expect([gateway.mapped.files?.length, gateway.mapped.filesTruncated]).toEqual([200, true]);
+      expect([refused.mapped.files?.length, refused.mapped.filesTruncated]).toEqual([100, true]);
+    });
+
+    it("still fails the page when a file request is refused the credential or cannot see the repository", async () => {
+      for (const [status, name] of [
+        [401, "UnauthorisedError"],
+        [404, "NotFoundError"],
+      ] as const) {
+        await expect(fetchWith(new Response("", { status }))).rejects.toMatchObject({ name });
+      }
+    });
+
+    it("stops at an empty page, a missing answer or a cursor that does not move", async () => {
+      const empty = await fetchWith(filesPage({ totalCount: 250, pageInfo: more("c2"), nodes: [] }));
+      const missing = await fetchWith(json({}));
+      const stuck = await fetchWith(filesPage({ totalCount: 250, pageInfo: more("c1"), nodes: paths(100, 100) }));
+
+      expect([empty.mapped.files?.length, empty.http.mock.calls.length]).toEqual([100, 2]);
+      expect([missing.mapped.files?.length, missing.http.mock.calls.length]).toEqual([100, 2]);
+      expect([stuck.mapped.files?.length, stuck.mapped.filesTruncated, stuck.http.mock.calls.length]).toEqual([200, true, 2]);
+    });
+
+    it("asks for nothing more when the first page offers no cursor", async () => {
+      const http = vi
+        .fn()
+        .mockResolvedValueOnce(
+          listPage({ totalCount: 250, pageInfo: { hasNextPage: true, endCursor: null }, nodes: paths(0, 100) }),
+        );
+      const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+      expect(http).toHaveBeenCalledTimes(1);
+      expect([mapped.files?.length, mapped.filesTruncated]).toEqual([100, true]);
+    });
+
+    it("reads to the end whatever size of page GitHub sends", async () => {
+      // 100 with the pull request, then 60, 60 and 30 make the 250 GitHub counts.
+      const { mapped, http } = await fetchWith(
+        filesPage({ totalCount: 250, pageInfo: more("c2"), nodes: paths(100, 60) }),
+        filesPage({ totalCount: 250, pageInfo: more("c3"), nodes: paths(160, 60) }),
+        filesPage({ totalCount: 250, pageInfo: more(null), nodes: paths(220, 30) }),
+      );
+
+      expect(http).toHaveBeenCalledTimes(4);
+      expect(mapped.files).toHaveLength(250);
+      expect("filesTruncated" in mapped).toBe(false);
+    });
   });
 
   it("retries once with a page of 10 after a 502 or 504, and only then", async () => {
@@ -209,7 +348,7 @@ describe("GitHubProvider", () => {
     expect(rejected).toHaveBeenCalledTimes(1);
   });
 
-  it("asks GitHub for the first 100 changed files of each pull request", async () => {
+  it("asks GitHub for the first 100 changed files of each pull request, with a cursor for the rest", async () => {
     const http = vi.fn(async () =>
       json({
         data: { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 0, nodes: [] } } },
@@ -218,7 +357,9 @@ describe("GitHubProvider", () => {
     await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null);
 
     const [, init] = http.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(init.body as string).query).toContain("files(first: 100) { totalCount nodes { path } }");
+    expect(JSON.parse(init.body as string).query).toContain(
+      "files(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { path } }",
+    );
   });
 
   it("returns a null cursor on the last page and tolerates a PR with no commits", async () => {

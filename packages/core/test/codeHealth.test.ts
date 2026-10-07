@@ -307,21 +307,21 @@ describe("prsWithTests boundaries", () => {
     expect(prsWithTests([at(1, "2026-08-31T23:59:59Z"), at(2, "2026-10-01T00:00:00Z")], range)).toBeNull();
   });
 
-  it("leaves out a pull request cut at 100 files whose listed files show no test, since a later file could be one", () => {
+  it("leaves out a pull request whose file list was cut short whose listed files show no test, since a later file could be one", () => {
     const truncated = at(3, "2026-09-10T00:00:00Z", { filesTruncated: true });
 
     expect(prsWithTests([truncated], range)).toBeNull();
     expect(prsWithTests([truncated, at(4, "2026-09-11T00:00:00Z")], range)).toEqual({ share: 0, withTests: 0, total: 1 });
   });
 
-  it("counts a pull request cut at 100 files whose listed files already show source and tests", () => {
+  it("counts a pull request whose file list was cut short whose listed files already show source and tests", () => {
     const truncated = pr(3, "2026-09-10T00:00:00Z", ["src/a.ts", "src/a.test.ts"], { filesTruncated: true });
 
     // The files left off can add a test but cannot take one away, so this is 1 of 1 with tests.
     expect(prsWithTests([truncated], range)).toEqual({ share: 1, withTests: 1, total: 1 });
   });
 
-  it("leaves out a pull request cut at 100 files whose listed files show no source", () => {
+  it("leaves out a pull request whose file list was cut short whose listed files show no source", () => {
     const truncated = pr(3, "2026-09-10T00:00:00Z", ["src/a.test.ts", "README.md"], { filesTruncated: true });
 
     expect(prsWithTests([truncated], range)).toBeNull();
@@ -515,7 +515,7 @@ describe("prsWithTests and tool configuration", () => {
     expect(prsWithTests(prs, range)).toEqual({ share: 0.5, withTests: 1, total: 2 });
   });
 
-  it("needs source beyond configuration before a pull request cut at 100 files can count", () => {
+  it("needs source beyond configuration before a pull request whose file list was cut short can count", () => {
     const cut = (n: number, files: string[]) => pr(n, "2026-09-10T00:00:00Z", files, { filesTruncated: true });
 
     // PR 1 shows only configuration and a test, so it is left out; PR 2 also shows source, so it counts with tests.

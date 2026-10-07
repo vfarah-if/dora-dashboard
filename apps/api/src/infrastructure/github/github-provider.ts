@@ -39,10 +39,19 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
         mergedBy { login }
         commits(first: 1) { nodes { commit { authoredDate committedDate } } }
         reviews(first: 100) { nodes { author { login } state submittedAt } }
-        files(first: 100) { totalCount nodes { path } }
+        files(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { path } }
         labels(first: 20) { nodes { name } }
         trailers: commits(last: 100) { nodes { commit { message } } }
       }
+    }
+  }
+}`;
+
+const PULL_REQUEST_FILES_QUERY = `
+query ($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: 100, after: $cursor) { totalCount pageInfo { hasNextPage endCursor } nodes { path } }
     }
   }
 }`;
@@ -68,6 +77,17 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
   }
 }`;
 
+interface GqlFiles {
+  totalCount?: number;
+  pageInfo?: { hasNextPage: boolean; endCursor: string | null };
+  nodes: ({ path: string } | null)[];
+}
+
+interface GqlFilesPage {
+  data?: { repository: { pullRequest: { files: GqlFiles | null } | null } | null };
+  errors?: { message: string }[];
+}
+
 interface GqlPullRequest {
   number: number;
   title: string;
@@ -87,7 +107,7 @@ interface GqlPullRequest {
   commits: { nodes: { commit: { authoredDate: string; committedDate: string } }[] };
   labels?: { nodes: ({ name: string } | null)[] } | null;
   trailers?: { nodes: ({ commit: { message: string } } | null)[] } | null;
-  files?: { totalCount?: number; nodes: { path: string }[] } | null;
+  files?: GqlFiles | null;
   reviews: {
     nodes: { author: { login: string; __typename?: string } | null; state: Review["state"]; submittedAt: string | null }[];
   };
@@ -113,13 +133,14 @@ interface GqlPage<Node = GqlPullRequest> {
   errors?: { message: string }[];
 }
 
-const FILES_RECORDED = 100;
+/** GitHub lists at most 3000 changed files of a pull request through its REST API, so reading stops there too. */
+export const MAX_FILES_READ = 3000;
 
-/** The changed paths, and a flag when GitHub reported more files than the 100 we asked for. */
+/** The changed paths, and a flag when GitHub reported more files than were read (ADR 0027). */
 function filesOf(node: GqlPullRequest): Pick<PullRequest, "files" | "filesTruncated"> {
   if (!node.files) return {};
   const files = node.files.nodes.flatMap((f) => (f?.path ? [f.path] : []));
-  return (node.files.totalCount ?? 0) > FILES_RECORDED ? { files, filesTruncated: true } : { files };
+  return (node.files.totalCount ?? 0) > files.length ? { files, filesTruncated: true } : { files };
 }
 
 const CO_AUTHOR_LINE = /^co-authored-by:\s*(.+?)\s*(<[^>]*>)?\s*$/i;
@@ -233,8 +254,11 @@ export class GitHubProvider implements SourceProvider {
     const connection = page.data?.repository?.pullRequests;
     if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
     if (page.errors?.length) throw new UpstreamError(page.errors.map((e) => e.message).join("; "), 200);
+    const nodes: GqlPullRequest[] = [];
+    // One pull request at a time, since GitHub's secondary rate limits penalise bursts of concurrent queries.
+    for (const node of connection.nodes) nodes.push(await this.withAllFiles(token, owner, name, node));
     return {
-      pullRequests: connection.nodes.map(toPullRequest),
+      pullRequests: nodes.map(toPullRequest),
       totalCount: connection.totalCount,
       nextCursor: connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null,
     };
@@ -245,6 +269,51 @@ export class GitHubProvider implements SourceProvider {
       method: "POST",
       body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
     });
+  }
+
+  /**
+   * The pull request with the rest of its changed paths when the first 100 were not all of them, read 100 at a time
+   * from where the page stopped until about `MAX_FILES_READ` are held, so the pull-request test check rarely meets a
+   * cut list (ADR 0027).
+   */
+  private async withAllFiles(token: string, owner: string, name: string, node: GqlPullRequest): Promise<GqlPullRequest> {
+    const files = node.files;
+    if (!files?.pageInfo?.hasNextPage) return node;
+    const nodes = [...files.nodes];
+    let cursor = files.pageInfo.endCursor;
+    try {
+      while (cursor !== null && nodes.length < MAX_FILES_READ) {
+        const page = await this.filesPage(token, owner, name, node.number, cursor);
+        if (!page) break;
+        nodes.push(...page.nodes);
+        cursor = page.next;
+      }
+    } catch (error) {
+      // A failed file request costs this pull request the rest of its list, not the whole page: the paths read so far
+      // stand, and `filesOf` marks the list as cut. A refused credential or a repository gone from view still fails it.
+      if (!(error instanceof UpstreamError)) throw error;
+    }
+    return { ...node, files: { ...files, nodes } };
+  }
+
+  /** The next paths of a pull request and the cursor after them, or null when GitHub sent no more. */
+  private async filesPage(
+    token: string,
+    owner: string,
+    name: string,
+    number: number,
+    cursor: string,
+  ): Promise<{ nodes: GqlFiles["nodes"]; next: string | null } | null> {
+    const page = await request<GqlFilesPage>(this.http, token, `${API}/graphql`, {
+      method: "POST",
+      body: JSON.stringify({ query: PULL_REQUEST_FILES_QUERY, variables: { owner, name, number, cursor } }),
+    });
+    if (page.errors?.length) throw new UpstreamError(page.errors.map((e) => e.message).join("; "), 200);
+    const files = page.data?.repository?.pullRequest?.files;
+    if (!files || files.nodes.length === 0) return null;
+    const next = files.pageInfo?.hasNextPage ? files.pageInfo.endCursor : null;
+    // A cursor that does not move would read the same page again.
+    return { nodes: files.nodes, next: next === cursor ? null : next };
   }
 
   async fetchOpenPullRequests(token: string, owner: string, name: string): Promise<OpenPullRequestsResult> {

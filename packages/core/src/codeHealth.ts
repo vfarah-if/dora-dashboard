@@ -179,8 +179,8 @@ const inRange = (mergedAt: string, from: string | undefined, to: string | undefi
 
 /**
  * The verdict on one pull request: null when it does not count, otherwise whether it also changes tests. Source is a
- * code file that is neither a test nor a tool's configuration. A list cut at the first 100 files counts only when it
- * already shows source and tests, because the files left off can add a test but never take one away (ADR 0027).
+ * code file that is neither a test nor a tool's configuration. A list the host cut short counts only when it already
+ * shows source and tests, because the files left off can add a test but never take one away (ADR 0027).
  */
 function changesTests(pr: PullRequest, from: string | undefined, to: string | undefined): boolean | null {
   if (!pr.files || !pr.mergedAt || isBot(pr) || !inRange(pr.mergedAt, from, to)) return null;

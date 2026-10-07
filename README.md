@@ -60,7 +60,7 @@ Without lizard the JavaScript and TypeScript are still measured and the page sho
 
 The first analysis after upgrading to syntax tree measurement can lower a JavaScript or TypeScript repository's grade with no change to its code. Lizard used to drop or cut short functions it could not follow, often the largest components, so their lines and branches were never counted. On one private repository this hid 44% of the code inside functions and turned a high maintainability band into a medium one. The bands are unchanged and the lower grade is the accurate one (ADR 0026).
 
-The testing grade can rise with no new crawl after ADR 0027. A pull request with more than 100 files now counts when its first 100 already include source and tests, and a change to a tool's configuration alone, such as `.ncurc.mjs` or `vite.config.ts`, no longer reads as source changed without tests.
+The testing grade can rise after ADR 0027. A change to a tool's configuration alone, such as `.ncurc.mjs` or `vite.config.ts`, no longer reads as source changed without tests, which needs no new crawl. The crawl now reads up to about 3000 changed files of each pull request rather than the first 100, so run a full crawl (`make crawl-full repo=owner/name`) once to complete the lists of large pull requests crawled before.
 
 ## Signing in
 
