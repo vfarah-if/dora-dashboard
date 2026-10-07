@@ -498,6 +498,14 @@ export const copy = {
 
   charts: {
     weekStarting: "Week starting",
+    partWeek: {
+      soFar: (name: string) => `${name}, so far`,
+      to: (name: string, day: string) => `${name}, to ${day}`,
+      current: (week: string) =>
+        `The week starting ${week} is not over yet, so its figures are marked so far. Its counts are drawn lighter inside an outline, because a part week holds fewer pull requests and deploys than a whole one.`,
+      cut: (week: string, day: string) =>
+        `The range ends on ${day}, part way through the week starting ${week}, so that week's figures stop there. Its counts are drawn lighter inside an outline, because a part week holds fewer pull requests and deploys than a whole one.`,
+    },
     zoomLabel: "Weeks shown. Drag either handle to widen or narrow the range, or drag the band to move along it.",
     hours: "Hours",
     share: "Share of merged PRs",

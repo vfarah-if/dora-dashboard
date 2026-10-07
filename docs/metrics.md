@@ -1,6 +1,6 @@
 # What each figure means
 
-Every figure is computed in `packages/core` from crawled pull requests and deploy workflow runs. The reasoning behind each rule is in ADR 0006; this page is the reader's version. Times are UTC and weeks start on Monday. The current, unfinished week is left off weekly charts so a part week does not look like a slump. Repository and space reports take a range as `from` and `to` dates (`YYYY-MM-DD`), and a `from` after today is refused with a 400 ("from must not be after today"), as is a `from` after `to`.
+Every figure is computed in `packages/core` from crawled pull requests and deploy workflow runs. The reasoning behind each rule is in ADR 0006; this page is the reader's version. Times are UTC and weeks start on Monday. A repository's weekly charts keep the week the range ends part way through, normally the current one, and mark it in their tooltips and tables, as so far when the range runs to today or with the day the range stops at otherwise. Its counts are drawn lighter so a part week does not look like a slump. The comparison and Jira space charts leave that week off. Repository and space reports take a range as `from` and `to` dates (`YYYY-MM-DD`), and a `from` after today is refused with a 400 ("from must not be after today"), as is a `from` after `to`.
 
 ## Flow
 

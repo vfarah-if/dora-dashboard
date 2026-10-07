@@ -13,7 +13,7 @@ import { DoraTile } from "../components/DoraTile";
 import { DownloadReportButton } from "../components/DownloadReportButton";
 import { PrTable } from "../components/PrTable";
 import { ProfileLine } from "../components/ProfileLine";
-import { RepoCharts } from "../components/RepoCharts";
+import { PartWeekNote, RepoCharts } from "../components/RepoCharts";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { StickyPanel } from "../components/StickyPanel";
@@ -118,6 +118,7 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
       </section>
 
       <section className="section">
+        <PartWeekNote report={report} />
         <RepoCharts report={report} />
       </section>
 

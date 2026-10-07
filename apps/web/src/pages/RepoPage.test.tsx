@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
 import { mockFetch, renderRoute } from "../test/render";
-import { repo, report } from "../test/fixtures";
+import { repo, report, week } from "../test/fixtures";
 import { copy } from "../copy";
 
 const noHealth = { body: { status: "none" } };
@@ -71,6 +71,117 @@ describe("RepoPage", () => {
     const reportUrl = fetchMock.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/report"));
     expect(reportUrl).toContain("from=2026-01-01");
     expect(reportUrl).toContain("includeBots=1");
+  });
+
+  describe("the week the range ends part way through", () => {
+    afterEach(() => vi.useRealTimers());
+
+    const showReport = (body: ReturnType<typeof report>) => {
+      mockFetch({
+        "GET /api/repos/1/report": { body },
+        "GET /api/repos/1/code-health": noHealth,
+        "GET /api/repos": { body: [repo()] },
+      });
+      renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    };
+    const chart = (title: string) => screen.getByRole("region", { name: title });
+    const cellsFor = (table: HTMLElement, week: string) =>
+      within(within(table).getByRole("rowheader", { name: week }).closest("tr")!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent);
+
+    it("stays on every weekly chart, marked so far while it is under way, and the page says why", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-01-21T15:00:00Z"));
+      const weekly = [
+        week({ week: "2026-01-12", weekIndex: 0 }),
+        week({ week: "2026-01-19", weekIndex: 1, opened: 4, merged: 3, deploys: 12, partial: true }),
+      ];
+      showReport(report({ weekly, range: { from: "2026-01-12T00:00:00Z", to: "2026-01-21T14:00:00Z" } }));
+      expect(
+        await screen.findByText(
+          "The week starting 19 Jan is not over yet, so its figures are marked so far. Its counts are drawn lighter inside an outline, because a part week holds fewer pull requests and deploys than a whole one.",
+        ),
+      ).toBeInTheDocument();
+      const counts = within(chart(copy.charts.openedVsMerged.title)).getByRole("table");
+      expect(cellsFor(counts, "19 Jan, so far")).toEqual(["4", "3"]);
+      expect(cellsFor(counts, "12 Jan")).toEqual(["2", "2"]);
+      const deploys = within(chart(copy.charts.deploys.title)).getByRole("table");
+      expect(cellsFor(deploys, "19 Jan, so far")).toEqual(["12", "0"]);
+      for (const title of [copy.charts.weeklyOpenToMerge.title, copy.charts.stages.title]) {
+        expect(
+          within(within(chart(title)).getByRole("table")).getByRole("rowheader", { name: "19 Jan, so far" }),
+        ).toBeInTheDocument();
+      }
+      for (const title of [copy.charts.openedVsMerged.title, copy.charts.deploys.title]) {
+        const swatch = within(chart(title))
+          .getByText("Week starting 19 Jan, so far")
+          .querySelector<HTMLElement>(".legend-swatch");
+        expect(swatch).toHaveClass("legend-swatch-part");
+        expect(swatch?.style.borderColor).toBe("var(--text-muted)");
+      }
+      for (const title of [copy.charts.weeklyOpenToMerge.title, copy.charts.stages.title]) {
+        expect(within(chart(title)).queryByText("Week starting 19 Jan, so far")).not.toBeInTheDocument();
+      }
+    });
+
+    it("gives the day a past range stops at instead of so far", async () => {
+      const weekly = [week({ week: "2026-01-12", weekIndex: 0 }), week({ week: "2026-01-19", weekIndex: 1, partial: true })];
+      showReport(report({ weekly, range: { from: "2026-01-12T00:00:00Z", to: "2026-01-21T23:59:59Z" } }));
+      expect(
+        await screen.findByText(
+          "The range ends on 21 Jan, part way through the week starting 19 Jan, so that week's figures stop there. Its counts are drawn lighter inside an outline, because a part week holds fewer pull requests and deploys than a whole one.",
+        ),
+      ).toBeInTheDocument();
+      const counts = within(chart(copy.charts.openedVsMerged.title)).getByRole("table");
+      expect(cellsFor(counts, "19 Jan, to 21 Jan")).toEqual(["2", "2"]);
+      expect(screen.queryByText(/so far/)).not.toBeInTheDocument();
+    });
+
+    it("fills the charts of a young repository whose only week is the part week", async () => {
+      const weekly = [week({ week: "2026-01-19", weekIndex: 0, opened: 3, merged: 1, deploys: 2, partial: true })];
+      showReport(report({ weekly, range: { from: "2026-01-19T09:00:00Z", to: "2026-01-21T23:59:59Z" } }));
+      await screen.findByText(/part way through the week starting 19 Jan/);
+      for (const title of [copy.charts.openedVsMerged.title, copy.charts.deploys.title]) {
+        expect(within(chart(title)).queryByText(copy.charts.noData)).not.toBeInTheDocument();
+      }
+      expect(cellsFor(within(chart(copy.charts.openedVsMerged.title)).getByRole("table"), "19 Jan, to 21 Jan")).toEqual([
+        "3",
+        "1",
+      ]);
+      expect(cellsFor(within(chart(copy.charts.deploys.title)).getByRole("table"), "19 Jan, to 21 Jan")).toEqual(["2", "0"]);
+    });
+
+    it("draws the part week's count bars lighter inside an outline, and every other bar in full", async () => {
+      const weekly = [week({ week: "2026-01-12", weekIndex: 0 }), week({ week: "2026-01-19", weekIndex: 1, partial: true })];
+      // Recharts draws bars at full height straight away for a reader who prefers reduced motion; jsdom never runs its animation.
+      const realMatchMedia = window.matchMedia;
+      window.matchMedia = (query: string) => ({ ...realMatchMedia(query), matches: query.includes("prefers-reduced-motion") });
+      onTestFinished(() => {
+        window.matchMedia = realMatchMedia;
+      });
+      showReport(report({ weekly, range: { from: "2026-01-12T00:00:00Z", to: "2026-01-21T23:59:59Z" } }));
+      await screen.findByText(/part way through the week starting 19 Jan/);
+      // Opened and merged draw a bar each for both weeks; deploys draw one for each week, as no deploy failed.
+      for (const [title, bars] of [
+        [copy.charts.openedVsMerged.title, 4],
+        [copy.charts.deploys.title, 2],
+      ] as const) {
+        const card = chart(title);
+        await waitFor(() => expect(card.querySelectorAll(".recharts-bar-rectangle path")).toHaveLength(bars));
+        const pale = card.querySelectorAll('.recharts-bar-rectangle path[fill-opacity="0.35"]');
+        expect(pale).toHaveLength(bars / 2);
+        for (const path of pale) expect(path.getAttribute("stroke")).toBe(path.getAttribute("fill"));
+      }
+    });
+
+    it("is not mentioned when the range ends with a whole week", async () => {
+      showReport(report());
+      const counts = within(await screen.findByRole("region", { name: copy.charts.openedVsMerged.title })).getByRole("table");
+      expect(cellsFor(counts, "19 Jan")).toEqual(["2", "2"]);
+      expect(screen.queryByText(/not over yet|part way through the week/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/so far|, to /)).not.toBeInTheDocument();
+    });
   });
 
   it("explains why DORA measures are missing when no deploy workflow is configured", async () => {

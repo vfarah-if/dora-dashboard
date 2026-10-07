@@ -15,11 +15,11 @@ import {
 } from "recharts";
 import { copy } from "../copy";
 import { STAGE_KEYS } from "../lib/compare";
-import { formatDuration, formatNumber, formatPercent, formatWeek } from "../lib/format";
+import { formatDuration, formatNumber, formatPercent, formatWeek, isoDaysAgo } from "../lib/format";
 import { seriesColour } from "../lib/series";
-import { fromFirstActive } from "../lib/weekly";
+import { fromFirstActive, partWeek, partWeekNote, weekNames } from "../lib/weekly";
 import { ChartCard } from "./ChartCard";
-import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, weekZoom } from "./chartParts";
+import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, weekZoom, WeeklyCountBar } from "./chartParts";
 import { SeriesLegend } from "./SeriesLegend";
 
 const STAGE_LABEL = {
@@ -32,13 +32,24 @@ const STAGE_LABEL = {
 const stageColour = (i: number) => `var(--stage-${i + 1})`;
 const MIN_HOURS = 1 / 60;
 
-const formatWeekLabel = (label: string | number) => `${copy.charts.weekStarting} ${formatWeek(String(label))}`;
 const formatCount = (value: number) => formatNumber(value, 1);
 const formatHours = (value: number) => formatDuration(value);
 
+/** Says which week the range ends part way through, above the charts, or nothing when the range ends with a week. */
+export function PartWeekNote({ report }: { report: RepoReport }) {
+  const part = partWeek(report, isoDaysAgo(0));
+  return part && <p className="section-lede">{partWeekNote(part)}</p>;
+}
+
 export function RepoCharts({ report }: { report: RepoReport }) {
-  // The part-finished current week would read as a slump on every weekly chart.
-  const weekly = report.weekly.filter((w) => !w.partial);
+  // The week the range ends part way through stays on every weekly chart, marked so far in its tooltip and table. Its
+  // counts are drawn lighter so a short week does not read as a slump; a median or mean is not lowered by one.
+  const weekly = report.weekly;
+  const part = partWeek(report, isoDaysAgo(0));
+  const names = weekNames(part);
+  const partLegend = part
+    ? [{ key: "part-week", label: names.heading(part.week), colour: "var(--text-muted)", shape: "part" as const }]
+    : [];
   const hasPrs = weekly.some((w) => w.opened > 0 || w.merged > 0);
   const hasDeploy = (w: (typeof weekly)[number]) => w.deploys > 0 || w.deployFailures > 0;
   const hasDeploys = weekly.some(hasDeploy);
@@ -72,12 +83,13 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             items={[
               { key: "opened", label: copy.charts.openedVsMerged.opened, colour: seriesColour(0) },
               { key: "merged", label: copy.charts.openedVsMerged.merged, colour: seriesColour(1) },
+              ...partLegend,
             ]}
           />
         }
         table={{
           columns: [copy.charts.weekStarting, copy.charts.openedVsMerged.opened, copy.charts.openedVsMerged.merged],
-          rows: weekly.map((w) => [formatWeek(w.week), w.opened, w.merged]),
+          rows: weekly.map((w) => [names.cell(w.week), w.opened, w.merged]),
         }}
       >
         <ResponsiveContainer width="100%" height={zoom?.height ?? CHART_HEIGHT}>
@@ -86,11 +98,23 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
             <YAxis {...axisProps} allowDecimals={false} />
             <Tooltip
-              content={<ChartTooltip formatLabel={formatWeekLabel} formatValue={formatCount} />}
+              content={<ChartTooltip formatLabel={names.heading} formatValue={formatCount} />}
               cursor={{ fill: "var(--surface-sunken)" }}
             />
-            <Bar dataKey="opened" name={copy.charts.openedVsMerged.opened} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
-            <Bar dataKey="merged" name={copy.charts.openedVsMerged.merged} fill={seriesColour(1)} radius={[2, 2, 0, 0]} />
+            <Bar
+              dataKey="opened"
+              name={copy.charts.openedVsMerged.opened}
+              fill={seriesColour(0)}
+              radius={[2, 2, 0, 0]}
+              shape={WeeklyCountBar}
+            />
+            <Bar
+              dataKey="merged"
+              name={copy.charts.openedVsMerged.merged}
+              fill={seriesColour(1)}
+              radius={[2, 2, 0, 0]}
+              shape={WeeklyCountBar}
+            />
             {zoom && <Brush {...zoom.brush} />}
           </BarChart>
         </ResponsiveContainer>
@@ -103,7 +127,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
         xLabel={copy.charts.weekStarting}
         table={{
           columns: [copy.charts.weekStarting, copy.charts.weeklyOpenToMerge.series],
-          rows: weekly.map((w) => [formatWeek(w.week), formatDuration(w.medianOpenToMergeHours)]),
+          rows: weekly.map((w) => [names.cell(w.week), formatDuration(w.medianOpenToMergeHours)]),
         }}
       >
         <ResponsiveContainer width="100%" height={zoom?.height ?? CHART_HEIGHT}>
@@ -121,7 +145,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
                 dx: 14,
               }}
             />
-            <Tooltip content={<ChartTooltip formatLabel={formatWeekLabel} formatValue={formatHours} />} />
+            <Tooltip content={<ChartTooltip formatLabel={names.heading} formatValue={formatHours} />} />
             <Line
               type="monotone"
               dataKey="medianOpenToMergeHours"
@@ -146,12 +170,13 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             items={[
               { key: "deploys", label: copy.charts.deploys.deploys, colour: seriesColour(0) },
               { key: "failures", label: copy.charts.deploys.failures, colour: seriesColour(1) },
+              ...partLegend,
             ]}
           />
         }
         table={{
           columns: [copy.charts.weekStarting, copy.charts.deploys.deploys, copy.charts.deploys.failures],
-          rows: deployWeeks.map((w) => [formatWeek(w.week), w.deploys, w.deployFailures]),
+          rows: deployWeeks.map((w) => [names.cell(w.week), w.deploys, w.deployFailures]),
         }}
       >
         <ResponsiveContainer width="100%" height={deployZoom?.height ?? CHART_HEIGHT}>
@@ -160,11 +185,23 @@ export function RepoCharts({ report }: { report: RepoReport }) {
             <XAxis dataKey="week" {...axisProps} tickFormatter={formatWeek} minTickGap={24} />
             <YAxis {...axisProps} allowDecimals={false} />
             <Tooltip
-              content={<ChartTooltip formatLabel={formatWeekLabel} formatValue={formatCount} />}
+              content={<ChartTooltip formatLabel={names.heading} formatValue={formatCount} />}
               cursor={{ fill: "var(--surface-sunken)" }}
             />
-            <Bar dataKey="deploys" name={copy.charts.deploys.deploys} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
-            <Bar dataKey="deployFailures" name={copy.charts.deploys.failures} fill={seriesColour(1)} radius={[2, 2, 0, 0]} />
+            <Bar
+              dataKey="deploys"
+              name={copy.charts.deploys.deploys}
+              fill={seriesColour(0)}
+              radius={[2, 2, 0, 0]}
+              shape={WeeklyCountBar}
+            />
+            <Bar
+              dataKey="deployFailures"
+              name={copy.charts.deploys.failures}
+              fill={seriesColour(1)}
+              radius={[2, 2, 0, 0]}
+              shape={WeeklyCountBar}
+            />
             {deployZoom && <Brush {...deployZoom.brush} />}
           </BarChart>
         </ResponsiveContainer>
@@ -179,7 +216,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
         table={{
           columns: [copy.charts.weekStarting, ...STAGE_KEYS.map((key) => STAGE_LABEL[key])],
           rows: weekly.map((w) => [
-            formatWeek(w.week),
+            names.cell(w.week),
             ...STAGE_KEYS.map((key) => formatDuration(w.stages ? w.stages[key] : null)),
           ]),
         }}
@@ -200,7 +237,7 @@ export function RepoCharts({ report }: { report: RepoReport }) {
               }}
             />
             <Tooltip
-              content={<ChartTooltip formatLabel={formatWeekLabel} formatValue={formatHours} />}
+              content={<ChartTooltip formatLabel={names.heading} formatValue={formatHours} />}
               cursor={{ fill: "var(--surface-sunken)" }}
             />
             {STAGE_KEYS.map((key, i) => (

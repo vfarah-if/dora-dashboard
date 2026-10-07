@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import type { LabelProps } from "recharts";
+import { Rectangle, type BarShapeProps, type LabelProps } from "recharts";
 import { copy } from "../copy";
 import { formatWeek } from "../lib/format";
 import { initialWindow } from "../lib/weekly";
@@ -47,6 +47,20 @@ export function weekZoom(length: number) {
       className: "chart-brush",
     },
   };
+}
+
+/** How strongly a part week's count bar is filled. Its outline stays at full strength, so the bar keeps a clear edge. */
+export const PART_WEEK_FILL_OPACITY = 0.35;
+const PART_WEEK_STROKE_WIDTH = 1;
+
+/**
+ * The bar for a weekly count, passed to a Recharts `Bar` as its `shape`. A week the range ends part way through is
+ * filled lighter inside a solid outline, so a count that covers only part of a week does not read as a slump.
+ */
+export function WeeklyCountBar(props: BarShapeProps) {
+  const partial = (props.payload as { partial?: boolean } | undefined)?.partial === true;
+  if (!partial) return <Rectangle {...props} />;
+  return <Rectangle {...props} fillOpacity={PART_WEEK_FILL_OPACITY} stroke={props.fill} strokeWidth={PART_WEEK_STROKE_WIDTH} />;
 }
 
 /** Approximate width of one 12px tick character, so the axis can be sized without measuring the DOM. */
