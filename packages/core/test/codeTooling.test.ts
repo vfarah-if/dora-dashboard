@@ -3,6 +3,7 @@ import {
   detectTooling,
   isCodeFile,
   isTestPath,
+  isToolConfig,
   isToolingCandidate,
   toolingCandidates,
   type CandidateFile,
@@ -64,6 +65,23 @@ describe("isCodeFile", () => {
     [".ts", false],
   ])("%s gives %s", (path, expected) => {
     expect(isCodeFile(path)).toBe(expected);
+  });
+});
+
+describe("isToolConfig", () => {
+  it.each([
+    [".ncurc.mjs", true],
+    ["apps/web/.eslintrc.cjs", true],
+    ["vite.config.ts", true],
+    ["apps/api/vitest.config.mts", true],
+    ["eslint.config.js", true],
+    ["webpack.config.prod.js", true],
+    ["apps/api/src/core/config.ts", false],
+    ["src/configure.ts", false],
+    ["src/app.ts", false],
+    [".github/scripts/release.js", false],
+  ])("%s gives %s", (path, expected) => {
+    expect(isToolConfig(path)).toBe(expected);
   });
 });
 

@@ -40,6 +40,18 @@ export function isCodeFile(path: string): boolean {
   return dot > 0 && CODE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
+/**
+ * A tool's configuration rather than the product's source: a dot-file such as `.ncurc.mjs` or `.eslintrc.cjs`, or a
+ * name with `.config.` in it such as `vite.config.ts`. A module named `config.ts` is source. It goes by name alone, so
+ * a product module named `database.config.ts` is missed and `karma.conf.js` or `jest.setup.ts` still count as source.
+ * Only the pull request check uses this, so a configuration change alone does not read as source changed without
+ * tests (ADR 0027).
+ */
+export function isToolConfig(path: string): boolean {
+  const name = baseName(path);
+  return name.startsWith(".") || name.includes(".config.");
+}
+
 const TEST_DIRECTORIES = new Set(["test", "tests", "__tests__", "__mocks__", "spec"]);
 
 /**

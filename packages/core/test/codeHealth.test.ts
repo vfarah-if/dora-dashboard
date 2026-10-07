@@ -307,11 +307,24 @@ describe("prsWithTests boundaries", () => {
     expect(prsWithTests([at(1, "2026-08-31T23:59:59Z"), at(2, "2026-10-01T00:00:00Z")], range)).toBeNull();
   });
 
-  it("leaves out a pull request whose file list was truncated at 100", () => {
+  it("leaves out a pull request cut at 100 files whose listed files show no test, since a later file could be one", () => {
     const truncated = at(3, "2026-09-10T00:00:00Z", { filesTruncated: true });
 
     expect(prsWithTests([truncated], range)).toBeNull();
     expect(prsWithTests([truncated, at(4, "2026-09-11T00:00:00Z")], range)).toEqual({ share: 0, withTests: 0, total: 1 });
+  });
+
+  it("counts a pull request cut at 100 files whose listed files already show source and tests", () => {
+    const truncated = pr(3, "2026-09-10T00:00:00Z", ["src/a.ts", "src/a.test.ts"], { filesTruncated: true });
+
+    // The files left off can add a test but cannot take one away, so this is 1 of 1 with tests.
+    expect(prsWithTests([truncated], range)).toEqual({ share: 1, withTests: 1, total: 1 });
+  });
+
+  it("leaves out a pull request cut at 100 files whose listed files show no source", () => {
+    const truncated = pr(3, "2026-09-10T00:00:00Z", ["src/a.test.ts", "README.md"], { filesTruncated: true });
+
+    expect(prsWithTests([truncated], range)).toBeNull();
   });
 });
 
@@ -482,5 +495,36 @@ describe("codeHealth checks", () => {
 
     expect(tie.longestFunction?.name).toBe("high");
     expect(codeHealth({ ...snapshot, functions: [] }).longestFunction).toBeNull();
+  });
+});
+
+describe("prsWithTests and tool configuration", () => {
+  const range = { from: "2026-09-01", to: "2026-09-30" };
+  const merged = (n: number, files: string[]) => pr(n, "2026-09-10T00:00:00Z", files);
+
+  it("does not count a pull request that changes only a tool's configuration as changing source", () => {
+    const prs = [merged(1, [".ncurc.mjs"]), merged(2, ["vite.config.ts", "README.md"]), merged(3, ["apps/web/eslint.config.js"])];
+
+    expect(prsWithTests(prs, range)).toBeNull();
+  });
+
+  it("still judges the source changed beside a configuration file", () => {
+    // PR 1 changes source without tests and PR 2 source with tests, whatever else they change: 1 of 2.
+    const prs = [merged(1, [".ncurc.mjs", "src/a.ts"]), merged(2, ["vite.config.ts", "src/b.ts", "src/b.test.ts"])];
+
+    expect(prsWithTests(prs, range)).toEqual({ share: 0.5, withTests: 1, total: 2 });
+  });
+
+  it("needs source beyond configuration before a pull request cut at 100 files can count", () => {
+    const cut = (n: number, files: string[]) => pr(n, "2026-09-10T00:00:00Z", files, { filesTruncated: true });
+
+    // PR 1 shows only configuration and a test, so it is left out; PR 2 also shows source, so it counts with tests.
+    const prs = [cut(1, [".ncurc.mjs", "src/a.test.ts"]), cut(2, [".ncurc.mjs", "src/b.ts", "src/b.test.ts"])];
+
+    expect(prsWithTests(prs, range)).toEqual({ share: 1, withTests: 1, total: 1 });
+  });
+
+  it("keeps a module that is merely named config as source", () => {
+    expect(prsWithTests([merged(1, ["src/core/config.ts"])], range)).toEqual({ share: 0, withTests: 0, total: 1 });
   });
 });

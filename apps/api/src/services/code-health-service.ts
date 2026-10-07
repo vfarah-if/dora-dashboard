@@ -8,10 +8,11 @@ import {
   type CodeHealthRange,
   type CodeHealthResponse,
   type CodeSnapshot,
+  type Repo,
   type ToolingFacts,
 } from "@dora-dashboard/core";
 import { NotFoundError } from "../core/errors.js";
-import type { CodeAnalyser } from "../interfaces/code-analyser.js";
+import type { AnalyserReach, CodeAnalyser } from "../interfaces/code-analyser.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
@@ -52,7 +53,7 @@ export class CodeHealthService {
     const repo = this.store.getRepo(repoId);
     if (!repo) throw new NotFoundError(`Unknown repository ${repoId}`);
 
-    const outcome = await this.measure(token, repoId, repo.owner, repo.name, repo.deployBranch, force);
+    const outcome = await this.measure(token, repo, force);
     if (outcome.unchanged) return outcome.unchanged;
     this.store.saveCodeSnapshot(repoId, outcome.snapshot);
     return outcome.snapshot;
@@ -70,72 +71,84 @@ export class CodeHealthService {
     return latest.error ? { ...report, lastError: failure(latest.error, latest.analysedAt) } : report;
   }
 
+  private failed(error: string): CodeSnapshot {
+    return {
+      commitSha: "",
+      analysedAt: this.now().toISOString(),
+      functions: [],
+      error,
+      snapshotVersion: CODE_SNAPSHOT_VERSION,
+    } as CodeSnapshot;
+  }
+
   private async measure(
     token: string,
-    repoId: number,
-    owner: string,
-    name: string,
-    branch: string,
+    repo: Repo,
     force: boolean,
   ): Promise<{ snapshot: CodeSnapshot; unchanged?: CodeSnapshot }> {
-    const failed = (error: string) => ({
-      snapshot: {
-        commitSha: "",
-        analysedAt: this.now().toISOString(),
-        functions: [],
-        error,
-        snapshotVersion: CODE_SNAPSHOT_VERSION,
-      } as CodeSnapshot,
-    });
+    const { checkout, analyser } = this;
     try {
-      if (!this.checkout || !this.analyser) return failed(ANALYSIS_OFF);
+      if (!checkout || !analyser) return { snapshot: this.failed(ANALYSIS_OFF) };
       // The combined analyser never reports "none" today, since it can always measure scripts. This message now mainly
       // comes back from snapshots stored before ADR 0025, when lizard was required for everything.
-      const reach = await this.analyser.reach();
-      if (reach === "none") return failed(ANALYSER_MISSING);
-
-      const previous = this.store.latestCodeSnapshot(repoId);
-      // A snapshot from an older version lacks data the current one records, so it is analysed again at the same head.
-      // So is one that left files unmeasured once every tool is found, or installing lizard would change nothing. While
-      // a tool is still missing the snapshot stands, so the repository is not cloned on every crawl.
-      const leftFilesOut = (previous?.unmeasuredFiles ?? 0) > 0 && reach === "full";
-      if (!force && previous && !previous.error && previous.snapshotVersion === CODE_SNAPSHOT_VERSION && !leftFilesOut) {
-        const head = await this.checkout.headSha(token, owner, name, branch).catch((err: unknown) => {
-          this.log.warn({ err, repoId }, "could not read the branch head; analysing anyway");
-          return null;
-        });
-        if (head && head === previous.commitSha) return { snapshot: previous, unchanged: previous };
-      }
-
-      const checkout = await this.checkout.checkout(token, owner, name, branch);
-      try {
-        const { functions, partlyMeasured, unmeasuredFiles } = await this.analyser.analyse(checkout.dir);
-        if (unmeasuredFiles > 0) {
-          this.log.warn(
-            { repoId, unmeasuredFiles },
-            "some source files were left unmeasured because their analysis tool was not found",
-          );
-        }
-        const tooling = await this.readTooling(checkout.dir, repoId);
-        return {
-          snapshot: {
-            commitSha: checkout.commitSha,
-            analysedAt: this.now().toISOString(),
-            functions,
-            partlyMeasured,
-            unmeasuredFiles,
-            error: null,
-            tooling,
-            snapshotVersion: CODE_SNAPSHOT_VERSION,
-          },
-        };
-      } finally {
-        // A clean-up failure must not throw away a finished analysis.
-        await checkout.dispose().catch((err: unknown) => this.log.warn({ err, repoId }, "could not remove the checkout"));
-      }
+      const reach = await analyser.reach();
+      if (reach === "none") return { snapshot: this.failed(ANALYSER_MISSING) };
+      const unchanged = force ? null : await this.unchangedSnapshot(token, repo, reach, checkout);
+      if (unchanged) return { snapshot: unchanged, unchanged };
+      return { snapshot: await this.analyseClone(token, repo, checkout, analyser) };
     } catch (error) {
-      this.log.warn({ err: error, repoId }, "code analysis failed");
-      return failed(error instanceof Error ? error.message : String(error));
+      this.log.warn({ err: error, repoId: repo.id }, "code analysis failed");
+      return { snapshot: this.failed(error instanceof Error ? error.message : String(error)) };
+    }
+  }
+
+  /**
+   * The stored snapshot when the branch head is still the commit it measured, so the repository is not cloned again.
+   * A snapshot from an older version lacks data the current one records, so it is analysed again at the same head. So
+   * is one that left files unmeasured once every tool is found, or installing lizard would change nothing. While a tool
+   * is still missing the snapshot stands, so the repository is not cloned on every crawl.
+   */
+  private async unchangedSnapshot(
+    token: string,
+    repo: Repo,
+    reach: AnalyserReach,
+    checkout: SourceCheckout,
+  ): Promise<CodeSnapshot | null> {
+    const previous = this.store.latestCodeSnapshot(repo.id);
+    if (!previous || previous.error || previous.snapshotVersion !== CODE_SNAPSHOT_VERSION) return null;
+    if ((previous.unmeasuredFiles ?? 0) > 0 && reach === "full") return null;
+    const head = await checkout.headSha(token, repo.owner, repo.name, repo.deployBranch).catch((err: unknown) => {
+      this.log.warn({ err, repoId: repo.id }, "could not read the branch head; analysing anyway");
+      return null;
+    });
+    return head && head === previous.commitSha ? previous : null;
+  }
+
+  /** Clones the branch, measures it and reads its tooling, and removes the clone whatever happens. */
+  private async analyseClone(token: string, repo: Repo, checkout: SourceCheckout, analyser: CodeAnalyser): Promise<CodeSnapshot> {
+    const clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    try {
+      const { functions, partlyMeasured, unmeasuredFiles } = await analyser.analyse(clone.dir);
+      if (unmeasuredFiles > 0) {
+        this.log.warn(
+          { repoId: repo.id, unmeasuredFiles },
+          "some source files were left unmeasured because their analysis tool was not found",
+        );
+      }
+      const tooling = await this.readTooling(clone.dir, repo.id);
+      return {
+        commitSha: clone.commitSha,
+        analysedAt: this.now().toISOString(),
+        functions,
+        partlyMeasured,
+        unmeasuredFiles,
+        error: null,
+        tooling,
+        snapshotVersion: CODE_SNAPSHOT_VERSION,
+      };
+    } finally {
+      // A clean-up failure must not throw away a finished analysis.
+      await clone.dispose().catch((err: unknown) => this.log.warn({ err, repoId: repo.id }, "could not remove the checkout"));
     }
   }
 

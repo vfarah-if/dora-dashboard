@@ -61,9 +61,14 @@ interface RawChangeItem {
   toString?: string | null;
 }
 
-interface RawChangelog {
+interface RawHistory {
   /** The bulk changelog sends `created` as epoch milliseconds, unlike the issue fields. */
-  issueChangeLogs?: { issueId: string; changeHistories?: { created: string | number; items?: RawChangeItem[] }[] }[];
+  created: string | number;
+  items?: RawChangeItem[];
+}
+
+interface RawChangelog {
+  issueChangeLogs?: { issueId: string; changeHistories?: RawHistory[] }[];
   nextPageToken?: string | null;
 }
 
@@ -115,6 +120,115 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+/** `message`, followed by Jira's own reason when it gave one. */
+function withReason(message: string, reason: string | null): string {
+  return reason ? `${message}. ${reason}` : message;
+}
+
+/** How long Jira asked to wait before trying again, capped, or a second when it named no usable time. */
+function retryDelayMs(response: Response): number {
+  const asked = Number(response.headers.get("Retry-After"));
+  const seconds = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MAX_RETRY_SECONDS) : DEFAULT_RETRY_SECONDS;
+  return seconds * 1000;
+}
+
+/**
+ * Atlassian answers a token that lacks a scope with a 401. Reconnecting cannot add a scope the app does not have, so it
+ * is a refusal, which keeps the grant, and not a rejected credential, which drops it.
+ */
+function unauthorised(reason: string | null, where: string): Error {
+  if (reason !== null && /scope does not match/i.test(reason)) {
+    return new AccessRefusedError(
+      `Jira refused access to ${where}. The app lacks a scope this call needs; add it to the app in the Atlassian developer console and connect Jira again`,
+    );
+  }
+  return new UnauthorisedError(`${withReason(`Jira rejected the credential for ${where}`, reason)}; reconnect Jira`);
+}
+
+/**
+ * The error for a response that is not a success. It names the path without its query, which can carry a space key or
+ * a date; the token travels in a header and is never in either.
+ */
+async function failureOf(response: Response, url: string): Promise<Error> {
+  const where = new URL(url).pathname;
+  switch (response.status) {
+    case 429:
+      return new RateLimitedError("Jira is rate limiting requests; try again shortly");
+    case 401:
+      return unauthorised(await reasonFrom(response), where);
+    case 403:
+      return new AccessRefusedError(
+        `Jira refused access to ${where}. The connected account may lack permission, or the app may lack a scope`,
+      );
+    case 404:
+      return new NotFoundError("Jira site or space was not found, or this account cannot see it");
+    default:
+      return new UpstreamError(
+        withReason(`Jira answered ${response.status} for ${where}`, await reasonFrom(response)),
+        response.status,
+      );
+  }
+}
+
+async function bodyOf<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new UpstreamError("Jira sent an unreadable response", response.status);
+  }
+}
+
+const isStatusChange = (item: RawChangeItem) => item.field === "status" || item.fieldId === "status";
+
+/** The status changes in one issue's histories, in the order Jira sent them. */
+function statusChangesIn(histories: RawHistory[] | undefined, issueKey: string): StatusChange[] {
+  const changes: StatusChange[] = [];
+  for (const history of histories ?? []) {
+    for (const item of (history.items ?? []).filter(isStatusChange)) {
+      changes.push({
+        at: toIso(history.created, issueKey, "changelog date"),
+        fromId: text(item.from),
+        fromName: text(item.fromString),
+        toId: text(item.to),
+        toName: text(item.toString) ?? "",
+      });
+    }
+  }
+  return changes;
+}
+
+type CategoryLookup = (id: string | null) => StatusCategory | null;
+
+/**
+ * The item's history from its creation, in the status it was created in: the first change's starting status, or the
+ * current status when it never changed.
+ */
+function transitionsOf(
+  createdAt: string,
+  current: RawStatus | undefined,
+  changes: StatusChange[],
+  lookup: CategoryLookup,
+): WorkItemTransition[] {
+  const first = changes[0];
+  const initialName = first ? (first.fromName ?? first.toName) : (current?.name ?? "");
+  const initialId = first ? first.fromId : (current?.id ?? null);
+  return [
+    { at: createdAt, from: null, to: initialName, fromCategory: null, toCategory: lookup(initialId) },
+    ...changes.map((c) => ({
+      at: c.at,
+      from: c.fromName,
+      to: c.toName,
+      fromCategory: lookup(c.fromId),
+      toCategory: lookup(c.toId),
+    })),
+  ];
+}
+
+/** The space's category for the current status, or the one Jira sent inline when the space does not list it. */
+function currentCategory(status: RawStatus | undefined, lookup: CategoryLookup): StatusCategory | null {
+  return lookup(status?.id ?? null) ?? CATEGORIES[status?.statusCategory?.key ?? ""] ?? null;
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -142,62 +256,33 @@ export class JiraCloudProvider implements WorkItemProvider {
 
   private readonly categoryCache = new Map<string, { at: number; categories: Map<string, StatusCategory> }>();
 
-  private async call<T>(token: string, url: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-    for (let attempt = 0; ; attempt++) {
-      let response: Response;
-      try {
-        response = await this.http(url, {
-          method: init.method ?? "GET",
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-            ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
-          },
-          ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-        });
-      } catch (cause) {
-        throw new UpstreamError("Jira could not be reached", 502, { cause });
-      }
-      if (response.status === 429) {
-        if (attempt > 0) throw new RateLimitedError("Jira is rate limiting requests; try again shortly");
-        const asked = Number(response.headers.get("Retry-After"));
-        const seconds = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MAX_RETRY_SECONDS) : DEFAULT_RETRY_SECONDS;
-        await this.sleep(seconds * 1000);
-        continue;
-      }
-      if (response.status === 401) {
-        const reason = await reasonFrom(response);
-        const where = new URL(url).pathname;
-        // Atlassian answers a token that lacks a scope with a 401. Reconnecting cannot add a scope the app does not
-        // have, so it is a refusal, which keeps the grant, and not a rejected credential, which drops it.
-        if (reason !== null && /scope does not match/i.test(reason)) {
-          throw new AccessRefusedError(
-            `Jira refused access to ${where}. The app lacks a scope this call needs; add it to the app in the Atlassian developer console and connect Jira again`,
-          );
-        }
-        throw new UnauthorisedError(`Jira rejected the credential for ${where}${reason ? `. ${reason}` : ""}; reconnect Jira`);
-      }
-      if (response.status === 403) {
-        // The path without its query; the token travels in a header and is never here.
-        throw new AccessRefusedError(
-          `Jira refused access to ${new URL(url).pathname}. The connected account may lack permission, or the app may lack a scope`,
-        );
-      }
-      if (response.status === 404) {
-        throw new NotFoundError("Jira site or space was not found, or this account cannot see it");
-      }
-      if (!response.ok) {
-        // The path without its query, which can carry a space key or a date; the token travels in a header and is never here.
-        const where = new URL(url).pathname;
-        const reason = await reasonFrom(response);
-        throw new UpstreamError(`Jira answered ${response.status} for ${where}${reason ? `. ${reason}` : ""}`, response.status);
-      }
-      try {
-        return (await response.json()) as T;
-      } catch {
-        throw new UpstreamError("Jira sent an unreadable response", response.status);
-      }
+  /** One request; a network failure means Jira could not be reached. The token goes in a header, never the address. */
+  private async send(token: string, url: string, init: { method?: string; body?: unknown }): Promise<Response> {
+    const hasBody = init.body !== undefined;
+    try {
+      return await this.http(url, {
+        method: init.method ?? "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+      });
+    } catch (cause) {
+      throw new UpstreamError("Jira could not be reached", 502, { cause });
     }
+  }
+
+  /** Sends a request, waiting and trying once more when Jira rate limits it, and reads the answer. */
+  private async call<T>(token: string, url: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+    let response = await this.send(token, url, init);
+    if (response.status === 429) {
+      await this.sleep(retryDelayMs(response));
+      response = await this.send(token, url, init);
+    }
+    if (!response.ok) throw await failureOf(response, url);
+    return bodyOf<T>(response);
   }
 
   private api<T>(token: string, siteId: string, path: string, init?: { method?: string; body?: unknown }): Promise<T> {
@@ -341,18 +426,7 @@ export class JiraCloudProvider implements WorkItemProvider {
       });
       for (const log of page.issueChangeLogs ?? []) {
         const list = result.get(log.issueId) ?? [];
-        for (const history of log.changeHistories ?? []) {
-          for (const item of history.items ?? []) {
-            if (item.field !== "status" && item.fieldId !== "status") continue;
-            list.push({
-              at: toIso(history.created, keyOf.get(log.issueId) ?? log.issueId, "changelog date"),
-              fromId: text(item.from),
-              fromName: text(item.fromString),
-              toId: text(item.to),
-              toName: text(item.toString) ?? "",
-            });
-          }
-        }
+        list.push(...statusChangesIn(log.changeHistories, keyOf.get(log.issueId) ?? log.issueId));
         result.set(log.issueId, list);
       }
       next = page.nextPageToken ?? null;
@@ -368,41 +442,23 @@ export class JiraCloudProvider implements WorkItemProvider {
     changes: StatusChange[],
   ): WorkItem {
     const f = issue.fields;
-    const lookup = (id: string | null): StatusCategory | null => (id === null ? null : (categories.get(id) ?? null));
-    const currentId = f.status?.id ?? null;
-    const currentName = f.status?.name ?? "";
-    const inline = CATEGORIES[f.status?.statusCategory?.key ?? ""] ?? null;
+    const lookup: CategoryLookup = (id) => (id === null ? null : (categories.get(id) ?? null));
     const createdAt = toIso(f.created, issue.key, "created date");
-
-    const first = changes[0];
-    const initialName = first ? (first.fromName ?? first.toName) : currentName;
-    const initialId = first ? first.fromId : currentId;
-    const transitions: WorkItemTransition[] = [
-      { at: createdAt, from: null, to: initialName, fromCategory: null, toCategory: lookup(initialId) },
-      ...changes.map((c) => ({
-        at: c.at,
-        from: c.fromName,
-        to: c.toName,
-        fromCategory: lookup(c.fromId),
-        toCategory: lookup(c.toId),
-      })),
-    ];
-
     const level = levelOf(f.issuetype?.hierarchyLevel);
     return {
       key: issue.key,
       spaceKey,
       type: f.issuetype?.name ?? "",
       summary: f.summary ?? "",
-      status: currentName,
-      statusCategory: lookup(currentId) ?? inline,
+      status: f.status?.name ?? "",
+      statusCategory: currentCategory(f.status, lookup),
       createdAt,
       updatedAt: toIso(f.updated, issue.key, "updated date"),
       resolvedAt: f.resolutiondate ? toIso(f.resolutiondate, issue.key, "resolution date") : null,
       assigneeId: f.assignee?.accountId ?? null,
       parentKey: f.parent?.key ?? null,
       labels: f.labels ?? [],
-      transitions,
+      transitions: transitionsOf(createdAt, f.status, changes, lookup),
       ...(level === undefined ? {} : { level }),
     };
   }

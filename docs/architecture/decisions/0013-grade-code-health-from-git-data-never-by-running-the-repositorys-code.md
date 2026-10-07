@@ -57,3 +57,4 @@ Left out for now:
 
 - 2026-09-30: the snapshot version is now 4, which records files the analyser may have read only in part (ADR 0015).
 - 2026-10-07: `CODE_SNAPSHOT_VERSION` is now 5 (ADR 0025), so every repository is analysed again on its next crawl even when the branch has not moved. The body above says "currently 3"; the current version is the one in `packages/core/src/codeHealth.ts`. The body also says function metrics come from lizard. JavaScript and TypeScript are now measured by the syntax tree analyser of ADR 0025, which reads files and never runs them, and lizard measures every other language.
+- 2026-10-07: a pull request with more than 100 files now counts in the pull-request check when its first 100 already include a source file and a test file, and a tool's configuration file no longer counts as source there (ADR 0027). The body above says such pull requests are left out; that now holds only when the files listed do not settle the answer.

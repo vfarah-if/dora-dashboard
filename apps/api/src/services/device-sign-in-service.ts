@@ -85,26 +85,36 @@ export class DeviceSignInService {
   /** `retiredSessionId` is a session this browser already held, deleted if the sign-in is granted. */
   async poll(id: string | null, retiredSessionId: string | null): Promise<PollOutcome> {
     const entry = id ? this.pending.get(id) : undefined;
-    if (!id || !entry || entry.expiresAt <= this.now()) {
-      if (id) this.pending.delete(id);
-      return { status: "expired", interval: entry?.interval ?? DEFAULT_POLL_INTERVAL_SECONDS, settled: true };
-    }
+    if (!id || !entry || entry.expiresAt <= this.now()) return this.expire(id, entry);
     if (this.now() - entry.lastPolledAt < entry.interval * 1000) return this.waiting(entry);
 
     entry.lastPolledAt = this.now();
     const result = await this.device.poll(entry.deviceCode);
-    if (result.status === "pending") return this.waiting(entry);
-    if (result.status === "slow_down") {
-      entry.interval = result.interval ?? entry.interval + DEFAULT_POLL_INTERVAL_SECONDS;
-      return this.waiting(entry);
+    if (result.status === "pending" || result.status === "slow_down") {
+      return this.keepWaiting(entry, result.status, result.interval);
     }
     // GitHub has consumed the device code whatever happens next, so the entry goes either way.
     this.pending.delete(id);
     if (result.status !== "granted") return { status: result.status, interval: entry.interval, settled: true };
+    return this.grant(entry, result.token, retiredSessionId);
+  }
 
-    const viewer = await this.provider.fetchViewer(result.token);
+  /** Drops a sign-in that is unknown or has run out of time. */
+  private expire(id: string | null, entry: Pending | undefined): PollOutcome {
+    if (id) this.pending.delete(id);
+    return { status: "expired", interval: entry?.interval ?? DEFAULT_POLL_INTERVAL_SECONDS, settled: true };
+  }
+
+  /** Keeps a sign-in waiting. On `slow_down` the interval becomes the one GitHub names, or grows by the default. */
+  private keepWaiting(entry: Pending, status: "pending" | "slow_down", interval: number | undefined): PollOutcome {
+    if (status === "slow_down") entry.interval = interval ?? entry.interval + DEFAULT_POLL_INTERVAL_SECONDS;
+    return this.waiting(entry);
+  }
+
+  private async grant(entry: Pending, token: string, retiredSessionId: string | null): Promise<PollOutcome> {
+    const viewer = await this.provider.fetchViewer(token);
     if (retiredSessionId) this.sessions.delete(retiredSessionId);
-    const sessionId = this.sessions.create({ token: result.token, ...viewer });
+    const sessionId = this.sessions.create({ token, ...viewer });
     return {
       status: "granted",
       interval: entry.interval,

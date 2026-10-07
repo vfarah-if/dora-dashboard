@@ -39,7 +39,9 @@ const REFUSED = new Set([401, 403]);
 /** How much of Atlassian's `error_description` a log keeps. It carries no secret. */
 const MAX_DESCRIPTION = 200;
 
-function refusesToken(step: "sign-in" | "refresh", status: number, body: TokenBody): boolean {
+type Step = "sign-in" | "refresh";
+
+function refusesToken(step: Step, status: number, body: TokenBody): boolean {
   if (REFUSED.has(status)) return true;
   return status === 400 && (step === "sign-in" || body.error === "invalid_grant");
 }
@@ -57,6 +59,35 @@ const MISCONFIGURED =
 /** Only at sign-in: a revoked refresh token also arrives as a 401 `unauthorized_client`, and must drop the grant. */
 function refusesAppCredentials(status: number, body: TokenBody): boolean {
   return status === 401 || CREDENTIAL_ERRORS.has(body.error ?? "") || /redirect_uri/i.test(body.error_description ?? "");
+}
+
+/** Atlassian's answer for a log: the status, the error code and the start of its description, which carries no secret. */
+function answerOf(status: number, body: TokenBody): string {
+  const code = body.error ? ` ${body.error}` : "";
+  const description =
+    typeof body.error_description === "string" && body.error_description !== ""
+      ? `: ${body.error_description.slice(0, MAX_DESCRIPTION)}`
+      : "";
+  return `Atlassian answered ${status}${code}${description}`;
+}
+
+/** Why no token was issued, as the error the caller acts on. */
+function tokenFailure(step: Step, status: number, body: TokenBody): Error {
+  if (step === "sign-in" && refusesAppCredentials(status, body)) {
+    // The status, the code and Atlassian's description, which says whether the secret or the redirect URI is wrong.
+    return new TrackerConfigurationError(MISCONFIGURED, { cause: new Error(answerOf(status, body)) });
+  }
+  const reason = body.error_description ?? body.error ?? "Atlassian did not issue a token";
+  if (refusesToken(step, status, body)) return new UnauthorisedError(`Atlassian refused the ${step}. ${reason}`);
+  return new UpstreamError(`Atlassian ${step} failed. ${reason}`, status);
+}
+
+async function bodyOf(response: Response, step: Step): Promise<TokenBody> {
+  try {
+    return (await response.json()) as TokenBody;
+  } catch {
+    throw new UpstreamError(`Atlassian sent an unreadable ${step} response`, response.status);
+  }
 }
 
 /** Atlassian's OAuth 2.0 (3LO) authorisation code grant, with rotating refresh tokens. */
@@ -92,11 +123,9 @@ export class AtlassianOAuth implements TrackerAuthorisation {
     return this.token("refresh", { grant_type: "refresh_token", refresh_token: refreshToken });
   }
 
-  /** `step` names the exchange in any error, so a log says which one failed. */
-  private async token(step: "sign-in" | "refresh", grant: Record<string, string>): Promise<TrackerGrant> {
-    let response: Response;
+  private async post(step: Step, grant: Record<string, string>): Promise<Response> {
     try {
-      response = await this.http(`${this.authBase}/oauth/token`, {
+      return await this.http(`${this.authBase}/oauth/token`, {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ ...grant, client_id: this.clientId, client_secret: this.clientSecret }),
@@ -104,33 +133,17 @@ export class AtlassianOAuth implements TrackerAuthorisation {
     } catch (cause) {
       throw new UpstreamError(`Atlassian could not be reached during ${step}`, 502, { cause });
     }
-    let body: TokenBody;
-    try {
-      body = (await response.json()) as TokenBody;
-    } catch {
-      throw new UpstreamError(`Atlassian sent an unreadable ${step} response`, response.status);
-    }
-    if (response.ok && body.access_token) {
-      return {
-        accessToken: body.access_token,
-        refreshToken: body.refresh_token ?? null,
-        expiresAt: this.now() + (body.expires_in ?? 3600) * 1000,
-      };
-    }
-    const reason = body.error_description ?? body.error ?? "Atlassian did not issue a token";
-    if (step === "sign-in" && refusesAppCredentials(response.status, body)) {
-      throw new TrackerConfigurationError(MISCONFIGURED, {
-        // The status, the code and Atlassian's description, which says whether the secret or the redirect URI is wrong.
-        cause: new Error(
-          `Atlassian answered ${response.status}${body.error ? ` ${body.error}` : ""}${
-            typeof body.error_description === "string" && body.error_description !== ""
-              ? `: ${body.error_description.slice(0, MAX_DESCRIPTION)}`
-              : ""
-          }`,
-        ),
-      });
-    }
-    if (refusesToken(step, response.status, body)) throw new UnauthorisedError(`Atlassian refused the ${step}. ${reason}`);
-    throw new UpstreamError(`Atlassian ${step} failed. ${reason}`, response.status);
+  }
+
+  /** `step` names the exchange in any error, so a log says which one failed. */
+  private async token(step: Step, grant: Record<string, string>): Promise<TrackerGrant> {
+    const response = await this.post(step, grant);
+    const body = await bodyOf(response, step);
+    if (!response.ok || !body.access_token) throw tokenFailure(step, response.status, body);
+    return {
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token ?? null,
+      expiresAt: this.now() + (body.expires_in ?? 3600) * 1000,
+    };
   }
 }

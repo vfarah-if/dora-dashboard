@@ -152,25 +152,66 @@ function wrapsItsArgument(call: Node & { callee: Node }): boolean {
   );
 }
 
+/** How one kind of parent names the value `child` it holds, or null when it names something else. */
+type Namer<T extends NodeType> = (parent: Extract<Node, { type: T }>, child: Node) => string | null;
+
+const propertyName = (parent: { key: Node; value?: unknown; computed?: boolean }, child: Node): string | null =>
+  parent.value === child ? keyName(parent.key, "computed" in parent && parent.computed === true) : null;
+
+const assignedName = (parent: { left: Node; right: Node }, child: Node): string | null =>
+  parent.right === child ? targetName(parent.left) : null;
+
+/** The parents that give the value they hold a name. Any other parent gives none. */
+const NAMERS: { [T in NodeType]?: Namer<T> } = {
+  VariableDeclarator: (parent, child) => (parent.init === child && parent.id.type === "Identifier" ? parent.id.name : null),
+  ObjectProperty: propertyName,
+  ClassProperty: propertyName,
+  ClassPrivateProperty: propertyName,
+  ClassAccessorProperty: propertyName,
+  AssignmentExpression: assignedName,
+  AssignmentPattern: assignedName,
+  ExportDefaultDeclaration: () => "default",
+};
+
 /** The name a parent gives the value `child`, or null when it gives none. */
 function nameGivenBy(parent: Node, child: Node): string | null {
-  switch (parent.type) {
-    case "VariableDeclarator":
-      return parent.init === child && parent.id.type === "Identifier" ? parent.id.name : null;
-    case "ObjectProperty":
-    case "ClassProperty":
-    case "ClassPrivateProperty":
-    case "ClassAccessorProperty":
-      return parent.value === child ? keyName(parent.key, "computed" in parent && parent.computed === true) : null;
-    case "AssignmentExpression":
-      return parent.right === child ? targetName(parent.left) : null;
-    case "AssignmentPattern":
-      return parent.right === child ? targetName(parent.left) : null;
-    case "ExportDefaultDeclaration":
-      return "default";
-    default:
-      return null;
+  if (!Object.hasOwn(NAMERS, parent.type)) return null;
+  // Each entry takes its own node type, which TypeScript cannot follow through a lookup by `parent.type`.
+  const namer = NAMERS[parent.type] as Namer<NodeType>;
+  return namer(parent, child);
+}
+
+/** The attribute's name when `holder` is the braces of a JSX attribute, such as `onClick` in `onClick={…}`. */
+function attributeName(holder: Visit): string | null {
+  const attribute = holder.parent?.node;
+  if (holder.node.type !== "JSXExpressionContainer" || attribute?.type !== "JSXAttribute") return null;
+  const { name } = attribute;
+  return name.type === "JSXIdentifier" ? name.name : `${name.namespace.name}:${name.name.name}`;
+}
+
+/** Where a climb from a function stopped: the node that may name it, the value it holds, and the first callee passed. */
+interface Climb {
+  holder: Visit | null;
+  child: Node;
+  callee: string | null;
+}
+
+/**
+ * Climbs from a function through wrappers and through calls that return their argument. It stops at the first other
+ * parent, which may name the function, or with no holder at a call that does not return it or that calls it.
+ */
+function climb(visit: Visit): Climb {
+  let child = visit.node;
+  let callee: string | null = null;
+  for (let up = visit.parent; up; child = up.node, up = up.parent) {
+    const parent = up.node;
+    if (WRAPPERS.has(parent.type)) continue;
+    if (!CALLS.has(parent.type) || !("callee" in parent)) return { holder: up, child, callee };
+    if (parent.callee === child) return { holder: null, child, callee };
+    callee ??= targetName(parent.callee);
+    if (!wrapsItsArgument(parent)) return { holder: null, child, callee };
   }
+  return { holder: null, child, callee };
 }
 
 /**
@@ -179,25 +220,9 @@ function nameGivenBy(parent: Node, child: Node): string | null {
  * one in a JSX attribute takes the attribute's name, and anything else is `(anonymous)`, as lizard prints it.
  */
 function inferredName(visit: Visit): string {
-  let child = visit.node;
-  let callee: string | null = null;
-  for (let up = visit.parent; up; child = up.node, up = up.parent) {
-    const parent = up.node;
-    if (WRAPPERS.has(parent.type)) continue;
-    if (CALLS.has(parent.type) && "callee" in parent) {
-      if (parent.callee === child) break;
-      callee ??= targetName(parent.callee);
-      if (wrapsItsArgument(parent)) continue;
-      break;
-    }
-    if (parent.type === "JSXExpressionContainer" && up.parent?.node.type === "JSXAttribute") {
-      const attribute = up.parent.node.name;
-      return attribute.type === "JSXIdentifier" ? attribute.name : `${attribute.namespace.name}:${attribute.name.name}`;
-    }
-    const name = nameGivenBy(parent, child);
-    if (name !== null) return name;
-    break;
-  }
+  const { holder, child, callee } = climb(visit);
+  const name = holder === null ? null : (attributeName(holder) ?? nameGivenBy(holder.node, child));
+  if (name !== null) return name;
   return callee === null ? "(anonymous)" : `${callee} callback`;
 }
 
@@ -241,6 +266,41 @@ function ownedFrom(fn: FunctionNode): number {
 const hasDecorators = (node: Node): boolean =>
   "decorators" in node && Array.isArray(node.decorators) && node.decorators.length > 0;
 
+function measuredFunction(path: string, language: FunctionMetrics["language"], visit: Visit, fn: FunctionNode): Measured {
+  return {
+    metrics: {
+      file: path,
+      language,
+      name: nameOf(visit, fn),
+      startLine: startLineOf(fn),
+      ccn: 1,
+      nloc: 0,
+      params: paramCount(fn),
+    },
+    start: ownedFrom(fn),
+    end: fn.end!,
+    lines: 0,
+  };
+}
+
+/** The keys to walk below a node, noting in `problems` a node type this module does not know. */
+function childKeys(node: Node, problems: string[]): readonly string[] {
+  const known = VISITOR_KEYS[node.type];
+  if (!known) problems.push(`The parser produced a node of type ${node.type} that this module does not know how to read.`);
+  const keys = known ?? [];
+  // TSParameterProperty holds decorators that its visitor keys leave out.
+  return hasDecorators(node) && !keys.includes("decorators") ? [...keys, "decorators"] : keys;
+}
+
+/** The `owner` and `outer` of a child found under `key`, where `fn` is the node's own measurement when it is a function. */
+function childScope(visit: Visit, fn: Measured | null, key: string): Pick<Visit, "owner" | "outer"> {
+  // A decorator runs where the class is defined, so its branches belong to the code around the method or parameter.
+  const owner = key === "decorators" ? visit.outer : (fn ?? visit.owner);
+  if (!fn) return { owner, outer: visit.outer };
+  // Parameters, and what they hold, sit in the function's signature, so a decorator there runs in the code around it.
+  return { owner, outer: key === "params" ? visit.owner : fn };
+}
+
 /**
  * Walks the tree, noting in `problems` anything it does not know how to walk. The walk itself uses no recursion, so a
  * deeply nested expression cannot overflow the stack here, although the parser has its own limit.
@@ -252,45 +312,14 @@ function measureTree(path: string, program: Node, problems: string[]): Measured[
   while (work.length > 0) {
     const visit = work.pop()!;
     const { node } = visit;
-    let owner = visit.owner;
-    let fn: Measured | null = null;
-    if (isFunction(node)) {
-      fn = {
-        metrics: {
-          file: path,
-          language,
-          name: nameOf(visit, node),
-          startLine: startLineOf(node),
-          ccn: 1,
-          nloc: 0,
-          params: paramCount(node),
-        },
-        start: ownedFrom(node),
-        end: node.end!,
-        lines: 0,
-      };
-      found.push(fn);
-      owner = fn;
-    } else if (owner && isDecision(node)) {
-      owner.metrics.ccn += 1;
-    }
-    const known = VISITOR_KEYS[node.type];
-    if (!known) problems.push(`The parser produced a node of type ${node.type} that this module does not know how to read.`);
-    const keys = known ?? [];
-    // TSParameterProperty holds decorators that its visitor keys leave out.
-    for (const key of hasDecorators(node) && !keys.includes("decorators") ? [...keys, "decorators"] : keys) {
-      let childOwner = owner;
-      let childOuter = visit.outer;
-      if (fn) {
-        // Parameters, and what they hold, sit in the function's signature, so a decorator there runs in the code around it.
-        if (key === "params") childOuter = visit.owner;
-        else childOuter = fn;
-      }
-      // A decorator runs where the class is defined, so its branches belong to the code around the method or parameter.
-      if (key === "decorators") childOwner = visit.outer;
+    const fn = isFunction(node) ? measuredFunction(path, language, visit, node) : null;
+    if (fn) found.push(fn);
+    else if (visit.owner && isDecision(node)) visit.owner.metrics.ccn += 1;
+    for (const key of childKeys(node, problems)) {
+      const scope = childScope(visit, fn, key);
       const value = (node as unknown as Record<string, unknown>)[key];
       for (const child of Array.isArray(value) ? value : [value]) {
-        if (isNode(child)) work.push({ node: child, parent: visit, owner: childOwner, outer: childOuter });
+        if (isNode(child)) work.push({ node: child, parent: visit, ...scope });
       }
     }
   }
@@ -319,27 +348,47 @@ function codeLines(token: Token, source: string): number[] {
 }
 
 /**
+ * Comments and the end of the file put no code on a line. Comments arrive among the tokens as plain strings, and every
+ * other token is an object from `tokTypes`, so any other string is a token this module does not know, noted in `problems`.
+ */
+function holdsCode(token: Token, problems: string[]): boolean {
+  if (token.type === "CommentLine" || token.type === "CommentBlock" || token.type === tokTypes.eof) return false;
+  if (typeof token.type !== "string") return true;
+  problems.push(`The parser produced a token of type ${token.type} that this module does not know how to count.`);
+  return false;
+}
+
+/**
+ * Follows `functions`, sorted by where they start, through the source: each call takes a position no earlier than the
+ * last and gives the innermost function open there, or null outside every function.
+ */
+function innermostAt(functions: readonly Measured[]): (position: number) => Measured | null {
+  const open: Measured[] = [];
+  let next = 0;
+  const closeBefore = (position: number) => {
+    while (open.length > 0 && open[open.length - 1]!.end <= position) open.pop();
+  };
+  return (position) => {
+    while (next < functions.length && functions[next]!.start <= position) {
+      const fn = functions[next++]!;
+      closeBefore(fn.start);
+      open.push(fn);
+    }
+    closeBefore(position);
+    return open[open.length - 1] ?? null;
+  };
+}
+
+/**
  * Lizard's line rule: a line counts once, to the innermost function holding its first code token, and every function
  * also counts its own start line, so `useEffect(() => {` counts for both the component and the callback.
  */
 function countLines(functions: Measured[], tokens: readonly Token[], source: string, problems: string[]): void {
   const owners = new Map<number, Measured | null>();
-  const open: Measured[] = [];
-  let next = 0;
+  const ownerAt = innermostAt(functions);
   for (const token of tokens) {
-    // Comments arrive among the tokens as plain strings; every other token is an object from `tokTypes`.
-    if (token.type === "CommentLine" || token.type === "CommentBlock" || token.type === tokTypes.eof) continue;
-    if (typeof token.type === "string") {
-      problems.push(`The parser produced a token of type ${token.type} that this module does not know how to count.`);
-      continue;
-    }
-    while (next < functions.length && functions[next]!.start <= token.start) {
-      const fn = functions[next++]!;
-      while (open.length > 0 && open[open.length - 1]!.end <= fn.start) open.pop();
-      open.push(fn);
-    }
-    while (open.length > 0 && open[open.length - 1]!.end <= token.start) open.pop();
-    const owner = open[open.length - 1] ?? null;
+    if (!holdsCode(token, problems)) continue;
+    const owner = ownerAt(token.start);
     for (const line of codeLines(token, source)) {
       if (owners.has(line)) continue;
       owners.set(line, owner);

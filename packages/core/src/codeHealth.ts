@@ -1,4 +1,4 @@
-import { isCodeFile, isTestPath, type ToolingFacts } from "./codeTooling.js";
+import { isCodeFile, isTestPath, isToolConfig, type ToolingFacts } from "./codeTooling.js";
 import {
   HIGH_CCN,
   LONG_FUNCTION_NLOC,
@@ -177,12 +177,18 @@ const ratio = (part: number, whole: number) => (whole === 0 ? 0 : part / whole);
 const inRange = (mergedAt: string, from: string | undefined, to: string | undefined) =>
   !(from && mergedAt < from) && !(to && mergedAt > to);
 
-/** The verdict on one pull request: null when it does not count, otherwise whether it also changes tests. */
+/**
+ * The verdict on one pull request: null when it does not count, otherwise whether it also changes tests. Source is a
+ * code file that is neither a test nor a tool's configuration. A list cut at the first 100 files counts only when it
+ * already shows source and tests, because the files left off can add a test but never take one away (ADR 0027).
+ */
 function changesTests(pr: PullRequest, from: string | undefined, to: string | undefined): boolean | null {
-  // A pull request with more than 100 files lists only the first 100, so its split of source and tests is unknown.
-  if (!pr.files || pr.filesTruncated || !pr.mergedAt || isBot(pr) || !inRange(pr.mergedAt, from, to)) return null;
+  if (!pr.files || !pr.mergedAt || isBot(pr) || !inRange(pr.mergedAt, from, to)) return null;
   const code = pr.files.filter(isCodeFile);
-  return code.some((f) => !isTestPath(f)) ? code.some(isTestPath) : null;
+  const changesTest = code.some(isTestPath);
+  if (!code.some((f) => !isTestPath(f) && !isToolConfig(f))) return null;
+  if (pr.filesTruncated && !changesTest) return null;
+  return changesTest;
 }
 
 /**
