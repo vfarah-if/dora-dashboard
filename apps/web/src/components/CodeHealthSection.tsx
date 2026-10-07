@@ -54,8 +54,9 @@ function Hotspots({ report }: { report: CodeHealthReport }) {
           </tr>
         </thead>
         <tbody>
-          {report.hotspots.map((fn) => (
-            <tr key={`${fn.file}:${fn.startLine}:${fn.name}`}>
+          {report.hotspots.map((fn, i) => (
+            // Two functions can share a file, line and name, such as callbacks written side by side.
+            <tr key={`${fn.file}:${fn.startLine}:${fn.name}:${i}`}>
               <th scope="row" className="mono wrap-anywhere">
                 {fn.name}
                 {fn.onPath && <span className="start-tag">{copy.codeHealth.hotspots.startHere}</span>}
@@ -277,7 +278,7 @@ function HygienePanel({ report }: { report: CodeHealthReport }) {
   );
 }
 
-/** How to install lizard on each platform, shown only when the API reports that it cannot find it. */
+/** How to install lizard on each platform. Shown when files went unmeasured for want of lizard, or when an older snapshot recorded lizard as missing. */
 function InstallLizard() {
   const c = copy.codeHealth.install;
   return (
@@ -336,8 +337,8 @@ function StartCard({ report }: { report: CodeHealthReport }) {
       </h3>
       <p>{c.lift(path.functions.length, path.lines, path.from, path.to)}</p>
       <ul className="start-list">
-        {path.functions.map((fn) => (
-          <li key={`${fn.file}:${fn.startLine}:${fn.name}`} className="mono">
+        {path.functions.map((fn, i) => (
+          <li key={`${fn.file}:${fn.startLine}:${fn.name}:${i}`} className="mono">
             {c.functionItem(fn.name, locationLabel(fn), fn.nloc)}
           </li>
         ))}
@@ -366,6 +367,17 @@ function PartlyMeasuredNotice({ report }: { report: CodeHealthReport }) {
   );
 }
 
+function UnmeasuredNotice({ report }: { report: CodeHealthReport }) {
+  const c = copy.codeHealth.unmeasured;
+  if (report.unmeasuredFiles <= 0) return null;
+  return (
+    <aside className="notice notice-warning">
+      <p className="notice-title">{c.title}</p>
+      <p>{c.body(report.unmeasuredFiles)}</p>
+    </aside>
+  );
+}
+
 function HotspotsCard({ report }: { report: CodeHealthReport }) {
   const c = copy.codeHealth;
   return (
@@ -385,7 +397,6 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
     <>
       <p className="chart-subtitle">{c.analysedAt(shortSha(report.commitSha), formatDateTime(report.analysedAt))}</p>
       <StaleNotice report={report} />
-      {report.lastError?.reason === "analyser-missing" && <InstallLizard />}
 
       <Verdict report={report} />
       <Lists report={report} />
@@ -402,6 +413,8 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
       </div>
 
       <PartlyMeasuredNotice report={report} />
+      <UnmeasuredNotice report={report} />
+      {(report.unmeasuredFiles > 0 || report.lastError?.reason === "analyser-missing") && <InstallLizard />}
       <StartCard report={report} />
       <HotspotsCard report={report} />
 

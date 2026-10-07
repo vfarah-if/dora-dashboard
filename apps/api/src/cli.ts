@@ -4,12 +4,13 @@
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "./core/config.js";
+import { createCodeAnalyser } from "./infrastructure/analysis/create-code-analyser.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
-import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
+import type { Logger } from "./interfaces/logger.js";
 import { CodeHealthService } from "./services/code-health-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { isSafeBranch, parseRepoRef } from "./services/repo-ref.js";
@@ -49,10 +50,16 @@ const timer = setInterval(() => {
   const progress = store.getRepo(repo.id)?.crawlProgress;
   if (progress) console.log(progress);
 }, 2000);
-const reader = new FsWorkspaceReader();
+// Everything the server would log reaches the terminal, including which files were measured only in part and why.
+const log: Logger = {
+  info: (context, message) => console.log(message, context),
+  warn: (context, message) => console.warn(message, context),
+  error: (context, message) => console.error(message, context),
+};
+const reader = new FsWorkspaceReader(undefined, log);
 try {
   const codeHealth = config.codeAnalysis
-    ? new CodeHealthService(store, new GitCheckout(), new LizardAnalyser(reader), undefined, undefined, reader)
+    ? new CodeHealthService(store, new GitCheckout(), createCodeAnalyser(reader, log), undefined, log, reader)
     : undefined;
   await new CrawlService(store, provider, codeHealth).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));

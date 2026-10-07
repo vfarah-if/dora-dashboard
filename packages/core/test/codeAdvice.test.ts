@@ -177,4 +177,12 @@ describe("codeHealth advice", () => {
   it("has no partly measured files for a snapshot from before version 4", () => {
     expect(codeHealth(snapshot(filler(1, 5))).partlyMeasured).toEqual([]);
   });
+
+  it("reports the source files no installed tool could read", () => {
+    expect(codeHealth({ ...snapshot(filler(1, 5)), unmeasuredFiles: 7 }).unmeasuredFiles).toBe(7);
+  });
+
+  it("has no unmeasured files for a snapshot from before version 5", () => {
+    expect(codeHealth(snapshot(filler(1, 5))).unmeasuredFiles).toBe(0);
+  });
 });

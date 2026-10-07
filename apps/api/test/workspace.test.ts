@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { CodeSnapshot, PullRequest } from "@dora-dashboard/core";
 import { CODE_SNAPSHOT_VERSION } from "@dora-dashboard/core";
 import type { FastifyInstance } from "fastify";
@@ -70,8 +70,27 @@ describe("FsWorkspaceReader", () => {
     expect(await reader.read(root, "linked-dir/secret.txt", 1000)).toBeNull();
   });
 
-  it.each(["../secret.txt", "src/../../secret.txt", "/etc/hosts", "src\\..\\x", "a\0b"])("refuses the path %j", async (path) => {
+  it.each(["../secret.txt", "src/../../secret.txt", "/etc/hosts", "a\0b"])("refuses the path %j", async (path) => {
     await expect(reader.read(root, path, 1000)).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe("FsWorkspaceReader file names with a backslash", () => {
+  let root: string;
+  beforeEach(() => void (root = mkdtempSync(join(tmpdir(), "dora-backslash-"))));
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // On POSIX a backslash is an ordinary character in a file name, so this file is legal and sits inside the clone.
+  it.skipIf(sep === "\\")("lists and reads a file literally named ..\\evil.ts without refusing the analysis", async () => {
+    writeFileSync(join(root, "..\\evil.ts"), "export const a = 1;");
+    const reader = new FsWorkspaceReader();
+
+    expect(await reader.list(root)).toEqual(["..\\evil.ts"]);
+    expect(await reader.read(root, "..\\evil.ts", 1000)).toBe("export const a = 1;");
+  });
+
+  it.skipIf(sep === "\\")("still refuses a real parent segment next to a backslash name", async () => {
+    await expect(new FsWorkspaceReader().read(root, "a\\b/../../x", 1000)).rejects.toBeInstanceOf(ValidationError);
   });
 });
 
@@ -90,6 +109,67 @@ describe("FsWorkspaceReader limits", () => {
 
     expect(all).toHaveLength(6);
     expect(capped.length).toBeLessThan(3); // two directories and one file used the three visits
+  });
+
+  it("warns once, naming the limit, when the entry cap cuts the listing short", async () => {
+    for (const name of ["a", "b", "c", "d"]) writeFileSync(join(root, name), "x");
+    const warnings: { context: object; message: string }[] = [];
+    const log = {
+      info: () => undefined,
+      error: () => undefined,
+      warn: (context: object, message: string) => void warnings.push({ context, message }),
+    };
+
+    const listed = await new FsWorkspaceReader({ maxEntries: 2, maxDepth: 5 }, log).list(root);
+
+    expect(listed).toHaveLength(2);
+    expect(warnings).toEqual([
+      { context: { dir: root, limit: "2 entries", listed: 2 }, message: expect.stringContaining("left out") },
+    ]);
+  });
+
+  it("warns once, naming the limit, when the depth cap cuts the listing short", async () => {
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    writeFileSync(join(root, "a", "b", "deep"), "x");
+    writeFileSync(join(root, "top"), "x");
+    const warnings: { context: object }[] = [];
+    const log = { info: () => undefined, error: () => undefined, warn: (context: object) => void warnings.push({ context }) };
+
+    await new FsWorkspaceReader({ maxEntries: 100, maxDepth: 1 }, log).list(root);
+
+    expect(warnings).toEqual([{ context: { dir: root, limit: "depth of 1 directories", listed: 1 } }]);
+  });
+
+  it("warns once for a directory one analysis lists several times, and again for the next directory", async () => {
+    const other = join(root, "other");
+    mkdirSync(other);
+    for (const name of ["a", "b", "c"]) {
+      writeFileSync(join(root, name), "x");
+      writeFileSync(join(other, name), "x");
+    }
+    const warned: string[] = [];
+    const log = {
+      info: () => undefined,
+      error: () => undefined,
+      warn: (context: object) => void warned.push((context as { dir: string }).dir),
+    };
+    const reader = new FsWorkspaceReader({ maxEntries: 2, maxDepth: 5 }, log);
+
+    await reader.list(root);
+    await reader.list(root);
+    await reader.list(other);
+
+    expect(warned).toEqual([root, other]);
+  });
+
+  it("does not warn when the listing is complete", async () => {
+    writeFileSync(join(root, "a"), "x");
+    const warnings: object[] = [];
+    const log = { info: () => undefined, error: () => undefined, warn: (context: object) => void warnings.push(context) };
+
+    await new FsWorkspaceReader({ maxEntries: 1, maxDepth: 1 }, log).list(root);
+
+    expect(warnings).toEqual([]);
   });
 
   it("does not descend past the depth cap", async () => {

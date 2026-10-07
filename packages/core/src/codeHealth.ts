@@ -35,9 +35,11 @@ export interface FunctionMetrics {
  * Bumped whenever a snapshot gains data, so that older snapshots are analysed again even when the branch has
  * not moved. Version 1 (no number stored) had no tooling facts; version 3 read CI and coverage configuration more
  * strictly (comments, `continue-on-error`, installs), so version 2 tooling facts may differ. Version 4 records
- * the files the analyser may have read only in part.
+ * the files the analyser may have read only in part. Version 5 measures JavaScript and TypeScript from a syntax tree
+ * rather than with lizard (ADR 0025), so their figures differ, and records `unmeasuredFiles`, the files in languages
+ * lizard reads that went unmeasured because lizard was not found.
  */
-export const CODE_SNAPSHOT_VERSION = 4;
+export const CODE_SNAPSHOT_VERSION = 5;
 
 /** What one analysis of one commit found. `error` is set, with no functions, when the analysis could not run. */
 export interface CodeSnapshot {
@@ -50,10 +52,17 @@ export interface CodeSnapshot {
   /** Absent means version 1. */
   snapshotVersion?: number;
   /**
-   * Files the analyser may have read only in part, so some of their functions can be missing from `functions`.
-   * Absent before version 4.
+   * JavaScript and TypeScript files the analyser could not read in full, so some of their functions can be missing
+   * from `functions`. Absent before version 4, when these were files lizard may have misread. From version 5 a file is
+   * listed when it is larger than 2 MiB or could not be read, when the parser recovered from errors or gave up, when
+   * it is nested too deeply for the parser, or when it holds a node or token type the analyser does not know.
    */
   partlyMeasured?: string[];
+  /**
+   * Files in languages lizard 1.24 reads that went unmeasured because the API could not find lizard, test files
+   * included. 0 when lizard ran. Absent before version 5.
+   */
+  unmeasuredFiles?: number;
 }
 
 export interface CodeHealthThresholds {
@@ -113,8 +122,10 @@ export interface CodeHealthReport {
   hotspots: Hotspot[];
   /** The fewest functions to simplify for maintainability to reach the next band; null when elite or empty. */
   nextBand: NextBand | null;
-  /** Source files the analyser may have read only in part, sorted. Empty when none, or before snapshot version 4. */
+  /** Source files read only in part, sorted, with test files left out. Empty when none, or before snapshot version 4. */
   partlyMeasured: string[];
+  /** Files in languages lizard reads that went unmeasured because lizard was not found, so none of their functions are counted. 0 when lizard ran and before version 5. */
+  unmeasuredFiles: number;
   tests: { functions: number; nloc: number };
   maintainability: MaintainabilityFigures;
   testing: { testRatio: number; prsWithTests: PrsWithTests | null; ciRunsTests: boolean | null; coverageFloor: number | null };
@@ -133,7 +144,9 @@ export interface CodeHealthReport {
 
 /**
  * Why an analysis produced no figures, so a front end can offer the right remedy without matching message text.
- * `analyser-missing` means lizard is not on the API's PATH, `analysis-off` means CODE_ANALYSIS=off, `failed` is anything else.
+ * `analyser-missing` means an analyser reported that it could not run at all. The combined analyser no longer does
+ * (a missing lizard is shown as `unmeasuredFiles`), so it now mainly comes from snapshots stored before ADR 0025.
+ * `analysis-off` means CODE_ANALYSIS=off, `failed` is anything else, including a lizard that was found but did not run.
  */
 export type CodeHealthFailureReason = "analyser-missing" | "analysis-off" | "failed";
 
@@ -340,6 +353,7 @@ export function codeHealth(
     hotspots: describeHotspots(byComplexity.slice(0, HOTSPOT_COUNT), nloc, path),
     nextBand: path,
     partlyMeasured: (snapshot.partlyMeasured ?? []).filter((f) => !isTestPath(f)).sort(),
+    unmeasuredFiles: snapshot.unmeasuredFiles ?? 0,
     tests: { functions: testFns.length, nloc: testNloc },
     maintainability,
     testing: testingFigures(testRatio, withTests, tooling),

@@ -33,7 +33,7 @@ const CODE_EXTENSIONS = new Set(
 
 const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
-/** True for a file in a language the analyser reads, judged by extension. */
+/** True for a file in a language on a fixed list of extensions, whether or not an analyser is installed for it. */
 export function isCodeFile(path: string): boolean {
   const name = baseName(path);
   const dot = name.lastIndexOf(".");

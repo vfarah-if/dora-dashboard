@@ -40,6 +40,7 @@ One test: `cd apps/api && npx vitest run test/routes.test.ts -t "compares"`.
 5. **Tests prove behaviour.** Use the fakes in `apps/api/test/fakes.ts`; no network in any test. Coverage floor: 90% lines, branches, functions and statements in every workspace (ADR 0018).
 6. **UK English, no em or en dashes**, no consultancy speak. User-facing copy lives in `apps/web/src/copy.ts`.
 7. **Record decisions.** A new dependency, a changed metric definition or a new external system means an ADR.
+8. **A lower grade after an analyser change is not a reason to move the bands.** Compare two stored snapshots of the same commit with core's `codeHealth` first; a more complete measurement lowering a grade is expected (ADR 0026).
 
 ## Agents
 

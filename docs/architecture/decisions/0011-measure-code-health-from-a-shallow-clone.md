@@ -49,3 +49,7 @@ The new port pair follows ADR 0003, and only `main.ts` names the concrete adapte
 - The host needs `git` and, for this feature, Python with lizard installed, which is a step the rest of the tool does not ask for.
 - The view is a single point in time at the tip of the deploy branch, with no trend yet, and it says nothing about test coverage or code that has since changed.
 - CCN counts paths through a function and is a proxy for risk, not a measure of quality. Generated code that is not in an excluded directory will inflate the figures.
+
+## Revision History
+
+- 2026-10-07: Lizard no longer reads JavaScript or TypeScript. The syntax tree alternative rejected above is now taken for those languages, and lizard remains the analyser for every other language (ADR 0025). The body above says a missing lizard records an instruction to install it as an analysis error, and that `available()` asks lizard for its version. A missing lizard no longer fails the analysis. The port's `reach()` replaces `available()`, the scripts are still measured, and the page explains the gap beside the figures with a count of files left unmeasured. A lizard that is found but fails to run, or times out, still fails the analysis, and the page keeps the last good figures and shows the reason.
