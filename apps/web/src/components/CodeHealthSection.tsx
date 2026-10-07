@@ -15,9 +15,12 @@ const WARN = 10;
 const HIGH = 20;
 const yesNo = (value: boolean) => (value ? copy.codeHealth.yes : copy.codeHealth.no);
 
-/** A path that may wrap after each slash, so a narrow column breaks it at folder boundaries rather than mid-name. */
-function PathText({ path }: { path: string }) {
-  const parts = path.split("/");
+/**
+ * Text holding a path, which may wrap after each slash, so a narrow column or a printed page breaks it at folder
+ * boundaries rather than mid-name or past the edge of its box. Any other slash in the text may wrap too.
+ */
+function PathText({ text }: { text: string }) {
+  const parts = text.split("/");
   return (
     <>
       {parts.map((part, i) => (
@@ -62,7 +65,7 @@ function Hotspots({ report }: { report: CodeHealthReport }) {
                 {fn.onPath && <span className="start-tag">{copy.codeHealth.hotspots.startHere}</span>}
               </th>
               <td className="mono wrap-anywhere">
-                <PathText path={locationLabel(fn)} />
+                <PathText text={locationLabel(fn)} />
               </td>
               <td className="numeric">{fn.ccn}</td>
               <td className="numeric">{fn.nloc}</td>
@@ -181,7 +184,7 @@ function Tiles({ report }: { report: CodeHealthReport }) {
       <StatTile
         label={d.mostComplex}
         value={most ? d.mostComplexValue(formatNumber(most.ccn, 0)) : d.mostComplexNone}
-        hint={most ? d.mostComplexHint(most.name, locationLabel(most)) : undefined}
+        hint={most ? <PathText text={d.mostComplexHint(most.name, locationLabel(most))} /> : undefined}
       />
       <StatTile label={d.nloc} value={formatNumber(report.nloc, 0)} hint={d.nlocHint} />
       <StatTile
@@ -339,7 +342,7 @@ function StartCard({ report }: { report: CodeHealthReport }) {
       <ul className="start-list">
         {path.functions.map((fn, i) => (
           <li key={`${fn.file}:${fn.startLine}:${fn.name}:${i}`} className="mono">
-            {c.functionItem(fn.name, locationLabel(fn), fn.nloc)}
+            <PathText text={c.functionItem(fn.name, locationLabel(fn), fn.nloc)} />
           </li>
         ))}
       </ul>

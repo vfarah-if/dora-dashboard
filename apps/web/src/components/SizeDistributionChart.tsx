@@ -3,9 +3,10 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { copy } from "../copy";
 import { distributionIsEmpty, distributionRows, type DistributionRow } from "../lib/codeHealth";
 import { formatNumber } from "../lib/format";
+import { usePrinting } from "../lib/print";
 import { seriesColour } from "../lib/series";
 import { ChartCard } from "./ChartCard";
-import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps } from "./chartParts";
+import { axisProps, CHART_HEIGHT, ChartTooltip, gridProps, PRINT_CHART_WIDTH } from "./chartParts";
 
 function RangeKey() {
   const c = copy.codeHealth.chart;
@@ -39,8 +40,10 @@ export function SizeDistributionChart({ report }: { report: CodeHealthReport }) 
 }
 
 function SizeDistributionBars({ rows }: { rows: DistributionRow[] }) {
+  // The chart spans the section, about twice a printed page, so it is drawn at the page's width while printing.
+  const printing = usePrinting();
   return (
-    <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+    <ResponsiveContainer width={printing ? PRINT_CHART_WIDTH : "100%"} height={CHART_HEIGHT}>
       <BarChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: -12 }}>
         <CartesianGrid {...gridProps} />
         <XAxis dataKey="label" {...axisProps} />
@@ -49,7 +52,13 @@ function SizeDistributionBars({ rows }: { rows: DistributionRow[] }) {
           content={<ChartTooltip formatValue={(value) => formatNumber(value, 0)} />}
           cursor={{ fill: "var(--surface-sunken)" }}
         />
-        <Bar dataKey="count" name={copy.codeHealth.chart.series} fill={seriesColour(0)} radius={[2, 2, 0, 0]} />
+        <Bar
+          dataKey="count"
+          name={copy.codeHealth.chart.series}
+          fill={seriesColour(0)}
+          radius={[2, 2, 0, 0]}
+          isAnimationActive={false}
+        />
       </BarChart>
     </ResponsiveContainer>
   );

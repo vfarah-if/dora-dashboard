@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import type { CodeHealthReport } from "@dora-dashboard/core";
 import { CodeHealthSection } from "./CodeHealthSection";
+import { PRINT_CHART_WIDTH } from "./chartParts";
 import { mockFetch, renderRoute } from "../test/render";
 import { repo } from "../test/fixtures";
 import { copy } from "../copy";
@@ -185,6 +186,35 @@ describe("CodeHealthSection", () => {
     expect(tile(copy.codeHealth.detail.functions)).toHaveTextContent("120");
     expect(tile(copy.codeHealth.detail.functions)).toHaveTextContent("35 test functions are counted separately");
     expect(screen.queryByText("Median complexity")).not.toBeInTheDocument();
+  });
+
+  it("lets the most complex function's location break at each folder, so a long path stays inside its tile", async () => {
+    show({ ...ok, mostComplex: { ...hotspot, file: "apps/web/src/components/Chat/MessageCard.tsx" } });
+    await screen.findByText(copy.codeHealth.verdict.title);
+    const tile = screen.getByRole("heading", { name: copy.codeHealth.detail.mostComplex }).closest("article")!;
+
+    expect(tile).toHaveTextContent("runPipeline at apps/web/src/components/Chat/MessageCard.tsx:42");
+    // One break opportunity after each of the five slashes.
+    expect(tile.querySelectorAll("wbr")).toHaveLength(5);
+    // The functions named under Where to start break the same way, once in each of their two paths.
+    const start = screen.getByRole("heading", { name: copy.codeHealth.start.title }).closest("section")!;
+    expect(start.querySelectorAll(".start-list wbr")).toHaveLength(2);
+  });
+
+  it("draws the complexity chart at the printed page's width while printing, and only then", async () => {
+    show(ok);
+    await screen.findByText(copy.codeHealth.verdict.title);
+    const card = screen.getByRole("region", { name: copy.codeHealth.chart.title });
+    const surface = () => card.querySelector("svg.recharts-surface");
+
+    // The test set-up measures every responsive chart at 800px.
+    expect(surface()).toHaveAttribute("width", "800");
+
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    expect(surface()).toHaveAttribute("width", String(PRINT_CHART_WIDTH));
+
+    act(() => void window.dispatchEvent(new Event("afterprint")));
+    expect(surface()).toHaveAttribute("width", "800");
   });
 
   it("shows the range key, the distribution table and the hotspots", async () => {

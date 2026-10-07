@@ -15,6 +15,14 @@ export const gridProps = { stroke: "var(--grid)", vertical: false } as const;
 
 export const CHART_HEIGHT = 280;
 
+/**
+ * A full-width chart's width on a printed A4 page: 186mm between the page margins (703px), less a card's 20px padding
+ * and 1px border on each side, which leaves 661px, with a little to spare. The main area has no side padding in print,
+ * whether from "Download PDF report" or the browser's own Print. The browser lays out the printed copy before a resize
+ * could redraw a responsive chart, so such a chart is drawn at this width while printing.
+ */
+export const PRINT_CHART_WIDTH = 656;
+
 const BRUSH_HEIGHT = 28;
 
 /**
