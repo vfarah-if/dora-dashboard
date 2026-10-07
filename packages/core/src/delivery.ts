@@ -3,7 +3,7 @@ import type { PullRequest } from "./types.js";
 
 /**
  * Helpers shared by the reports that measure delivery from a tracker, the Jira space report and the GitHub issue
- * report (ADR 0021). Each works on anything with a creation time, so neither report depends on the other.
+ * report (ADR 0021, ADR 0028). Each works on anything with a creation time, so neither report depends on the other.
  */
 
 /** Jira writes `.000Z` and GitHub does not, so instants are always compared as numbers, never as text. */

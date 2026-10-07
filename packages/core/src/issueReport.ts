@@ -1,34 +1,33 @@
-import { instant, rangeOf, sinceCreated, toFirstPr, toProduction, type DeliveredPr } from "./delivery.js";
+import { instant, rangeOf, sinceCreated, toFirstPr, toProduction, type DeliveredPr, type RangeOptions } from "./delivery.js";
 import { shippedPrs } from "./dora.js";
+import {
+  ISSUE_COUNTED_KINDS,
+  ISSUE_PRIORITY_KEYS,
+  type IssueCountedKind,
+  type IssueKind,
+  type IssuePriority,
+  type IssuePriorityKey,
+} from "./issueKinds.js";
 import { classifyIssue } from "./issueLabels.js";
 import { linkIssues } from "./issueLinks.js";
 import { isBot } from "./pullRequests.js";
 import { summarise, weekRange, weekStart, type Summary } from "./stats.js";
-import type { DeployRun, IssueKind, IssueLabelRules, IssuePriority, PullRequest, Repo, RepoIssue } from "./types.js";
+import type { ClosedRepoIssue, DeployRun, IssueLabelRules, PullRequest, PullRequestRef, Repo, RepoIssue } from "./types.js";
 
 /**
  * Delivery measured from a repository's GitHub Issues (ADR 0028). Every figure counts issues other than epics; an
- * epic is shown only as a count of the open ones, and is never counted in a flow, a time or a check. The names are
- * distinct from DORA lead time on purpose (ADR 0020).
+ * epic is shown only as a count of the open ones, and is never counted in a flow, a time or an issue check. A pull
+ * request linked only to an epic is still linked to an issue, so it is not listed as a pull request without one. The
+ * names are distinct from DORA lead time on purpose (ADR 0021).
  */
 
-export interface IssueReportOptions {
-  /** YYYY-MM-DD; defaults to the earliest issue's creation. */
-  from?: string;
-  /** YYYY-MM-DD, inclusive; defaults to `now`. */
-  to?: string;
-  /** The instant the report is built at, ISO. Passed in so the report stays pure. */
-  now: string;
+/** `from` defaults to the earliest issue's creation; `now` is passed in so the report stays pure. */
+export interface IssueReportOptions extends RangeOptions {
   /** Include assignee logins in lists and findings. Off by default (ADR 0008). */
   people?: boolean;
   /** The repository's label override; null or absent for the defaults. */
   labels?: IssueLabelRules | null;
 }
-
-/** The kinds a report counts; epics are counted apart. */
-export type IssueCountedKind = Exclude<IssueKind, "epic">;
-/** A priority, or `none` for an issue that names none. */
-export type IssuePriorityKey = IssuePriority | "none";
 
 /** One issue named in a finding or a list. */
 export interface IssueRef {
@@ -66,21 +65,20 @@ export interface IssueAgeingItem extends IssueRef {
   ageHours: number;
 }
 
-export type IssueHygieneCheck =
-  "closed_without_pr" | "reopened" | "urgent_unassigned" | "stale_urgent" | "unclassified" | "pr_without_issue";
-
-/** The checks whose findings list issues, as against pull requests. */
-export type IssueHygieneItemCheck = Exclude<IssueHygieneCheck, "pr_without_issue">;
-
 /** Every check, in the order a report lists them; the one that is noisiest without closing keywords comes last. */
-export const ISSUE_HYGIENE_CHECKS: readonly IssueHygieneCheck[] = [
+export const ISSUE_HYGIENE_CHECKS = [
   "closed_without_pr",
   "reopened",
   "urgent_unassigned",
   "stale_urgent",
   "unclassified",
   "pr_without_issue",
-];
+] as const;
+
+export type IssueHygieneCheck = (typeof ISSUE_HYGIENE_CHECKS)[number];
+
+/** The checks whose findings list issues, as against pull requests. */
+export type IssueHygieneItemCheck = Exclude<IssueHygieneCheck, "pr_without_issue">;
 
 /** How many open issues the ageing list carries; `ageingTotal` says how many there are. */
 export const AGEING_LIMIT = 50;
@@ -99,7 +97,7 @@ interface IssueHygieneTally {
 /** Merged pull requests, not by a bot, that no issue is linked to. */
 export interface IssueHygienePullRequestFinding extends IssueHygieneTally {
   check: "pr_without_issue";
-  pullRequests: { repo: string; number: number; title: string; url: string }[];
+  pullRequests: PullRequestRef[];
 }
 
 /** Any other check: the issues it found, in number order. */
@@ -148,15 +146,15 @@ export interface IssueReport {
   /** Issues closed as completed in the range that have a linked pull request, out of all those. */
   linkedShare: { linked: number; total: number };
   hygiene: IssueHygieneFinding[];
+  /** How many days without an update make an open urgent issue stale, so a page can say so without its own copy. */
+  staleUrgentDays: number;
 }
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 
-const KINDS: readonly IssueCountedKind[] = ["bug", "feature", "maintenance", "incident", "security", "other"];
-const PRIORITY_KEYS: readonly IssuePriorityKey[] = ["P0", "P1", "P2", "P3", "P4", "none"];
-
+/** A count of zero for each key. The key lists are built with `keysOf`, which will not compile without every member. */
 const zeroes = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
 
 /** A time the issue was open from, to a time it stopped being open; null while it still is. */
@@ -164,14 +162,13 @@ type Span = [start: number, end: number | null];
 
 /**
  * When the issue was open, replayed from its closes and reopens. Without a usable history, which is when the host held
- * older events than were read or when a closed issue has none, it was open from creation to its close.
+ * older events than were read or when a closed issue has none, it was open from creation, until its final close if it
+ * is closed.
  */
 function spansOf(issue: RepoIssue): Span[] {
   const created = instant(issue.createdAt);
-  const closed = issue.state === "closed";
-  if (issue.eventsTruncated || (closed && issue.events.length === 0)) {
-    return [[created, closed ? instant(finalCloseOf(issue)) : null]];
-  }
+  const finalClose = issue.state === "closed" ? instant(issue.closedAt) : null;
+  if (issue.eventsTruncated || (finalClose !== null && issue.events.length === 0)) return [[created, finalClose]];
   const spans: Span[] = [[created, null]];
   for (const event of [...issue.events].sort((a, b) => instant(a.at) - instant(b.at))) {
     const current = spans[spans.length - 1]!;
@@ -181,12 +178,9 @@ function spansOf(issue: RepoIssue): Span[] {
   // A closed issue whose events hold no close after the last reopen, such as a transferred one with only a reopened
   // event, would stay open for ever; the host's own final close ends the last span.
   const last = spans[spans.length - 1]!;
-  if (closed && last[1] === null) last[1] = instant(finalCloseOf(issue));
+  if (finalClose !== null && last[1] === null) last[1] = finalClose;
   return spans;
 }
-
-/** When a closed issue was last closed. The host always gives it; the last update stands in when it somehow did not. */
-const finalCloseOf = (issue: RepoIssue) => issue.closedAt ?? issue.updatedAt;
 
 /** An issue with what the report needs of it worked out once. */
 interface Tracked {
@@ -194,11 +188,21 @@ interface Tracked {
   kind: IssueKind;
   priority: IssuePriority | null;
   spans: Span[];
-  /** The final close, for a closed issue. */
-  closedAt: string | null;
-  /** True for a closed issue whose reason is completed; a closed issue with no reason counts as completed. */
-  completed: boolean;
 }
+
+/** An issue the report counts, which is any but an epic. */
+interface Counted extends Tracked {
+  kind: IssueCountedKind;
+}
+
+/** A counted issue that is closed. */
+interface Closed extends Counted {
+  issue: ClosedRepoIssue;
+}
+
+const isCounted = (t: Tracked): t is Counted => t.kind !== "epic";
+const isClosed = (t: Counted): t is Closed => t.issue.state === "closed";
+const isCompleted = (t: Closed) => t.issue.closeReason === "completed";
 
 const isOpenAt = ({ spans }: Tracked, ms: number) => spans.some(([start, end]) => start <= ms && (end === null || end > ms));
 
@@ -213,14 +217,8 @@ export function buildIssueReport(
   const inRange = (iso: string) => instant(iso) >= range.start && instant(iso) <= range.end;
   const repoId = `${repo.owner}/${repo.name}`;
   const people = options.people === true;
-  const tracked: Tracked[] = issues.map((issue) => ({
-    issue,
-    ...classifyIssue(issue, options.labels),
-    spans: spansOf(issue),
-    closedAt: issue.state === "closed" ? finalCloseOf(issue) : null,
-    completed: issue.state === "closed" && (issue.closeReason ?? "completed") === "completed",
-  }));
-  const counted = tracked.filter((t) => t.kind !== "epic");
+  const tracked: Tracked[] = issues.map((issue) => ({ issue, ...classifyIssue(issue, options.labels), spans: spansOf(issue) }));
+  const counted = tracked.filter(isCounted);
   const refOf = ({ issue, kind, priority }: Tracked): IssueRef => {
     const ref: IssueRef = {
       number: issue.number,
@@ -235,9 +233,9 @@ export function buildIssueReport(
   };
   const refsOf = (list: readonly Tracked[]) => list.map(refOf).sort((a, b) => a.number - b.number);
 
-  const closedInRange = counted.filter((t) => t.closedAt !== null && inRange(t.closedAt));
-  const completed = closedInRange.filter((t) => t.completed);
-  const notPlanned = closedInRange.filter((t) => !t.completed);
+  const closedInRange = counted.filter(isClosed).filter((t) => inRange(t.issue.closedAt));
+  const completed = closedInRange.filter(isCompleted);
+  const notPlanned = closedInRange.filter((t) => !isCompleted(t));
   const openAtEnd = counted.filter((t) => isOpenAt(t, range.end));
   const openEpics = tracked.filter((t) => t.kind === "epic" && isOpenAt(t, range.end));
 
@@ -245,9 +243,9 @@ export function buildIssueReport(
   const shipped = new Map<PullRequest, string>(
     shippedPrs(prs, runs, repo.deployBranch).map(({ pr, deploy }) => [pr, deploy.completedAt]),
   );
-  const deliveredOf = (t: Tracked): DeliveredPr[] =>
-    byIssue.get(t.issue.number)!.map((pr) => ({ pr, deployedAt: shipped.get(pr) ?? null }));
-  const withPr = (t: Tracked) => byIssue.get(t.issue.number)!.length > 0;
+  const linkedTo = (t: Tracked): readonly PullRequest[] => byIssue.get(t.issue.number) ?? [];
+  const deliveredOf = (t: Tracked): DeliveredPr[] => linkedTo(t).map((pr) => ({ pr, deployedAt: shipped.get(pr) ?? null }));
+  const withPr = (t: Tracked) => linkedTo(t).length > 0;
 
   const mergedHuman = prs.filter((pr) => pr.mergedAt !== null && inRange(pr.mergedAt) && !isBot(pr));
   const prsWithoutIssue = mergedHuman.filter((pr) => !linkedPrNumbers.has(pr.number)).sort((a, b) => a.number - b.number);
@@ -256,13 +254,18 @@ export function buildIssueReport(
   const staleCandidates = openAtEnd.filter(
     (t) => t.priority === "P0" || t.priority === "P1" || t.kind === "incident" || t.kind === "security",
   );
-  const itemFinding = (check: IssueHygieneItemCheck, found: readonly Tracked[], of: number | null): IssueHygieneItemFinding => ({
+  const itemFinding = <C extends IssueHygieneItemCheck>(
+    check: C,
+    found: readonly Tracked[],
+    of: number | null,
+  ): IssueHygieneItemFinding & { check: C } => ({
     check,
     count: found.length,
     of,
     items: refsOf(found),
   });
-  const findings: Record<IssueHygieneCheck, IssueHygieneFinding> = {
+  // Each key holds the finding of its own check, so a finding filed under the wrong check does not compile.
+  const findings: { [C in IssueHygieneCheck]: IssueHygieneFinding & { check: C } } = {
     closed_without_pr: itemFinding(
       "closed_without_pr",
       completed.filter((t) => !withPr(t)),
@@ -292,32 +295,37 @@ export function buildIssueReport(
       check: "pr_without_issue",
       count: prsWithoutIssue.length,
       of: mergedHuman.length,
-      pullRequests: prsWithoutIssue.map((pr) => ({ repo: repoId, number: pr.number, title: pr.title, url: pr.url })),
+      pullRequests: prsWithoutIssue.map((pr): PullRequestRef => ({
+        repo: repoId,
+        number: pr.number,
+        title: pr.title,
+        url: pr.url,
+      })),
     },
   };
 
   const weeks = weekRange(weekStart(new Date(range.start).toISOString()), weekStart(new Date(range.end).toISOString()));
   const weekly = weeks.map((week): IssueWeekRow => {
     const weekMs = instant(`${week}T00:00:00Z`);
-    const closedThisWeek = completed.filter((t) => weekStart(t.closedAt!) === week);
-    const closedByKind = zeroes(KINDS);
-    for (const t of closedThisWeek) closedByKind[t.kind as IssueCountedKind]++;
+    const closedThisWeek = completed.filter((t) => weekStart(t.issue.closedAt) === week);
+    const closedByKind = zeroes(ISSUE_COUNTED_KINDS);
+    for (const t of closedThisWeek) closedByKind[t.kind]++;
     const cutoff = Math.min(weekMs + WEEK_MS - 1, range.end);
     return {
       week,
       opened: counted.filter((t) => inRange(t.issue.createdAt) && weekStart(t.issue.createdAt) === week).length,
       closed: closedThisWeek.length,
-      notPlanned: notPlanned.filter((t) => weekStart(t.closedAt!) === week).length,
+      notPlanned: notPlanned.filter((t) => weekStart(t.issue.closedAt) === week).length,
       closedByKind,
       openAtEnd: counted.filter((t) => isOpenAt(t, cutoff)).length,
       partial: weekMs + WEEK_MS > range.end + 1, // `end` is the last millisecond of the range
     };
   });
 
-  const openByKind = zeroes(KINDS);
-  const openByPriority = zeroes(PRIORITY_KEYS);
+  const openByKind = zeroes(ISSUE_COUNTED_KINDS);
+  const openByPriority = zeroes(ISSUE_PRIORITY_KEYS);
   for (const t of openAtEnd) {
-    openByKind[t.kind as IssueCountedKind]++;
+    openByKind[t.kind]++;
     openByPriority[t.priority ?? "none"]++;
   }
 
@@ -331,11 +339,11 @@ export function buildIssueReport(
       open: openAtEnd.length,
       openEpics: openEpics.length,
     },
-    timeToClose: summarise(completed.map((t) => sinceCreated(t.issue, t.closedAt!))),
-    timeToCloseByPriority: PRIORITY_KEYS.map((priority) => ({
+    timeToClose: summarise(completed.map((t) => sinceCreated(t.issue, t.issue.closedAt))),
+    timeToCloseByPriority: ISSUE_PRIORITY_KEYS.map((priority) => ({
       priority,
       summary: summarise(
-        completed.filter((t) => (t.priority ?? "none") === priority).map((t) => sinceCreated(t.issue, t.closedAt!)),
+        completed.filter((t) => (t.priority ?? "none") === priority).map((t) => sinceCreated(t.issue, t.issue.closedAt)),
       ),
     })),
     weekly,
@@ -356,5 +364,6 @@ export function buildIssueReport(
     },
     linkedShare: { linked: completed.filter(withPr).length, total: completed.length },
     hygiene: ISSUE_HYGIENE_CHECKS.map((check) => findings[check]),
+    staleUrgentDays: STALE_URGENT_DAYS,
   };
 }

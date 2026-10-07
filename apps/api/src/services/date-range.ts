@@ -2,7 +2,7 @@ import { ValidationError } from "../core/errors.js";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** No code host holds data older than this; it also bounds the weekly rows any report can be asked to build. */
+/** A floor on `from` and `to`, so the weekly rows a report can be asked to build stay bounded. */
 export const EARLIEST_DATE = "2000-01-01";
 
 /** True for a real calendar day: parsed as UTC, it reads back as the same date (so 2026-02-30 and 2026-13-01 fail). */
@@ -15,8 +15,9 @@ const isCalendarDay = (value: string): boolean => {
 export const dayOf = (at: Date): string => at.toISOString().slice(0, 10);
 
 /**
- * Rejects a malformed, impossible, pre-2000 or inverted `from` and `to`, with the same wording as the report routes. When `today` is given,
- * a `from` after it is refused too: the range ends no later than today, so such a request would be inverted.
+ * Rejects a `from` or `to` that is malformed, impossible, before `EARLIEST_DATE`, or inverted, with the same wording as
+ * the report routes. When `today` is given, a `from` after it is refused too: the range ends no later than today, so
+ * such a request would be inverted.
  */
 export function validateDateRange(range: { from?: string; to?: string }, today?: string): void {
   for (const key of ["from", "to"] as const) {

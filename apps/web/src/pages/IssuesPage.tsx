@@ -61,7 +61,10 @@ function IssueRepoList() {
   );
 }
 
-/** The repositories whose issues have been read, from the repositories list, so no route of its own is needed. */
+/**
+ * The repositories with issues, or with something to say about them, taken from the repositories list, so the page
+ * needs no API route of its own.
+ */
 export function IssuesPage() {
   return (
     <div className="page">

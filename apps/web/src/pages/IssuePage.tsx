@@ -107,7 +107,7 @@ function IdeaToProduction({ report }: { report: IssueReport }) {
 }
 
 function IssueBody({ report, people }: { report: IssueReport; people: boolean }) {
-  // The week the range ends part way through stays on the weekly charts, drawn lighter and marked so far.
+  // The part week stays on the weekly charts, drawn lighter and marked as partial.
   const part = partWeek(report, isoDaysAgo(0));
   return (
     <>
@@ -147,7 +147,7 @@ function IssueBody({ report, people }: { report: IssueReport; people: boolean })
           {copy.issue.hygiene.title}
         </h2>
         <p className="section-lede">{copy.issue.hygiene.lede}</p>
-        <IssueHygiene findings={report.hygiene} people={people} />
+        <IssueHygiene findings={report.hygiene} people={people} staleUrgentDays={report.staleUrgentDays} />
       </section>
     </>
   );
@@ -183,6 +183,12 @@ function ListingNotices({ listing }: { listing: RepoListing | undefined }) {
           <p className="notice-title">{text.issueErrorTitle}</p>
           <p>{text.issueErrorBody}</p>
           <p>{text.issueErrorReason(listing.issueError)}</p>
+        </div>
+      )}
+      {listing.issuesEnabled === false && (
+        <div className="notice notice-info" role="status">
+          <p className="notice-title">{text.issuesDisabledTitle}</p>
+          <p>{text.issuesDisabledBody}</p>
         </div>
       )}
       {listing.crawlStatus === "crawling" && (
@@ -234,7 +240,8 @@ function IssueView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [people, setPeople] = useFlagParam("people");
   const report = useIssueReport(id, { from: range.from, to: range.to }, people);
-  const listing = useRepos().data?.find((repo) => repo.id === id);
+  const repos = useRepos();
+  const listing = repos.data?.find((repo) => repo.id === id);
   const notFound = report.isError && report.error instanceof ApiError && report.error.status === 404;
 
   return (
@@ -250,6 +257,12 @@ function IssueView({ id }: { id: number }) {
         </div>
       </StickyPanel>
 
+      {!notFound && repos.isError && (
+        <div className="notice notice-warning" role="alert">
+          <p className="notice-title">{copy.issue.reposFailedTitle}</p>
+          <p>{copy.issue.reposFailedBody}</p>
+        </div>
+      )}
       {!notFound && <ListingNotices listing={listing} />}
       <ReportState query={report} people={people} />
     </div>

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CodeHealthResponse,
+  IssueLabelDefaults,
   IssueLabelRules,
   IssueReport,
   JiraConnection,
@@ -88,6 +89,7 @@ export const queryKeys = {
   linkedSpaces: (repoId: number) => ["repos", repoId, "spaces"] as const,
   spaces: ["spaces"] as const,
   spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
+  issueLabelDefaults: ["issue-label-defaults"] as const,
   issues: (id: number) => ["issues", id] as const,
   issueReport: (id: number, range: SpaceRange, people: boolean) => ["issues", id, "report", range, people] as const,
 };
@@ -437,6 +439,16 @@ export function useIssueReport(id: number, range: SpaceRange, people: boolean) {
     // address, and a report fetched without names is not shown while the one with names loads.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === id && previousQuery.queryKey[4] === people ? previous : undefined,
+  });
+}
+
+/** The label names the API classifies issues with until a repository overrides them, and the limits an override keeps to. */
+export function useIssueLabelDefaults() {
+  return useQuery({
+    queryKey: queryKeys.issueLabelDefaults,
+    queryFn: () => apiRequest<IssueLabelDefaults>("/api/issue-labels/defaults"),
+    // The defaults change only with a release of the API, so one read serves the whole session.
+    staleTime: 60 * 60 * 1000,
   });
 }
 

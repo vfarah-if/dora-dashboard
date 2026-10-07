@@ -13,7 +13,6 @@ const node = {
   createdAt: "2026-09-01T10:00:00Z",
   updatedAt: "2026-09-03T10:00:00Z",
   closedAt: "2026-09-02T10:00:00Z",
-  author: { login: "alice" },
   assignees: { nodes: [{ login: "bob" }] },
   labels: { nodes: [{ name: "bug" }, { name: "P1" }] },
   issueType: { name: "Bug" },
@@ -21,7 +20,7 @@ const node = {
   timelineItems: {
     pageInfo: { hasPreviousPage: false },
     nodes: [
-      { __typename: "ClosedEvent", createdAt: "2026-09-02T10:00:00Z", stateReason: "COMPLETED" },
+      { __typename: "ClosedEvent", createdAt: "2026-09-02T10:00:00Z" },
       { __typename: "ReopenedEvent", createdAt: "2026-09-01T18:00:00Z" },
     ],
   },
@@ -32,8 +31,14 @@ const connection = (nodes: unknown[], more: string | null = null, totalCount = n
   issues: { totalCount, pageInfo: { hasNextPage: more !== null, endCursor: more }, nodes },
 });
 const answer = (repository: unknown) => json({ data: { repository } });
-const read = (http: typeof fetch, request = { updatedSince: null as string | null, cursor: null as string | null }) =>
+const readAny = (http: typeof fetch, request = { updatedSince: null as string | null, cursor: null as string | null }) =>
   new GitHubIssueProvider(http).fetchIssuePage("t", "acme", "widgets", request);
+/** A page the test expects to be enabled, so its issues can be read. */
+const read = async (...args: Parameters<typeof readAny>) => {
+  const page = await readAny(...args);
+  if (!page.enabled) throw new Error("expected an enabled page");
+  return page;
+};
 const variablesOf = (http: ReturnType<typeof vi.fn>, call = 0) =>
   JSON.parse((http.mock.calls[call]![1] as RequestInit).body as string).variables;
 
@@ -53,14 +58,13 @@ describe("GitHubIssueProvider", () => {
       createdAt: "2026-09-01T10:00:00Z",
       updatedAt: "2026-09-03T10:00:00Z",
       closedAt: "2026-09-02T10:00:00Z",
-      author: "alice",
       assignees: ["bob"],
       labels: ["bug", "P1"],
       issueType: "Bug",
       closedBy: [{ repo: "acme/widgets", number: 30 }],
       events: [
-        { at: "2026-09-01T18:00:00Z", type: "reopened", reason: null },
-        { at: "2026-09-02T10:00:00Z", type: "closed", reason: "completed" },
+        { at: "2026-09-01T18:00:00Z", type: "reopened" },
+        { at: "2026-09-02T10:00:00Z", type: "closed" },
       ],
     });
     expect("eventsTruncated" in page.items[0]!).toBe(false);
@@ -90,14 +94,13 @@ describe("GitHubIssueProvider", () => {
     expect(issue).toMatchObject({ state: "open", closeReason: null, closedAt: null });
   });
 
-  it("keeps a close event's own reason, and null when GitHub gave none or one it does not know", async () => {
+  it("keeps closes and reopens, drops other timeline items and entries without a time, and sorts oldest first", async () => {
     const events = [
-      { __typename: "ClosedEvent", createdAt: "2026-09-01T10:00:00Z", stateReason: "DUPLICATE" },
-      { __typename: "ClosedEvent", createdAt: "2026-09-02T10:00:00Z", stateReason: null },
-      { __typename: "ClosedEvent", createdAt: "2026-09-03T10:00:00Z", stateReason: "FUTURE_VALUE" },
+      { __typename: "ClosedEvent", createdAt: "2026-09-03T10:00:00Z" },
       { __typename: "SomethingElse", createdAt: "2026-09-04T10:00:00Z" },
       { __typename: "ClosedEvent" },
       null,
+      { __typename: "ReopenedEvent", createdAt: "2026-09-01T10:00:00Z" },
     ];
 
     const issue = (
@@ -108,7 +111,10 @@ describe("GitHubIssueProvider", () => {
       )
     ).items[0]!;
 
-    expect(issue.events.map((e) => e.reason)).toEqual(["duplicate", null, null]);
+    expect(issue.events).toEqual([
+      { at: "2026-09-01T10:00:00Z", type: "reopened" },
+      { at: "2026-09-03T10:00:00Z", type: "closed" },
+    ]);
   });
 
   it("flags events as truncated when GitHub held older ones than it sent", async () => {
@@ -140,7 +146,6 @@ describe("GitHubIssueProvider", () => {
       createdAt: "2026-09-01T10:00:00Z",
       updatedAt: "2026-09-01T10:00:00Z",
       closedAt: null,
-      author: null,
       assignees: [],
       labels: [],
       issueType: null,
@@ -152,25 +157,21 @@ describe("GitHubIssueProvider", () => {
   it("tolerates null entries and nulls inside the connections", async () => {
     const sparse = {
       ...node,
-      author: null,
       issueType: null,
       assignees: { nodes: [null, { login: "bob" }] },
       labels: { nodes: [null, { name: "bug" }] },
       closedByPullRequestsReferences: {
         nodes: [null, { number: 5, repository: null }, { number: 6, repository: { nameWithOwner: "acme/gadgets" } }],
       },
-      closedAt: null,
     };
 
     const issue = (await read(vi.fn(async () => answer(connection([sparse]))))).items[0]!;
 
     expect(issue).toMatchObject({
-      author: null,
       issueType: null,
       assignees: ["bob"],
       labels: ["bug"],
       closedBy: [{ repo: "acme/gadgets", number: 6 }],
-      closedAt: null,
     });
   });
 
@@ -223,13 +224,63 @@ describe("GitHubIssueProvider", () => {
       }),
     );
 
-    expect(await read(http)).toEqual({ enabled: false, items: [], totalCount: 0, nextCursor: null });
+    expect(await readAny(http)).toEqual({ enabled: false });
   });
 
-  it("answers an enabled page with no issues connection as empty rather than switched off", async () => {
-    const page = await read(vi.fn(async () => answer({ hasIssuesEnabled: true, issues: null })));
+  it("raises a 502 when GitHub sends no issues list, rather than an empty page", async () => {
+    const failure = await read(vi.fn(async () => answer({ hasIssuesEnabled: true, issues: null }))).catch((e: unknown) => e);
 
-    expect(page).toEqual({ enabled: true, items: [], totalCount: 0, nextCursor: null });
+    expect(failure).toBeInstanceOf(UpstreamError);
+    expect(failure).toMatchObject({ status: 502, message: "GitHub sent no issues list for acme/widgets" });
+  });
+
+  it("tolerates an error inside one field of an issue, reading that field as empty", async () => {
+    const http = vi.fn(async () =>
+      json({
+        data: { repository: connection([{ ...node, labels: null }]) },
+        errors: [{ message: "labels timed out", path: ["repository", "issues", "nodes", 0, "labels"] }],
+      }),
+    );
+
+    const issue = (await read(http)).items[0]!;
+
+    expect(issue).toMatchObject({ number: 12, labels: [] });
+  });
+
+  it("raises an error inside a field when it left its whole issue null, so a full read cannot drop the issue", async () => {
+    const http = vi.fn(async () =>
+      json({
+        data: { repository: connection([node, null]) },
+        errors: [{ message: "timeline failed", path: ["repository", "issues", "nodes", 1, "timelineItems", "nodes", 0] }],
+      }),
+    );
+
+    await expect(read(http)).rejects.toMatchObject({ name: "UpstreamError", message: "timeline failed" });
+  });
+
+  it.each([
+    ["on an issue node itself", ["repository", "issues", "nodes", 0]],
+    ["on the issues connection", ["repository", "issues"]],
+    ["elsewhere", ["viewer", "login"]],
+    ["with no path", undefined],
+    ["inside a field but not of a numbered node", ["repository", "issues", "nodes", "x", "labels"]],
+  ])("still raises an error %s, even when issues arrived", async (_name, path) => {
+    const http = vi.fn(async () =>
+      json({ data: { repository: connection([node]) }, errors: [{ message: "node failed", ...(path ? { path } : {}) }] }),
+    );
+
+    await expect(read(http)).rejects.toMatchObject({ name: "UpstreamError", message: "node failed" });
+  });
+
+  it("explains a rate limit rather than repeating GitHub's text, whether or not issues arrived", async () => {
+    const limited = { type: "RATE_LIMITED", message: "API rate limit already exceeded for user ID 123." };
+    for (const data of [{ repository: null }, { repository: connection([node]) }]) {
+      const failure = await read(vi.fn(async () => json({ data, errors: [limited] }))).catch((e: unknown) => e);
+
+      expect(failure).toBeInstanceOf(UpstreamError);
+      expect((failure as Error).message).toMatch(/rate limit for this token was reached.*Crawl again once it resets/);
+      expect((failure as Error).message).not.toContain("user ID");
+    }
   });
 
   it("raises the GraphQL errors, not a missing repository, when both arrive", async () => {
@@ -258,7 +309,7 @@ describe("GitHubIssueProvider", () => {
 
   it.each([
     ["a NOT_FOUND on another path", { type: "NOT_FOUND", path: ["viewer"], message: "gone" }],
-    ["a different type on the repository path", { type: "RATE_LIMITED", path: ["repository"], message: "slow down" }],
+    ["a different type on the repository path", { type: "FORBIDDEN", path: ["repository"], message: "slow down" }],
     ["an error with no type", { message: "boom" }],
   ])("keeps %s as an UpstreamError", async (_name, error) => {
     const http = vi.fn(async () => json({ data: { repository: null }, errors: [error] }));
@@ -295,6 +346,18 @@ describe("GitHubIssueProvider", () => {
     expect(http).toHaveBeenCalledTimes(2);
     expect(variablesOf(http, 0).first).toBe(50);
     expect(variablesOf(http, 1).first).toBe(20);
+  });
+
+  it("keeps the cursor and the since filter on the smaller retry", async () => {
+    const http = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("gateway", { status: 504 }))
+      .mockResolvedValueOnce(answer(connection([node])));
+
+    await read(http, { updatedSince: "2026-09-01T00:00:00.000Z", cursor: "c7" });
+
+    expect(variablesOf(http, 0)).toMatchObject({ cursor: "c7", filter: { since: "2026-09-01T00:00:00.000Z" }, first: 50 });
+    expect(variablesOf(http, 1)).toMatchObject({ cursor: "c7", filter: { since: "2026-09-01T00:00:00.000Z" }, first: 20 });
   });
 
   it("gives up after the one retry, and does not retry other failures", async () => {

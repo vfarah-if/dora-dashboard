@@ -1,4 +1,5 @@
 import type {
+  IssueLabelDefaults,
   IssueAgeingItem,
   IssueRef,
   IssueReport,
@@ -47,6 +48,7 @@ export function repo(overrides: Partial<RepoListing> = {}): RepoListing {
     issues: 0,
     issuesEnabled: null,
     issueLabels: null,
+    issueLabelsUnreadable: false,
     issueError: null,
     ...overrides,
   };
@@ -490,6 +492,7 @@ export function issueReport(options: { people?: boolean } = {}): IssueReport {
   return {
     repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z" },
     range: { from: "2026-01-05", to: "2026-01-21" },
+    staleUrgentDays: 14,
     totals: { opened: 15, closed: 12, notPlanned: 2, open: 6, openEpics: 2 },
     timeToClose: { count: 12, median: 48, p75: 120, mean: 70 },
     timeToCloseByPriority: [
@@ -571,5 +574,27 @@ export function issueReport(options: { people?: boolean } = {}): IssueReport {
         ],
       },
     ],
+  };
+}
+
+/** What `GET /api/issue-labels/defaults` answers: the names the API classifies with and the limits it enforces. */
+export function issueLabelDefaults(): IssueLabelDefaults {
+  return {
+    kinds: {
+      bug: ["bug", "defect", "regression"],
+      feature: ["feature", "enhancement", "feature request", "story"],
+      maintenance: ["chore", "maintenance", "tech-debt"],
+      incident: ["incident", "outage", "hotfix"],
+      security: ["security", "vulnerability"],
+      epic: ["epic"],
+    },
+    priorities: {
+      P0: ["p0", "critical", "urgent", "blocker"],
+      P1: ["p1", "high"],
+      P2: ["p2", "medium"],
+      P3: ["p3", "low"],
+      P4: ["p4", "lowest", "trivial"],
+    },
+    limits: { names: 30, length: 100 },
   };
 }

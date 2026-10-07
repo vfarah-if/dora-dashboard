@@ -51,9 +51,15 @@ export interface AppDeps {
   reader?: WorkspaceReader;
   /** The time source for review waits and the review queue cache; tests pass a fixed one. */
   clock?: () => Date;
-  /** GitHub Issues, read during the crawl. Leave it out and a crawl reads no issues; stored ones and the label route still work. */
+  /**
+   * GitHub Issues, read during the crawl. Leave it out and a crawl reads no issues; stored ones and the label route
+   * still work.
+   */
   issues?: IssueProvider;
-  /** Jira, through OAuth 2.0 (3LO). Used only when `config.jira` is set; otherwise the Jira routes are not registered and answer 404 (ADR 0020). */
+  /**
+   * Jira, through OAuth 2.0 (3LO). Used only when `config.jira` is set; otherwise the Jira routes are not registered
+   * and answer 404 (ADR 0020).
+   */
   jira?: { provider: WorkItemProvider; auth: TrackerAuthorisation; grants: TrackerGrantStore };
   /** `true` logs to stdout; a stream lets a test read the log lines. */
   logger?: boolean | { stream: NodeJS.WritableStream };

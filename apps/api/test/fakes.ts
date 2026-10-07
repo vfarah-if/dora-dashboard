@@ -68,23 +68,29 @@ export function workItem(overrides: Partial<WorkItem> & { key: string }): WorkIt
   };
 }
 
+/** A closed issue unless `state: "open"` is given, in which case it has no close reason or time. */
 export function issue(overrides: Partial<RepoIssue> & { number: number }): RepoIssue {
-  return {
+  const base = {
     title: `Issue ${overrides.number}`,
     url: `https://example.test/acme/widgets/issues/${overrides.number}`,
-    state: "closed",
-    closeReason: "completed",
     createdAt: "2026-09-01T09:00:00Z",
     updatedAt: "2026-09-01T12:00:00Z",
-    closedAt: "2026-09-01T12:00:00Z",
-    author: "alice",
     assignees: [],
     labels: [],
     issueType: null,
     closedBy: [],
-    events: [{ at: "2026-09-01T12:00:00Z", type: "closed", reason: "completed" }],
-    ...overrides,
   };
+  if (overrides.state === "open") {
+    return { ...base, state: "open", closeReason: null, closedAt: null, events: [], ...overrides } as RepoIssue;
+  }
+  return {
+    ...base,
+    state: "closed",
+    closeReason: "completed",
+    closedAt: "2026-09-01T12:00:00Z",
+    events: [{ at: "2026-09-01T12:00:00Z", type: "closed" }],
+    ...overrides,
+  } as RepoIssue;
 }
 
 /** One recorded call on a FakeIssueProvider. */
@@ -96,13 +102,15 @@ export interface IssueCall extends IssuePageRequest {
 
 /**
  * An in-memory issue tracker honouring the IssueProvider contract: pages ordered by updatedAt descending, issues no
- * older than `updatedSince`, issues switched off answering an empty disabled page, and an unseeded repository
+ * older than `updatedSince`, issues switched off answering a disabled page, and an unseeded repository
  * raising NotFoundError.
  */
 export class FakeIssueProvider implements IssueProvider {
   readonly kind = "fake";
   pageSize = 2;
   pagesServed = 0;
+  /** Serve every issue whatever `updatedSince` says, to prove the crawl service stops on its own. */
+  ignoreUpdatedSince = false;
   failWith: Error | null = null;
   /** Serve this many pages, then fail the next one with `failWith`. */
   failAfterPages: number | null = null;
@@ -137,10 +145,12 @@ export class FakeIssueProvider implements IssueProvider {
     this.pagesServed++;
     const repo = this.repos.get(`${owner}/${name}`);
     if (!repo) throw new NotFoundError(`${owner}/${name} was not found`);
-    if (!repo.enabled) return { enabled: false, items: [], totalCount: 0, nextCursor: null };
+    if (!repo.enabled) return { enabled: false };
+    // Instants, as the service compares them, because two spellings of one instant do not sort alike as strings.
+    const since = updatedSince === null || this.ignoreUpdatedSince ? null : Date.parse(updatedSince);
     const sorted = repo.issues
-      .filter((item) => !updatedSince || item.updatedAt >= updatedSince)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .filter((item) => since === null || Date.parse(item.updatedAt) >= since)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
     const start = cursor ? Number(cursor) : 0;
     const end = start + this.pageSize;
     return {

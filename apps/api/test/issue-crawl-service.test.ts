@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { NotFoundError, UpstreamError } from "../src/core/errors.js";
+import { NotFoundError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
 import { CrawlService } from "../src/services/crawl-service.js";
@@ -48,7 +48,7 @@ describe("IssueCrawlService", () => {
     expect(repo().crawlProgress).toBe("Read 5 of 5 issues");
   });
 
-  it("stops an incremental read at the first page holding nothing newer than the cursor", async () => {
+  it("asks only for issues updated since the cursor on an incremental read", async () => {
     await service.read("token", repo(), false);
     issues.pagesServed = 0;
     issues.issuesOf("acme/widgets").push(issue({ number: 6, title: "new", updatedAt: "2026-09-08T12:00:00Z" }));
@@ -58,6 +58,26 @@ describe("IssueCrawlService", () => {
     expect(issues.pagesServed).toBe(1);
     expect(store.counts(repoId).issues).toBe(6);
     expect(issues.calls.at(-1)).toMatchObject({ updatedSince: "2026-09-05T11:55:00.000Z" });
+  });
+
+  it("stops at the first page holding nothing newer, and writes only the new issue and the overlap", async () => {
+    await service.read("token", repo(), false);
+    // A host that ignores the lower bound would serve all six issues; the service must stop by itself.
+    issues.ignoreUpdatedSince = true;
+    issues.issuesOf("acme/widgets").push(issue({ number: 6, title: "new", updatedAt: "2026-09-08T12:00:00Z" }));
+    for (const held of issues.issuesOf("acme/widgets")) held.title = `edited ${held.number}`;
+    issues.pagesServed = 0;
+
+    await service.read("token", repo(), false);
+
+    // Pages are [6, 5], [4, 3], [2, 1]. The cursor is 11:55 on the 5th, so 6 is new and 5 sits in the overlap
+    // (12:00 is after 11:55); 4 is older, so page 2 is where the read stops and page 3 is never asked for.
+    expect(issues.pagesServed).toBe(2);
+    const titles = new Map(store.issues(repoId).map((i) => [i.number, i.title]));
+    expect(titles.get(6)).toBe("edited 6");
+    expect(titles.get(5)).toBe("edited 5");
+    expect([1, 2, 3, 4].map((n) => titles.get(n))).toEqual(["Issue 1", "Issue 2", "Issue 3", "Issue 4"]);
+    expect(store.issueState(repoId).cursor).toBe("2026-09-08T11:55:00.000Z");
   });
 
   it("treats an issue updated in the same second as the cursor as not newer, whatever the spelling", async () => {
@@ -121,14 +141,21 @@ describe("IssueCrawlService", () => {
     expect(store.counts(repoId).issues).toBe(5);
   });
 
-  it("clears stored issues when issues are switched off, and records that", async () => {
+  it("clears issues, cursor and error together when issues are switched off, and records that", async () => {
     await service.read("token", repo(), false);
+    store.failIssueCrawl(repoId, "earlier failure");
     issues.setEnabled("acme/widgets", false);
 
     await service.read("token", repo(), false);
 
     expect(store.counts(repoId).issues).toBe(0);
-    expect(store.issueState(repoId)).toEqual({ enabled: false, cursor: null, labels: null, error: null });
+    expect(store.issueState(repoId)).toEqual({
+      enabled: false,
+      cursor: null,
+      labels: null,
+      labelsUnreadable: false,
+      error: null,
+    });
   });
 
   it("reads from the start when issues are switched on again", async () => {
@@ -157,12 +184,44 @@ describe("IssueCrawlService", () => {
     expect(store.counts(repoId).issues).toBe(0);
   });
 
-  it("refuses an update time that is not a date, leaving the cursor alone", async () => {
-    issues.seed("acme/widgets", [issue({ number: 1, updatedAt: "yesterday" })]);
+  it("refuses a page holding an update time that is not a date, storing and pruning nothing and keeping the cursor", async () => {
+    await service.read("token", repo(), false);
+    const cursor = store.issueState(repoId).cursor;
+    const before = store.issues(repoId);
+    issues.seed("acme/widgets", [
+      issue({ number: 9, updatedAt: "2026-09-09T12:00:00Z" }),
+      issue({ number: 1, updatedAt: "yesterday" }),
+    ]);
 
-    await expect(service.read("token", repo(), false)).rejects.toThrow(/issue update time that is not a date/);
+    await expect(service.read("token", repo(), true)).rejects.toMatchObject({
+      name: "UpstreamError",
+      status: 502,
+      message: expect.stringContaining("issue #1"),
+    });
 
-    expect(store.issueState(repoId).cursor).toBeNull();
+    expect(store.issues(repoId)).toEqual(before);
+    expect(store.issueState(repoId).cursor).toBe(cursor);
+  });
+
+  it("leaves the previous cursor in place when a full read fails on a later page", async () => {
+    await service.read("token", repo(), false);
+    const cursor = store.issueState(repoId).cursor;
+    issues.failAfterPages = issues.pagesServed + 1;
+    issues.failWith = new UpstreamError("GitHub answered 502", 502);
+
+    await expect(service.read("token", repo(), true)).rejects.toThrow("GitHub answered 502");
+
+    expect(store.issueState(repoId).cursor).toBe(cursor);
+    expect(store.counts(repoId).issues).toBe(5);
+  });
+
+  it("removes every stored issue on a full read when the host now holds none", async () => {
+    await service.read("token", repo(), false);
+    issues.issuesOf("acme/widgets").splice(0);
+
+    await service.read("token", repo(), true);
+
+    expect(store.counts(repoId).issues).toBe(0);
   });
 });
 
@@ -252,13 +311,25 @@ describe("the repository crawl with issues", () => {
     expect(store.getRepo(repoId)!.crawlStatus).toBe("idle");
   });
 
+  it("fails the crawl, rather than storing an issue error, when the credential is rejected during the issue read", async () => {
+    issues.failWith = new UnauthorisedError("GitHub rejected the credential; sign in again");
+
+    await expect(crawler.crawl("token", repoId)).rejects.toBeInstanceOf(UnauthorisedError);
+
+    expect(store.getRepo(repoId)).toMatchObject({
+      crawlStatus: "failed",
+      crawlError: "GitHub rejected the credential; sign in again",
+    });
+    expect(store.issueState(repoId).error).toBeNull();
+  });
+
   it("behaves as before when no issue service is wired", async () => {
     const plain = new CrawlService(store, provider);
 
     await plain.crawl("token", repoId);
 
     expect(store.counts(repoId)).toEqual({ pullRequests: 1, deployRuns: 0, issues: 0 });
-    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, error: null });
+    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
     expect(issues.calls).toHaveLength(0);
   });
 });

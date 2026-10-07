@@ -13,6 +13,7 @@ export * from "./reviewQueue.js";
 export * from "./features.js";
 export * from "./spaceReport.js";
 export * from "./doraDrivers.js";
+export * from "./issueKinds.js";
 export * from "./issueLabels.js";
 export * from "./issueLinks.js";
 export * from "./issueReport.js";

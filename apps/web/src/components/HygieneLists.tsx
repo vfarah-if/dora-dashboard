@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from "react";
-import type { ItemRef } from "@dora-dashboard/core";
+import type { ItemRef, PullRequestRef } from "@dora-dashboard/core";
 import { assigneeLabel, groupByAssignee, limitGroups } from "../lib/space";
 import { ExternalLink } from "./ExternalLink";
 import { ShowAllList } from "./ShowAllList";
@@ -48,15 +48,8 @@ export function GroupedItemList<T extends Pick<ItemRef, "assigned" | "assignee">
   );
 }
 
-interface PullRequestEntry {
-  repo: string;
-  number: number;
-  title: string;
-  url: string;
-}
-
 /** Pull requests with no linked item, each as a qualified reference and its title. */
-export function PullRequestList({ pullRequests }: { pullRequests: readonly PullRequestEntry[] }) {
+export function PullRequestList({ pullRequests }: { pullRequests: readonly PullRequestRef[] }) {
   return (
     <ShowAllList total={pullRequests.length}>
       {(limit) => (

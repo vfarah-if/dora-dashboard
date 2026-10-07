@@ -35,7 +35,7 @@ One test: `cd apps/api && npx vitest run test/routes.test.ts -t "compares"`.
 
 1. **Never publish a private name.** Real repository, company or client names go in `repos.local.json` or `.private-names`, both gitignored, never in code, tests, docs or commits. Fixtures use `acme/widgets`. `make check-names` enforces it (ADR 0009).
 2. **Git is the human's.** Do not stage, commit or push unless asked in so many words. Conventional commits, lower-case subject.
-3. **Layers only point down.** Routes call services, services call interfaces, infrastructure implements interfaces. Only `main.ts` names a concrete adapter. A new code host or tracker is a new adapter behind a port, not an `if` in a service.
+3. **Layers only point down.** Routes call services, services call interfaces, infrastructure implements interfaces. Only the composition roots, `main.ts` and `cli.ts`, name a concrete adapter. A new code host or tracker is a new adapter behind a port, not an `if` in a service.
 4. **Metrics live in core and are pure.** No `Date.now()` inside a metric; pass the range in. Every new metric gets a test with hand-computed expectations and a line in `docs/metrics.md`.
 5. **Tests prove behaviour.** Use the fakes in `apps/api/test/fakes.ts`; no network in any test. Coverage floor: 90% lines, branches, functions and statements in every workspace (ADR 0018).
 6. **UK English, no em or en dashes**, no consultancy speak. User-facing copy lives in `apps/web/src/copy.ts`.

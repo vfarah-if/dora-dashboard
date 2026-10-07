@@ -176,11 +176,11 @@ A space whose board Jira refused is not a failed crawl. Its page says the board 
 
 ## GitHub Issues
 
-There is nothing to configure. Issues are read on every crawl with the same GitHub token as pull requests, and the **GitHub Issues** link in the header appears once some repository has stored issues. The first crawl after upgrading reads every issue of the repository once, so choose **Full re-crawl** or wait for the next crawl, and a large repository can take a few minutes. After that each crawl reads only what changed.
+There is nothing to configure. Issues are read on every crawl with the same GitHub token as pull requests, and the **GitHub Issues** link in the header appears when some repository has stored issues or an issue error. The first crawl after upgrading, of either kind, reads every issue of the repository once, and a full re-crawl also re-reads every pull request, so a plain **Re-crawl** is enough. There is no scheduled crawl to wait for, and a large repository can take a few minutes. After that each crawl reads only what changed.
 
-A fine-grained personal access token needs read access to Issues as well as to pull requests, contents and actions. If the read fails, the repository shows an issue error and the rest of the crawl still finishes. A repository with issues switched off on GitHub shows no issues page.
+A fine-grained personal access token needs Issues read access in addition to what pull requests already need. If the read fails, the repository shows an issue error and the rest of the crawl still finishes. A repository with issues switched off on GitHub has its stored issues cleared and is not listed on the GitHub Issues page, and its own issue page says that issues are switched off.
 
-Which labels mean which kind of work and which priority can be changed in the repository's **Configure** panel. The change applies to the page at once and needs no crawl (ADR 0028).
+Which labels mean which kind of work and which priority can be changed in the repository's **Configure** panel, which shows the labels panel once the repository has stored issues, and warns when a saved override cannot be read. The change applies to the page at once and needs no crawl (ADR 0028).
 
 ## Automated tests
 

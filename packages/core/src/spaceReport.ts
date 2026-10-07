@@ -6,6 +6,7 @@ import { hoursBetween, median, summarise, weekRange, weekStart, type Summary } f
 import type {
   DeployRun,
   PullRequest,
+  PullRequestRef,
   Repo,
   StatusCategory,
   TrackerSpace,
@@ -106,7 +107,7 @@ interface SpaceHygieneTally {
 /** Merged pull requests that name no issue key. */
 export interface SpaceHygienePullRequestFinding extends SpaceHygieneTally {
   check: "pr_without_key";
-  pullRequests: { repo: string; number: number; title: string; url: string }[];
+  pullRequests: PullRequestRef[];
 }
 
 /** Delivery items moved into done in batches. */

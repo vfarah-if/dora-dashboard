@@ -1,5 +1,5 @@
 import type { DeployRun } from "@dora-dashboard/core";
-import { AppError, NotFoundError } from "../core/errors.js";
+import { AppError, NotFoundError, UnauthorisedError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
@@ -48,13 +48,15 @@ export class CrawlService {
 
   /**
    * Issues are a bonus too: a failure is stored on the repository as its issue error and logged, the issue cursor is
-   * left where the last complete read put it, and the pull request crawl still finishes.
+   * left where the last complete read put it, and the pull request crawl still finishes. A rejected credential is the
+   * exception: it would fail every later step too, so it fails the crawl and the usual sign-in handling applies.
    */
   private async readIssues(token: string, repo: CrawledRepo, full: boolean): Promise<void> {
     if (!this.issues) return;
     try {
       await this.issues.read(token, repo, full);
     } catch (err) {
+      if (err instanceof UnauthorisedError) throw err;
       if (err instanceof AppError) this.log.warn({ err, repoId: repo.id }, "issue step failed");
       else this.log.error({ err, repoId: repo.id }, "issue step failed unexpectedly");
       this.store.failIssueCrawl(repo.id, err instanceof AppError ? err.message : UNEXPECTED_ISSUE_FAILURE);

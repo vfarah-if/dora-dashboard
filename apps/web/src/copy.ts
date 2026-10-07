@@ -1039,6 +1039,10 @@ export const copy = {
     issueErrorTitle: "The last read of this repository's issues failed",
     issueErrorBody: "These figures come from the last read that completed, so they may be out of date.",
     issueErrorReason: (reason: string) => `The reason given was ${reason}`,
+    issuesDisabledTitle: "Issues are switched off on GitHub for this repository",
+    issuesDisabledBody: "Any figures here come from issues read before they were switched off, so they may be out of date.",
+    reposFailedTitle: "The crawl status could not be loaded",
+    reposFailedBody: "The report below is unaffected, but a failed crawl or a failed read of issues would not be shown here.",
     rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
     lastCrawled: (when: string) => `Last crawled ${when}`,
     showPeople: "Show people",
@@ -1132,7 +1136,7 @@ export const copy = {
       timeToClose: {
         title: "Time to close by priority",
         subtitle:
-          "Median time from opened to closed as completed for issues closed in this range, by priority. The table gives the 75th percentile and how many issues each figure covers.",
+          "Median time from opened to closed as completed for issues closed in this range, by priority. The table gives the median, 75th percentile and mean, and how many issues each covers.",
         series: "Median time to close",
         issues: "Issues",
         median: "Median",
@@ -1144,7 +1148,7 @@ export const copy = {
 
     ageing: {
       title: "Ageing issues",
-      subtitle: "Issues open at the end of the range, oldest first, with the time since they were opened.",
+      subtitle: "Issues open at the end of the range, oldest first, with how long each had been open when the range ends.",
       number: "Issue",
       issueTitle: "Title",
       kind: "Kind",
@@ -1160,13 +1164,13 @@ export const copy = {
     idea: {
       title: "Idea to production",
       lede: (linked: number, total: number, share: string) =>
-        `Only issues closed as completed that have a linked pull request can be measured, so these figures cover at most ${linked} of ${total} issues (${share}), and issue to production covers fewer when a linked pull request has not shipped. A pull request is linked by a closing keyword, an issue number in its title or a number in its branch name, so work linked in none of those ways is left out and the times may not represent the whole picture.`,
+        `Only issues closed as completed that have a linked pull request can be measured, so these figures cover at most ${linked} of ${total} issues (${share}), and issue to production covers fewer when a linked pull request has not shipped. A pull request is linked by a closing reference, which includes the link in the issue's Development section, by an issue number in its title, or by a number in its branch name. The times leave out work that is linked in none of those ways.`,
       toFirstPr: "Issue to first pull request",
       toFirstPrHint: (p75: string, count: number) =>
         `Median from opened to the first linked pull request opened, 75th percentile ${p75}, across ${count} issues`,
       toProduction: "Issue to production",
       toProductionHint: (p75: string, count: number) =>
-        `Median from opened to the deploy that shipped the last linked pull request, 75th percentile ${p75}, across ${count} issues`,
+        `Median from opened to the deploy that shipped the last of its merged linked pull requests, 75th percentile ${p75}, across ${count} issues`,
     },
 
     hygiene: {
@@ -1194,7 +1198,7 @@ export const copy = {
         stale_urgent: {
           title: "Stale urgent issues",
           explanation: (days: number) =>
-            `Open P0 and P1 issues, incidents and security issues with no update in the last ${days} days.`,
+            `Open P0 and P1 issues, incidents and security issues with no update in the ${days} days before the range ends.`,
         },
         unclassified: {
           title: "Open issues with no kind or priority",
@@ -1204,7 +1208,7 @@ export const copy = {
         pr_without_issue: {
           title: "Pull requests with no issue",
           explanation:
-            "Pull requests merged in this range by a person that no issue is linked to. Where pull requests carry no closing keyword and no issue number in the branch name, this list will be long.",
+            "Pull requests merged in this range by a person that no issue is linked to. A pull request counts as linked when it has a closing keyword or an issue number in its title or branch name, so where pull requests carry none of those this list will be long.",
         },
       },
     },
@@ -1224,6 +1228,9 @@ export const copy = {
     applyNote: "Changes apply to the report straight away, because kinds and priorities are worked out when the report is built.",
     tooMany: (limit: number) => `Name at most ${limit} labels for each kind or priority.`,
     tooLong: (limit: number) => `Each label can have at most ${limit} characters.`,
+    control: "Label names cannot contain control characters, such as a tab or a line break.",
+    unreadable: "The label names saved for this repository could not be read, so the defaults apply until you save them again.",
+    loadingDefaults: "Loading the default label names. Saving is available once they have loaded.",
   },
 
   compare: {

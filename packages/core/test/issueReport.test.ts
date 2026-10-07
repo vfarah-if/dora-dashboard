@@ -109,6 +109,22 @@ describe("weeks", () => {
     const weeks = build(issues, { to: "2026-09-23" }).weekly;
     expect(weeks.map((w) => w.partial)).toEqual([false, true]);
   });
+
+  it("counts in the first week only what was opened inside the range, so the weeks add up to the total", () => {
+    // From Wednesday 16 to Wednesday 23 September. Issue 1 was opened on Monday 14th, before the range; issue 2 on the
+    // 16th, inside it; issue 3 on Friday 25th, after it. Only issue 2 counts, in the week of the 14th.
+    const midWeek = [
+      issue({ number: 1, createdAt: "2026-09-14T09:00:00Z" }),
+      issue({ number: 2, createdAt: "2026-09-16T09:00:00Z" }),
+      issue({ number: 3, createdAt: "2026-09-25T09:00:00Z" }),
+    ];
+    const report = build(midWeek, { from: "2026-09-16", to: "2026-09-23" });
+    expect(report.totals.opened).toBe(1);
+    expect(report.weekly.map((w) => [w.week, w.opened])).toEqual([
+      ["2026-09-14", 1],
+      ["2026-09-21", 0],
+    ]);
+  });
 });
 
 describe("flow over a range", () => {
@@ -131,14 +147,8 @@ describe("flow over a range", () => {
       closeReason: "duplicate",
     }),
     closedIssue({ number: 6, createdAt: "2026-09-14T12:00:00Z", closedAt: "2026-09-15T00:00:00Z", labels: ["epic"] }),
-    // Closed with no reason and no events: counted as completed, open from creation to its close.
-    issue({
-      number: 7,
-      state: "closed",
-      createdAt: "2026-09-20T00:00:00Z",
-      closedAt: "2026-09-20T06:00:00Z",
-      updatedAt: "2026-09-20T06:00:00Z",
-    }),
+    // Closed with no events: open from creation to its close.
+    closedIssue({ number: 7, createdAt: "2026-09-20T00:00:00Z", closedAt: "2026-09-20T06:00:00Z", events: [] }),
     issue({ number: 8, createdAt: "2026-09-21T00:00:00Z" }),
     issue({ number: 9, createdAt: "2026-09-10T00:00:00Z" }),
   ];
@@ -192,9 +202,9 @@ describe("an issue reopened and closed again", () => {
     createdAt: "2026-09-14T00:00:00Z",
     closedAt: "2026-09-18T00:00:00Z",
     events: [
-      { at: "2026-09-18T00:00:00Z", type: "closed", reason: "completed" },
-      { at: "2026-09-16T00:00:00Z", type: "reopened", reason: null }, // out of order on purpose
-      { at: "2026-09-15T00:00:00Z", type: "closed", reason: "completed" },
+      { at: "2026-09-18T00:00:00Z", type: "closed" },
+      { at: "2026-09-16T00:00:00Z", type: "reopened" }, // out of order on purpose
+      { at: "2026-09-15T00:00:00Z", type: "closed" },
     ],
   });
   const range = { from: "2026-09-14" };
@@ -223,8 +233,8 @@ describe("an issue reopened and closed again", () => {
       number: 2,
       createdAt: "2026-09-14T00:00:00Z",
       events: [
-        { at: "2026-09-15T00:00:00Z", type: "closed", reason: "completed" },
-        { at: "2026-09-16T00:00:00Z", type: "reopened", reason: null },
+        { at: "2026-09-15T00:00:00Z", type: "closed" },
+        { at: "2026-09-16T00:00:00Z", type: "reopened" },
       ],
     });
     expect(build([stillOpen], { ...range, to: "2026-09-15" }).totals.open).toBe(0);
@@ -237,9 +247,9 @@ describe("an issue reopened and closed again", () => {
       number: 3,
       createdAt: "2026-09-14T00:00:00Z",
       events: [
-        { at: "2026-09-13T00:00:00Z", type: "reopened", reason: null },
-        { at: "2026-09-15T00:00:00Z", type: "closed", reason: "completed" },
-        { at: "2026-09-16T00:00:00Z", type: "closed", reason: "completed" },
+        { at: "2026-09-13T00:00:00Z", type: "reopened" },
+        { at: "2026-09-15T00:00:00Z", type: "closed" },
+        { at: "2026-09-16T00:00:00Z", type: "closed" },
       ],
     });
     // Closed on the 15th, so closed by the end of the 15th and not reopened by the 16th.
@@ -249,14 +259,11 @@ describe("an issue reopened and closed again", () => {
 
 describe("a closed issue whose events hold no close after the last reopen", () => {
   // Transferred in: closed on the 12th according to the host, but the only event read is a reopen on the 10th.
-  const transferred = issue({
+  const transferred = closedIssue({
     number: 8,
-    state: "closed",
-    closeReason: "completed",
     createdAt: "2026-09-08T00:00:00Z",
     closedAt: "2026-09-12T00:00:00Z",
-    updatedAt: "2026-09-12T00:00:00Z",
-    events: [{ at: "2026-09-10T00:00:00Z", type: "reopened", reason: null }],
+    events: [{ at: "2026-09-10T00:00:00Z", type: "reopened" }],
   });
 
   it("stays open until its final close, then is closed", () => {
@@ -314,7 +321,7 @@ describe("open spans without a usable history", () => {
       number: 1,
       createdAt: "2026-09-14T00:00:00Z",
       closedAt: "2026-09-20T00:00:00Z",
-      events: [{ at: "2026-09-15T00:00:00Z", type: "closed", reason: "completed" }],
+      events: [{ at: "2026-09-15T00:00:00Z", type: "closed" }],
       eventsTruncated: true,
     });
     expect(build([truncated], range).totals.open).toBe(1);
@@ -322,13 +329,7 @@ describe("open spans without a usable history", () => {
   });
 
   it("falls back when a closed issue has no events at all", () => {
-    const bare = issue({
-      number: 2,
-      state: "closed",
-      closeReason: "completed",
-      createdAt: "2026-09-14T00:00:00Z",
-      closedAt: "2026-09-20T00:00:00Z",
-    });
+    const bare = closedIssue({ number: 2, createdAt: "2026-09-14T00:00:00Z", closedAt: "2026-09-20T00:00:00Z", events: [] });
     expect(build([bare], range).totals.open).toBe(1);
     expect(build([bare], { ...range, to: "2026-09-27" }).totals).toMatchObject({ open: 0, closed: 1 });
   });
@@ -336,19 +337,6 @@ describe("open spans without a usable history", () => {
   it("keeps an open issue with truncated events open from creation", () => {
     const open = issue({ number: 3, createdAt: "2026-09-14T00:00:00Z", eventsTruncated: true });
     expect(build([open], range).totals.open).toBe(1);
-  });
-
-  it("uses the last update when a closed issue somehow has no close date", () => {
-    const odd = issue({
-      number: 4,
-      state: "closed",
-      closeReason: "completed",
-      createdAt: "2026-09-14T00:00:00Z",
-      updatedAt: "2026-09-16T00:00:00Z",
-    });
-    const report = build([odd], range);
-    expect(report.totals).toMatchObject({ closed: 1, open: 0 });
-    expect(report.timeToClose.median).toBe(48);
   });
 });
 
@@ -471,6 +459,22 @@ describe("idea to production", () => {
   ];
   const report = build(issues, { from: "2026-09-14", to: "2026-09-27" }, prs, runs);
 
+  it("waits for every merged pull request of an issue to ship, then takes the last deploy", () => {
+    // Issue 20 was opened on 14 September at midnight. Pull request 40 merged at noon and shipped with deploy 2 at
+    // 13:10; pull request 41 merged on the 16th at noon, after the last deploy, so the issue has not reached production.
+    const both = [closedIssue({ number: 20, createdAt: created, closedAt: "2026-09-18T00:00:00Z" })];
+    const work = [
+      pr({ number: 40, title: "Fix #20", createdAt: "2026-09-14T06:00:00Z", mergedAt: "2026-09-14T12:00:00Z" }),
+      pr({ number: 41, title: "More for #20", createdAt: "2026-09-15T06:00:00Z", mergedAt: "2026-09-16T12:00:00Z" }),
+    ];
+    const range = { from: "2026-09-14", to: "2026-09-27" };
+    expect(build(both, range, work, runs).ideaToProduction.toProduction.count).toBe(0);
+    // A deploy on the 17th at 08:00, done at 08:10, ships 41, so the issue reached production 80 hours 10 minutes in.
+    const shipped = build(both, range, work, [...runs, deploy(4, "2026-09-17T08:00:00Z")]).ideaToProduction.toProduction;
+    expect(shipped.count).toBe(1);
+    expect(shipped.median).toBeCloseTo(80 + 10 / 60, 6);
+  });
+
   it("measures creation to the first linked pull request opened", () => {
     // Issue 10: 6 hours. Issue 11: 3 hours, the earlier of its two. Issue 12: 36 hours. Issue 13 has no pull request.
     // Median 6; p75 halfway from 6 to 36, 21; mean 45 / 3 = 15.
@@ -541,8 +545,8 @@ describe("hygiene", () => {
       number: 13,
       labels: ["bug"],
       events: [
-        { at: "2026-09-05T00:00:00Z", type: "closed", reason: "completed" },
-        { at: "2026-09-08T00:00:00Z", type: "reopened", reason: null },
+        { at: "2026-09-05T00:00:00Z", type: "closed" },
+        { at: "2026-09-08T00:00:00Z", type: "reopened" },
       ],
     }),
     issue({
@@ -551,8 +555,8 @@ describe("hygiene", () => {
       createdAt: "2026-08-01T00:00:00Z",
       labels: ["bug"],
       events: [
-        { at: "2026-08-05T00:00:00Z", type: "closed", reason: "completed" },
-        { at: "2026-08-10T00:00:00Z", type: "reopened", reason: null },
+        { at: "2026-08-05T00:00:00Z", type: "closed" },
+        { at: "2026-08-10T00:00:00Z", type: "reopened" },
       ],
     }),
     closedIssue({ ...base, number: 15, closedAt: "2026-09-12T00:00:00Z", labels: ["p0"] }),
@@ -646,6 +650,31 @@ describe("hygiene", () => {
     expect(refs.every((ref) => !("assignee" in ref))).toBe(true);
     expect(refs.find((ref) => ref.number === 6)).toMatchObject({ assigned: true });
     expect(JSON.stringify(report)).not.toContain("carol");
+  });
+
+  it("never names the author of a pull request, with or without people", () => {
+    const authored = prs.map((p) => ({ ...p, author: "pat", mergedBy: "pat" }));
+    expect(JSON.stringify(build(issues, { from: "2026-09-01" }, authored))).not.toContain("pat");
+    expect(JSON.stringify(build(issues, { from: "2026-09-01", people: true }, authored))).not.toContain("pat");
+  });
+
+  it("lists pull requests without an issue in number order", () => {
+    const unordered = [
+      pr({ number: 61, title: "Second", mergedAt: "2026-09-20T00:00:00Z" }),
+      pr({ number: 60, title: "First", mergedAt: "2026-09-21T00:00:00Z" }),
+    ];
+    expect(numbers(finding(build([], { from: "2026-09-01" }, unordered), "pr_without_issue").pullRequests)).toEqual([60, 61]);
+  });
+
+  it("counts a pull request linked only to an epic as linked to an issue", () => {
+    const epic = issue({ number: 7, createdAt: "2026-09-01T00:00:00Z", labels: ["epic"] });
+    const work = pr({ number: 70, title: "Work on #7", createdAt: "2026-09-02T00:00:00Z", mergedAt: "2026-09-03T00:00:00Z" });
+    const found = finding(build([epic], { from: "2026-09-01" }, [work]), "pr_without_issue");
+    expect([found.count, found.of]).toEqual([0, 1]);
+  });
+
+  it("says how many days make an urgent issue stale", () => {
+    expect(report.staleUrgentDays).toBe(STALE_URGENT_DAYS);
   });
 
   it("names the first assignee, or null, behind the people toggle", () => {

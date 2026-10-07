@@ -1,10 +1,12 @@
-import { DEFAULT_ISSUE_LABELS, ISSUE_HYGIENE_CHECKS } from "@dora-dashboard/core";
 import type {
   IssueAgeingItem,
   IssueCountedKind,
   IssueHygieneCheck,
   IssueHygieneFinding,
   IssueKind,
+  IssueLabelDefaults,
+  IssueLabelKind,
+  IssueLabelLists,
   IssueLabelRules,
   IssuePriority,
   IssuePriorityKey,
@@ -16,14 +18,35 @@ import { copy } from "../copy";
 import { formatWeek } from "./format";
 import type { PartWeek } from "./weekly";
 
-/** True when any repository has stored issues, which is when the GitHub Issues page is offered. */
-export const hasIssues = (repos: readonly RepoListing[]): boolean => repos.some((repo) => repo.issues > 0);
+/**
+ * The keys of a record that names every member of `K`, in the order written. The record is what makes the compiler
+ * refuse a list that misses a kind or priority that core has added.
+ */
+const keysOf = <K extends string>(record: Record<K, true>): readonly K[] => Object.keys(record) as K[];
 
-/** The repositories that have stored issues, in the order the list gave them. */
-export const reposWithIssues = (repos: readonly RepoListing[]): RepoListing[] => repos.filter((repo) => repo.issues > 0);
+/**
+ * True when the GitHub Issues page has something to say about the repository: it has stored issues, or its last read
+ * of them failed, since leaving out a failed first read would hide the failure. Issues switched off on GitHub are not
+ * enough on their own, because a repository tracked in Jira usually has them off and every such repository would then
+ * be listed; its own issue page still says so to anyone who arrives there.
+ */
+export const hasIssueStatus = (repo: RepoListing): boolean => repo.issues > 0 || repo.issueError !== null;
+
+/** True when any repository belongs on the GitHub Issues page, which is when the page is offered. */
+export const hasIssues = (repos: readonly RepoListing[]): boolean => repos.some(hasIssueStatus);
+
+/** The repositories that belong on the GitHub Issues page, in the order the list gave them. */
+export const reposWithIssues = (repos: readonly RepoListing[]): RepoListing[] => repos.filter(hasIssueStatus);
 
 /** The kinds a report counts, in the order charts and tables list them. Epics are counted apart. */
-export const ISSUE_KINDS: readonly IssueCountedKind[] = ["bug", "feature", "maintenance", "incident", "security", "other"];
+export const ISSUE_KINDS = keysOf<IssueCountedKind>({
+  bug: true,
+  feature: true,
+  maintenance: true,
+  incident: true,
+  security: true,
+  other: true,
+});
 
 /**
  * Each kind has one colour for good, so a kind that is absent in a range leaves the others where they were. The
@@ -45,7 +68,7 @@ export const kindLabel = (kind: IssueKind): string => copy.issue.kinds[kind];
 export const priorityLabel = (priority: IssuePriorityKey): string => copy.issue.priorities[priority];
 
 /** The priorities in report order, most urgent first, then none. */
-export const ISSUE_PRIORITIES: readonly IssuePriorityKey[] = ["P0", "P1", "P2", "P3", "P4", "none"];
+export const ISSUE_PRIORITIES = keysOf<IssuePriorityKey>({ P0: true, P1: true, P2: true, P3: true, P4: true, none: true });
 
 export interface KindSeries {
   key: IssueCountedKind;
@@ -108,18 +131,19 @@ export function issuePartWeekNote(part: PartWeek): string {
   return part.current ? text.current(week) : text.cut(week, formatWeek(part.through));
 }
 
-/** The hygiene findings in the order the cards are shown, whatever order the API returned them in. */
-export function orderedFindings(findings: readonly IssueHygieneFinding[]): IssueHygieneFinding[] {
-  const byCheck = new Map<IssueHygieneCheck, IssueHygieneFinding>(findings.map((f) => [f.check, f]));
-  return ISSUE_HYGIENE_CHECKS.flatMap((check) => {
-    const finding = byCheck.get(check);
-    return finding ? [finding] : [];
-  });
-}
+/** Where each check's card sits, so a check added in core must be given a place here before this compiles. */
+const CHECK_RANK: Record<IssueHygieneCheck, number> = {
+  closed_without_pr: 0,
+  reopened: 1,
+  urgent_unassigned: 2,
+  stale_urgent: 3,
+  unclassified: 4,
+  pr_without_issue: 5,
+};
 
-/** What the API allows for one kind or priority. */
-export const MAX_LABEL_NAMES = 30;
-export const MAX_LABEL_LENGTH = 100;
+/** The hygiene findings in the order the cards are shown, whatever order the API returned them in. */
+export const orderedFindings = (findings: readonly IssueHygieneFinding[]): IssueHygieneFinding[] =>
+  [...findings].sort((a, b) => CHECK_RANK[a.check] - CHECK_RANK[b.check]);
 
 /** Label names from comma separated text. Blanks are dropped and a name repeated with other capitals is kept once. */
 export function parseLabelList(text: string): string[] {
@@ -138,9 +162,16 @@ export function parseLabelList(text: string): string[] {
 /** Label names as the text a person types, one comma and a space between them. */
 export const formatLabelList = (names: readonly string[] | undefined): string => (names ?? []).join(", ");
 
-export type LabelKey = Exclude<IssueKind, "other">;
-export const LABEL_KINDS: readonly LabelKey[] = ["bug", "feature", "maintenance", "incident", "security", "epic"];
-export const LABEL_PRIORITIES: readonly IssuePriority[] = ["P0", "P1", "P2", "P3", "P4"];
+export type LabelKey = IssueLabelKind;
+export const LABEL_KINDS = keysOf<IssueLabelKind>({
+  bug: true,
+  feature: true,
+  maintenance: true,
+  incident: true,
+  security: true,
+  epic: true,
+});
+export const LABEL_PRIORITIES = keysOf<IssuePriority>({ P0: true, P1: true, P2: true, P3: true, P4: true });
 
 /** The text of every input in the labels panel. */
 export interface LabelInputs {
@@ -156,12 +187,9 @@ export function inputsFromRules(rules: IssueLabelRules | null): LabelInputs {
   return { kinds: blank(LABEL_KINDS, rules?.kinds), priorities: blank(LABEL_PRIORITIES, rules?.priorities) };
 }
 
-/** The placeholder text of every input, from the defaults core classifies with. */
-export function defaultInputs(): LabelInputs {
-  return {
-    kinds: blank(LABEL_KINDS, DEFAULT_ISSUE_LABELS.kinds),
-    priorities: blank(LABEL_PRIORITIES, DEFAULT_ISSUE_LABELS.priorities),
-  };
+/** The placeholder text of every input, from the defaults the API classifies with. */
+export function defaultInputs(defaults: IssueLabelLists): LabelInputs {
+  return { kinds: blank(LABEL_KINDS, defaults.kinds), priorities: blank(LABEL_PRIORITIES, defaults.priorities) };
 }
 
 /**
@@ -186,10 +214,17 @@ export function rulesFromInputs(inputs: LabelInputs): IssueLabelRules | null {
   return Object.keys(rules).length > 0 ? rules : null;
 }
 
-/** What is wrong with one input's text, if anything, by the limits the API enforces. */
-export function labelProblem(text: string): "tooMany" | "tooLong" | null {
+const hasControlCharacter = (name: string): boolean =>
+  [...name].some((char) => {
+    const code = char.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+
+/** What is wrong with one input's text, if anything, by the limits and rules the API enforces. */
+export function labelProblem(text: string, limits: IssueLabelDefaults["limits"]): "tooMany" | "tooLong" | "control" | null {
   const names = parseLabelList(text);
-  if (names.length > MAX_LABEL_NAMES) return "tooMany";
-  if (names.some((name) => name.length > MAX_LABEL_LENGTH)) return "tooLong";
+  if (names.length > limits.names) return "tooMany";
+  if (names.some((name) => name.length > limits.length)) return "tooLong";
+  if (names.some(hasControlCharacter)) return "control";
   return null;
 }

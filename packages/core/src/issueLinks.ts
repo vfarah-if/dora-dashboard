@@ -7,8 +7,8 @@ import type { PullRequest, Repo, RepoIssue } from "./types.js";
  * (ADR 0028): a closing reference on the issue, `#n` in the pull request title, and a number in its branch name.
  */
 
-/** `#12` in a title, not part of a longer word or number. */
-const TITLE_REFERENCE = /(?<!\w)#(\d+)(?!\d)/g;
+/** `#12` in a title, not part of a longer word or number: no letter, digit or underscore just before or after it. */
+const TITLE_REFERENCE = /(?<!\w)#(\d+)(?!\w)/g;
 /**
  * A branch segment such as `526-tts-gating`, `issue-389-crash` or a bare `123`, as in `feat/526-tts-gating`. The number
  * must start the segment (after an optional word and hyphen) and end at a hyphen, underscore, slash or the end of the
@@ -58,7 +58,7 @@ export function linkIssues(
     for (const number of named) {
       const issue = issueByNumber.get(number);
       if (!issue || instant(issue.createdAt) > instant(pr.createdAt)) continue;
-      const closedBefore = issue.state === "closed" && issue.closedAt !== null && instant(issue.closedAt) < instant(pr.createdAt);
+      const closedBefore = issue.state === "closed" && instant(issue.closedAt) < instant(pr.createdAt);
       if (!closedBefore) link(number, pr);
     }
   }

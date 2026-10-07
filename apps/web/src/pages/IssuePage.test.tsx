@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Link } from "react-router";
 import { IssuePage } from "./IssuePage";
 import { mockFetch, renderRoute, type MockResponse } from "../test/render";
 import { issueReport, repo } from "../test/fixtures";
 import { copy } from "../copy";
+
+const HYGIENE_TITLES = [
+  "Closed with no pull request",
+  "Reopened issues",
+  "Urgent issues with no assignee",
+  "Stale urgent issues",
+  "Open issues with no kind or priority",
+  "Pull requests with no issue",
+];
 
 const route = (query = "") => ({ path: "/issues/:id", route: `/issues/1${query}` });
 
@@ -222,7 +232,7 @@ describe("IssuePage", () => {
       within(hygiene)
         .getAllByRole("heading", { level: 3 })
         .map((h) => h.textContent),
-    ).toEqual(Object.values(copy.issue.hygiene.checks).map((c) => c.title));
+    ).toEqual(HYGIENE_TITLES);
   });
 
   it("asks for no names by default and shows none", async () => {
@@ -265,8 +275,7 @@ describe("IssuePage", () => {
     const holders = screen
       .getAllByText("Ann Example")
       .map((el) => el.closest("section")?.getAttribute("aria-label") ?? el.closest("section")?.className);
-    const hygieneTitles = Object.values(copy.issue.hygiene.checks).map((c) => c.title);
-    for (const holder of holders) expect(["card space-ageing", ...hygieneTitles]).toContain(holder);
+    for (const holder of holders) expect(["card space-ageing", ...HYGIENE_TITLES]).toContain(holder);
   });
 
   it("sends the range and leaves out the bots switch", async () => {
@@ -322,6 +331,116 @@ describe("IssuePage", () => {
     renderRoute(<IssuePage />, route());
     expect(await screen.findByText("boom")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
+  });
+
+  it("says issues are switched off on GitHub when the repositories list reports it", async () => {
+    mockReport(repo({ issues: 21, issuesEnabled: false }));
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText(copy.issue.issuesDisabledTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.issue.issuesDisabledBody)).toBeInTheDocument();
+  });
+
+  it("says nothing about issues being switched off when they are on", async () => {
+    mockReport(repo({ issues: 21, issuesEnabled: true }));
+    renderRoute(<IssuePage />, route());
+    await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
+    expect(screen.queryByText(copy.issue.issuesDisabledTitle)).not.toBeInTheDocument();
+  });
+
+  it("shows the failed read of issues and the failed crawl from the repositories list", async () => {
+    mockReport(repo({ issues: 21, issueError: "GitHub answered 502", crawlStatus: "failed", crawlError: "rate limited" }));
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText(copy.issue.issueErrorReason("GitHub answered 502"))).toBeInTheDocument();
+    expect(screen.getByText(copy.issue.crawlFailedReason("rate limited"))).toBeInTheDocument();
+    expect(screen.queryByText(copy.issue.reposFailedTitle)).not.toBeInTheDocument();
+  });
+
+  it("says the crawl status could not be loaded when the repositories list fails, and still shows the report", async () => {
+    mockFetch({
+      "GET /api/repos": { status: 500, body: { error: "list failed" } },
+      "GET /api/repos/1/issues/report": { body: issueReport() },
+    });
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText(copy.issue.reposFailedTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.issue.reposFailedBody)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "acme/widgets" })).toBeInTheDocument();
+  });
+
+  it("does not add the crawl status notice when the repository cannot be found", async () => {
+    mockFetch({
+      "GET /api/repos": { status: 500, body: { error: "list failed" } },
+      "GET /api/repos/1/issues/report": { status: 404, body: { error: "not found" } },
+    });
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText(copy.issue.notFoundTitle)).toBeInTheDocument();
+    expect(screen.queryByText(copy.issue.reposFailedTitle)).not.toBeInTheDocument();
+  });
+
+  it("loads the report when Retry is pressed after the first request fails with a 500", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    mockFetch({
+      "GET /api/repos": { body: [repo({ issues: 21 })] },
+      "GET /api/repos/1/issues/report": () =>
+        ++calls === 1 ? { status: 500, body: { error: "boom" } } : { body: issueReport() },
+    });
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: copy.common.retry }));
+    expect(await screen.findByRole("heading", { level: 1, name: "acme/widgets" })).toBeInTheDocument();
+    expect(screen.queryByText("boom")).not.toBeInTheDocument();
+  });
+
+  it("never shows another repository's report under the next repository's address while that one loads", async () => {
+    const user = userEvent.setup();
+    let release: (response: MockResponse) => void = () => undefined;
+    const gadgets = issueReport();
+    gadgets.repo = { ...gadgets.repo, id: 2, name: "gadgets" };
+    mockFetch({
+      "GET /api/repos": { body: [repo({ id: 1, issues: 21 }), repo({ id: 2, name: "gadgets", issues: 4 })] },
+      "GET /api/repos/1/issues/report": { body: issueReport() },
+      "GET /api/repos/2/issues/report": () => new Promise<MockResponse>((resolve) => (release = resolve)),
+    });
+    renderRoute(
+      <>
+        <IssuePage />
+        <Link to="/issues/2">Next repository</Link>
+      </>,
+      { path: "/issues/:id", route: "/issues/1" },
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "acme/widgets" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Next repository" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: copy.issue.loadingTitle })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1, name: "acme/widgets" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: copy.issue.headline.title })).not.toBeInTheDocument();
+    release({ body: gadgets });
+    expect(await screen.findByRole("heading", { level: 1, name: "acme/gadgets" })).toBeInTheDocument();
+  });
+
+  it("does not show a report fetched without names as unassigned while the one with names loads", async () => {
+    const user = userEvent.setup();
+    let release: (response: MockResponse) => void = () => undefined;
+    mockFetch({
+      "GET /api/repos": { body: [repo({ issues: 21 })] },
+      "GET /api/repos/1/issues/report": (url) =>
+        url.searchParams.get("people") === "1"
+          ? new Promise<MockResponse>((resolve) => (release = resolve))
+          : { body: issueReport() },
+    });
+    renderRoute(<IssuePage />, route());
+    await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
+
+    await user.click(screen.getByRole("switch", { name: copy.issue.showPeople }));
+
+    // The figures that were fetched without names are gone, so no list can group them under Unassigned.
+    await waitFor(() => expect(screen.queryByRole("region", { name: copy.issue.hygiene.title })).not.toBeInTheDocument());
+    expect(screen.queryByText(copy.space.hygiene.unassigned)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.issue.ageing.unassigned)).not.toBeInTheDocument();
+    release({ body: issueReport({ people: true }) });
+    const closedNoPr = await screen.findByRole("region", { name: copy.issue.hygiene.checks.closed_without_pr.title });
+    expect(within(closedNoPr).getByRole("heading", { level: 4, name: "Ann Example" })).toBeInTheDocument();
   });
 
   it("keeps the previous figures on screen, marked as refreshing, while a new range loads", async () => {

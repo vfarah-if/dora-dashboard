@@ -109,7 +109,7 @@ interface GqlPage<Node = GqlPullRequest> {
       pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; totalCount: number; nodes: Node[] };
     } | null;
   };
-  errors?: { message: string }[];
+  errors?: { message: string; type?: string; path?: (string | number)[] }[];
 }
 
 /** GitHub lists at most 3000 changed files of a pull request through its REST API, so reading stops there too. */
@@ -233,8 +233,14 @@ export class GitHubProvider implements SourceProvider {
       page = await this.pullRequestPage(token, owner, name, cursor, RETRY_PAGE_SIZE);
     }
     const connection = page.data?.repository?.pullRequests;
-    if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+    // Errors come first: a rate limit also leaves the repository null, and must not be reported as not found. Only
+    // GitHub's own NOT_FOUND on the `repository` path says the repository is missing or invisible.
+    const missing = page.errors?.some((e) => e.type === "NOT_FOUND" && e.path?.[0] === "repository") ?? false;
+    if (missing && !page.data?.repository) {
+      throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+    }
     if (page.errors?.length) throw new UpstreamError(page.errors.map((e) => e.message).join("; "), 200);
+    if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
     const nodes: GqlPullRequest[] = [];
     // One pull request at a time, since GitHub's secondary rate limits penalise bursts of concurrent queries.
     for (const node of connection.nodes) nodes.push(await this.withAllFiles(token, owner, name, node));

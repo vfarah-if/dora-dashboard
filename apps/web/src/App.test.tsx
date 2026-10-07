@@ -113,6 +113,28 @@ describe("App sign-in gate", () => {
       expect(await screen.findByRole("link", { name: copy.nav.issues })).toHaveAttribute("href", "/issues");
     });
 
+    it("links to the page when a repository's first read of issues failed, so the failure can be found", async () => {
+      mockFetch({
+        "GET /api/auth/me": signedIn,
+        "GET /api/health": health,
+        "GET /api/repos": { body: [repo({ issues: 0, issueError: "Bad credentials" })] },
+      });
+      renderApp();
+      expect(await screen.findByRole("link", { name: copy.nav.issues })).toHaveAttribute("href", "/issues");
+    });
+
+    it("leaves the link out when the only news is issues switched off on GitHub", async () => {
+      mockFetch({
+        "GET /api/auth/me": signedIn,
+        "GET /api/health": health,
+        "GET /api/repos": { body: [repo({ issues: 0, issuesEnabled: false })] },
+      });
+      renderApp();
+      await screen.findByText("ada");
+      await screen.findByRole("heading", { level: 1, name: copy.home.title });
+      expect(screen.queryByRole("link", { name: copy.nav.issues })).not.toBeInTheDocument();
+    });
+
     it("leaves the link out when no repository has issues", async () => {
       mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": health, "GET /api/repos": { body: [repo({ issues: 0 })] } });
       renderApp();

@@ -64,15 +64,78 @@ describe("issues in the store", () => {
     expect(store.issues(repoId).map((i) => i.number)).toEqual([2]);
   });
 
-  it("clears only the given repository's issues", () => {
+  it("leaves another repository alone when pruning, though both hold the same issue numbers", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    store.upsertIssues(
+      repoId,
+      [1, 2, 3].map((number) => issue({ number })),
+    );
+    store.upsertIssues(
+      other,
+      [1, 2, 3].map((number) => issue({ number })),
+    );
+
+    const removed = store.removeIssuesExcept(repoId, new Set([1]));
+
+    expect(removed).toBe(2);
+    expect(store.issues(repoId).map((i) => i.number)).toEqual([1]);
+    expect(
+      store
+        .issues(other)
+        .map((i) => i.number)
+        .sort(),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it("stores nothing when a later issue in the batch cannot be stored", () => {
+    const broken = issue({ number: 2 });
+    Object.defineProperty(broken, "toJSON", {
+      value: () => {
+        throw new Error("cannot serialise");
+      },
+    });
+
+    expect(() => store.upsertIssues(repoId, [issue({ number: 1 }), broken])).toThrow("cannot serialise");
+
+    expect(store.issues(repoId)).toEqual([]);
+  });
+
+  it("names the repository and the issue when a stored row cannot be read", () => {
+    store.upsertIssues(repoId, [issue({ number: 41 })]);
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    db.prepare("UPDATE issues SET data = '{broken' WHERE repo_id = ? AND number = 41").run(repoId);
+
+    expect(() => store.issues(repoId)).toThrow(`Stored issue #41 of repository ${repoId} is not readable`);
+  });
+
+  it("reads a closed row stored without a close time as closed at its last update", () => {
+    store.upsertIssues(repoId, [issue({ number: 42, updatedAt: "2026-09-03T10:00:00Z" })]);
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    const legacy = { ...store.issues(repoId)[0]!, state: "closed", closeReason: "completed", closedAt: null };
+    db.prepare("UPDATE issues SET data = ? WHERE repo_id = ? AND number = 42").run(JSON.stringify(legacy), repoId);
+
+    expect(store.issues(repoId)[0]).toMatchObject({ state: "closed", closedAt: "2026-09-03T10:00:00Z" });
+  });
+
+  it("indexes issues by repository, update time and number, the order the report reads them in", () => {
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    const columns = db.prepare("PRAGMA index_info(idx_issues_repo_updated)").all() as unknown as { name: string }[];
+
+    expect(columns.map((c) => c.name)).toEqual(["repo_id", "updated_at", "number"]);
+  });
+
+  it("switches issues off in one step, clearing issues, cursor and error and leaving other repositories alone", () => {
     const other = store.addRepo("acme", "gadgets", [], "main").id;
     store.upsertIssues(repoId, [issue({ number: 1 })]);
     store.upsertIssues(other, [issue({ number: 1 })]);
+    store.finishIssueCrawl(repoId, "2026-09-01T00:00:00.000Z");
+    store.failIssueCrawl(repoId, "GitHub answered 500");
 
-    store.clearIssues(repoId);
+    store.disableIssues(repoId);
 
     expect(store.issues(repoId)).toEqual([]);
     expect(store.issues(other)).toHaveLength(1);
+    expect(store.issueState(repoId)).toMatchObject({ enabled: false, cursor: null, error: null });
   });
 
   it("removes issues with their repository", () => {
@@ -85,36 +148,25 @@ describe("issues in the store", () => {
   });
 
   it("starts with nothing recorded about the issue crawl", () => {
-    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, error: null });
-    expect(store.issueState(999)).toEqual({ enabled: null, cursor: null, labels: null, error: null });
+    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
+    expect(store.issueState(999)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
   });
 
   it("records a finished crawl, and keeps the cursor when finishing with none", () => {
-    store.finishIssueCrawl(repoId, true, "2026-09-01T00:00:00.000Z");
-    store.finishIssueCrawl(repoId, true, null);
+    store.finishIssueCrawl(repoId, "2026-09-01T00:00:00.000Z");
+    store.finishIssueCrawl(repoId, null);
 
     expect(store.issueState(repoId)).toMatchObject({ enabled: true, cursor: "2026-09-01T00:00:00.000Z" });
-
-    store.finishIssueCrawl(repoId, false, null);
-    expect(store.issueState(repoId).enabled).toBe(false);
   });
 
   it("records a failure without touching the cursor, and clears it when the next crawl finishes", () => {
-    store.finishIssueCrawl(repoId, true, "2026-09-01T00:00:00.000Z");
+    store.finishIssueCrawl(repoId, "2026-09-01T00:00:00.000Z");
 
     store.failIssueCrawl(repoId, "GitHub answered 500");
     expect(store.issueState(repoId)).toMatchObject({ error: "GitHub answered 500", cursor: "2026-09-01T00:00:00.000Z" });
 
-    store.finishIssueCrawl(repoId, true, null);
+    store.finishIssueCrawl(repoId, null);
     expect(store.issueState(repoId).error).toBeNull();
-  });
-
-  it("resets the cursor", () => {
-    store.finishIssueCrawl(repoId, true, "2026-09-01T00:00:00.000Z");
-
-    store.resetIssueCursor(repoId);
-
-    expect(store.issueState(repoId).cursor).toBeNull();
   });
 
   it("saves a label override, and clears it with null", () => {
@@ -125,6 +177,20 @@ describe("issues in the store", () => {
 
     store.setIssueLabels(repoId, null);
     expect(store.issueState(repoId).labels).toBeNull();
+  });
+
+  it("says a saved override is unreadable until a good one is saved", () => {
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    expect(store.issueState(repoId).labelsUnreadable).toBe(false);
+
+    db.prepare("UPDATE repos SET issue_labels = '{not json' WHERE id = ?").run(repoId);
+    expect(store.issueState(repoId)).toMatchObject({ labels: null, labelsUnreadable: true });
+
+    db.prepare('UPDATE repos SET issue_labels = \'{"kinds":{"bug":"x"}}\' WHERE id = ?').run(repoId);
+    expect(store.issueState(repoId).labelsUnreadable).toBe(true);
+
+    store.setIssueLabels(repoId, { kinds: { bug: ["defect"] } });
+    expect(store.issueState(repoId)).toMatchObject({ labels: { kinds: { bug: ["defect"] } }, labelsUnreadable: false });
   });
 
   it("reads labels that are not usable as no override, and logs which repository", () => {
@@ -246,7 +312,13 @@ describe("migrating a database made before issues were read", () => {
 
     expect(issueColumns(path)).toEqual(["issues_enabled", "issue_cursor", "issue_labels", "issue_error"]);
     const repo = store.findRepo("acme", "widgets")!;
-    expect(store.issueState(repo.id)).toEqual({ enabled: null, cursor: null, labels: null, error: null });
+    expect(store.issueState(repo.id)).toEqual({
+      enabled: null,
+      cursor: null,
+      labels: null,
+      labelsUnreadable: false,
+      error: null,
+    });
     store.upsertIssues(repo.id, [issue({ number: 1 })]);
     expect(store.counts(repo.id).issues).toBe(1);
   });
@@ -256,7 +328,7 @@ describe("migrating a database made before issues were read", () => {
     oldDatabase(path);
     const first = new SqliteRepoStore(path);
     const id = first.findRepo("acme", "widgets")!.id;
-    first.finishIssueCrawl(id, true, "2026-09-01T00:00:00.000Z");
+    first.finishIssueCrawl(id, "2026-09-01T00:00:00.000Z");
     first.setIssueLabels(id, { kinds: { bug: ["defect"] } });
 
     const again = new SqliteRepoStore(path);
@@ -266,6 +338,7 @@ describe("migrating a database made before issues were read", () => {
       enabled: true,
       cursor: "2026-09-01T00:00:00.000Z",
       labels: { kinds: { bug: ["defect"] } },
+      labelsUnreadable: false,
       error: null,
     });
   });

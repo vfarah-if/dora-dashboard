@@ -1,4 +1,11 @@
-import type { IssueLabelRules, Repo, RepoListing } from "@dora-dashboard/core";
+import {
+  DEFAULT_ISSUE_LABELS,
+  ISSUE_LABEL_LIMITS,
+  type IssueLabelDefaults,
+  type IssueLabelRules,
+  type Repo,
+  type RepoListing,
+} from "@dora-dashboard/core";
 import { ConflictError, NotFoundError, ValidationError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceProvider } from "../interfaces/source-provider.js";
@@ -24,8 +31,20 @@ export class RepoService {
   }
 
   private listing(repo: Repo): RepoListing {
-    const { enabled, labels, error } = this.store.issueState(repo.id);
-    return { ...repo, ...this.store.counts(repo.id), issuesEnabled: enabled, issueLabels: labels, issueError: error };
+    const { enabled, labels, labelsUnreadable, error } = this.store.issueState(repo.id);
+    return {
+      ...repo,
+      ...this.store.counts(repo.id),
+      issuesEnabled: enabled,
+      issueLabels: labels,
+      issueLabelsUnreadable: labelsUnreadable,
+      issueError: error,
+    };
+  }
+
+  /** The label names every repository starts with, and the limits a saved override must keep to. */
+  issueLabelDefaults(): IssueLabelDefaults {
+    return { ...DEFAULT_ISSUE_LABELS, limits: { ...ISSUE_LABEL_LIMITS } };
   }
 
   /**

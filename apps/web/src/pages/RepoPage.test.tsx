@@ -539,6 +539,17 @@ describe("RepoPage GitHub Issues link", () => {
     expect(await screen.findByRole("link", { name: copy.repo.issuesLink })).toHaveAttribute("href", "/issues/1");
   });
 
+  it("links when the first read of issues failed, so the failure can be found", async () => {
+    await open(repo({ issues: 0, issueError: "Bad credentials" }));
+    expect(await screen.findByRole("link", { name: copy.repo.issuesLink })).toHaveAttribute("href", "/issues/1");
+  });
+
+  it("leaves the link out when issues are only switched off on GitHub", async () => {
+    await open(repo({ issues: 0, issuesEnabled: false }));
+    await waitFor(() => expect(screen.getByRole("button", { name: copy.report.download })).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: copy.repo.issuesLink })).not.toBeInTheDocument();
+  });
+
   it("leaves the link out when the repository has no issues", async () => {
     await open(repo({ issues: 0 }));
     await waitFor(() => expect(screen.getByRole("button", { name: copy.report.download })).toBeInTheDocument());

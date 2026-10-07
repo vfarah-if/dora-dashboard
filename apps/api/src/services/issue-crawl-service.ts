@@ -1,4 +1,5 @@
 import type { Repo } from "@dora-dashboard/core";
+import { UpstreamError } from "../core/errors.js";
 import type { IssueProvider } from "../interfaces/issue-provider.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
@@ -8,11 +9,12 @@ import { cursorBefore } from "./crawl-cursor.js";
 /**
  * Reads a repository's issues from its code host into the store, as `CrawlService` does for pull requests.
  *
- * Incremental by default: pages come most recently updated first, so the read stops at the first page holding an
- * issue no newer than the last complete read. A full read clears that cursor and re-reads everything and, once it
- * completes, removes stored issues the host no longer holds. A repository with issues switched off has its stored
- * issues cleared and is recorded as such. Whatever fails here is the caller's to isolate: the cursor is only moved
- * by a read that completes, so a failure leaves the next read to start where the last good one stopped.
+ * Pages come most recently updated first. An incremental read stops after the first page holding an issue no newer
+ * than the stored cursor, which sits five minutes behind the newest update the last complete read saw, so a late
+ * indexed issue is read again. A full read, and the first read, start from the beginning and ignore the cursor; only
+ * such a read removes stored issues the host no longer holds. The cursor moves only when a read completes, full or
+ * incremental, so a failure leaves the next read to start where the last good one stopped. A repository with issues
+ * switched off has its issues, cursor and issue error cleared together. Whatever fails here is the caller's to isolate.
  */
 export class IssueCrawlService {
   constructor(
@@ -22,8 +24,7 @@ export class IssueCrawlService {
   ) {}
 
   async read(token: string, repo: Repo, full: boolean): Promise<void> {
-    if (full) this.store.resetIssueCursor(repo.id);
-    const stopAt = this.store.issueState(repo.id).cursor;
+    const stopAt = full ? null : this.store.issueState(repo.id).cursor;
     this.store.setCrawlState(repo.id, "crawling", "Reading issues");
 
     let cursor: string | null = null;
@@ -38,11 +39,16 @@ export class IssueCrawlService {
         return;
       }
       if (!page.enabled) {
-        this.store.clearIssues(repo.id);
-        // Issues switched back on later must be read from the start, not from a cursor older than the cleared ones.
-        this.store.resetIssueCursor(repo.id);
-        this.store.finishIssueCrawl(repo.id, false, null);
+        this.store.disableIssues(repo.id);
         return;
+      }
+      // Refuse the page before anything from it is stored: an update time that is not a date cannot be ordered.
+      const bad = page.items.find((issue) => Number.isNaN(Date.parse(issue.updatedAt)));
+      if (bad) {
+        throw new UpstreamError(
+          `The code host sent issue #${bad.number} with an update time that is not a date (${JSON.stringify(bad.updatedAt.slice(0, 40))})`,
+          502,
+        );
       }
       // Instants, not strings: GitHub writes `...:00Z` where the cursor is `...:00.000Z`, and the two sort differently.
       const stopMs = stopAt === null ? null : Date.parse(stopAt);
@@ -55,8 +61,10 @@ export class IssueCrawlService {
       cursor = fresh.length < page.items.length ? null : page.nextCursor;
     } while (cursor);
 
+    // Worked out first, so a bad cursor cannot leave a half-finished prune.
+    const next = newest === null ? null : cursorBefore(newest, "an issue");
     // Only a read that began at the start saw every issue, so only it can say which are gone.
     if (stopAt === null) this.store.removeIssuesExcept(repo.id, numbers);
-    this.store.finishIssueCrawl(repo.id, true, newest === null ? null : cursorBefore(newest, "issue"));
+    this.store.finishIssueCrawl(repo.id, next);
   }
 }

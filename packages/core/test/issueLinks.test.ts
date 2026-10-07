@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { linkIssues } from "../src/issueLinks.js";
-import { issue, pr } from "./issue.js";
+import { closedIssue, issue, pr } from "./issue.js";
 
 const repo = { owner: "acme", name: "widgets" };
 /** Issues 10, 11 and 12 exist from the start of September; the pull requests below are numbered after them. */
@@ -73,6 +73,10 @@ describe("linkIssues", () => {
       ["Fix crash #1", []],
       ["Fix crash #99", []],
       ["Fix crash 10", []],
+      ["Fix crash #10abc", []],
+      ["Fix crash #10_b", []],
+      ["Fix crash #10's cause", [10]],
+      ["Fix crash #10, #11", [10, 11]],
     ])("reads %j as issues %j", (title, expected) => {
       const found = linkIssues(repo, issues, [pr({ number: 20, title })]);
       expect(issues.map((i) => i.number).filter((n) => linkedTo(found, n).includes(20))).toEqual(expected);
@@ -155,13 +159,7 @@ describe("linkIssues", () => {
       expect(linkedTo(found, 2025)).toEqual([3001, 3002]);
     });
 
-    const closedBefore = issue({
-      number: 22,
-      state: "closed",
-      closeReason: "completed",
-      createdAt: "2026-09-01T09:00:00Z",
-      closedAt: "2026-09-02T09:00:00Z",
-    });
+    const closedBefore = closedIssue({ number: 22, createdAt: "2026-09-01T09:00:00Z", closedAt: "2026-09-02T09:00:00Z" });
     const opened = "2026-09-03T09:00:00Z";
 
     it("skips an issue already closed when the pull request was created, by branch and by title", () => {

@@ -36,8 +36,8 @@ function ThemeToggle() {
 }
 
 /**
- * The link to the GitHub Issues page, offered only when some repository has issues. It sits inside the signed-in nav
- * because the repositories list needs a session.
+ * The link to the GitHub Issues page, offered only when some repository has issues or a failed read of them. It sits
+ * inside the signed-in nav because the repositories list needs a session.
  */
 function IssuesNavLink() {
   const repos = useRepos();

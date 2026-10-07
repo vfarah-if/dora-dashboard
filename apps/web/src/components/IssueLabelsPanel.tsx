@@ -1,8 +1,9 @@
 import { useId, useState, type FormEvent } from "react";
-import type { RepoListing } from "@dora-dashboard/core";
+import type { IssueLabelDefaults, RepoListing } from "@dora-dashboard/core";
 import { errorText } from "../api/client";
-import { useUpdateIssueLabels } from "../api/hooks";
+import { useIssueLabelDefaults, useUpdateIssueLabels } from "../api/hooks";
 import { copy } from "../copy";
+import { ErrorState } from "./States";
 import {
   defaultInputs,
   inputsFromRules,
@@ -10,8 +11,6 @@ import {
   LABEL_KINDS,
   LABEL_PRIORITIES,
   labelProblem,
-  MAX_LABEL_LENGTH,
-  MAX_LABEL_NAMES,
   priorityLabel,
   rulesFromInputs,
   type LabelInputs,
@@ -22,11 +21,13 @@ interface LabelFieldProps {
   label: string;
   value: string;
   placeholder: string;
+  /** Unknown until the defaults have loaded, when nothing is checked and Save is off. */
+  limits: IssueLabelDefaults["limits"] | undefined;
   onChange: (value: string) => void;
 }
 
-function LabelField({ id, label, value, placeholder, onChange }: LabelFieldProps) {
-  const problem = labelProblem(value);
+function LabelField({ id, label, value, placeholder, limits, onChange }: LabelFieldProps) {
+  const problem = limits ? labelProblem(value, limits) : null;
   const problemId = `${id}-problem`;
   return (
     <div className="field">
@@ -44,14 +45,17 @@ function LabelField({ id, label, value, placeholder, onChange }: LabelFieldProps
       />
       {problem && (
         <p id={problemId} className="field-hint">
-          {problem === "tooMany" ? copy.issueLabels.tooMany(MAX_LABEL_NAMES) : copy.issueLabels.tooLong(MAX_LABEL_LENGTH)}
+          {problem === "tooMany" && limits && copy.issueLabels.tooMany(limits.names)}
+          {problem === "tooLong" && limits && copy.issueLabels.tooLong(limits.length)}
+          {problem === "control" && copy.issueLabels.control}
         </p>
       )}
     </div>
   );
 }
 
-const DEFAULTS = defaultInputs();
+/** Empty placeholders, used until the defaults have loaded. */
+const NO_PLACEHOLDERS = inputsFromRules(null);
 
 /**
  * Which label names mean which kind and priority for one repository. An empty box keeps the default shown inside it.
@@ -61,14 +65,18 @@ const DEFAULTS = defaultInputs();
 export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
   const text = copy.issueLabels;
   const update = useUpdateIssueLabels(repo.id);
+  const defaultsQuery = useIssueLabelDefaults();
+  const defaults = defaultsQuery.data;
+  const limits = defaults?.limits;
+  const placeholders = defaults ? defaultInputs(defaults) : NO_PLACEHOLDERS;
   const [inputs, setInputs] = useState<LabelInputs>(() => inputsFromRules(repo.issueLabels));
   const [done, setDone] = useState<"saved" | "reset" | null>(null);
   const titleId = useId();
   const idBase = useId();
 
-  const hasProblem = [...Object.values(inputs.kinds), ...Object.values(inputs.priorities)].some(
-    (value) => labelProblem(value) !== null,
-  );
+  const hasProblem =
+    !limits ||
+    [...Object.values(inputs.kinds), ...Object.values(inputs.priorities)].some((value) => labelProblem(value, limits) !== null);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -92,6 +100,17 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
         {text.title}
       </h3>
       <p className="field-hint">{text.lede}</p>
+      {repo.issueLabelsUnreadable && (
+        <p className="notice notice-warning" role="alert">
+          {text.unreadable}
+        </p>
+      )}
+      {defaultsQuery.isPending && (
+        <p className="field-hint" role="status">
+          {text.loadingDefaults}
+        </p>
+      )}
+      {defaultsQuery.isError && <ErrorState error={defaultsQuery.error} onRetry={() => void defaultsQuery.refetch()} />}
       <fieldset className="checkbox-group">
         <legend>{text.kindsLegend}</legend>
         {LABEL_KINDS.map((kind) => (
@@ -100,7 +119,8 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
             id={`${idBase}-kind-${kind}`}
             label={text.kindLabel(kindLabel(kind))}
             value={inputs.kinds[kind]}
-            placeholder={DEFAULTS.kinds[kind]}
+            placeholder={placeholders.kinds[kind]}
+            limits={limits}
             onChange={(value) => setInputs((current) => ({ ...current, kinds: { ...current.kinds, [kind]: value } }))}
           />
         ))}
@@ -113,7 +133,8 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
             id={`${idBase}-priority-${priority}`}
             label={text.priorityLabel(priorityLabel(priority))}
             value={inputs.priorities[priority]}
-            placeholder={DEFAULTS.priorities[priority]}
+            placeholder={placeholders.priorities[priority]}
+            limits={limits}
             onChange={(value) =>
               setInputs((current) => ({ ...current, priorities: { ...current.priorities, [priority]: value } }))
             }

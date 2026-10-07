@@ -1,7 +1,7 @@
-import type { IssueLabelRules, IssueReport, RepoListing } from "@dora-dashboard/core";
+import type { IssueLabelDefaults, IssueLabelRules, IssueReport, RepoListing } from "@dora-dashboard/core";
 import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
 import type { Config } from "../core/config.js";
-import { idParams, issueLabelsBody, spaceReportQuery } from "../schemas/requests.js";
+import { idParams, issueLabelsBody, issueReportQuery } from "../schemas/requests.js";
 import type { IssueReportService } from "../services/issue-report-service.js";
 import type { RepoService } from "../services/repo-service.js";
 import { requireSameOrigin } from "./auth.js";
@@ -16,14 +16,22 @@ export interface IssueRouteDeps {
 export function registerIssueRoutes(app: FastifyInstance, deps: IssueRouteDeps): void {
   const { guard, config, repos, reports } = deps;
 
-  /** The repository's issue report over `from` to `to`; names appear only with `people=1` (ADR 0008). Reads stored data, so it works whether or not a provider is wired. */
+  /**
+   * The repository's issue report over `from` to `to`; names appear only with `people=1` (ADR 0008). Reads stored
+   * data, so it works whether or not a provider is wired.
+   */
   app.get<{ Params: { id: number }; Querystring: { from?: string; to?: string; people?: "0" | "1" } }>(
     "/api/repos/:id/issues/report",
-    { preHandler: guard, schema: { params: idParams, querystring: spaceReportQuery } },
+    { preHandler: guard, schema: { params: idParams, querystring: issueReportQuery } },
     async (request): Promise<IssueReport> => {
       const { from, to, people } = request.query;
       return reports.report(request.params.id, { from, to, people: people === "1" });
     },
+  );
+
+  /** The label names every repository starts with and the limits an override must keep to, so the page need not copy them. */
+  app.get("/api/issue-labels/defaults", { preHandler: guard }, async (): Promise<IssueLabelDefaults> =>
+    repos.issueLabelDefaults(),
   );
 
   /**

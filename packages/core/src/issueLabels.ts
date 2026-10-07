@@ -1,22 +1,30 @@
-import type { IssueKind, IssueLabelRules, IssuePriority, RepoIssue } from "./types.js";
+import {
+  ISSUE_LABEL_KINDS,
+  ISSUE_PRIORITIES,
+  keysOf,
+  type IssueKind,
+  type IssueLabelKind,
+  type IssuePriority,
+} from "./issueKinds.js";
+import type { IssueLabelLists, IssueLabelRules, RepoIssue } from "./types.js";
 
 /**
  * Decides what kind of work a GitHub issue is and how urgent it is, from the host's own issue type, its labels and the
  * prefix of its title (ADR 0028). Names are compared whole and without case; no user-supplied pattern is ever run.
  */
 
-type ClassifiedKind = Exclude<IssueKind, "other">;
-
 /** Kinds in the order that decides between several matches: the first listed wins. */
-const KIND_PRECEDENCE: readonly ClassifiedKind[] = ["epic", "security", "incident", "bug", "feature", "maintenance"];
-/** Priorities from the most urgent, which wins when an issue names more than one. */
-const PRIORITIES: readonly IssuePriority[] = ["P0", "P1", "P2", "P3", "P4"];
+const KIND_PRECEDENCE = keysOf<IssueLabelKind>({
+  epic: true,
+  security: true,
+  incident: true,
+  bug: true,
+  feature: true,
+  maintenance: true,
+});
 
 /** The label names that mean each kind and priority until a repository overrides them. */
-export const DEFAULT_ISSUE_LABELS: {
-  kinds: Record<ClassifiedKind, string[]>;
-  priorities: Record<IssuePriority, string[]>;
-} = {
+export const DEFAULT_ISSUE_LABELS: IssueLabelLists = {
   kinds: {
     bug: ["bug", "defect", "regression"],
     feature: ["feature", "enhancement", "feature request", "story"],
@@ -46,6 +54,9 @@ export const DEFAULT_ISSUE_LABELS: {
   },
 };
 
+/** The most names one kind or priority of an override may list, and the most characters one name may have. */
+export const ISSUE_LABEL_LIMITS = { names: 30, length: 100 } as const;
+
 const PREFIX = /^(?:type|kind|priority|prio)\s*[:/]\s*/;
 
 /** A name as compared: trimmed, lower case, without a leading `type:`, `kind/`, `priority:` or `prio:` style prefix. */
@@ -67,23 +78,29 @@ function titlePrefixes(title: string): string[] {
   return found;
 }
 
-function kindFrom(names: readonly string[], lists: Record<ClassifiedKind, Set<string>>): ClassifiedKind | null {
+function kindFrom(names: readonly string[], lists: Record<IssueLabelKind, Set<string>>): IssueLabelKind | null {
   return KIND_PRECEDENCE.find((kind) => names.some((name) => lists[kind].has(name))) ?? null;
 }
 
 function priorityFrom(names: readonly string[], lists: Record<IssuePriority, Set<string>>): IssuePriority | null {
-  return PRIORITIES.find((priority) => names.some((name) => lists[priority].has(name))) ?? null;
+  return ISSUE_PRIORITIES.find((priority) => names.some((name) => lists[priority].has(name))) ?? null;
 }
 
+/**
+ * Each key's names as compared. An override replaces a key's defaults only when it names something once normalised,
+ * so an empty or blank list keeps the defaults and can never switch a kind or priority off (ADR 0028).
+ */
 const setsOf = <K extends string>(
   keys: readonly K[],
   defaults: Record<K, string[]>,
   override: Partial<Record<K, string[]>> | undefined,
 ) =>
-  Object.fromEntries(keys.map((key) => [key, new Set((override?.[key] ?? defaults[key]).map(normalise))])) as Record<
-    K,
-    Set<string>
-  >;
+  Object.fromEntries(
+    keys.map((key) => {
+      const named = (override?.[key] ?? []).map(normalise).filter((name) => name !== "");
+      return [key, new Set(named.length > 0 ? named : defaults[key].map(normalise))];
+    }),
+  ) as Record<K, Set<string>>;
 
 /**
  * The kind and priority of an issue. Evidence is read in order: the native issue type, then the labels, then the
@@ -97,14 +114,14 @@ export function classifyIssue(
   issue: Pick<RepoIssue, "title" | "labels" | "issueType">,
   rules?: IssueLabelRules | null,
 ): { kind: IssueKind; priority: IssuePriority | null } {
-  const kinds = setsOf(KIND_PRECEDENCE, DEFAULT_ISSUE_LABELS.kinds, rules?.kinds);
-  const priorities = setsOf(PRIORITIES, DEFAULT_ISSUE_LABELS.priorities, rules?.priorities);
+  const kinds = setsOf(ISSUE_LABEL_KINDS, DEFAULT_ISSUE_LABELS.kinds, rules?.kinds);
+  const priorities = setsOf(ISSUE_PRIORITIES, DEFAULT_ISSUE_LABELS.priorities, rules?.priorities);
   const sources = [
     issue.issueType === null ? [] : [normalise(issue.issueType)],
     issue.labels.map(normalise),
     titlePrefixes(issue.title).map(normalise),
   ];
-  let kind: ClassifiedKind | null = null;
+  let kind: IssueLabelKind | null = null;
   let priority: IssuePriority | null = null;
   for (const names of sources) {
     kind ??= kindFrom(names, kinds);

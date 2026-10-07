@@ -3,6 +3,7 @@ import { Link, useLocation, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
+import { hasIssueStatus } from "../lib/issues";
 import { copy } from "../copy";
 import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
@@ -207,7 +208,7 @@ function RepoView({ id }: { id: number }) {
   const report = useReport(id, range, excluded);
   const listing = useListing(id);
   const crawling = listing?.crawlStatus === "crawling";
-  const issueCount = listing?.issues ?? 0;
+  const showIssuesLink = listing !== undefined && hasIssueStatus(listing);
   const choices = report.data?.authorChoices ?? [];
   const leftOut = excludedInRange(choices, excluded);
 
@@ -218,7 +219,7 @@ function RepoView({ id }: { id: number }) {
           {copy.common.backToRepos}
         </Link>
         <RepoHeader report={report.data} leftOut={leftOut} />
-        {issueCount > 0 && (
+        {showIssuesLink && (
           <p>
             <Link to={`/issues/${id}`} className="button button-secondary">
               {copy.repo.issuesLink}

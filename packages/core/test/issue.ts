@@ -1,7 +1,10 @@
-import type { DeployRun, PullRequest, RepoIssue } from "../src/types.js";
+import type { ClosedRepoIssue, DeployRun, OpenRepoIssue, PullRequest } from "../src/types.js";
+
+/** What an open and a closed issue share. */
+type IssueFields = Omit<OpenRepoIssue, "state" | "closeReason" | "closedAt">;
 
 /** An open issue of acme/widgets with nothing special about it. */
-export function issue(overrides: Partial<RepoIssue> & { number: number }): RepoIssue {
+export function issue(overrides: Partial<IssueFields> & { number: number }): OpenRepoIssue {
   return {
     title: `Issue ${overrides.number}`,
     url: `https://github.com/acme/widgets/issues/${overrides.number}`,
@@ -10,7 +13,6 @@ export function issue(overrides: Partial<RepoIssue> & { number: number }): RepoI
     createdAt: "2026-09-01T09:00:00Z",
     updatedAt: "2026-09-01T09:00:00Z",
     closedAt: null,
-    author: "alice",
     assignees: [],
     labels: [],
     issueType: null,
@@ -20,16 +22,17 @@ export function issue(overrides: Partial<RepoIssue> & { number: number }): RepoI
   };
 }
 
-/** An issue closed at `closedAt`, as completed unless said otherwise, with the close recorded as an event. */
-export function closedIssue(overrides: Partial<RepoIssue> & { number: number; closedAt: string }): RepoIssue {
-  const reason = overrides.closeReason ?? "completed";
-  return issue({
+/** An issue closed at `closedAt`, as completed unless said otherwise, with the close recorded as an event unless `events` is given. */
+export function closedIssue(
+  overrides: Partial<Omit<ClosedRepoIssue, "state">> & { number: number; closedAt: string },
+): ClosedRepoIssue {
+  const { closedAt, closeReason = "completed", ...fields } = overrides;
+  return {
+    ...issue({ updatedAt: closedAt, events: [{ at: closedAt, type: "closed" }], ...fields }),
     state: "closed",
-    closeReason: reason,
-    updatedAt: overrides.closedAt,
-    events: [{ at: overrides.closedAt, type: "closed", reason }],
-    ...overrides,
-  });
+    closeReason,
+    closedAt,
+  };
 }
 
 /** A merged pull request of acme/widgets into main. */

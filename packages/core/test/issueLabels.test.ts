@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssue, DEFAULT_ISSUE_LABELS } from "../src/issueLabels.js";
+import { classifyIssue, DEFAULT_ISSUE_LABELS, ISSUE_LABEL_LIMITS } from "../src/issueLabels.js";
 import { issue } from "./issue.js";
 
 const classify = (
@@ -161,6 +161,18 @@ describe("classifyIssue with an override", () => {
 
   it("applies an override to the title prefix as well", () => {
     expect(classify({ title: "Defect: crash" }, { kinds: { bug: ["defect"] } }).kind).toBe("bug");
+  });
+
+  it.each([[[]], [[" "]], [["", "type:"]]])("keeps the defaults for a key whose list %j names nothing", (names) => {
+    // ADR 0028: an override replaces a key's names but can never switch the key off.
+    expect(classify({ labels: ["bug"] }, { kinds: { bug: names } }).kind).toBe("bug");
+    expect(classify({ labels: ["critical"] }, { priorities: { P0: names } }).priority).toBe("P0");
+  });
+});
+
+describe("ISSUE_LABEL_LIMITS", () => {
+  it("allows thirty names of up to a hundred characters for each key", () => {
+    expect(ISSUE_LABEL_LIMITS).toEqual({ names: 30, length: 100 });
   });
 });
 

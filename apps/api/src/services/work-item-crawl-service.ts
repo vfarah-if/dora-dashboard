@@ -62,7 +62,7 @@ export class WorkItemCrawlService {
       if (read && this.store.getSpace(spaceId)) {
         if (full) this.store.removeWorkItemsExcept(spaceId, read.keys);
         this.savePeople(space, read.people, full);
-        this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest, "work item"));
+        this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest, "a work item"));
       }
     } catch (caught) {
       const error = this.refusedGrant(login, used.token, caught);

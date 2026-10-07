@@ -36,6 +36,32 @@ describe("IssuesPage", () => {
     expect(screen.getByText(copy.issues.errorReason("GitHub answered 502"))).toBeInTheDocument();
   });
 
+  it("lists a repository whose first read of issues failed, with its error, although it holds no issues", async () => {
+    mockFetch({
+      "GET /api/repos": {
+        body: [
+          repo({ id: 1, issues: 0, issueError: "Resource not accessible by personal access token" }),
+          repo({ id: 2, name: "gadgets" }),
+        ],
+      },
+    });
+    renderRoute(<IssuesPage />, route);
+    const widgets = (await screen.findByRole("link", { name: copy.issues.openReport("acme/widgets") })).closest("li")!;
+    expect(within(widgets).getByText(copy.issues.errorTitle)).toBeInTheDocument();
+    expect(
+      within(widgets).getByText(copy.issues.errorReason("Resource not accessible by personal access token")),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /gadgets/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.issues.emptyTitle)).not.toBeInTheDocument();
+  });
+
+  it("does not list a repository whose only news is issues switched off on GitHub", async () => {
+    mockFetch({ "GET /api/repos": { body: [repo({ id: 1, issues: 0, issuesEnabled: false })] } });
+    renderRoute(<IssuesPage />, route);
+    expect(await screen.findByText(copy.issues.emptyTitle)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: copy.issues.openReport("acme/widgets") })).not.toBeInTheDocument();
+  });
+
   it("shows no failure notice for a repository whose read succeeded", async () => {
     mockFetch({ "GET /api/repos": { body: [repo({ issues: 3 })] } });
     renderRoute(<IssuesPage />, route);
