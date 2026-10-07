@@ -1242,6 +1242,13 @@ a:hover {
   border-radius: 2px;
 }
 
+.legend-swatch-part {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid;
+}
+
 .legend-swatch-line {
   width: 16px;
   height: 2px;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { categoryAxisProps, CHART_HEIGHT, ChartTooltip, endLabel, weekZoom } from "./chartParts";
+import type { BarShapeProps } from "recharts";
+import { categoryAxisProps, CHART_HEIGHT, ChartTooltip, endLabel, weekZoom, WeeklyCountBar } from "./chartParts";
 
 describe("ChartTooltip", () => {
   it("lists each numeric value with the formatted label and hides when inactive", () => {
@@ -74,5 +75,41 @@ describe("weekZoom", () => {
     expect(zoom.brush).toMatchObject({ dataKey: "week", startIndex: 84, endIndex: 109 });
     expect(zoom.height).toBeGreaterThan(CHART_HEIGHT);
     expect(zoom.brush.tickFormatter("2026-03-23")).toBe("23 Mar");
+  });
+});
+
+describe("WeeklyCountBar", () => {
+  const bar = (partial: boolean) =>
+    ({
+      x: 10,
+      y: 20,
+      width: 30,
+      height: 40,
+      fill: "var(--series-1)",
+      payload: { week: "2026-03-09", partial },
+    }) as unknown as BarShapeProps;
+
+  it("draws a whole week's count at full strength with no outline", () => {
+    const { container } = render(
+      <svg>
+        <WeeklyCountBar {...bar(false)} />
+      </svg>,
+    );
+    const path = container.querySelector("path");
+    expect(path).toHaveAttribute("fill", "var(--series-1)");
+    expect(path).not.toHaveAttribute("fill-opacity");
+    expect(path).not.toHaveAttribute("stroke");
+  });
+
+  it("draws a part week's count lighter, inside an outline in the series colour", () => {
+    const { container } = render(
+      <svg>
+        <WeeklyCountBar {...bar(true)} />
+      </svg>,
+    );
+    const path = container.querySelector("path");
+    expect(path).toHaveAttribute("fill", "var(--series-1)");
+    expect(path).toHaveAttribute("fill-opacity", "0.35");
+    expect(path).toHaveAttribute("stroke", "var(--series-1)");
   });
 });
