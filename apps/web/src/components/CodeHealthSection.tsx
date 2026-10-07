@@ -278,7 +278,7 @@ function HygienePanel({ report }: { report: CodeHealthReport }) {
   );
 }
 
-/** How to install lizard on each platform, shown only when the API reports that it cannot find it. */
+/** How to install lizard on each platform. Shown when files went unmeasured for want of lizard, or when an older snapshot recorded lizard as missing. */
 function InstallLizard() {
   const c = copy.codeHealth.install;
   return (
@@ -371,13 +371,10 @@ function UnmeasuredNotice({ report }: { report: CodeHealthReport }) {
   const c = copy.codeHealth.unmeasured;
   if (report.unmeasuredFiles <= 0) return null;
   return (
-    <>
-      <aside className="notice notice-warning">
-        <p className="notice-title">{c.title}</p>
-        <p>{c.body(report.unmeasuredFiles)}</p>
-      </aside>
-      <InstallLizard />
-    </>
+    <aside className="notice notice-warning">
+      <p className="notice-title">{c.title}</p>
+      <p>{c.body(report.unmeasuredFiles)}</p>
+    </aside>
   );
 }
 
@@ -400,7 +397,6 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
     <>
       <p className="chart-subtitle">{c.analysedAt(shortSha(report.commitSha), formatDateTime(report.analysedAt))}</p>
       <StaleNotice report={report} />
-      {report.lastError?.reason === "analyser-missing" && <InstallLizard />}
 
       <Verdict report={report} />
       <Lists report={report} />
@@ -418,6 +414,7 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
 
       <PartlyMeasuredNotice report={report} />
       <UnmeasuredNotice report={report} />
+      {(report.unmeasuredFiles > 0 || report.lastError?.reason === "analyser-missing") && <InstallLizard />}
       <StartCard report={report} />
       <HotspotsCard report={report} />
 

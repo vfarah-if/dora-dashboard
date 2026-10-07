@@ -12,11 +12,13 @@ import { MemorySessionStore } from "../src/infrastructure/auth/memory-session-st
 import { GitCheckout, type Exec as GitExec, type ExecOptions as GitExecOptions } from "../src/infrastructure/git/git-checkout.js";
 import { languageOf } from "../src/infrastructure/analysis/languages.js";
 import {
+  LIZARD_EXTENSIONS,
   LizardAnalyser,
   parseLizardCsv,
   type ExecOptions as LizardExecOptions,
 } from "../src/infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
+import { AnalyserMissingError } from "../src/interfaces/code-analyser.js";
 import { RepoService } from "../src/services/repo-service.js";
 import { isSafeBranch, parseRepoRef } from "../src/services/repo-ref.js";
 import { ANALYSER_MISSING, ANALYSIS_OFF, CodeHealthService } from "../src/services/code-health-service.js";
@@ -114,7 +116,7 @@ describe("code health during a crawl", () => {
   });
 
   it("explains that lizard is missing without cloning", async () => {
-    analyser.isAvailable = false;
+    analyser.reachIs = "none";
 
     await crawler.crawl("token", repoId);
 
@@ -382,7 +384,10 @@ describe("LizardAnalyser", () => {
     expect(await analyser.analyse("/work/clone")).toEqual({ functions: [], partlyMeasured: [], unmeasuredFiles: 0 });
     expect(calls[0]).toEqual([
       "--csv",
-      ...["*/node_modules/*", "*/vendor/*", "*/dist/*", "*/build/*", "*.min.js", "*.ts", "*.tsx"].flatMap((x) => ["-x", x]),
+      ...["*/node_modules/*", "*/vendor/*", "*/dist/*", "*/build/*", "*.min.js", "*.[tT][sS]", "*.[tT][sS][xX]"].flatMap((x) => [
+        "-x",
+        x,
+      ]),
       ".",
     ]);
   });
@@ -402,7 +407,7 @@ describe("LizardAnalyser", () => {
       throw Object.assign(new Error("timed out"), { killed: true });
     });
 
-    await expect(hung.analyse("/work/clone")).rejects.toThrow("took longer than 10 minutes");
+    await expect(hung.analyse("/work/clone")).rejects.toThrow("Lizard took longer than 10 minutes and was stopped.");
     expect(options).toMatchObject({ timeout: 600_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024 });
   });
 
@@ -414,13 +419,91 @@ describe("LizardAnalyser", () => {
     await expect(broken.analyse("/work/clone")).rejects.toThrow("lizard exploded");
   });
 
-  it("is available only when `lizard --version` succeeds", async () => {
-    expect(await new LizardAnalyser([], async () => ({ stdout: "1.17" })).available()).toBe(true);
-    expect(
-      await new LizardAnalyser([], async () => {
-        throw new Error("ENOENT");
-      }).available(),
-    ).toBe(false);
+  it("reaches everything when `lizard --version` succeeds", async () => {
+    const calls: string[][] = [];
+    const analyser = new LizardAnalyser([], async (_file, args) => {
+      calls.push(args);
+      return { stdout: "1.24.0" };
+    });
+
+    expect(await analyser.reach()).toBe("full");
+    expect(calls).toEqual([["--version"]]);
+  });
+
+  it("reaches nothing when lizard cannot be found", async () => {
+    const missing = new LizardAnalyser([], async () => {
+      throw Object.assign(new Error("spawn lizard ENOENT"), { code: "ENOENT" });
+    });
+
+    expect(await missing.reach()).toBe("none");
+  });
+
+  it("says its tool is missing, rather than failing, when lizard cannot be found as it runs", async () => {
+    const cause = Object.assign(new Error("spawn lizard ENOENT"), { code: "ENOENT" });
+    const missing = new LizardAnalyser([], async () => {
+      throw cause;
+    });
+
+    const error = await missing.analyse("/clone").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(error).toBeInstanceOf(AnalyserMissingError);
+    expect(error?.message).toBe("Lizard was not found on the API's PATH.");
+    expect(error?.cause).toBe(cause);
+  });
+
+  it.each([
+    ["a non-zero exit", Object.assign(new Error("Command failed"), { code: 1 })],
+    ["the thirty second timeout", Object.assign(new Error("timed out"), { killed: true, signal: "SIGKILL" })],
+    ["a spawn that is refused", Object.assign(new Error("spawn lizard EACCES"), { code: "EACCES" })],
+    ["a spawn that runs out of processes", Object.assign(new Error("spawn lizard EAGAIN"), { code: "EAGAIN" })],
+  ])("rejects, keeping the cause, when lizard was found but failed with %s", async (_label, failure) => {
+    const broken = new LizardAnalyser([], async () => {
+      throw failure;
+    });
+
+    const error = await broken.reach().then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(error?.message).toBe(
+      "Lizard was found but did not run. Check that `lizard --version` works on the machine that runs the API.",
+    );
+    expect(error?.cause).toBe(failure);
+  });
+
+  it("measures the extensions lizard reads, except the ones it is told to skip and minified files", () => {
+    const analyser = new LizardAnalyser(["ts", "js"]);
+
+    expect(analyser.measures("app/main.py")).toBe(true);
+    expect(analyser.measures("app/Main.PY")).toBe(true);
+    expect(analyser.measures("src/view.vue")).toBe(true);
+    expect(analyser.measures("src/a.ts")).toBe(false);
+    expect(analyser.measures("src/Legacy.JS")).toBe(false);
+    expect(analyser.measures("src/b.tsx")).toBe(true);
+    expect(analyser.measures("public/app.min.js")).toBe(false);
+    expect(new LizardAnalyser().measures("public/app.min.js")).toBe(false);
+    expect(new LizardAnalyser().measures("src/a.js")).toBe(true);
+    expect(analyser.measures("README.md")).toBe(false);
+    expect(analyser.measures("Makefile")).toBe(false);
+    expect(analyser.measures("notes.dart")).toBe(false);
+  });
+
+  it("knows exactly the extensions of lizard 1.24.0", () => {
+    expect(LIZARD_EXTENSIONS.size).toBe(55);
+    expect([...LIZARD_EXTENSIONS].filter((e) => ["ts", "tsx", "jsx", "mjs", "cjs", "js"].includes(e)).sort()).toEqual([
+      "cjs",
+      "js",
+      "jsx",
+      "mjs",
+      "ts",
+      "tsx",
+    ]);
+    // Lizard does not read .mts or .cts, so no analyser measures them but the Babel one.
+    expect(LIZARD_EXTENSIONS.has("mts")).toBe(false);
   });
 });
 
@@ -624,15 +707,74 @@ describe("hardening of the code health service", () => {
   });
 
   it("says lizard is missing as a reason, so the page can show how to install it", async () => {
-    analyser.isAvailable = false;
+    analyser.reachIs = "none";
     await service.analyse("t", repoId);
 
     expect(service.report(repoId)).toMatchObject({ status: "error", message: ANALYSER_MISSING, reason: "analyser-missing" });
   });
 
+  it("stores a failure, and keeps serving the last good figures, when finding out what can be measured fails", async () => {
+    await service.analyse("t", repoId);
+    analyser.reachFailWith = new Error("Lizard was found but did not run.");
+    checkout.head = "def5678";
+
+    await service.analyse("t", repoId);
+
+    expect(checkout.requests).toHaveLength(1);
+    expect(service.report(repoId)).toMatchObject({
+      status: "ok",
+      commitSha: "abc1234",
+      functions: 1,
+      lastError: { message: "Lizard was found but did not run.", reason: "failed" },
+    });
+    expect(logged.map((l) => l.message)).toEqual(["code analysis failed"]);
+  });
+
+  it("analyses the same head again when files were left unmeasured and every tool is now found", async () => {
+    analyser.reachIs = "partial";
+    analyser.unmeasuredFiles = 3;
+    await service.analyse("t", repoId);
+    expect(checkout.requests).toHaveLength(1);
+
+    analyser.reachIs = "full";
+    analyser.unmeasuredFiles = 0;
+    const again = await service.analyse("t", repoId);
+
+    expect(checkout.requests).toHaveLength(2);
+    expect(again.unmeasuredFiles).toBe(0);
+    expect(service.report(repoId)).toMatchObject({ status: "ok", unmeasuredFiles: 0 });
+  });
+
+  it("does not analyse the same head again while a tool is still missing", async () => {
+    analyser.reachIs = "partial";
+    analyser.unmeasuredFiles = 3;
+    await service.analyse("t", repoId);
+
+    await service.analyse("t", repoId);
+
+    expect(checkout.requests).toHaveLength(1);
+    expect(analyser.analysed).toHaveLength(1);
+  });
+
+  it("does not analyse the same head again when nothing was left unmeasured, even with every tool found", async () => {
+    await service.analyse("t", repoId);
+    await service.analyse("t", repoId);
+
+    expect(checkout.requests).toHaveLength(1);
+  });
+
+  it("warns, with the repository and the count, when a new analysis leaves files unmeasured", async () => {
+    analyser.reachIs = "partial";
+    analyser.unmeasuredFiles = 4;
+
+    await service.analyse("t", repoId);
+
+    expect(logged).toEqual([{ context: { repoId, unmeasuredFiles: 4 }, message: expect.stringContaining("left unmeasured") }]);
+  });
+
   it("keeps the missing-lizard reason on lastError when older figures are served", async () => {
     await service.analyse("t", repoId);
-    analyser.isAvailable = false;
+    analyser.reachIs = "none";
     checkout.head = "def5678";
     await service.analyse("t", repoId);
 

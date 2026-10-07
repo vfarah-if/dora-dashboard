@@ -56,4 +56,4 @@ Left out for now:
 ## Revision History
 
 - 2026-09-30: the snapshot version is now 4, which records files the analyser may have read only in part (ADR 0015).
-- 2026-10-07: `CODE_SNAPSHOT_VERSION` is now 5 (ADR 0025), so every repository is analysed again on its next crawl even when the branch has not moved. The body above says "currently 3"; the current version is the one in `packages/core/src/codeHealth.ts`.
+- 2026-10-07: `CODE_SNAPSHOT_VERSION` is now 5 (ADR 0025), so every repository is analysed again on its next crawl even when the branch has not moved. The body above says "currently 3"; the current version is the one in `packages/core/src/codeHealth.ts`. The body also says function metrics come from lizard. JavaScript and TypeScript are now measured by the syntax tree analyser of ADR 0025, which reads files and never runs them, and lizard measures every other language.

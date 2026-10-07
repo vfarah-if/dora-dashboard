@@ -30,7 +30,7 @@ Or add repositories from the web app by pasting `owner/name` or a GitHub URL.
 
 ### Code health (optional)
 
-Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). JavaScript and TypeScript are measured in process from a syntax tree (ADR 0025), so they need only `git` on the host. Every other language needs [lizard](https://github.com/terryyin/lizard), and a repository that holds only JavaScript and TypeScript does not need it at all.
+Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). The clone is made with `git`, so `git` must be on the machine that runs the API for code health in every language. JavaScript and TypeScript are then measured in process from a syntax tree (ADR 0025) and need nothing more. Every other language needs [lizard](https://github.com/terryyin/lizard), and a repository that holds only JavaScript and TypeScript does not need it at all.
 
 To measure other languages, install lizard with whichever of these suits the machine that runs the API:
 
@@ -54,9 +54,9 @@ py -m pipx ensurepath
 py -m pipx install lizard
 ```
 
-Open a new terminal and check that `lizard --version` works. If the API was already running, restart it so it can find lizard on its PATH, then crawl again. The repository page shows the same commands, with a count of the files left unmeasured, when the API cannot find lizard.
+Open a new terminal and check that `lizard --version` works. If the API was already running, restart it so it can find lizard on its PATH, then crawl again, and the files that were left out are measured. The repository page shows the same commands, with a count of the files left unmeasured, when the API cannot find lizard.
 
-Without lizard the JavaScript and TypeScript are still measured and the page counts the files in other languages that were not. If an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
+Without lizard the JavaScript and TypeScript are still measured and the page shows a notice counting the files in other languages that were not. A lizard that is found but does not run, or that times out, fails the analysis. If an analysis fails, the crawl still completes and the repository page explains why code health is unavailable, keeping the last good figures when there are any. A crawl skips the clone when the branch has not moved, and a full crawl always analyses again. Set `CODE_ANALYSIS=off` in `.env` to skip the clone altogether. The result is served at `GET /api/repos/:id/code-health`.
 
 ## Signing in
 

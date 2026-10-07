@@ -89,11 +89,17 @@ export class CodeHealthService {
     });
     try {
       if (!this.checkout || !this.analyser) return failed(ANALYSIS_OFF);
-      if (!(await this.analyser.available())) return failed(ANALYSER_MISSING);
+      // The combined analyser never reports "none" today, since it can always measure scripts. This message now mainly
+      // comes back from snapshots stored before ADR 0025, when lizard was required for everything.
+      const reach = await this.analyser.reach();
+      if (reach === "none") return failed(ANALYSER_MISSING);
 
       const previous = this.store.latestCodeSnapshot(repoId);
       // A snapshot from an older version lacks data the current one records, so it is analysed again at the same head.
-      if (!force && previous && !previous.error && previous.snapshotVersion === CODE_SNAPSHOT_VERSION) {
+      // So is one that left files unmeasured once every tool is found, or installing lizard would change nothing. While
+      // a tool is still missing the snapshot stands, so the repository is not cloned on every crawl.
+      const leftFilesOut = (previous?.unmeasuredFiles ?? 0) > 0 && reach === "full";
+      if (!force && previous && !previous.error && previous.snapshotVersion === CODE_SNAPSHOT_VERSION && !leftFilesOut) {
         const head = await this.checkout.headSha(token, owner, name, branch).catch((err: unknown) => {
           this.log.warn({ err, repoId }, "could not read the branch head; analysing anyway");
           return null;
@@ -104,6 +110,12 @@ export class CodeHealthService {
       const checkout = await this.checkout.checkout(token, owner, name, branch);
       try {
         const { functions, partlyMeasured, unmeasuredFiles } = await this.analyser.analyse(checkout.dir);
+        if (unmeasuredFiles > 0) {
+          this.log.warn(
+            { repoId, unmeasuredFiles },
+            "some source files were left unmeasured because their analysis tool was not found",
+          );
+        }
         const tooling = await this.readTooling(checkout.dir, repoId);
         return {
           snapshot: {

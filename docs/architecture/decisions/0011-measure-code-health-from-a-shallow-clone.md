@@ -52,4 +52,4 @@ The new port pair follows ADR 0003, and only `main.ts` names the concrete adapte
 
 ## Revision History
 
-- 2026-10-07: Lizard no longer reads JavaScript or TypeScript. The syntax tree alternative rejected above is now taken for those languages, and lizard remains the analyser for every other language and is optional for a repository that holds only scripts (ADR 0025).
+- 2026-10-07: Lizard no longer reads JavaScript or TypeScript. The syntax tree alternative rejected above is now taken for those languages, and lizard remains the analyser for every other language (ADR 0025). The body above says a missing lizard records an instruction to install it as an analysis error, and that `available()` asks lizard for its version. A missing lizard no longer fails the analysis. The port's `reach()` replaces `available()`, the scripts are still measured, and the page explains the gap beside the figures with a count of files left unmeasured. A lizard that is found but fails to run, or times out, still fails the analysis, and the page keeps the last good figures and shows the reason.

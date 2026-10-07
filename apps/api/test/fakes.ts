@@ -13,7 +13,12 @@ import type {
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
-import type { CodeAnalyser, CodeAnalysis } from "../src/interfaces/code-analyser.js";
+import {
+  AnalyserMissingError,
+  type AnalyserReach,
+  type CodeAnalyser,
+  type CodeAnalysis,
+} from "../src/interfaces/code-analyser.js";
 import type { Checkout, SourceCheckout } from "../src/interfaces/source-checkout.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../src/interfaces/source-provider.js";
 import type { DeviceAuthorisation, DeviceCode, DevicePoll } from "../src/interfaces/device-authorisation.js";
@@ -401,20 +406,32 @@ export class FakeSourceCheckout implements SourceCheckout {
 }
 
 export class FakeCodeAnalyser implements CodeAnalyser {
-  isAvailable = true;
+  /** What the analyser says it can measure now. */
+  reachIs: AnalyserReach = "full";
+  /** Set to make `reach()` reject, as when finding out fails for a reason other than a missing tool. */
+  reachFailWith: Error | null = null;
+  /** Which paths this analyser claims; by default every one. */
+  measuresPath: (path: string) => boolean = () => true;
   failWith: Error | null = null;
   functions: FunctionMetrics[] = [fn()];
   partlyMeasured: string[] = [];
   unmeasuredFiles = 0;
   readonly analysed: string[] = [];
 
-  async available(): Promise<boolean> {
-    return this.isAvailable;
+  async reach(): Promise<AnalyserReach> {
+    if (this.reachFailWith) throw this.reachFailWith;
+    return this.reachIs;
+  }
+
+  measures(path: string): boolean {
+    return this.measuresPath(path);
   }
 
   async analyse(dir: string): Promise<CodeAnalysis> {
     this.analysed.push(dir);
     if (this.failWith) throw this.failWith;
+    // A real adapter whose tool is missing finds out when it tries to run it.
+    if (this.reachIs === "none") throw new AnalyserMissingError("The fake's tool is missing.");
     return { functions: this.functions, partlyMeasured: this.partlyMeasured, unmeasuredFiles: this.unmeasuredFiles };
   }
 }

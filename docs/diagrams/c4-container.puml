@@ -17,7 +17,7 @@ System_Boundary(dashboard, "DORA Dashboard") {
   Container(cli, "Crawl CLI", "Node 22, apps/api/src/cli.ts", "Runs the same crawl and code health analysis as the API from the terminal, with the local GitHub CLI login and no server. Run by make crawl and make crawl-all.")
   Container(core, "Core", "TypeScript package", "Domain types and every metric as a pure function, with no I/O (ADR 0006). Linked into the API and CLI; the web app imports its types only.")
   ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys and code health results (ADR 0005).")
-  ContainerDb(clone, "Shallow clone", "Temporary directory", "The deploy branch at its tip. Read for complexity and tooling files, then deleted (ADR 0011, ADR 0013).")
+  ContainerDb(clone, "Shallow clone", "Temporary directory", "The deploy branch at its tip. Source and tooling files are read, never run, then the clone is deleted (ADR 0011, ADR 0013).")
 }
 
 System_Ext(github, "GitHub", "GraphQL and REST APIs, OAuth and git over HTTPS.")
@@ -45,7 +45,8 @@ Rel(api, core, "Computes metrics with", "in process")
 Rel(cli, core, "Computes metrics with", "in process")
 Rel(api, db, "Reads and writes", "SQL")
 Rel(cli, db, "Writes", "SQL")
-Rel(api, clone, "Reads tooling files, never runs them", "file system")
+Rel(api, clone, "Reads source and tooling files, never runs them, and measures JavaScript and TypeScript in process with @babel/parser (ADR 0025)", "file system")
+Rel(cli, clone, "Reads source and tooling files, never runs them, and measures JavaScript and TypeScript in process with @babel/parser", "file system")
 
 Rel(api, github, "Reads pull requests, workflow runs and the user, and exchanges OAuth codes", "HTTPS, GraphQL and REST")
 Rel(cli, github, "Reads pull requests and workflow runs", "HTTPS, GraphQL and REST")

@@ -1,9 +1,7 @@
 /** Composition root: the only file that chooses concrete adapters. */
 import { buildApp } from "./app.js";
 import { loadConfig } from "./core/config.js";
-import { CombinedAnalyser } from "./infrastructure/analysis/combined-analyser.js";
-import { SCRIPT_EXTENSIONS } from "./infrastructure/analysis/languages.js";
-import { BabelAnalyser } from "./infrastructure/babel/babel-analyser.js";
+import { createCodeAnalyser } from "./infrastructure/analysis/create-code-analyser.js";
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { MemorySessionStore } from "./infrastructure/auth/memory-session-store.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
@@ -13,7 +11,6 @@ import { GitHubProvider } from "./infrastructure/github/github-provider.js";
 import { MemoryTrackerGrantStore } from "./infrastructure/auth/memory-tracker-grant-store.js";
 import { AtlassianOAuth } from "./infrastructure/jira/atlassian-oauth.js";
 import { JiraCloudProvider } from "./infrastructure/jira/jira-cloud-provider.js";
-import { LizardAnalyser } from "./infrastructure/lizard/lizard-analyser.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
 import { noopLogger, type Logger } from "./interfaces/logger.js";
 import { githubCodeExchange } from "./routes/auth.js";
@@ -23,24 +20,25 @@ const checkout = new GitCheckout("https://github.com");
 // A crash mid-clone leaves its temporary directory behind.
 await checkout.sweepStale();
 const provider = new GitHubProvider();
-const reader = new FsWorkspaceReader();
-// The store is built before the app, whose logger it should use; it writes through this until the app exists.
+// The store and the analysers are built before the app, whose logger they should use; they write through this until
+// the app exists.
 let appLog: Logger = noopLogger;
-const storeLog: Logger = {
+const lateLog: Logger = {
   info: (context, message) => appLog.info(context, message),
   warn: (context, message) => appLog.warn(context, message),
   error: (context, message) => appLog.error(context, message),
 };
+const reader = new FsWorkspaceReader(undefined, lateLog);
 const { app } = await buildApp({
   config,
-  store: new SqliteRepoStore(config.databasePath, undefined, storeLog),
+  store: new SqliteRepoStore(config.databasePath, undefined, lateLog),
   provider,
   sessions: new MemorySessionStore(),
   cli: new GhCliTokenSource(provider),
   exchangeCode: githubCodeExchange(config),
   deviceAuth: new GitHubDeviceFlow(config.deviceClientId),
   checkout,
-  analyser: new CombinedAnalyser(new BabelAnalyser(reader), new LizardAnalyser(SCRIPT_EXTENSIONS), reader),
+  analyser: createCodeAnalyser(reader, lateLog),
   reader,
   jira: config.jira
     ? {

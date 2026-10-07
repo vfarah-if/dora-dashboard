@@ -36,7 +36,8 @@ const LANGUAGES: Record<string, string> = {
   dart: "Dart",
 };
 
-const extensionOf = (file: string): string => {
+/** The lower-cased extension of a file name without its dot, or an empty string when it has none. */
+export const extensionOf = (file: string): string => {
   const name = file.slice(file.lastIndexOf("/") + 1);
   return name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
 };
@@ -49,6 +50,10 @@ export const languageOf = (file: string): string => {
 /** JavaScript and TypeScript, which are measured from a syntax tree rather than by lizard (ADR 0025). */
 export const SCRIPT_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"] as const;
 
+export type ScriptExtension = (typeof SCRIPT_EXTENSIONS)[number];
+
 const SCRIPTS = new Set<string>(SCRIPT_EXTENSIONS);
 
-export const isScriptPath = (file: string): boolean => SCRIPTS.has(extensionOf(file));
+export const isScriptExtension = (extension: string): extension is ScriptExtension => SCRIPTS.has(extension);
+
+export const isScriptPath = (file: string): boolean => isScriptExtension(extensionOf(file));

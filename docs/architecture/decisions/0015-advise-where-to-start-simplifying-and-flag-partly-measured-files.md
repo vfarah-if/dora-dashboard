@@ -45,4 +45,4 @@ The report gains advice that uses the figures and limits of ADR 0013, and none o
 
 ## Revision History
 
-- 2026-10-07: The JSX spread heuristic is removed (ADR 0025). `partlyMeasured` now lists files that failed to parse cleanly or were too large to read, and no longer files that merely hold a JSX spread attribute. The next band advice and the hotspot shapes are unchanged.
+- 2026-10-07: The JSX spread heuristic is removed (ADR 0025). `partlyMeasured` now lists only JavaScript and TypeScript files that could not be read in full, because they were larger than 2 MiB, could not be opened, or hold code the parser could not read, and no longer files that merely hold a JSX spread attribute. The next band advice and the hotspot shapes are unchanged.

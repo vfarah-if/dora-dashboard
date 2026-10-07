@@ -1,62 +1,65 @@
-import { parse, type ParserPlugin } from "@babel/parser";
+import { parse, tokTypes, type ParserPlugin } from "@babel/parser";
 import { VISITOR_KEYS, type Node } from "@babel/types";
 import type { FunctionMetrics } from "@dora-dashboard/core";
-import { languageOf } from "../analysis/languages.js";
+import { extensionOf, isScriptExtension, languageOf, type ScriptExtension } from "../analysis/languages.js";
 
-/** What one file yielded. `complete` is false when the parser had to recover from an error, or gave up. */
+/**
+ * What one file yielded. `complete` is false when the parser had to recover from an error or gave up, or when the file
+ * held something this module does not know how to walk; `problem` then says what, and is null otherwise.
+ */
 export interface SourceMeasurement {
-  functions: FunctionMetrics[];
-  complete: boolean;
+  readonly functions: FunctionMetrics[];
+  readonly complete: boolean;
+  readonly problem: string | null;
 }
 
+type NodeType = Node["type"];
+
 // `jsx` stays off for .ts, .mts and .cts, where `<T>value` is a type assertion rather than an element.
-const PLUGINS: Record<string, ParserPlugin[]> = {
+// Flow annotations are read in any .js, .jsx, .mjs or .cjs file. The `@flow` pragma only decides the syntax that
+// standard JavaScript reads differently, such as the call `f<T>(x)`.
+const JAVASCRIPT: ParserPlugin[] = ["jsx", "flow"];
+const PLUGINS: Record<ScriptExtension, ParserPlugin[]> = {
   ts: ["typescript"],
   mts: ["typescript"],
   cts: ["typescript"],
   tsx: ["typescript", "jsx"],
-  // Flow syntax is read only in files that carry an @flow pragma, so plain JavaScript parses as the standard says.
-  js: ["jsx", "flow"],
+  js: JAVASCRIPT,
+  jsx: JAVASCRIPT,
+  mjs: JAVASCRIPT,
+  cjs: JAVASCRIPT,
 };
 
 // Babel reads one decorator syntax at a time. Legacy decorators come first because TypeScript's parameter decorators
-// exist only there; standard decorators (`export @dec class`, `accessor`) are the fallback for a file legacy cannot read.
-const LEGACY_DECORATORS: ParserPlugin[] = ["decorators-legacy"];
+// exist only there; standard decorators (`export @dec class`) are the fallback for a file legacy cannot read.
+const LEGACY_DECORATORS: ParserPlugin[] = ["decorators-legacy", "decoratorAutoAccessors"];
 const STANDARD_DECORATORS: ParserPlugin[] = ["decorators", "decoratorAutoAccessors"];
 
 const pluginsFor = (path: string): ParserPlugin[] => {
-  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
-  return PLUGINS[ext] ?? PLUGINS.js!;
+  const extension = extensionOf(path);
+  return PLUGINS[isScriptExtension(extension) ? extension : "js"];
 };
 
-type FunctionNode = Extract<
-  Node,
-  {
-    type:
-      | "FunctionDeclaration"
-      | "FunctionExpression"
-      | "ArrowFunctionExpression"
-      | "ObjectMethod"
-      | "ClassMethod"
-      | "ClassPrivateMethod";
-  }
->;
-
-// Overload signatures, `declare function` and abstract methods are separate node types with no body, so they never match.
-const FUNCTIONS = new Set<string>([
+const FUNCTION_TYPES = [
   "FunctionDeclaration",
   "FunctionExpression",
   "ArrowFunctionExpression",
   "ObjectMethod",
   "ClassMethod",
   "ClassPrivateMethod",
-]);
+] as const satisfies readonly NodeType[];
+
+type FunctionNode = Extract<Node, { type: (typeof FUNCTION_TYPES)[number] }>;
+
+// Overload signatures, `declare function` and abstract methods are separate node types with no body, so they never match.
+const FUNCTIONS: ReadonlySet<string> = new Set(FUNCTION_TYPES);
 
 const isFunction = (node: Node): node is FunctionNode => FUNCTIONS.has(node.type);
 
-// The decision points lizard's TypeScript reader counts (ADR 0025). `??` and the logical assignments count once each,
-// where lizard counts them once or twice depending on spacing. Optional chaining, default values and `default:` never count.
-const BRANCHES = new Set<string>([
+// The decision points lizard's TypeScript reader counts (ADR 0025). Only `??` and `??=` depend on spacing in lizard, which
+// counts `a ?? b` and `a ??= b` twice and `a??b` and `a??=b` once; here each counts once. `||=` and `&&=` count once
+// however they are spaced. Optional chaining, default values and `default:` never count.
+const BRANCH_TYPES = [
   "IfStatement",
   "ForStatement",
   "ForInStatement",
@@ -65,7 +68,8 @@ const BRANCHES = new Set<string>([
   "DoWhileStatement",
   "CatchClause",
   "ConditionalExpression",
-]);
+] as const satisfies readonly NodeType[];
+const BRANCHES: ReadonlySet<string> = new Set(BRANCH_TYPES);
 const LOGICAL_OPERATORS = new Set<string>(["&&", "||", "??", "&&=", "||=", "??="]);
 
 function isDecision(node: Node): boolean {
@@ -75,11 +79,17 @@ function isDecision(node: Node): boolean {
   return false;
 }
 
-/** A node on the walk, with the way back up for naming and the function its decision points count towards. */
+/** A node on the walk, with the way back up for naming and the functions its decision points count towards. */
 interface Visit {
   node: Node;
   parent: Visit | null;
+  /** The function this node's decision points count to. */
   owner: Measured | null;
+  /**
+   * The function around the nearest function above this node, where a decorator on this node runs: a function's
+   * parameters see the function's own owner, and anything else inside it sees the function.
+   */
+  outer: Measured | null;
 }
 
 interface Measured {
@@ -111,17 +121,36 @@ function targetName(target: Node): string | null {
 }
 
 /** Expressions that only wrap a value, so a function inside one is still the value being named. */
-const WRAPPERS = new Set<string>([
-  "ParenthesizedExpression",
+const WRAPPER_TYPES = [
   "TSAsExpression",
   "TSSatisfiesExpression",
   "TSNonNullExpression",
   "TSTypeAssertion",
   "TSInstantiationExpression",
   "TypeCastExpression",
-]);
+] as const satisfies readonly NodeType[];
+const WRAPPERS: ReadonlySet<string> = new Set(WRAPPER_TYPES);
 
-const CALLS = new Set<string>(["CallExpression", "OptionalCallExpression", "NewExpression"]);
+const CALL_TYPES = ["CallExpression", "OptionalCallExpression", "NewExpression"] as const satisfies readonly NodeType[];
+const CALLS: ReadonlySet<string> = new Set(CALL_TYPES);
+
+/**
+ * True when a function passed to this call may still be the value being named: a call to a plain function such as
+ * `memo`, `forwardRef` or `useCallback`, or to a member of a capitalised namespace such as `React.memo`. A method of a
+ * value, such as `items.reduce`, returns something other than its callback, and so does a constructor, such as
+ * `new Promise`. A plain function is taken on trust, so `const id = setTimeout(() => …)` still names the callback `id`.
+ */
+function wrapsItsArgument(call: Node & { callee: Node }): boolean {
+  if (call.type === "NewExpression") return false;
+  const { callee } = call;
+  if (callee.type === "Identifier") return true;
+  return (
+    (callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression") &&
+    !callee.computed &&
+    callee.object.type === "Identifier" &&
+    /^[A-Z]/.test(callee.object.name)
+  );
+}
 
 /** The name a parent gives the value `child`, or null when it gives none. */
 function nameGivenBy(parent: Node, child: Node): string | null {
@@ -145,9 +174,9 @@ function nameGivenBy(parent: Node, child: Node): string | null {
 }
 
 /**
- * Names an unnamed function after what holds it, looking up through wrappers and any call it is passed into, so that
- * `const Card = memo(() => …)` is `Card`. Otherwise a function passed to a call is `<callee> callback`, one in a JSX
- * attribute takes the attribute's name, and anything else is `(anonymous)`, as lizard prints it.
+ * Names an unnamed function after what holds it, looking up through wrappers and through calls that return their
+ * argument, so that `const Card = memo(() => …)` is `Card`. Otherwise a function passed to a call is `<callee> callback`,
+ * one in a JSX attribute takes the attribute's name, and anything else is `(anonymous)`, as lizard prints it.
  */
 function inferredName(visit: Visit): string {
   let child = visit.node;
@@ -158,7 +187,8 @@ function inferredName(visit: Visit): string {
     if (CALLS.has(parent.type) && "callee" in parent) {
       if (parent.callee === child) break;
       callee ??= targetName(parent.callee);
-      continue;
+      if (wrapsItsArgument(parent)) continue;
+      break;
     }
     if (parent.type === "JSXExpressionContainer" && up.parent?.node.type === "JSXAttribute") {
       const attribute = up.parent.node.name;
@@ -171,8 +201,7 @@ function inferredName(visit: Visit): string {
   return callee === null ? "(anonymous)" : `${callee} callback`;
 }
 
-function nameOf(visit: Visit & { node: FunctionNode }): string {
-  const fn = visit.node;
+function nameOf(visit: Visit, fn: FunctionNode): string {
   if ((fn.type === "FunctionDeclaration" || fn.type === "FunctionExpression") && fn.id) return fn.id.name;
   if (fn.type === "ObjectMethod" || fn.type === "ClassMethod" || fn.type === "ClassPrivateMethod") {
     return keyName(fn.key, "computed" in fn && fn.computed === true);
@@ -209,21 +238,28 @@ function ownedFrom(fn: FunctionNode): number {
   return last ? last.end! : fn.start!;
 }
 
-/** Walks the tree without recursion, so a deeply nested expression cannot overflow the stack. */
-function measureTree(path: string, program: Node): Measured[] {
+const hasDecorators = (node: Node): boolean =>
+  "decorators" in node && Array.isArray(node.decorators) && node.decorators.length > 0;
+
+/**
+ * Walks the tree, noting in `problems` anything it does not know how to walk. The walk itself uses no recursion, so a
+ * deeply nested expression cannot overflow the stack here, although the parser has its own limit.
+ */
+function measureTree(path: string, program: Node, problems: string[]): Measured[] {
   const found: Measured[] = [];
   const language = languageOf(path);
-  const work: Visit[] = [{ node: program, parent: null, owner: null }];
+  const work: Visit[] = [{ node: program, parent: null, owner: null, outer: null }];
   while (work.length > 0) {
     const visit = work.pop()!;
     const { node } = visit;
     let owner = visit.owner;
+    let fn: Measured | null = null;
     if (isFunction(node)) {
-      owner = {
+      fn = {
         metrics: {
           file: path,
           language,
-          name: nameOf(visit as Visit & { node: FunctionNode }),
+          name: nameOf(visit, node),
           startLine: startLineOf(node),
           ccn: 1,
           nloc: 0,
@@ -233,16 +269,28 @@ function measureTree(path: string, program: Node): Measured[] {
         end: node.end!,
         lines: 0,
       };
-      found.push(owner);
+      found.push(fn);
+      owner = fn;
     } else if (owner && isDecision(node)) {
       owner.metrics.ccn += 1;
     }
-    for (const key of VISITOR_KEYS[node.type] ?? []) {
-      // A decorator runs where the class is defined, so its branches belong to the code around the method.
-      const childOwner = key === "decorators" ? visit.owner : owner;
+    const known = VISITOR_KEYS[node.type];
+    if (!known) problems.push(`The parser produced a node of type ${node.type} that this module does not know how to read.`);
+    const keys = known ?? [];
+    // TSParameterProperty holds decorators that its visitor keys leave out.
+    for (const key of hasDecorators(node) && !keys.includes("decorators") ? [...keys, "decorators"] : keys) {
+      let childOwner = owner;
+      let childOuter = visit.outer;
+      if (fn) {
+        // Parameters, and what they hold, sit in the function's signature, so a decorator there runs in the code around it.
+        if (key === "params") childOuter = visit.owner;
+        else childOuter = fn;
+      }
+      // A decorator runs where the class is defined, so its branches belong to the code around the method or parameter.
+      if (key === "decorators") childOwner = visit.outer;
       const value = (node as unknown as Record<string, unknown>)[key];
       for (const child of Array.isArray(value) ? value : [value]) {
-        if (isNode(child)) work.push({ node: child, parent: visit, owner: childOwner });
+        if (isNode(child)) work.push({ node: child, parent: visit, owner: childOwner, outer: childOuter });
       }
     }
   }
@@ -250,7 +298,7 @@ function measureTree(path: string, program: Node): Measured[] {
 }
 
 interface Token {
-  type: string | { label: string };
+  type: unknown;
   start: number;
   end: number;
   loc: { start: { line: number }; end: { line: number } };
@@ -261,7 +309,7 @@ const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
 /** The lines a token puts code on. JSX text spans the whitespace between elements, so only its non-blank lines count. */
 function codeLines(token: Token, source: string): number[] {
   const first = token.loc.start.line;
-  if (typeof token.type === "object" && token.type.label === "jsxText") {
+  if (token.type === tokTypes.jsxText) {
     return source
       .slice(token.start, token.end)
       .split(LINE_BREAK)
@@ -274,12 +322,17 @@ function codeLines(token: Token, source: string): number[] {
  * Lizard's line rule: a line counts once, to the innermost function holding its first code token, and every function
  * also counts its own start line, so `useEffect(() => {` counts for both the component and the callback.
  */
-function countLines(functions: Measured[], tokens: readonly Token[], source: string): void {
+function countLines(functions: Measured[], tokens: readonly Token[], source: string, problems: string[]): void {
   const owners = new Map<number, Measured | null>();
   const open: Measured[] = [];
   let next = 0;
   for (const token of tokens) {
-    if (typeof token.type === "string" || token.type.label === "eof") continue;
+    // Comments arrive among the tokens as plain strings; every other token is an object from `tokTypes`.
+    if (token.type === "CommentLine" || token.type === "CommentBlock" || token.type === tokTypes.eof) continue;
+    if (typeof token.type === "string") {
+      problems.push(`The parser produced a token of type ${token.type} that this module does not know how to count.`);
+      continue;
+    }
     while (next < functions.length && functions[next]!.start <= token.start) {
       const fn = functions[next++]!;
       while (open.length > 0 && open[open.length - 1]!.end <= fn.start) open.pop();
@@ -300,11 +353,21 @@ function countLines(functions: Measured[], tokens: readonly Token[], source: str
 
 type Parsed = ReturnType<typeof parse>;
 
-/** The file's syntax tree with tokens, or null when the parser gives up even with error recovery on. */
-function parseWith(source: string, plugins: ParserPlugin[]): Parsed | null {
+/** One attempt at reading a file: its tree with tokens (null when the parser gave up), how many errors it recovered from, and why. */
+interface Reading {
+  file: Parsed | null;
+  errors: number;
+  problem: string | null;
+}
+
+/**
+ * Parses with error recovery on, so a file with a few faults still yields a tree. A fault in the file, or nesting too
+ * deep for the parser, is a result; anything else is a fault in this module or the parser's set-up and is rethrown.
+ */
+function parseWith(source: string, plugins: ParserPlugin[], sourceType: "unambiguous" | "script"): Reading {
   try {
-    return parse(source, {
-      sourceType: "unambiguous",
+    const file = parse(source, {
+      sourceType,
       plugins,
       errorRecovery: true,
       tokens: true,
@@ -315,28 +378,57 @@ function parseWith(source: string, plugins: ParserPlugin[]): Parsed | null {
       allowNewTargetOutsideFunction: true,
       allowSuperOutsideMethod: true,
     });
-  } catch {
-    return null;
+    const errors = file.errors ?? [];
+    return { file, errors: errors.length, problem: errors[0]?.message ?? null };
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (error instanceof SyntaxError && typeof code === "string" && code.startsWith("BABEL_PARSER_")) {
+      return { file: null, errors: Infinity, problem: error.message };
+    }
+    if (error instanceof RangeError) {
+      return { file: null, errors: Infinity, problem: "The code is nested too deeply for the parser to read." };
+    }
+    throw error;
   }
 }
 
-const errorCount = (file: Parsed | null): number => (file ? (file.errors ?? []).length : Infinity);
+/**
+ * Tries the readings in order and stops at the first with no errors, otherwise keeps the one with the fewest (the
+ * earlier wins a tie). Unambiguous source type reads a file as a module and records strict-mode errors for sloppy
+ * scripts (`with`, octal literals, duplicate parameters), so a script reading comes last.
+ */
+function readFile(path: string, source: string): Reading {
+  const plugins = pluginsFor(path);
+  const later: (() => Reading | null)[] = [
+    // Standard decorators only differ from legacy ones in a file that has a decorator to read.
+    () => (source.includes("@") ? parseWith(source, [...plugins, ...STANDARD_DECORATORS], "unambiguous") : null),
+    () => parseWith(source, [...plugins, ...LEGACY_DECORATORS], "script"),
+  ];
+  let best = parseWith(source, [...plugins, ...LEGACY_DECORATORS], "unambiguous");
+  for (const attempt of later) {
+    if (best.errors === 0) break;
+    const reading = attempt();
+    if (reading && reading.errors < best.errors) best = reading;
+  }
+  return best;
+}
 
 /**
  * Measures every function in one JavaScript or TypeScript file from its syntax tree, with lizard's definitions of CCN,
- * NLOC and parameters (ADR 0025). Never throws: a file the parser cannot read at all yields no functions.
+ * NLOC and parameters (ADR 0025). It throws only for a fault in this module or the parser's set-up, such as clashing
+ * plugins, and never because of what the file holds: a file the parser cannot read at all yields no functions and a
+ * `problem` saying why.
  */
 export function measureSource(path: string, source: string): SourceMeasurement {
-  let file = parseWith(source, [...pluginsFor(path), ...LEGACY_DECORATORS]);
-  if (errorCount(file) > 0 && source.includes("@")) {
-    const standard = parseWith(source, [...pluginsFor(path), ...STANDARD_DECORATORS]);
-    if (errorCount(standard) < errorCount(file)) file = standard;
-  }
-  if (!file) return { functions: [], complete: false };
-  const functions = measureTree(path, file.program);
-  countLines(functions, (file.tokens ?? []) as Token[], source);
+  const { file, problem } = readFile(path, source);
+  if (!file) return { functions: [], complete: false, problem };
+  const problems: string[] = [];
+  const functions = measureTree(path, file.program, problems);
+  countLines(functions, (file.tokens ?? []) as Token[], source, problems);
+  const found = problem ?? problems[0] ?? null;
   return {
     functions: functions.map((f) => f.metrics).sort((a, b) => a.startLine - b.startLine),
-    complete: errorCount(file) === 0,
+    complete: found === null,
+    problem: found,
   };
 }

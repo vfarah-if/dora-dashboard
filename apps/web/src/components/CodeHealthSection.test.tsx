@@ -345,12 +345,22 @@ describe("CodeHealthSection", () => {
   it("warns which files may be partly measured, and shows no notice otherwise", async () => {
     show({ ...ok, partlyMeasured: ["src/A.tsx", "src/B.tsx"] });
     const notice = (await screen.findByText(copy.codeHealth.partly.title)).closest("aside")!;
-    expect(notice).toHaveTextContent(copy.codeHealth.partly.body(2));
+    expect(notice).toHaveTextContent(
+      "These 2 JavaScript or TypeScript files could not be read in full, either because the parser met code it could not read or because they are larger than 2 MiB or could not be opened, so some or all of their functions may be missing and the figures can read better than the code is.",
+    );
     expect(
       within(notice)
         .getAllByRole("listitem")
         .map((li) => li.textContent),
     ).toEqual(["src/A.tsx", "src/B.tsx"]);
+  });
+
+  it("uses the singular when one file was partly measured", async () => {
+    show({ ...ok, partlyMeasured: ["src/A.tsx"] });
+    const notice = (await screen.findByText(copy.codeHealth.partly.title)).closest("aside")!;
+    expect(notice).toHaveTextContent(
+      "This JavaScript or TypeScript file could not be read in full, either because the parser met code it could not read or because it is larger than 2 MiB or could not be opened, so some or all of its functions may be missing and the figures can read better than the code is.",
+    );
   });
 
   it("lists the first ten partly measured files and counts the rest", async () => {
@@ -370,7 +380,9 @@ describe("CodeHealthSection", () => {
   it("says how many files were not measured and shows how to install lizard", async () => {
     show({ ...ok, unmeasuredFiles: 3 });
     const notice = (await screen.findByText(copy.codeHealth.unmeasured.title)).closest("aside")!;
-    expect(notice).toHaveTextContent(copy.codeHealth.unmeasured.body(3));
+    expect(notice).toHaveTextContent(
+      "The API could not find lizard on its PATH, so 3 files in languages other than JavaScript and TypeScript were not measured and are not in any figure. Installing lizard, restarting the API if it was already running, and crawling this repository again will add them.",
+    );
     expect(screen.getByRole("heading", { name: copy.codeHealth.install.title })).toBeInTheDocument();
     expect(screen.getByText("uv tool install lizard")).toBeInTheDocument();
   });
@@ -378,7 +390,9 @@ describe("CodeHealthSection", () => {
   it("uses the singular when one file was not measured", async () => {
     show({ ...ok, unmeasuredFiles: 1 });
     const notice = (await screen.findByText(copy.codeHealth.unmeasured.title)).closest("aside")!;
-    expect(notice).toHaveTextContent("1 source file in languages other than JavaScript and TypeScript was not measured");
+    expect(notice).toHaveTextContent(
+      "The API could not find lizard on its PATH, so 1 file in languages other than JavaScript and TypeScript was not measured and is not in any figure. Installing lizard, restarting the API if it was already running, and crawling this repository again will add it.",
+    );
   });
 
   it("shows no unmeasured notice or install commands when every file was measured", async () => {
@@ -427,6 +441,16 @@ describe("CodeHealthSection", () => {
     show({ ...ok, lastError: { message: "lizard is missing", analysedAt: "2026-03-08T09:00:00Z", reason: "analyser-missing" } });
     expect(await screen.findByRole("heading", { name: copy.codeHealth.install.title })).toBeInTheDocument();
     expect(screen.getByText(copy.codeHealth.verdict.title)).toBeInTheDocument();
+  });
+
+  it("shows the install guide once when files went unmeasured and an older error also says lizard was missing", async () => {
+    show({
+      ...ok,
+      unmeasuredFiles: 2,
+      lastError: { message: "lizard is missing", analysedAt: "2026-03-08T09:00:00Z", reason: "analyser-missing" },
+    });
+    await screen.findByText(copy.codeHealth.unmeasured.title);
+    expect(screen.getAllByRole("heading", { name: copy.codeHealth.install.title })).toHaveLength(1);
   });
 
   it("shows the request failure and offers a retry", async () => {

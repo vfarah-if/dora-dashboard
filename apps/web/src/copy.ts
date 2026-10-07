@@ -787,14 +787,14 @@ export const copy = {
     partly: {
       title: "Some functions may not have been measured",
       body: (count: number) =>
-        `${count === 1 ? "This JavaScript or TypeScript file" : `These ${count} JavaScript or TypeScript files`} could not be read in full, either because ${count === 1 ? "it has" : "they have"} a syntax error or because ${count === 1 ? "it is" : "they are"} larger than 2 MiB, so some or all of ${count === 1 ? "its" : "their"} functions may be missing and the figures can read better than the code is.`,
+        `${count === 1 ? "This JavaScript or TypeScript file" : `These ${count} JavaScript or TypeScript files`} could not be read in full, either because the parser met code it could not read or because ${count === 1 ? "it is" : "they are"} larger than 2 MiB or could not be opened, so some or all of ${count === 1 ? "its" : "their"} functions may be missing and the figures can read better than the code is.`,
       more: (count: number) => `and ${count} more`,
     },
 
     unmeasured: {
-      title: "Some source files were not measured",
+      title: "Some files were not measured",
       body: (count: number) =>
-        `Lizard is not installed on the machine that runs the API, so ${count === 1 ? "1 source file" : `${count} source files`} in languages other than JavaScript and TypeScript ${count === 1 ? "was" : "were"} not measured and ${count === 1 ? "is" : "are"} not in any figure. Installing lizard and crawling this repository again will add ${count === 1 ? "it" : "them"}.`,
+        `The API could not find lizard on its PATH, so ${count === 1 ? "1 file" : `${count} files`} in languages other than JavaScript and TypeScript ${count === 1 ? "was" : "were"} not measured and ${count === 1 ? "is" : "are"} not in any figure. Installing lizard, restarting the API if it was already running, and crawling this repository again will add ${count === 1 ? "it" : "them"}.`,
     },
 
     none: {
