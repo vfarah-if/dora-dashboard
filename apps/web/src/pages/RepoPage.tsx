@@ -3,6 +3,7 @@ import { Link, useLocation, useParams } from "react-router";
 import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
+import { hasIssueStatus } from "../lib/issues";
 import { copy } from "../copy";
 import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
@@ -149,10 +150,9 @@ function InfoNotice({ text }: { text: string }) {
   );
 }
 
-/** True while the crawler is fetching this repository, from the repository list. */
-function useIsCrawling(id: number): boolean {
-  const repos = useRepos();
-  return repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
+/** This repository's row in the repository list, once the list has loaded. */
+function useListing(id: number) {
+  return useRepos().data?.find((r) => r.id === id);
 }
 
 interface ReportStateProps {
@@ -206,7 +206,9 @@ function RepoView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [excluded, setExcluded] = useListParam("exclude");
   const report = useReport(id, range, excluded);
-  const crawling = useIsCrawling(id);
+  const listing = useListing(id);
+  const crawling = listing?.crawlStatus === "crawling";
+  const showIssuesLink = listing !== undefined && hasIssueStatus(listing);
   const choices = report.data?.authorChoices ?? [];
   const leftOut = excludedInRange(choices, excluded);
 
@@ -217,6 +219,13 @@ function RepoView({ id }: { id: number }) {
           {copy.common.backToRepos}
         </Link>
         <RepoHeader report={report.data} leftOut={leftOut} />
+        {showIssuesLink && (
+          <p>
+            <Link to={`/issues/${id}`} className="button button-secondary">
+              {copy.repo.issuesLink}
+            </Link>
+          </p>
+        )}
 
         <div className="controls-bar">
           <DateRangeControls value={range} onChange={setRange} />

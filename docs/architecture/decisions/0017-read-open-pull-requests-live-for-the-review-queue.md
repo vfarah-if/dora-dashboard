@@ -46,3 +46,7 @@ The definitions are in `packages/core/src/reviewQueue.ts` and `features.ts`, and
 - Weekdays are taken in UTC, not in the team's local time, so the weekend boundary is off by the team's offset and a team far from UTC will see slightly different waits from its own clocks.
 - Public holidays and team leave are not excluded, so a pull request can reach overdue or stale over a holiday.
 - Feature grouping is heuristic. A shared ticket key or branch name can join pull requests that are unrelated, and work with no key, link or shared branch is not grouped, so the page presents groups as a prompt to look and not as fact.
+
+## Revision History
+
+- 2026-10-07: Linked issues are now qualified by repository and are used for grouping. The pull request query asks GitHub for each closing issue's own repository and records it as `owner/name#12`, falling back to the pull request's own repository when GitHub gives none. Core keeps these qualified references as ticket keys, so two pull requests that close the same issue group together, and two repositories' issue 12 stay apart because grouping spans every repository in the queue. Previously the references were recorded as `#12` and dropped silently, because only Jira style keys were matched. An unqualified `#12` is still ignored.

@@ -4,6 +4,7 @@ import type {
   DeployRun,
   FunctionMetrics,
   OpenPullRequest,
+  RepoIssue,
   PullRequest,
   TrackerSite,
   TrackerSpaceSummary,
@@ -12,6 +13,7 @@ import type {
 } from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
+import type { IssuePage, IssuePageRequest, IssueProvider } from "../src/interfaces/issue-provider.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import {
   AnalyserMissingError,
@@ -64,6 +66,100 @@ export function workItem(overrides: Partial<WorkItem> & { key: string }): WorkIt
     transitions: [],
     ...overrides,
   };
+}
+
+/** A closed issue unless `state: "open"` is given, in which case it has no close reason or time. */
+export function issue(overrides: Partial<RepoIssue> & { number: number }): RepoIssue {
+  const base = {
+    title: `Issue ${overrides.number}`,
+    url: `https://example.test/acme/widgets/issues/${overrides.number}`,
+    createdAt: "2026-09-01T09:00:00Z",
+    updatedAt: "2026-09-01T12:00:00Z",
+    assignees: [],
+    labels: [],
+    issueType: null,
+    closedBy: [],
+  };
+  if (overrides.state === "open") {
+    return { ...base, state: "open", closeReason: null, closedAt: null, events: [], ...overrides } as RepoIssue;
+  }
+  return {
+    ...base,
+    state: "closed",
+    closeReason: "completed",
+    closedAt: "2026-09-01T12:00:00Z",
+    events: [{ at: "2026-09-01T12:00:00Z", type: "closed" }],
+    ...overrides,
+  } as RepoIssue;
+}
+
+/** One recorded call on a FakeIssueProvider. */
+export interface IssueCall extends IssuePageRequest {
+  token: string;
+  owner: string;
+  name: string;
+}
+
+/**
+ * An in-memory issue tracker honouring the IssueProvider contract: pages ordered by updatedAt descending, issues no
+ * older than `updatedSince`, issues switched off answering a disabled page, and an unseeded repository
+ * raising NotFoundError.
+ */
+export class FakeIssueProvider implements IssueProvider {
+  readonly kind = "fake";
+  pageSize = 2;
+  pagesServed = 0;
+  /** Serve every issue whatever `updatedSince` says, to prove the crawl service stops on its own. */
+  ignoreUpdatedSince = false;
+  failWith: Error | null = null;
+  /** Serve this many pages, then fail the next one with `failWith`. */
+  failAfterPages: number | null = null;
+  /** Runs before each page is served, so a test can change the world mid-read. */
+  onPage: (() => void) | null = null;
+  readonly calls: IssueCall[] = [];
+  private readonly repos = new Map<string, { issues: RepoIssue[]; enabled: boolean }>();
+
+  seed(fullName: string, issues: RepoIssue[], enabled = true): void {
+    this.repos.set(fullName, { issues, enabled });
+  }
+
+  /** Switches issues on or off for a seeded repository. */
+  setEnabled(fullName: string, enabled: boolean): void {
+    this.repos.get(fullName)!.enabled = enabled;
+  }
+
+  /** The issues held for a seeded repository, to change between reads. */
+  issuesOf(fullName: string): RepoIssue[] {
+    return this.repos.get(fullName)!.issues;
+  }
+
+  async fetchIssuePage(
+    token: string,
+    owner: string,
+    name: string,
+    { updatedSince, cursor }: IssuePageRequest,
+  ): Promise<IssuePage> {
+    this.calls.push({ token, owner, name, updatedSince, cursor });
+    this.onPage?.();
+    if (this.failWith && (this.failAfterPages === null || this.pagesServed >= this.failAfterPages)) throw this.failWith;
+    this.pagesServed++;
+    const repo = this.repos.get(`${owner}/${name}`);
+    if (!repo) throw new NotFoundError(`${owner}/${name} was not found`);
+    if (!repo.enabled) return { enabled: false };
+    // Instants, as the service compares them, because two spellings of one instant do not sort alike as strings.
+    const since = updatedSince === null || this.ignoreUpdatedSince ? null : Date.parse(updatedSince);
+    const sorted = repo.issues
+      .filter((item) => since === null || Date.parse(item.updatedAt) >= since)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const start = cursor ? Number(cursor) : 0;
+    const end = start + this.pageSize;
+    return {
+      enabled: true,
+      items: sorted.slice(start, end),
+      totalCount: sorted.length,
+      nextCursor: end < sorted.length ? String(end) : null,
+    };
+  }
 }
 
 export const SITE: TrackerSite = { id: "cloud-1", url: "https://acme.example.test", name: "Acme" };

@@ -1,6 +1,6 @@
 # What each figure means
 
-Every figure is computed in `packages/core` from crawled pull requests and deploy workflow runs. The reasoning behind each rule is in ADR 0006; this page is the reader's version. Times are UTC and weeks start on Monday. A repository's weekly charts keep the week the range ends part way through, normally the current one, and mark it in their tooltips and tables, as so far when the range runs to today or with the day the range stops at otherwise. Its counts are drawn lighter so a part week does not look like a slump. The comparison and Jira space charts leave that week off. Repository and space reports take a range as `from` and `to` dates (`YYYY-MM-DD`), and a `from` after today is refused with a 400 ("from must not be after today"), as is a `from` after `to`.
+Every figure is computed in `packages/core` from crawled pull requests and deploy workflow runs. The reasoning behind each rule is in ADR 0006; this page is the reader's version. Times are UTC and weeks start on Monday. A repository's weekly charts keep the week the range ends part way through, normally the current one, and mark it in their tooltips and tables, as so far when the range runs to today or with the day the range stops at otherwise. Its counts are drawn lighter so a part week does not look like a slump. The comparison and Jira space charts leave that week off, whereas the GitHub Issues page keeps it and draws it lighter, as a repository's does (ADR 0028). Repository and space reports take a range as `from` and `to` dates (`YYYY-MM-DD`), and a `from` after today is refused with a 400 ("from must not be after today"), as is a `from` after `to`. Every report route (repository, Jira space and issue reports) also refuses an impossible calendar date such as 2026-02-30, and any date before 2000-01-01, with a 400.
 
 ## Flow
 
@@ -142,7 +142,7 @@ Needs attention lists stale pull requests with no reviewer first, then stale pul
 
 ### Features
 
-Open pull requests are grouped as one piece of work when they share a ticket key (such as `ABC-123` or `MY_PROJ-7`, matched as described under Delivery from Jira) in the title, branch or linked issues, name each other on a `Related:` line in the description, share a head branch other than a common trunk name such as `main` or `develop`, or form a stack, where one is based on another's branch. Only groups of two or more are shown. These are heuristics, so a group is a prompt to look, not a fact.
+Open pull requests are grouped as one piece of work when they share a ticket key (such as `ABC-123` or `MY_PROJ-7`, matched as described under Delivery from Jira) in the title, branch or linked issues (a linked GitHub issue is matched as `owner/name#12`, so two repositories' issue 12 are different), name each other on a `Related:` line in the description, share a head branch other than a common trunk name such as `main` or `develop`, or form a stack, where one is based on another's branch. Only groups of two or more are shown. These are heuristics, so a group is a prompt to look, not a fact.
 
 ## Code health
 
@@ -336,6 +336,96 @@ Each check lists the issue keys or pull requests it found, and where a share mak
 | Reopened                 | A delivery item with a transition in the range from a done category to any category that is not done, including a status of unknown category, unless that is the item's last move and the item is done now, which makes it a move between two done statuses.                                                                                                                                                                                                                                                                             | Work that returns suggests it was closed too early or that a defect escaped, and the later finish is what is counted. |
 | Stale work               | A delivery item in progress now whose last update is more than 7 days before now.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Cards that nobody touches hide blocked or abandoned work and inflate work in progress.                                |
 | In progress, unassigned  | A delivery item in progress now with no assignee.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Nobody is visibly responsible, so nobody is likely to notice that it has stopped.                                     |
+
+## Delivery from GitHub Issues
+
+A repository whose issues are stored has a page at `/issues/:id`. The `/issues` page is always routed and shows an empty state when nothing qualifies. Otherwise it lists each repository that has stored issues or an issue error, with the error. The header link and the repository page's link appear when any repository is in one of those states. A repository with issues switched off on GitHub is not listed, since one tracked in Jira usually has them off, but its own issue page says so. These figures come from the issues in GitHub, joined to pull requests by closing reference, title and branch, and they are distinct from DORA lead time, which never reads issues. They are named "issue to first pull request" and "issue to production", as in the Jira report, so that they are not confused with it (ADR 0020, ADR 0021, ADR 0028); "idea to production" is only the section title. The page uses UTC and weeks that start on Monday, and its range follows the same rules about `from` and `to` as a repository report, running from the first millisecond of the from date to the last millisecond of the to date with the end capped at now. With no `from`, the range starts at the creation of the earliest stored issue. Unlike the Jira page, it keeps the week the range ends in, draws it lighter and marks it as partial, as the repository page does.
+
+### Reading issues
+
+Issues are read during the repository crawl, most recently updated first. The cursor is the newest update time seen less a five minute overlap and moves only when a read completes, whether full or incremental. A full read starts from the beginning without clearing the stored cursor, so a failed full read leaves the next crawl where the last complete read left it. Only a read that began at the start (a full read, or the first) removes issues the host no longer holds, so an issue deleted or transferred on GitHub stays until a full re-crawl. A missing issues list from GitHub fails the read rather than reading as empty. An error inside one issue's field, such as a closing pull request in an organisation the token cannot see, is tolerated with that field treated as missing, unless it left the whole issue unreadable, and any other GraphQL error fails the read. A rate limit gives a message to crawl again once it resets, and requests time out after 60 seconds. A failed read is stored as the repository's issue error and the rest of the crawl finishes, except that a rejected credential (HTTP 401) fails the whole crawl. Issue authors are not read or stored (ADR 0008).
+
+Each issue is read with at most 10 assignees, 30 labels and 10 closing pull requests, and the last 20 closes and reopens. When the host held older history, the open spans fall back to the creation and final close dates.
+
+Epics are never counted in a flow, a time or an issue check, and only the count of open epics is shown, apart. A pull request linked only to an epic still counts as linked to an issue, so it is not listed as a pull request without one. Pull requests are never issues.
+
+### Kind and priority
+
+Each issue is given a kind (bug, feature, maintenance, incident, security, epic or other) and a priority (P0 to P4, or none) when the report is built, so changing a repository's label override changes the report without a crawl. Evidence is read in order: GitHub's native issue type, then the labels, then the title's prefix, which is each leading `[tag]` and then the text before the first colon, so `[P1] Security: Login` offers `p1` and `security`. The first source that names a kind decides it, and when it names several the precedence is epic, security, incident, bug, feature, maintenance. Priority is decided the same way, by source in order. The first source that names any priority decides it, taking the most urgent it names, so a `p3` label outranks a `[P0]` title prefix. A native type that no list names, such as Task, gives no evidence, so the labels are read next. An issue nothing names is kind `other` with no priority.
+
+Names are compared whole and without case, with a leading `type`, `kind`, `priority` or `prio` followed by a colon or a slash removed, and no pattern a user supplies is ever run. The defaults are below.
+
+| Meaning     | Default names                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------ |
+| Bug         | bug, defect, regression                                                                                      |
+| Feature     | feature, enhancement, feature request, story                                                                 |
+| Maintenance | chore, maintenance, tech-debt, tech debt, refactor, dependencies, deps, dev-infra, infrastructure, infra, ci |
+| Incident    | incident, outage, hotfix                                                                                     |
+| Security    | security, vulnerability                                                                                      |
+| Epic        | epic                                                                                                         |
+| P0          | p0, critical, urgent, blocker                                                                                |
+| P1          | p1, high                                                                                                     |
+| P2          | p2, medium                                                                                                   |
+| P3          | p3, low                                                                                                      |
+| P4          | p4, lowest, trivial                                                                                          |
+
+A repository can override these in its Configure panel. An override replaces only the keys it names, so naming `bug` leaves every other kind and every priority on its defaults. A key left out, empty or blank keeps its defaults, which core enforces, so an override can change which names mean a kind or priority but cannot switch one off. Each key takes at most 30 names of at most 100 characters, with no control characters, and the web reads these limits and the default names from `GET /api/issue-labels/defaults`.
+
+### Open, closed and not planned
+
+An issue is open from its creation until a close, and again from each reopen to the next close, replayed from its close and reopen events. When GitHub held more events than were read, or a closed issue has no events, it is treated as open from creation to its final close, and an open issue in that case has no final close and stays open. An issue is open at the end of the range when it is open at the last millisecond of the range.
+
+A closed issue whose reason is completed, or that has no recorded reason, counts as closed. One closed as not planned or as a duplicate counts as not planned, and is left out of every time and of the linked share. Only an issue's final close counts, so one closed and then reopened is not closed until it is closed again. Duplicates are told apart only on that final reason, because a close event cannot say.
+
+### Totals
+
+- **Opened** is issues created in the range.
+- **Closed** is issues whose final close is in the range and was completed.
+- **Not planned** is issues whose final close is in the range and was not planned or a duplicate.
+- **Open** is issues open at the end of the range, and **open epics** is the epics open then, shown apart.
+
+### Time to close
+
+Hours from creation to the final close, over issues closed as completed in the range, as a count, median, 75th percentile and mean. It is also given for each priority, always all six in the order P0 to P4 then none, with a count of zero for a priority nothing fell in. A close earlier than the creation reads as zero hours.
+
+### Weekly flow
+
+Each week of the range has the issues opened, closed and not planned in it, the closed issues by kind (every kind present, zero when none) and the issues open at the last millisecond of the week, or at the end of the range when that is earlier. The week the range ends in is partial.
+
+### Open by kind and priority, and ageing
+
+Open issues at the end of the range are counted by kind and by priority, with `none` for no priority. Ageing lists the 50 oldest of those issues, with the hours from creation to the end of the range, which can be earlier than now, and says how many are open in all. Behind Show people the list also names the assignees, and without it each issue says only whether anyone is assigned.
+
+### Linking pull requests
+
+A pull request is linked to an issue when any of these hold.
+
+- The issue names it as a closing reference, which must be in the same repository as the issue.
+- Its title carries `#n` with no letter, digit or underscore just before the `#` or just after the number, so `Fix #12abc` does not link.
+- A segment of its branch name starts with the number, or with one word and a hyphen then the number, and the number ends the segment or is followed by a hyphen or underscore that is not followed by a digit, as in `feat/526-tts-gating`, `issue-389-crash` or a bare `123`.
+
+A number in a title or branch counts only when it is a stored issue of this repository opened at or before the pull request and not already closed when the pull request was opened. Date shapes such as `release/2026-10-07` are not read. Issue and pull request numbers share one sequence on GitHub, so together these rules exclude the numbers of pull requests and most dates and versions, though a number in a branch can still match an unrelated issue that happens to be open. Pull requests by bots are ignored.
+
+### Issue to first pull request and to production
+
+For each issue closed as completed in the range that has a linked pull request, **issue to first PR** is the hours from the issue's creation to the opening of its earliest linked pull request. **Issue to production** is the hours from the issue's creation to the completion of the latest deploy among those that shipped its merged linked pull requests, and an issue counts only when every one of its merged pull requests has shipped. It applies the deploy branch and pairing rules of DORA lead time (ADR 0007). A pull request ships with the first successful deploy of the repository's deploy branch created at or after its merge, so an issue whose merged pull request went to another branch, or merged before the first recorded deploy, never gets the figure. Both are clamped at zero, so an issue raised after the work started waited no time, and they are summaries over the issues that have a value.
+
+### Linked share
+
+The issues closed as completed in the range that have at least one linked pull request, out of all those closed as completed. It is shown beside the two figures above so that a reader can see how many issues they cover.
+
+### Hygiene checks
+
+Each check lists what it found and, where a share makes sense, out of how many it looked. They are prompts to look at the issues, not verdicts. They are listed in the order below, with the one most affected by missing closing keywords last. Names appear only in the hygiene lists and the ageing list, and only behind Show people (ADR 0008), and each issue says whether anyone is assigned without naming them. Ageing and stale urgent are measured to the end of the range, not now, and the report carries the 14 day stale threshold.
+
+| Check               | Rule                                                                                                                                                                                                                                                                                            | Of                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| Closed without a PR | An issue closed as completed in the range with no linked pull request.                                                                                                                                                                                                                          | Issues closed as completed in the range         |
+| Reopened            | An issue with a reopen event in the range, whatever its state now.                                                                                                                                                                                                                              | No share                                        |
+| Urgent, unassigned  | An issue open at the end of the range with priority P0 or P1 and nobody assigned.                                                                                                                                                                                                               | Open P0 and P1 issues                           |
+| Stale urgent        | An issue open at the end of the range with priority P0 or P1, or of kind incident or security, last updated more than 14 days before the end of the range. The last update is the latest one stored, so for a range that ended in the past an issue touched since then is not counted as stale. | Open issues of those priorities or kinds        |
+| Unclassified        | An issue open at the end of the range that is kind `other` with no priority.                                                                                                                                                                                                                    | Issues open at the end of the range             |
+| PR without an issue | A pull request merged in the range, not by a bot, that no issue links to, where a link to an epic counts as a link. It lists pull requests, not issues. It is noisy where branches carry no numbers and nobody uses closing keywords.                                                           | Pull requests merged in the range, not by a bot |
 
 ## Comparing repositories fairly
 

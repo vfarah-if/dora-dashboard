@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { useRepos, type RepoWithCounts } from "../api/hooks";
+import type { RepoListing } from "@dora-dashboard/core";
+import { useRepos } from "../api/hooks";
 import { copy } from "../copy";
 import { JiraOutcomeNotice } from "../components/JiraOutcomeNotice";
 import { AddRepoForm } from "../components/AddRepoForm";
@@ -37,7 +38,7 @@ function CompareBar({ chosen }: { chosen: number[] }) {
 }
 
 interface RepoListProps {
-  repos: RepoWithCounts[];
+  repos: RepoListing[];
   chosen: number[];
   onSelect: (id: number, on: boolean) => void;
 }

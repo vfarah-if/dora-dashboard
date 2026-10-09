@@ -2,10 +2,11 @@
  * Every colour in the application is defined here, once for the light theme and once for the dark theme.
  * Components read these custom properties and never state a colour of their own.
  *
- * Series colours are a fixed categorical order chosen to stay distinguishable under the common forms of
- * colour vision deficiency (blue, orange, teal, magenta, with lightness spread between them). Band colours
- * are status colours and are never used for a series. Stage colours are an ordered neutral ramp so a
- * stacked stage bar never borrows a repository's colour.
+ * Series colours are a fixed categorical order chosen to stay distinguishable under the common forms of colour vision
+ * deficiency (blue, orange, teal, magenta, then a gold, dark in the light theme and pale in the dark one, with lightness
+ * spread between them; the fifth is used only where a chart needs five categories). Band colours are status colours and
+ * are never used for a series. Stage colours are an ordered neutral ramp so a stacked stage bar never borrows a
+ * repository's colour.
  */
 
 :root {
@@ -53,6 +54,7 @@
   --series-2: #c96a00;
   --series-3: #0f8a7c;
   --series-4: #a52a86;
+  --series-5: #6b5600;
 
   --band-elite: #137a43;
   --band-high: #4f7a12;
@@ -116,6 +118,7 @@
     --series-2: #f5a04a;
     --series-3: #3cc7b3;
     --series-4: #e27ac7;
+    --series-5: #f0dc7a;
 
     --band-elite: #4cc38a;
     --band-high: #a8cf5a;
@@ -179,6 +182,7 @@
   --series-2: #f5a04a;
   --series-3: #3cc7b3;
   --series-4: #e27ac7;
+  --series-5: #f0dc7a;
 
   --band-elite: #4cc38a;
   --band-high: #a8cf5a;

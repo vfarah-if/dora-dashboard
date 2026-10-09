@@ -4,7 +4,9 @@ import type {
   CodeSnapshot,
   CrawlStatus,
   DeployRun,
+  IssueLabelRules,
   PullRequest,
+  RepoIssue,
   Repo,
   TrackerSpace,
   TrackerStatus,
@@ -14,6 +16,24 @@ import type {
 export interface RepoCounts {
   pullRequests: number;
   deployRuns: number;
+  issues: number;
+}
+
+/** What the store holds about a repository's issue crawl, apart from the issues themselves. */
+export interface IssueState {
+  /** Whether the host reported issues switched on at the last crawl; null before issues were first read. */
+  enabled: boolean | null;
+  /**
+   * The newest update the last complete issue read saw, less the overlap (ADR 0028); null before one finished, and
+   * after issues were switched off.
+   */
+  cursor: string | null;
+  /** The repository's label override; null when the defaults apply, or when what was saved cannot be read. */
+  labels: IssueLabelRules | null;
+  /** True when an override was saved but cannot be read (bad JSON or the wrong shape); `labels` is then null. */
+  labelsUnreadable: boolean;
+  /** Why the last issue read failed; null when it succeeded or never ran. */
+  error: string | null;
 }
 
 /** Persistence for tracked repositories and everything crawled from them. */
@@ -74,4 +94,23 @@ export interface RepoStore {
   removeWorkItemsExcept(spaceId: number, keep: ReadonlySet<string>): number;
   workItems(spaceId: number): WorkItem[];
   workItemCount(spaceId: number): number;
+
+  /** Inserts or replaces each issue by number. */
+  upsertIssues(repoId: number, issues: RepoIssue[]): void;
+  /** Deletes the repository's issues whose numbers are not in `keep`; returns how many went. */
+  removeIssuesExcept(repoId: number, keep: ReadonlySet<number>): number;
+  /** The repository's issues, most recently updated first (by the stored `updated_at`), then by number. */
+  issues(repoId: number): RepoIssue[];
+  issueState(repoId: number): IssueState;
+  /**
+   * Records the read as complete with issues switched on and clears any earlier failure. A null `cursor` keeps the
+   * stored one.
+   */
+  finishIssueCrawl(repoId: number, cursor: string | null): void;
+  /** Deletes the issues, clears the cursor and the issue error and records issues as switched off, in one transaction. */
+  disableIssues(repoId: number): void;
+  /** Records why the issue read failed. Neither the cursor nor the stored issues are touched. */
+  failIssueCrawl(repoId: number, message: string): void;
+  /** Saves the repository's label override, or the defaults again when null. Starts no crawl. */
+  setIssueLabels(repoId: number, rules: IssueLabelRules | null): void;
 }

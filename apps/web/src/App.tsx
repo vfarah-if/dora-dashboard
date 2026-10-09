@@ -4,6 +4,8 @@ import { copy } from "./copy";
 import { Header } from "./components/Header";
 import { SignIn } from "./components/SignIn";
 import { ErrorState, Skeleton } from "./components/States";
+import { IssuePage } from "./pages/IssuePage";
+import { IssuesPage } from "./pages/IssuesPage";
 import { HomePage } from "./pages/HomePage";
 import { ReposPage } from "./pages/ReposPage";
 import { RepoPage } from "./pages/RepoPage";
@@ -28,6 +30,8 @@ export function App() {
         <Route path="/compare" element={<ComparePage />} />
         <Route path="/spaces" element={<SpacesPage />} />
         <Route path="/spaces/:id" element={<SpacePage />} />
+        <Route path="/issues" element={<IssuesPage />} />
+        <Route path="/issues/:id" element={<IssuePage />} />
         <Route path="/review-queue" element={<ReviewQueuePage />} />
         <Route path="*" element={<ReposPage />} />
       </Routes>

@@ -24,7 +24,7 @@ describe("CrawlService", () => {
   it("reads every page and only the configured workflow's runs on a first crawl", async () => {
     await crawler.crawl("token", repoId);
 
-    expect(store.counts(repoId)).toEqual({ pullRequests: 5, deployRuns: 1 });
+    expect(store.counts(repoId)).toEqual({ pullRequests: 5, deployRuns: 1, issues: 0 });
     expect(provider.pagesServed).toBe(3);
     const repo = store.getRepo(repoId)!;
     expect(repo.crawlStatus).toBe("idle");

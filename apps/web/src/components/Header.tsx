@@ -1,7 +1,8 @@
 import { NavLink } from "react-router";
 import type { AuthState } from "../api/hooks";
-import { useHealth, useLogout } from "../api/hooks";
+import { useHealth, useLogout, useRepos } from "../api/hooks";
 import { copy } from "../copy";
+import { hasIssues } from "../lib/issues";
 import { useTheme } from "../lib/theme";
 
 function ThemeToggle() {
@@ -34,6 +35,16 @@ function ThemeToggle() {
   );
 }
 
+/**
+ * The link to the GitHub Issues page, offered only when some repository has issues or a failed read of them. It sits
+ * inside the signed-in nav because the repositories list needs a session.
+ */
+function IssuesNavLink() {
+  const repos = useRepos();
+  if (!repos.data || !hasIssues(repos.data)) return null;
+  return <NavLink to="/issues">{copy.nav.issues}</NavLink>;
+}
+
 /** Sign out applies to browser sign-ins only. A CLI session belongs to the machine, not the page. */
 const canSignOut = (auth: AuthState | undefined) =>
   auth?.source ? auth.source === "device" || auth.source === "oauth" : auth?.mode === "oauth";
@@ -60,6 +71,7 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
             </NavLink>
             <NavLink to="/repos">{copy.nav.repositories}</NavLink>
             {jira && <NavLink to="/spaces">{copy.nav.jira}</NavLink>}
+            <IssuesNavLink />
             <NavLink to="/review-queue">{copy.nav.reviewQueue}</NavLink>
           </nav>
         )}

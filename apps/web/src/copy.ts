@@ -19,6 +19,7 @@ export const copy = {
     viewAsTable: "View as table",
     backToRepos: "Back to repositories",
     backToSpaces: "Back to Jira spaces",
+    backToIssues: "Back to GitHub Issues",
     requestFailed: (status: number) => `The request failed with status ${status}.`,
     networkFailed: "The dashboard could not reach its API. Check that the API is running and try again.",
     errorTitle: "Something went wrong",
@@ -72,6 +73,7 @@ export const copy = {
     repositories: "Repositories",
     reviewQueue: "Review queue",
     jira: "Jira",
+    issues: "GitHub Issues",
   },
 
   repos: {
@@ -842,6 +844,7 @@ export const copy = {
     crawlInProgress: "A crawl is in progress, so these figures may still change.",
     notFound: "This repository could not be found.",
     toRepos: "Go to repositories",
+    issuesLink: "GitHub Issues for this repository",
   },
 
   spaces: {
@@ -1005,6 +1008,229 @@ export const copy = {
         },
       },
     },
+  },
+
+  issues: {
+    title: "GitHub Issues",
+    lede: "The repositories whose issues the dashboard has read from GitHub. Open one to see how its issues flow from being raised to reaching production.",
+    loading: "Loading repositories with issues",
+    emptyTitle: "No repository has GitHub issues yet",
+    emptyBody:
+      "Issues are read from GitHub during each crawl, so a repository appears here once a crawl has found issues in it. Start a crawl from the repositories page, and check that the repository has issues switched on and that your token can read them.",
+    toRepos: "Go to repositories",
+    issues: "Issues",
+    lastCrawled: "Last crawled",
+    neverCrawled: "Not crawled yet",
+    openReport: (name: string) => `Open the GitHub Issues report for ${name}`,
+    errorTitle: "The last read of issues failed",
+    errorReason: (reason: string) => `The reason given was ${reason}. The rest of the crawl was not affected.`,
+  },
+
+  issue: {
+    loadingTitle: "Loading repository",
+    /** Names the kind of report in the file name offered when the page is saved as a PDF. */
+    reportLabel: "github issues report",
+    notFoundTitle: "This repository could not be found",
+    notFoundBody: "The address may not name a repository the dashboard tracks, or the repository may have been removed.",
+    toIssues: "Go to GitHub Issues",
+    crawlFailedTitle: "The latest crawl of this repository failed",
+    crawlFailedBody: "These figures may be out of date, because they come from the last crawl that completed.",
+    crawlFailedReason: (reason: string) => `The reason given was ${reason}`,
+    issueErrorTitle: "The last read of this repository's issues failed",
+    issueErrorBody: "These figures come from the last read that completed, so they may be out of date.",
+    issueErrorReason: (reason: string) => `The reason given was ${reason}`,
+    issuesDisabledTitle: "Issues are switched off on GitHub for this repository",
+    issuesDisabledBody: "Any figures here come from issues read before they were switched off, so they may be out of date.",
+    reposFailedTitle: "The crawl status could not be loaded",
+    reposFailedBody: "The report below is unaffected, but a failed crawl or a failed read of issues would not be shown here.",
+    rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
+    lastCrawled: (when: string) => `Last crawled ${when}`,
+    showPeople: "Show people",
+    showPeopleHint:
+      "Show assignee names in the ageing list and group the hygiene lists by assignee. Names never appear in charts or tiles.",
+    kinds: {
+      bug: "Bug",
+      feature: "Feature",
+      maintenance: "Maintenance",
+      incident: "Incident",
+      security: "Security",
+      other: "Other",
+      epic: "Epic",
+    },
+    priorities: {
+      P0: "P0",
+      P1: "P1",
+      P2: "P2",
+      P3: "P3",
+      P4: "P4",
+      none: "No priority",
+    },
+    weeks: "Weeks",
+
+    headline: {
+      title: "Delivery from GitHub Issues",
+      lede: "Epics are left out of every figure and shown only as a count of those still open. Issues closed as not planned or as duplicates are not counted as closed, and they are left out of every time.",
+      opened: "Opened",
+      openedHint: "Issues raised in this range",
+      closed: "Closed",
+      closedHint: (notPlanned: number) =>
+        `Closed as completed in this range, with ${notPlanned} more closed as not planned or as duplicates`,
+      open: "Open at the end",
+      openHint: (epics: number) =>
+        `Still open when the range ends. ${epics} ${epics === 1 ? "epic is" : "epics are"} open and not counted`,
+      timeToClose: "Time to close",
+      timeToCloseHint: (p75: string) => `Median from opened to closed as completed, 75th percentile ${p75}`,
+      linked: "Linked to a pull request",
+      linkedHint: (linked: number, total: number) =>
+        `${linked} of ${total} issues closed as completed have at least one pull request`,
+      oldest: "Longest open",
+      oldestHint: (number: number) => `Issue #${number} has been open longest, measured to the end of the range`,
+      oldestNone: "No issue is open when the range ends",
+    },
+
+    flow: {
+      title: "Flow",
+      lede: "How many issues are raised and closed each week, which kinds of work get closed, and how many are left open.",
+      partWeek: {
+        current: (week: string) =>
+          `The week starting ${week} is not over yet, so its figures are marked so far. Its counts are drawn lighter inside an outline, because a part week holds fewer issues than a whole one. The open count is a position at one moment and is not lowered by a short week.`,
+        cut: (week: string, day: string) =>
+          `The range ends on ${day}, part way through the week starting ${week}, so that week's figures stop there. Its counts are drawn lighter inside an outline, because a part week holds fewer issues than a whole one. The open count is a position at one moment and is not lowered by a short week.`,
+      },
+      openedClosed: {
+        title: "Issues opened and closed",
+        subtitle:
+          "Weekly count of issues opened against those closed as completed. Issues closed as not planned or as duplicates are not counted.",
+        opened: "Opened",
+        closed: "Closed",
+      },
+      closedByKind: {
+        title: "Closed by kind",
+        subtitle:
+          "Issues closed as completed each week, stacked by kind. The kind comes from the issue type, a label or the title, and an issue that names none counts as other.",
+        total: "Total",
+      },
+      openAtEnd: {
+        title: "Open at the end of each week",
+        subtitle:
+          "Issues still open at the end of each week, or at the end of the range for the last week. Epics are not counted.",
+        series: "Open issues",
+      },
+    },
+
+    open: {
+      title: "Open issues and time to close",
+      lede: "What is still open at the end of the range, by kind and by priority, and how long closed issues took.",
+      byKind: {
+        title: "Open by kind",
+        subtitle: "Issues open at the end of the range, by kind. Epics are not counted.",
+        series: "Open issues",
+        kind: "Kind",
+      },
+      byPriority: {
+        title: "Open by priority",
+        subtitle: "Issues open at the end of the range, by priority. An issue that names no priority is shown as no priority.",
+        series: "Open issues",
+        priority: "Priority",
+      },
+      timeToClose: {
+        title: "Time to close by priority",
+        subtitle:
+          "Median time from opened to closed as completed for issues closed in this range, by priority. The table gives the median, 75th percentile and mean, and how many issues each covers.",
+        series: "Median time to close",
+        issues: "Issues",
+        median: "Median",
+        p75: "75th percentile",
+        mean: "Mean",
+        priority: "Priority",
+      },
+    },
+
+    ageing: {
+      title: "Ageing issues",
+      subtitle: "Issues open at the end of the range, oldest first, with how long each had been open when the range ends.",
+      number: "Issue",
+      issueTitle: "Title",
+      kind: "Kind",
+      priority: "Priority",
+      age: "Age",
+      assignee: "Assignee",
+      noPriority: "None",
+      unassigned: "Unassigned",
+      empty: "No issue is open when the range ends.",
+      cut: (shown: number, total: number) => `Showing the ${shown} oldest of ${total} open issues.`,
+    },
+
+    idea: {
+      title: "Idea to production",
+      lede: (linked: number, total: number, share: string) =>
+        `Only issues closed as completed that have a linked pull request can be measured, so these figures cover at most ${linked} of ${total} issues (${share}), and issue to production covers fewer when a linked pull request has not shipped. A pull request is linked by a closing reference, which includes the link in the issue's Development section, by an issue number in its title, or by a number in its branch name. The times leave out work that is linked in none of those ways.`,
+      toFirstPr: "Issue to first pull request",
+      toFirstPrHint: (p75: string, count: number) =>
+        `Median from opened to the first linked pull request opened, 75th percentile ${p75}, across ${count} issues`,
+      toProduction: "Issue to production",
+      toProductionHint: (p75: string, count: number) =>
+        `Median from opened to the deploy that shipped the last of its merged linked pull requests, 75th percentile ${p75}, across ${count} issues`,
+    },
+
+    hygiene: {
+      title: "Issue hygiene",
+      lede: "Prompts to tidy the issues so the figures above can be trusted. They are not a score, and some issues genuinely need no code.",
+      checkThese: "Check these",
+      none: "Nothing to check here.",
+      found: (count: number) => `${count} to check`,
+      foundOf: (count: number, of: number, share: string) => `${count} of ${of} to check (${share})`,
+      checks: {
+        closed_without_pr: {
+          title: "Closed with no pull request",
+          explanation:
+            "Issues closed as completed in this range that no pull request is linked to. Some work needs no code, so check whether a closing keyword or an issue number is missing.",
+        },
+        reopened: {
+          title: "Reopened issues",
+          explanation:
+            "Issues that were closed and then opened again in this range, which is worth a look at what was missed the first time.",
+        },
+        urgent_unassigned: {
+          title: "Urgent issues with no assignee",
+          explanation: "Issues open at the end of the range with priority P0 or P1 that nobody is assigned to.",
+        },
+        stale_urgent: {
+          title: "Stale urgent issues",
+          explanation: (days: number) =>
+            `Open P0 and P1 issues, incidents and security issues with no update in the ${days} days before the range ends.`,
+        },
+        unclassified: {
+          title: "Open issues with no kind or priority",
+          explanation:
+            "Open issues whose type, labels and title name neither a kind nor a priority, so they are counted as other and cannot be ranked.",
+        },
+        pr_without_issue: {
+          title: "Pull requests with no issue",
+          explanation:
+            "Pull requests merged in this range by a person that no issue is linked to. A pull request counts as linked when it has a closing keyword or an issue number in its title or branch name, so where pull requests carry none of those this list will be long.",
+        },
+      },
+    },
+  },
+
+  issueLabels: {
+    title: "GitHub issue labels",
+    lede: "Issues are given a kind and a priority from their type, labels and title. Name the labels your team uses for each, separated by commas. A box left empty keeps the default, which is shown inside it.",
+    kindsLegend: "Kinds",
+    prioritiesLegend: "Priorities",
+    kindLabel: (kind: string) => `${kind} labels`,
+    priorityLabel: (priority: string) => `${priority} labels`,
+    save: "Save labels",
+    reset: "Reset to defaults",
+    saved: "Labels saved. The report already uses them, so no crawl is needed.",
+    resetDone: "Labels reset to the defaults. The report already uses them, so no crawl is needed.",
+    applyNote: "Changes apply to the report straight away, because kinds and priorities are worked out when the report is built.",
+    tooMany: (limit: number) => `Name at most ${limit} labels for each kind or priority.`,
+    tooLong: (limit: number) => `Each label can have at most ${limit} characters.`,
+    control: "Label names cannot contain control characters, such as a tab or a line break.",
+    unreadable: "The label names saved for this repository could not be read, so the defaults apply until you save them again.",
+    loadingDefaults: "Loading the default label names. Saving is available once they have loaded.",
   },
 
   compare: {

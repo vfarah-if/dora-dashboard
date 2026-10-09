@@ -1,30 +1,7 @@
 import type { DeployRun, OpenPullRequest, PullRequest, RequestedReviewer, Review } from "@dora-dashboard/core";
-import { NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
+import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
-
-const API = "https://api.github.com";
-
-type Fetch = typeof fetch;
-
-async function request<T>(http: Fetch, token: string, url: string, init: RequestInit = {}): Promise<T> {
-  const response = await http(url, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "dora-dashboard",
-      ...init.headers,
-    },
-  });
-  if (response.status === 401) throw new UnauthorisedError("GitHub rejected the credential; sign in again");
-  if (response.status === 404) throw new NotFoundError("GitHub could not find that, or the credential cannot see it");
-  if (!response.ok) {
-    const body = await response.text();
-    throw new UpstreamError(`GitHub answered ${response.status}: ${body.slice(0, 300)}`, response.status);
-  }
-  return (await response.json()) as T;
-}
+import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
 
 const PULL_REQUESTS_QUERY = `
 query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
@@ -71,7 +48,7 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
         reviews(last: 100) { nodes { author { login __typename } state submittedAt } }
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } } }
         labels(first: 20) { nodes { name } }
-        closingIssuesReferences(first: 5) { nodes { number } }
+        closingIssuesReferences(first: 5) { nodes { number repository { nameWithOwner } } }
       }
     }
   }
@@ -121,7 +98,9 @@ interface GqlOpenPullRequest extends GqlPullRequest {
   reviewRequests?: {
     nodes: ({ requestedReviewer: { __typename?: string; login?: string; name?: string } | null } | null)[];
   } | null;
-  closingIssuesReferences?: { nodes: ({ number: number } | null)[] } | null;
+  closingIssuesReferences?: {
+    nodes: ({ number: number; repository?: { nameWithOwner?: string | null } | null } | null)[];
+  } | null;
 }
 
 interface GqlPage<Node = GqlPullRequest> {
@@ -130,7 +109,7 @@ interface GqlPage<Node = GqlPullRequest> {
       pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; totalCount: number; nodes: Node[] };
     } | null;
   };
-  errors?: { message: string }[];
+  errors?: { message: string; type?: string; path?: (string | number)[] }[];
 }
 
 /** GitHub lists at most 3000 changed files of a pull request through its REST API, so reading stops there too. */
@@ -206,7 +185,7 @@ const CHECKS: Record<string, OpenPullRequest["checks"]> = {
   EXPECTED: "pending",
 };
 
-function toOpenPullRequest(node: GqlOpenPullRequest): OpenPullRequest {
+function toOpenPullRequest(owner: string, name: string, node: GqlOpenPullRequest): OpenPullRequest {
   const rollup = node.latest?.nodes[0]?.commit.statusCheckRollup?.state;
   return {
     ...toPullRequest(node),
@@ -219,7 +198,10 @@ function toOpenPullRequest(node: GqlOpenPullRequest): OpenPullRequest {
       if (who?.login) return [{ name: who.login, isTeam: false }];
       return who?.name ? [{ name: who.name, isTeam: true }] : [];
     }),
-    linkedIssues: (node.closingIssuesReferences?.nodes ?? []).flatMap((n) => (n ? [`#${n.number}`] : [])),
+    // Qualified by the issue's own repository so that grouping across repositories keeps two issue 12s apart (ADR 0017).
+    linkedIssues: (node.closingIssuesReferences?.nodes ?? []).flatMap((n) =>
+      n ? [`${n.repository?.nameWithOwner ?? `${owner}/${name}`}#${n.number}`] : [],
+    ),
     ...(node.body ? { body: node.body } : {}),
   };
 }
@@ -227,7 +209,6 @@ function toOpenPullRequest(node: GqlOpenPullRequest): OpenPullRequest {
 // Each PR also carries up to 100 commit messages for trailers, so pages stay small to keep responses fast.
 const PAGE_SIZE = 25;
 const RETRY_PAGE_SIZE = 10;
-const RETRYABLE = new Set([502, 504]);
 const OPEN_PAGE_SIZE = 50;
 const OPEN_RETRY_PAGE_SIZE = 20;
 /** A repository with more open pull requests than this is read only as far as this many pages. */
@@ -252,8 +233,14 @@ export class GitHubProvider implements SourceProvider {
       page = await this.pullRequestPage(token, owner, name, cursor, RETRY_PAGE_SIZE);
     }
     const connection = page.data?.repository?.pullRequests;
-    if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+    // Errors come first: a rate limit also leaves the repository null, and must not be reported as not found. Only
+    // GitHub's own NOT_FOUND on the `repository` path says the repository is missing or invisible.
+    const missing = page.errors?.some((e) => e.type === "NOT_FOUND" && e.path?.[0] === "repository") ?? false;
+    if (missing && !page.data?.repository) {
+      throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+    }
     if (page.errors?.length) throw new UpstreamError(page.errors.map((e) => e.message).join("; "), 200);
+    if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
     const nodes: GqlPullRequest[] = [];
     // One pull request at a time, since GitHub's secondary rate limits penalise bursts of concurrent queries.
     for (const node of connection.nodes) nodes.push(await this.withAllFiles(token, owner, name, node));
@@ -325,7 +312,7 @@ export class GitHubProvider implements SourceProvider {
       if (result.errors?.length) throw new UpstreamError(result.errors.map((e) => e.message).join("; "), 200);
       const connection = result.data?.repository?.pullRequests;
       if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
-      found.push(...connection.nodes.map(toOpenPullRequest));
+      found.push(...connection.nodes.map((node) => toOpenPullRequest(owner, name, node)));
       if (!connection.pageInfo.hasNextPage) return { pullRequests: found, truncated: false };
       cursor = connection.pageInfo.endCursor;
     }

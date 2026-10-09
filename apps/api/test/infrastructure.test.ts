@@ -404,6 +404,79 @@ describe("GitHubProvider", () => {
     await expect(new GitHubProvider(vi.fn(async () => json({}, 500))).fetchViewer("t")).rejects.toBeInstanceOf(UpstreamError);
   });
 
+  it("gives every request a 60 second timeout unless the caller brings its own signal", async () => {
+    const http = vi.fn(async () => json({ login: "alice" }));
+    await new GitHubProvider(http).fetchViewer("t");
+    const [, init] = http.mock.calls[0] as unknown as [string, RequestInit];
+
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  it("maps a timeout onto a 504, so the page readers retry it smaller", async () => {
+    const timedOut = vi.fn(async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+
+    await expect(new GitHubProvider(timedOut).fetchViewer("t")).rejects.toMatchObject({
+      name: "UpstreamError",
+      status: 504,
+      message: "GitHub did not answer within 60 seconds",
+    });
+    const retried = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("timeout", "TimeoutError"))
+      .mockResolvedValueOnce(json({ data: { repository: { pullRequests: { pageInfo: {}, totalCount: 0, nodes: [] } } } }));
+    await new GitHubProvider(retried).fetchPullRequestPage("t", "acme", "widgets", null);
+    expect(retried).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets other network failures through unchanged", async () => {
+    const down = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+
+    await expect(new GitHubProvider(down).fetchViewer("t")).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("says when GitHub's rate limit lifts, from the reset header or the retry-after header", async () => {
+    const limited = (status: number, headers: Record<string, string>) =>
+      new GitHubProvider(vi.fn(async () => new Response("slow down", { status, headers }))).fetchViewer("t");
+
+    await expect(limited(403, { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1788000000" })).rejects.toMatchObject({
+      name: "UpstreamError",
+      status: 403,
+      message: "GitHub's rate limit for this token was reached; try again after 2026-08-29T10:40:00.000Z",
+    });
+
+    vi.useFakeTimers({ now: new Date("2026-09-01T10:00:00Z") });
+    try {
+      await expect(limited(429, { "retry-after": "90" })).rejects.toMatchObject({
+        status: 429,
+        message: "GitHub's rate limit for this token was reached; try again after 2026-09-01T10:01:30.000Z",
+      });
+      // A secondary limit says how long to wait; that wins over the primary window's reset time.
+      await expect(
+        limited(403, { "retry-after": "60", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1788000000" }),
+      ).rejects.toMatchObject({
+        message: "GitHub's rate limit for this token was reached; try again after 2026-09-01T10:01:00.000Z",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await expect(limited(403, { "x-ratelimit-remaining": "0" })).rejects.toMatchObject({
+      message: "GitHub's rate limit for this token was reached; try again later",
+    });
+  });
+
+  it("keeps the ordinary message for a 403 that is not a rate limit", async () => {
+    const forbidden = new GitHubProvider(
+      vi.fn(async () => new Response("no access", { status: 403, headers: { "x-ratelimit-remaining": "4999" } })),
+    );
+
+    await expect(forbidden.fetchViewer("t")).rejects.toMatchObject({ status: 403, message: "GitHub answered 403: no access" });
+  });
+
   it("pages through workflow runs until a short page, within the cap", async () => {
     const restRun = (id: number) => ({
       id,
@@ -459,11 +532,11 @@ describe("SqliteRepoStore", () => {
 
     expect(store.findRepo("ACME", "WIDGETS")?.id).toBe(repo.id);
     expect(store.pullRequests(repo.id).find((p) => p.number === 1)?.title).toBe("edited");
-    expect(store.counts(repo.id)).toEqual({ pullRequests: 2, deployRuns: 2 });
+    expect(store.counts(repo.id)).toEqual({ pullRequests: 2, deployRuns: 2, issues: 0 });
 
     store.deleteRepo(repo.id);
     expect(store.getRepo(repo.id)).toBeNull();
-    expect(store.counts(repo.id)).toEqual({ pullRequests: 0, deployRuns: 0 });
+    expect(store.counts(repo.id)).toEqual({ pullRequests: 0, deployRuns: 0, issues: 0 });
   });
 
   it("tracks crawl state and keeps the previous cursor when a crawl saw nothing", () => {
@@ -597,7 +670,14 @@ describe("GitHubProvider open pull requests", () => {
         null,
       ],
     },
-    closingIssuesReferences: { nodes: [{ number: 12 }, null] },
+    closingIssuesReferences: {
+      nodes: [
+        { number: 12, repository: { nameWithOwner: "acme/widgets" } },
+        { number: 7, repository: { nameWithOwner: "acme/gadgets" } },
+        { number: 9 },
+        null,
+      ],
+    },
     labels: { nodes: [{ name: "on hold" }] },
   };
   const connection = (nodes: unknown[], next: string | null = null) => ({
@@ -622,7 +702,7 @@ describe("GitHubProvider open pull requests", () => {
       checks: "failing",
       changedFiles: 7,
       body: "Related: #4",
-      linkedIssues: ["#12"],
+      linkedIssues: ["acme/widgets#12", "acme/gadgets#7", "acme/widgets#9"],
       labels: ["on hold"],
       requestedReviewers: [
         { name: "bob", isTeam: false },
@@ -726,6 +806,27 @@ describe("GitHubProvider open pull requests", () => {
     await expect(missing.fetchOpenPullRequests("t", "acme", "nope")).rejects.toBeInstanceOf(NotFoundError);
     const broken = new GitHubProvider(vi.fn(async () => json({ ...connection([]), errors: [{ message: "boom" }] })));
     await expect(broken.fetchOpenPullRequests("t", "acme", "widgets")).rejects.toBeInstanceOf(UpstreamError);
+  });
+
+  it("reports a rate limit that arrives with a null pull request page as an upstream error, not as not found", async () => {
+    const limited = new GitHubProvider(
+      vi.fn(async () => json({ data: { repository: null }, errors: [{ message: "API rate limit exceeded" }] })),
+    );
+
+    await expect(limited.fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toMatchObject({
+      name: "UpstreamError",
+      message: "API rate limit exceeded",
+    });
+  });
+
+  it("still reports a NOT_FOUND on the repository path as not found when reading a pull request page", async () => {
+    const gone = new GitHubProvider(
+      vi.fn(async () =>
+        json({ data: { repository: null }, errors: [{ type: "NOT_FOUND", path: ["repository"], message: "Could not resolve" }] }),
+      ),
+    );
+
+    await expect(gone.fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("reports a rate limit that arrives with a null repository as an upstream error, not as not found", async () => {

@@ -1,4 +1,4 @@
-import { DORA_PROFILE_IDS } from "@dora-dashboard/core";
+import { DORA_PROFILE_IDS, ISSUE_LABEL_KINDS, ISSUE_LABEL_LIMITS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 
 /** JSON schemas Fastify validates request bodies and query strings against before a handler runs. */
 
@@ -61,6 +61,12 @@ export const spaceReportQuery = {
   properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },
 } as const;
 
+/** A repository's issue report: the range and whether names appear. */
+export const issueReportQuery = {
+  type: "object",
+  properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },
+} as const;
+
 /** `ids` is optional: leave it out for every repository. */
 export const reviewQueueQuery = {
   type: "object",
@@ -107,4 +113,43 @@ export const linkSpacesBody = {
   required: ["siteId", "keys"],
   additionalProperties: false,
   properties: { siteId, keys: { type: "array", items: spaceKey, maxItems: 20 } },
+} as const;
+
+/** A label name: 1 to `length` characters, none of them a control character. */
+const labelName = {
+  type: "string",
+  minLength: 1,
+  maxLength: ISSUE_LABEL_LIMITS.length,
+  pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+} as const;
+const labelNames = { type: "array", items: labelName, maxItems: ISSUE_LABEL_LIMITS.names } as const;
+
+const keyed = <const K extends string>(keys: readonly K[]) =>
+  ({
+    type: "object",
+    additionalProperties: false,
+    properties: Object.fromEntries(keys.map((key) => [key, labelNames])) as Record<K, typeof labelNames>,
+  }) as const;
+
+/**
+ * `labels: null` returns the repository to the default label names; each key named replaces that key's defaults. An
+ * `anyOf` rather than `type: ["object", "null"]`, because Fastify's default `coerceTypes: "array"` would turn `false`,
+ * `0` and `""` into null and answer 200.
+ */
+export const issueLabelsBody = {
+  type: "object",
+  required: ["labels"],
+  additionalProperties: false,
+  properties: {
+    labels: {
+      anyOf: [
+        { const: null },
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: { kinds: keyed(ISSUE_LABEL_KINDS), priorities: keyed(ISSUE_PRIORITIES) },
+        },
+      ],
+    },
+  },
 } as const;

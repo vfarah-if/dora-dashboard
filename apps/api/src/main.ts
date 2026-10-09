@@ -7,6 +7,7 @@ import { MemorySessionStore } from "./infrastructure/auth/memory-session-store.j
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubDeviceFlow } from "./infrastructure/github/github-device-flow.js";
+import { GitHubIssueProvider } from "./infrastructure/github/github-issue-provider.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
 import { MemoryTrackerGrantStore } from "./infrastructure/auth/memory-tracker-grant-store.js";
 import { AtlassianOAuth } from "./infrastructure/jira/atlassian-oauth.js";
@@ -33,6 +34,7 @@ const { app } = await buildApp({
   config,
   store: new SqliteRepoStore(config.databasePath, undefined, lateLog),
   provider,
+  issues: new GitHubIssueProvider(),
   sessions: new MemorySessionStore(),
   cli: new GhCliTokenSource(provider),
   exchangeCode: githubCodeExchange(config),

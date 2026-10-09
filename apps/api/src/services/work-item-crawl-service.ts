@@ -1,28 +1,15 @@
-import { AppError, NotFoundError, TrackerUnauthorisedError, UnauthorisedError, UpstreamError } from "../core/errors.js";
+import { AppError, NotFoundError, TrackerUnauthorisedError, UnauthorisedError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { WorkItemProvider } from "../interfaces/work-item-provider.js";
+import { cursorBefore } from "./crawl-cursor.js";
 import { CRAWL_REFUSED, type JiraAuthService } from "./jira-auth-service.js";
 
 /** Shown in place of a failure's own message when it is not one the person can act on; the detail is in the log. */
 const UNEXPECTED_FAILURE = "The crawl failed unexpectedly. See the API log.";
 
-/** A cursor that is not a date would make every later incremental crawl misbehave, so refuse it now. */
-function cursorBefore(newest: string): string {
-  const at = Date.parse(newest);
-  if (Number.isNaN(at))
-    throw new UpstreamError(
-      `The tracker sent a work item update time that is not a date (${JSON.stringify(newest.slice(0, 40))})`,
-      502,
-    );
-  return new Date(at - CURSOR_OVERLAP_MS).toISOString();
-}
-
 type CrawledSpace = NonNullable<ReturnType<RepoStore["getSpace"]>>;
-
-/** How far behind the newest item the stored cursor sits, so late-indexed and same-millisecond items are re-read. */
-export const CURSOR_OVERLAP_MS = 5 * 60_000;
 
 interface UsedToken {
   token: string | null;
@@ -75,7 +62,7 @@ export class WorkItemCrawlService {
       if (read && this.store.getSpace(spaceId)) {
         if (full) this.store.removeWorkItemsExcept(spaceId, read.keys);
         this.savePeople(space, read.people, full);
-        this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest));
+        this.store.finishSpaceCrawl(spaceId, read.newest === null ? null : cursorBefore(read.newest, "a work item"));
       }
     } catch (caught) {
       const error = this.refusedGrant(login, used.token, caught);

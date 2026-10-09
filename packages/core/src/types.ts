@@ -1,3 +1,5 @@
+import type { IssueLabelKind, IssuePriority } from "./issueKinds.js";
+
 /** Where a repository's or a tracked space's crawl stands. */
 export type CrawlStatus = "idle" | "crawling" | "failed";
 
@@ -89,7 +91,7 @@ export interface OpenPullRequest extends PullRequest {
   headRef: string;
   /** State of the newest commit's checks: "none" when the repository reports no checks. */
   checks: "passing" | "failing" | "pending" | "none";
-  /** Issues the pull request is set to close, as `#12`. */
+  /** Issues the pull request is set to close, as `owner/name#12`, qualified by the issue's own repository. */
   linkedIssues: string[];
   /** Number of files changed, as reported by the host. */
   changedFiles: number;
@@ -370,4 +372,112 @@ export type ApiErrorCode = "jira_unauthorised";
 export interface ApiErrorBody {
   error: string;
   code?: ApiErrorCode;
+}
+
+/**
+ * Why a GitHub issue was closed. A closed issue GitHub recorded no reason for counts as completed, because closing
+ * without a reason was the only way to finish an issue before reasons existed; the adapter says so, not core.
+ */
+export type IssueCloseReason = "completed" | "not_planned" | "duplicate";
+
+/** One close or reopen in an issue's history. Why it was closed is the issue's `closeReason`, for its final close. */
+export interface IssueEvent {
+  at: string;
+  type: "closed" | "reopened";
+}
+
+/** A pull request an issue names as closing it, qualified by its repository so two repositories' #12 never meet. */
+export interface IssueReference {
+  /** "owner/name". */
+  repo: string;
+  number: number;
+}
+
+/** What every issue carries, open or closed. */
+interface RepoIssueFields {
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Logins; shown only behind the people toggle (ADR 0008). */
+  assignees: string[];
+  labels: string[];
+  /** The host's native issue type, such as "Bug"; null when none is set. */
+  issueType: string | null;
+  /** Pull requests that close this issue through a closing keyword or a manual link, in any repository. */
+  closedBy: IssueReference[];
+  /** Closes and reopens, oldest first. */
+  events: IssueEvent[];
+  /** True when the host had older closes or reopens than were read; the open spans then fall back to the dates. */
+  eventsTruncated?: boolean;
+}
+
+export interface OpenRepoIssue extends RepoIssueFields {
+  state: "open";
+  closeReason: null;
+  closedAt: null;
+}
+
+export interface ClosedRepoIssue extends RepoIssueFields {
+  state: "closed";
+  closeReason: IssueCloseReason;
+  /** When the issue was last closed. */
+  closedAt: string;
+}
+
+/**
+ * An issue read from a code host's own issue tracker, such as GitHub Issues. Pull requests are never issues here. Its
+ * author is not read, since no figure uses it (ADR 0008).
+ */
+export type RepoIssue = OpenRepoIssue | ClosedRepoIssue;
+
+/**
+ * A repository's override of which label names mean which kind and priority. Each key named replaces the default list
+ * for that key only; keys left out, or left with no names, keep their defaults. Names are compared without case.
+ */
+export interface IssueLabelRules {
+  kinds?: Partial<Record<IssueLabelKind, string[]>>;
+  priorities?: Partial<Record<IssuePriority, string[]>>;
+}
+
+/** Every kind's and every priority's label names. */
+export interface IssueLabelLists {
+  kinds: Record<IssueLabelKind, string[]>;
+  priorities: Record<IssuePriority, string[]>;
+}
+
+/** The label names that apply until a repository overrides them, and the limits an override must keep to. */
+export interface IssueLabelDefaults extends IssueLabelLists {
+  limits: {
+    /** The most names one kind or priority may list. */
+    names: number;
+    /** The most characters one name may have. */
+    length: number;
+  };
+}
+
+/** A pull request named in a finding or a list. */
+export interface PullRequestRef {
+  /** "owner/name". */
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+}
+
+/** A repository as the repositories list shows it, with how much has been crawled from it. */
+export interface RepoListing extends Repo {
+  pullRequests: number;
+  deployRuns: number;
+  /** Issues stored for the repository. */
+  issues: number;
+  /** Whether the host reported issues switched on at the last crawl; null before issues were first read. */
+  issuesEnabled: boolean | null;
+  /** The repository's label override; null when the defaults apply. */
+  issueLabels: IssueLabelRules | null;
+  /** True when an override was saved but cannot be read, so the defaults apply until it is saved again. */
+  issueLabelsUnreadable: boolean;
+  /** Why the last issue read failed; null when it succeeded or never ran. The rest of the crawl is unaffected. */
+  issueError: string | null;
 }

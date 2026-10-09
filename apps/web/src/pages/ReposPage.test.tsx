@@ -160,3 +160,26 @@ describe("ReposPage", () => {
     expect(screen.queryByText(copy.jira.outcomes.error.title)).not.toBeInTheDocument();
   });
 });
+
+describe("ReposPage issue labels", () => {
+  const configure = async (listing: ReturnType<typeof repo>) => {
+    const user = userEvent.setup();
+    mockFetch({
+      "GET /api/repos": { body: [listing] },
+      "GET /api/repos/1/workflows": { body: ["deploy.yml"] },
+    });
+    renderRoute(<ReposPage />);
+    await user.click(await screen.findByRole("button", { name: copy.repos.configure }));
+    await screen.findByRole("checkbox", { name: "deploy.yml" });
+  };
+
+  it("offers the label panel in Configure when the repository has issues", async () => {
+    await configure(repo({ issues: 4 }));
+    expect(screen.getByRole("heading", { name: copy.issueLabels.title })).toBeInTheDocument();
+  });
+
+  it("leaves the label panel out when the repository has no issues", async () => {
+    await configure(repo({ issues: 0 }));
+    expect(screen.queryByRole("heading", { name: copy.issueLabels.title })).not.toBeInTheDocument();
+  });
+});

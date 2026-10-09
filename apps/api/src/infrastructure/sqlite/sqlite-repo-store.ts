@@ -7,15 +7,18 @@ import type {
   CodeSnapshot,
   CrawlStatus,
   DeployRun,
+  IssueLabelRules,
   PullRequest,
   Repo,
+  RepoIssue,
   TrackerSpace,
   TrackerStatus,
   WorkItem,
 } from "@dora-dashboard/core";
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
-import type { RepoCounts, RepoStore } from "../../interfaces/repo-store.js";
+import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
+import type { IssueState, RepoCounts, RepoStore } from "../../interfaces/repo-store.js";
 
 const SNAPSHOTS_KEPT = 10;
 
@@ -32,6 +35,10 @@ CREATE TABLE IF NOT EXISTS repos (
   crawl_error TEXT,
   crawl_progress TEXT,
   crawl_cursor TEXT,
+  issues_enabled INTEGER,
+  issue_cursor TEXT,
+  issue_labels TEXT,
+  issue_error TEXT,
   UNIQUE (owner, name)
 );
 CREATE TABLE IF NOT EXISTS pull_requests (
@@ -47,6 +54,14 @@ CREATE TABLE IF NOT EXISTS deploy_runs (
   data TEXT NOT NULL,
   PRIMARY KEY (repo_id, run_id)
 );
+CREATE TABLE IF NOT EXISTS issues (
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  number INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (repo_id, number)
+);
+CREATE INDEX IF NOT EXISTS idx_issues_repo_updated ON issues (repo_id, updated_at DESC, number);
 CREATE TABLE IF NOT EXISTS code_snapshots (
   repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   commit_sha TEXT NOT NULL,
@@ -157,6 +172,58 @@ interface RepoRow {
   crawl_error: string | null;
   crawl_progress: string | null;
   crawl_cursor: string | null;
+  issues_enabled: number | null;
+  issue_cursor: string | null;
+  issue_labels: string | null;
+  issue_error: string | null;
+}
+
+const LABEL_KINDS: ReadonlySet<string> = new Set(ISSUE_LABEL_KINDS);
+const LABEL_PRIORITIES: ReadonlySet<string> = new Set(ISSUE_PRIORITIES);
+
+/** True for an object whose keys are all in `known` and whose values are all arrays of strings. */
+function isRuleGroup(value: unknown, known: ReadonlySet<string>): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.entries(value).every(
+    ([key, names]) => known.has(key) && Array.isArray(names) && names.every((name) => typeof name === "string"),
+  );
+}
+
+/**
+ * A saved label override. `rules` is null when none was saved or what was saved cannot be used; an override is never
+ * worth a failed read, and a wrong shape would make every report throw, so unusable rules read back as the defaults
+ * with `unreadable` set, which lets the person be told. The repository id is logged so the row can be found, once per
+ * repository in `warned`, because the list is polled.
+ */
+function labelsOf(
+  saved: string | null,
+  repoId: number,
+  log: Logger,
+  warned: Set<number>,
+): { rules: IssueLabelRules | null; unreadable: boolean } {
+  if (saved === null) return { rules: null, unreadable: false };
+  const refuse = (context: Record<string, unknown>, message: string) => {
+    if (!warned.has(repoId)) {
+      warned.add(repoId);
+      log.warn({ ...context, repoId }, message);
+    }
+    return { rules: null, unreadable: true };
+  };
+  let rules: unknown;
+  try {
+    rules = JSON.parse(saved);
+  } catch (err) {
+    return refuse({ err }, "saved issue labels are not readable JSON; using the defaults");
+  }
+  if (typeof rules !== "object" || rules === null || Array.isArray(rules)) {
+    return refuse({}, "saved issue labels are not an object; using the defaults");
+  }
+  const { kinds, priorities, ...rest } = rules as Record<string, unknown>;
+  if (Object.keys(rest).length > 0 || !isRuleGroup(kinds, LABEL_KINDS) || !isRuleGroup(priorities, LABEL_PRIORITIES)) {
+    return refuse({}, "saved issue labels do not have the expected shape; using the defaults");
+  }
+  return { rules: rules as IssueLabelRules, unreadable: false };
 }
 
 const toRepo = (row: RepoRow): Repo => ({
@@ -180,6 +247,8 @@ const RESTARTED_DURING_CRAWL = "The API restarted during this crawl. Crawl again
  */
 export class SqliteRepoStore implements RepoStore {
   private db: DatabaseSync;
+  /** Repositories whose unusable saved labels were already reported, so a polled list does not repeat it. */
+  private readonly warnedLabels = new Set<number>();
 
   constructor(
     path: string,
@@ -208,6 +277,17 @@ export class SqliteRepoStore implements RepoStore {
    * as it was, so a column added later has to be added here. Each step checks first, so running it twice is safe.
    */
   private migrate(): void {
+    const repoColumns = this.db.prepare("PRAGMA table_info(repos)").all() as unknown as { name: string }[];
+    // Issues read from the code host (ADR 0028): whether they are switched on, where the next read resumes, the
+    // label override and why the last read failed. Null means no issue read has recorded them yet.
+    for (const [column, type] of [
+      ["issues_enabled", "INTEGER"],
+      ["issue_cursor", "TEXT"],
+      ["issue_labels", "TEXT"],
+      ["issue_error", "TEXT"],
+    ] as const) {
+      if (!repoColumns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE repos ADD COLUMN ${column} ${type}`);
+    }
     const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string; notnull: number }[];
     // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
     if (!columns.some((c) => c.name === "people")) this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN people TEXT");
@@ -344,7 +424,95 @@ export class SqliteRepoStore implements RepoStore {
   counts(repoId: number): RepoCounts {
     const pr = this.db.prepare("SELECT count(*) AS n FROM pull_requests WHERE repo_id = ?").get(repoId) as { n: number };
     const dr = this.db.prepare("SELECT count(*) AS n FROM deploy_runs WHERE repo_id = ?").get(repoId) as { n: number };
-    return { pullRequests: pr.n, deployRuns: dr.n };
+    const issues = this.db.prepare("SELECT count(*) AS n FROM issues WHERE repo_id = ?").get(repoId) as { n: number };
+    return { pullRequests: pr.n, deployRuns: dr.n, issues: issues.n };
+  }
+
+  upsertIssues(repoId: number, issues: RepoIssue[]): void {
+    const stmt = this.db.prepare(
+      "INSERT INTO issues (repo_id, number, updated_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (repo_id, number) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+    );
+    this.db.exec("BEGIN");
+    try {
+      for (const issue of issues) stmt.run(repoId, issue.number, issue.updatedAt, JSON.stringify(issue));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  removeIssuesExcept(repoId: number, keep: ReadonlySet<number>): number {
+    const held = this.db.prepare("SELECT number FROM issues WHERE repo_id = ?").all(repoId) as unknown as { number: number }[];
+    const gone = held.filter((row) => !keep.has(row.number));
+    const stmt = this.db.prepare("DELETE FROM issues WHERE repo_id = ? AND number = ?");
+    this.db.exec("BEGIN");
+    try {
+      for (const row of gone) stmt.run(repoId, row.number);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return gone.length;
+  }
+
+  issues(repoId: number): RepoIssue[] {
+    const rows = this.db
+      .prepare("SELECT number, data FROM issues WHERE repo_id = ? ORDER BY updated_at DESC, number ASC")
+      .all(repoId) as unknown as { number: number; data: string }[];
+    return rows.map((r) => {
+      let issue: RepoIssue;
+      try {
+        issue = JSON.parse(r.data) as RepoIssue;
+      } catch (err) {
+        throw new Error(`Stored issue #${r.number} of repository ${repoId} is not readable`, { cause: err });
+      }
+      // A closed row stored by an earlier build may lack its close time, which would drop it from every figure. It
+      // takes its last update instead, as the adapter does for a closed issue GitHub sent without one.
+      return issue.state === "closed" && !issue.closedAt ? { ...issue, closedAt: issue.updatedAt } : issue;
+    });
+  }
+
+  issueState(repoId: number): IssueState {
+    const row = this.db
+      .prepare("SELECT issues_enabled, issue_cursor, issue_labels, issue_error FROM repos WHERE id = ?")
+      .get(repoId) as unknown as Pick<RepoRow, "issues_enabled" | "issue_cursor" | "issue_labels" | "issue_error"> | undefined;
+    const { rules, unreadable } = labelsOf(row?.issue_labels ?? null, repoId, this.log, this.warnedLabels);
+    return {
+      enabled: row?.issues_enabled == null ? null : row.issues_enabled === 1,
+      cursor: row?.issue_cursor ?? null,
+      labels: rules,
+      labelsUnreadable: unreadable,
+      error: row?.issue_error ?? null,
+    };
+  }
+
+  finishIssueCrawl(repoId: number, cursor: string | null): void {
+    this.db
+      .prepare("UPDATE repos SET issues_enabled = 1, issue_error = NULL, issue_cursor = COALESCE(?, issue_cursor) WHERE id = ?")
+      .run(cursor, repoId);
+  }
+
+  disableIssues(repoId: number): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM issues WHERE repo_id = ?").run(repoId);
+      this.db.prepare("UPDATE repos SET issues_enabled = 0, issue_cursor = NULL, issue_error = NULL WHERE id = ?").run(repoId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failIssueCrawl(repoId: number, message: string): void {
+    this.db.prepare("UPDATE repos SET issue_error = ? WHERE id = ?").run(message, repoId);
+  }
+
+  setIssueLabels(repoId: number, rules: IssueLabelRules | null): void {
+    this.warnedLabels.delete(repoId);
+    this.db.prepare("UPDATE repos SET issue_labels = ? WHERE id = ?").run(rules === null ? null : JSON.stringify(rules), repoId);
   }
 
   saveCodeSnapshot(repoId: number, snapshot: CodeSnapshot): void {

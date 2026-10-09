@@ -2,9 +2,13 @@ import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CodeHealthResponse,
+  IssueLabelDefaults,
+  IssueLabelRules,
+  IssueReport,
   JiraConnection,
   LinkedSpace,
   Repo,
+  RepoListing,
   RepoReport,
   ReviewQueue,
   SpaceDescription,
@@ -43,8 +47,6 @@ export interface DevicePoll {
   interval: number;
   user?: AuthUser;
 }
-
-export type RepoWithCounts = Repo & { pullRequests: number; deployRuns: number };
 
 /** The part of the page range that decides which merged pull requests count towards the testing figure. */
 export interface CodeHealthRange {
@@ -87,6 +89,9 @@ export const queryKeys = {
   linkedSpaces: (repoId: number) => ["repos", repoId, "spaces"] as const,
   spaces: ["spaces"] as const,
   spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
+  issueLabelDefaults: ["issue-label-defaults"] as const,
+  issues: (id: number) => ["issues", id] as const,
+  issueReport: (id: number, range: SpaceRange, people: boolean) => ["issues", id, "report", range, people] as const,
 };
 
 /** The part of the page range a space report reads. Bots do not apply to issues. */
@@ -124,7 +129,7 @@ export function useLogout() {
 export function useRepos() {
   return useQuery({
     queryKey: queryKeys.repos,
-    queryFn: () => apiRequest<RepoWithCounts[]>("/api/repos"),
+    queryFn: () => apiRequest<RepoListing[]>("/api/repos"),
     refetchInterval: (query) => (query.state.data?.some((r) => r.crawlStatus === "crawling") ? CRAWL_POLL_MS : false),
   });
 }
@@ -403,5 +408,63 @@ export function useSpaceReport(id: number, range: SpaceRange, people: boolean) {
     // is not shown as "unassigned" while the one with names loads.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === id && previousQuery.queryKey[4] === people ? previous : undefined,
+  });
+}
+
+/**
+ * One repository's GitHub Issues report. Names are asked for only when `people` is true (ADR 0008). It refetches when a
+ * crawl of that repository finishes, since the crawl is what reads the issues.
+ */
+export function useIssueReport(id: number, range: SpaceRange, people: boolean) {
+  const client = useQueryClient();
+  const repos = useRepos();
+  const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
+  const wasCrawling = useRef(false);
+  useEffect(() => {
+    if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: queryKeys.issues(id) });
+    wasCrawling.current = crawling;
+  }, [client, crawling, id]);
+  return useQuery({
+    queryKey: queryKeys.issueReport(id, range, people),
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams();
+      if (range.from) params.set("from", range.from);
+      if (range.to) params.set("to", range.to);
+      if (people) params.set("people", "1");
+      return apiRequest<IssueReport>(withQuery(`/api/repos/${id}/issues/report`, params.toString()), { signal });
+    },
+    enabled: isRecordId(id),
+    retry: false,
+    // A range change keeps the old figures on screen. Another repository's report is never shown under this one's
+    // address, and a report fetched without names is not shown while the one with names loads.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === id && previousQuery.queryKey[4] === people ? previous : undefined,
+  });
+}
+
+/** The label names the API classifies issues with until a repository overrides them, and the limits an override keeps to. */
+export function useIssueLabelDefaults() {
+  return useQuery({
+    queryKey: queryKeys.issueLabelDefaults,
+    queryFn: () => apiRequest<IssueLabelDefaults>("/api/issue-labels/defaults"),
+    // The defaults change only with a release of the API, so one read serves the whole session.
+    staleTime: 60 * 60 * 1000,
+  });
+}
+
+/**
+ * Saves a repository's label override, or clears it with null. The report is built from stored issues, so no crawl
+ * follows: the listing and the report are read again.
+ */
+export function useUpdateIssueLabels(id: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (labels: IssueLabelRules | null) =>
+      apiRequest<RepoListing>(`/api/repos/${id}/issue-labels`, { method: "PUT", body: { labels } }),
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.repos }),
+        client.invalidateQueries({ queryKey: queryKeys.issues(id) }),
+      ]),
   });
 }
