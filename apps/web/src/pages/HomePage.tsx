@@ -3,19 +3,37 @@ import type { Band } from "@dora-dashboard/core";
 import { Link } from "react-router";
 import { copy } from "../copy";
 import { BandLabel } from "../components/BandLabel";
+import { DownloadReportButton } from "../components/DownloadReportButton";
+import { ExternalLink } from "../components/ExternalLink";
 import { Loop, MeasureIcon, PipelineDiagram, StageBar } from "../components/HomeDiagrams";
 
 const BANDS: Band[] = ["elite", "high", "medium", "low"];
 const GROUPS = ["throughput", "stability"] as const;
 
-function ExternalLink({ href, children }: { href: string; children: string }) {
-  return (
-    <a href={href} target="_blank" rel="noreferrer">
-      {children}
-      <span className="visually-hidden"> {copy.common.opensInNewTab}</span>
-    </a>
-  );
+interface OutsideLink {
+  label: string;
+  href: string;
 }
+
+function onceEach(links: OutsideLink[]): OutsideLink[] {
+  return links.filter((link, i) => links.findIndex((other) => other.href === link.href) === i);
+}
+
+/**
+ * Every outside link on the page in reading order, each address once, for the list printed at the end of the
+ * PDF. The page test fails when a link is added to the page and not here.
+ */
+const OUTSIDE_LINKS = onceEach([
+  { label: copy.home.bandsSource, href: copy.home.bandsSourceHref },
+  copy.dora.explain.source,
+  ...copy.dora.explain.moveUp.links.map((key) => ({
+    label: copy.dora.explain.practices[key].name,
+    href: copy.dora.explain.practices[key].href,
+  })),
+  copy.dora.explain.system,
+  { label: copy.home.beckSource, href: copy.home.reading[0].href },
+  ...copy.home.reading.map((r) => ({ label: r.title, href: r.href })),
+]);
 
 function Hero() {
   const home = copy.home;
@@ -32,6 +50,7 @@ function Hero() {
           <a href="#four-keys" className="button button-secondary">
             {home.toKeys}
           </a>
+          <DownloadReportButton subject={home.pdfSubject} label={home.pdfLabel} />
         </div>
       </div>
       <div className="home-hero-art">
@@ -350,6 +369,29 @@ function Closing() {
   );
 }
 
+/** Printed only, so a reader of the PDF on paper can still follow every link. */
+function PrintedLinks() {
+  const home = copy.home;
+  return (
+    <section className="home-section home-links" aria-labelledby="links-title">
+      <h2 id="links-title" className="home-h2">
+        {home.linksTitle}
+      </h2>
+      <p className="home-section-lede">{home.linksLede}</p>
+      <ol className="home-link-list">
+        {OUTSIDE_LINKS.map((link) => (
+          <li key={link.href}>
+            <a href={link.href}>
+              <span className="home-link-label">{link.label}</span>
+              <span className="home-link-href">{link.href}</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 /** The landing page. It explains the theory behind every figure the dashboard shows. */
 export function HomePage() {
   return (
@@ -365,6 +407,7 @@ export function HomePage() {
       <Practices />
       <Reading />
       <Closing />
+      <PrintedLinks />
     </div>
   );
 }

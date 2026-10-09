@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderRoute } from "../test/render";
 import { copy } from "../copy";
 import { HomePage } from "./HomePage";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("HomePage", () => {
   it("explains all four keys under throughput and stability", () => {
@@ -59,7 +64,8 @@ describe("HomePage", () => {
   it("names the profile and cites the 2023 report, with the corrected deployment frequency row", () => {
     renderRoute(<HomePage />);
     expect(screen.getByRole("table", { name: /DORA 2023 profile/ })).toBeInTheDocument();
-    const source = screen.getByRole("link", { name: new RegExp(copy.home.bandsSource) });
+    const bands = screen.getByRole("region", { name: copy.home.bandsTitle });
+    const source = within(bands).getByRole("link", { name: new RegExp(copy.home.bandsSource) });
     expect(source).toHaveAttribute("href", copy.home.bandsSourceHref);
     expect(source).toHaveAttribute("target", "_blank");
     const table = screen.getByRole("table", { name: copy.home.bandsCaption });
@@ -112,5 +118,37 @@ describe("HomePage", () => {
     ]);
     expect(within(section).getByText(/prompts to tidy rather than a score/)).toBeInTheDocument();
     expect(within(section).getByText(copy.home.jira.people)).toBeInTheDocument();
+  });
+
+  it("offers the page as a PDF after the other buttons, saved under a name for the page", async () => {
+    const user = userEvent.setup();
+    const titles: string[] = [];
+    vi.spyOn(window, "print").mockImplementation(() => {
+      titles.push(document.title);
+      window.dispatchEvent(new Event("afterprint"));
+    });
+    renderRoute(<HomePage />);
+
+    const hero = screen.getByRole("region", { name: copy.home.title });
+    const actions = [...hero.querySelectorAll("a, button")].map((el) => el.textContent);
+    expect(actions).toEqual([copy.home.toRepos, copy.home.toKeys, copy.report.download]);
+
+    await user.click(within(hero).getByRole("button", { name: copy.report.download }));
+    await waitFor(() => expect(titles).toHaveLength(1));
+    expect(titles[0]).toMatch(/^delivery-metrics-why-it-matters-\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("lists every outside link on the page once, as a link showing its full address, for the printed copy", () => {
+    renderRoute(<HomePage />);
+    const list = screen.getByRole("region", { name: copy.home.linksTitle });
+    const inText = [...document.querySelectorAll('a[href^="http"]')].filter((a) => !list.contains(a));
+    const listed = within(list).getAllByRole("link");
+
+    expect(listed.map((a) => a.getAttribute("href"))).toEqual([...new Set(inText.map((a) => a.getAttribute("href")))]);
+    for (const link of listed) expect(link).toHaveTextContent(link.getAttribute("href")!);
+    expect(within(list).getByRole("link", { name: new RegExp(copy.home.beckSource) })).toHaveAttribute(
+      "href",
+      "https://martinfowler.com/bliki/BeckDesignRules.html",
+    );
   });
 });

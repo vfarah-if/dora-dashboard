@@ -2473,6 +2473,81 @@ a:hover {
   max-width: 64ch;
 }
 
+/* The list of outside links with their addresses is for the printed copy only; on screen the links are in the text. */
+.home-links {
+  display: none;
+}
+
+.home-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 1.5em;
+}
+
+.home-link-list a {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.home-link-label {
+  font-weight: 650;
+}
+
+.home-link-href {
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+/* "Why it matters" on paper, to be shared. The buttons are left out, since those into the dashboard point at
+   this machine, while the preparation date beside them stays. Unlike the reports, where links print as plain
+   text, links here keep their colour and underline so a reader of the PDF can see what to click. Cards and
+   headings are kept whole rather than split across pages. */
+@media print {
+  .home {
+    gap: 32px;
+  }
+
+  .home-actions .button,
+  .home-cta .button {
+    display: none !important;
+  }
+
+  .home a {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+
+  .home-links {
+    display: flex;
+  }
+
+  .home-eyebrow,
+  .home-h2,
+  .home-h3,
+  .measure-group > h3 {
+    break-after: avoid;
+  }
+
+  .home-hero,
+  .principle,
+  .practice,
+  .measure-card,
+  .stage-figure,
+  .home-callout,
+  .home-quote,
+  .band-table,
+  .rule,
+  .loop,
+  .reading-list li,
+  .home-cta,
+  .home-link-list li {
+    break-inside: avoid;
+  }
+}
+
 @media (max-width: 960px) {
   .home-hero,
   .measure-groups,

@@ -1616,6 +1616,11 @@ export const copy = {
     ctaTitle: "Put it into practice",
     ctaBody:
       "Add a repository to see its four keys, its flow and its code health side by side, then choose one small change to try this week.",
+
+    pdfSubject: "Delivery metrics",
+    pdfLabel: "why it matters",
+    linksTitle: "Links in this document",
+    linksLede: "Each link in the text above with its full address, so a printed copy can be followed too.",
   },
 
   reviewQueue: {
