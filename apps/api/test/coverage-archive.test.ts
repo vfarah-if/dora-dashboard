@@ -2,11 +2,12 @@ import { Zip, ZipDeflate, strToU8, zipSync } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 import { UpstreamError } from "../src/core/errors.js";
 import {
+  ARCHIVE_LIMITS,
   MAX_ENTRIES_SCANNED,
   MAX_ENTRY_BYTES,
-  MAX_TOTAL_BYTES,
   MAX_XML_ENTRY_BYTES,
   readCoverageArchive,
+  type ArchiveLimits,
 } from "../src/infrastructure/coverage-reports/read-coverage-archive.js";
 
 const RUNNER = "/home/runner/work/widgets/widgets";
@@ -195,7 +196,23 @@ describe("readCoverageArchive", () => {
   });
 
   describe("refusals", () => {
-    const refusal = async (bytes: Uint8Array) => readCoverageArchive(bytes, "coverage").catch((error: unknown) => error);
+    const refusal = async (bytes: Uint8Array, limits: ArchiveLimits = ARCHIVE_LIMITS) =>
+      readCoverageArchive(bytes, "coverage", limits).catch((error: unknown) => error);
+
+    /**
+     * Caps small enough to cross with a few kilobytes. The rules do not depend on the size of a cap, and crossing the real
+     * ones means inflating up to 192 MiB, which is slow enough on a shared CI runner to time out.
+     */
+    const SMALL: ArchiveLimits = { entries: 50, fileBytes: 8 * 1024, xmlFileBytes: 4 * 1024, totalBytes: 24 * 1024 };
+
+    it("reads every artefact under the documented caps unless it is given others", () => {
+      expect(ARCHIVE_LIMITS).toEqual({
+        entries: 5_000,
+        fileBytes: 64 * 1024 * 1024,
+        xmlFileBytes: 32 * 1024 * 1024,
+        totalBytes: 192 * 1024 * 1024,
+      });
+    });
 
     it("refuses bytes that are not a zip, without naming anything", async () => {
       const error = await refusal(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
@@ -236,11 +253,13 @@ describe("readCoverageArchive", () => {
       expect((error as UpstreamError).message).toMatch(/entries/);
     });
 
-    it("reads an archive of exactly the most entries", async () => {
+    it("reads an archive of exactly the most entries, and refuses one more", async () => {
       const entries: { [name: string]: Uint8Array } = { "lcov.info": strToU8(LCOV) };
-      for (let i = 1; i < MAX_ENTRIES_SCANNED; i++) entries[`f${i}.txt`] = new Uint8Array(0);
+      for (let i = 1; i < SMALL.entries; i++) entries[`f${i}.txt`] = new Uint8Array(0);
 
-      expect((await readCoverageArchive(zipSync(entries), "coverage")).reports).toHaveLength(1);
+      expect((await readCoverageArchive(zipSync(entries), "coverage", SMALL)).reports).toHaveLength(1);
+      entries[`f${SMALL.entries}.txt`] = new Uint8Array(0);
+      expect(((await refusal(zipSync(entries), SMALL)) as UpstreamError).message).toMatch(/entries/);
     });
 
     it("refuses a file that declares more than the per-file limit, before inflating it", async () => {
@@ -259,8 +278,8 @@ describe("readCoverageArchive", () => {
     });
 
     it("refuses files that together produce more than the total limit", async () => {
-      // Three entries fill the total limit exactly, so the one byte in the fourth crosses it.
-      const third = new Uint8Array(MAX_TOTAL_BYTES / 3);
+      // Three entries of one file's limit (8 KiB) fill the 24 KiB total exactly, so the one byte in the fourth crosses it.
+      const third = new Uint8Array(SMALL.totalBytes / 3);
       const bytes = streamedZip({
         "a/lcov.info": third,
         "b/lcov.info": third,
@@ -268,14 +287,23 @@ describe("readCoverageArchive", () => {
         "d/lcov.info": new Uint8Array(1),
       });
 
-      const error = await refusal(bytes);
+      const error = await refusal(bytes, SMALL);
 
       expect(error).toBeInstanceOf(UpstreamError);
       expect((error as UpstreamError).message).toMatch(/total size/);
-    }, 30_000);
+    });
+
+    it("reads files that together fill the total limit exactly", async () => {
+      const third = new Uint8Array(SMALL.totalBytes / 3);
+      const bytes = streamedZip({ "a/lcov.info": third, "b/lcov.info": third, "c/lcov.info": third });
+
+      // Zeros are no report, so each counts as empty, but none is refused.
+      expect(await readCoverageArchive(bytes, "coverage", SMALL)).toEqual({ reports: [], unreadable: [], empty: 3 });
+    });
 
     it("refuses files that honestly declare more than the total limit together", async () => {
-      const real = new Uint8Array(MAX_ENTRY_BYTES);
+      // Four stored files of 8 KiB declare 32 KiB, over the 24 KiB total, before any is inflated.
+      const real = new Uint8Array(SMALL.fileBytes);
       const bytes = zipSync({
         "a/lcov.info": [real, { level: 0 }],
         "b/lcov.info": [real, { level: 0 }],
@@ -283,10 +311,10 @@ describe("readCoverageArchive", () => {
         "d/lcov.info": [real, { level: 0 }],
       });
 
-      const error = await refusal(bytes);
+      const error = await refusal(bytes, SMALL);
 
       expect((error as UpstreamError).message).toMatch(/total size/);
-    }, 30_000);
+    });
 
     it("refuses a file that declares less than it holds, as soon as the count passes the declared size", async () => {
       const text = `${LCOV}${"SF:src/z.ts\nDA:1,1\nend_of_record\n".repeat(1000)}`;
@@ -333,12 +361,24 @@ describe("readCoverageArchive", () => {
     });
 
     it("stops a streamed entry that inflates past the per-file limit by the bytes it produces", async () => {
-      const bomb = streamedZip({ "evil/coverage.xml": new Uint8Array(MAX_XML_ENTRY_BYTES + 1) });
+      const bomb = streamedZip({ "evil/coverage.xml": new Uint8Array(SMALL.xmlFileBytes + 1) });
 
-      const error = await refusal(bomb);
+      const error = await refusal(bomb, SMALL);
 
       expect(error).toBeInstanceOf(UpstreamError);
       expect((error as UpstreamError).message).toMatch(/size of one file/);
+      expect((error as UpstreamError).message).not.toContain("evil");
+    });
+
+    it("lets a streamed flat file through at a size that would stop an XML file", async () => {
+      // An empty report of 4 KiB + 1 is over the XML limit but under the 8 KiB limit for other files.
+      const contents = await readCoverageArchive(
+        streamedZip({ "lcov.info": new Uint8Array(SMALL.xmlFileBytes + 1) }),
+        "coverage",
+        SMALL,
+      );
+
+      expect(contents).toEqual({ reports: [], unreadable: [], empty: 1 });
     });
 
     it("keeps the reason on the error for a corrupt archive", async () => {

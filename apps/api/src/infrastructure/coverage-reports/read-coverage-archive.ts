@@ -22,6 +22,29 @@ export const MAX_XML_ENTRY_BYTES = 32 * 1024 * 1024;
 /** The most all the coverage files together may declare, which bounds the memory one artefact can take. */
 export const MAX_TOTAL_BYTES = 192 * 1024 * 1024;
 
+/** The caps one read is held to. */
+export interface ArchiveLimits {
+  /** Entries looked at, wanted or not. */
+  entries: number;
+  /** What one coverage file may unzip to. */
+  fileBytes: number;
+  /** What one XML file may unzip to. */
+  xmlFileBytes: number;
+  /** What all the coverage files together may unzip to. */
+  totalBytes: number;
+}
+
+/**
+ * The caps every artefact is read under. The rules do not depend on their size, so a test can pass smaller ones and
+ * prove the same refusals with kilobytes rather than inflating hundreds of megabytes.
+ */
+export const ARCHIVE_LIMITS: Readonly<ArchiveLimits> = {
+  entries: MAX_ENTRIES_SCANNED,
+  fileBytes: MAX_ENTRY_BYTES,
+  xmlFileBytes: MAX_XML_ENTRY_BYTES,
+  totalBytes: MAX_TOTAL_BYTES,
+};
+
 /** How far into an XML file to look for the root element's attributes. */
 const SNIFF_CHARS = 4_096;
 
@@ -93,7 +116,11 @@ const looksLikeCobertura = (text: string): boolean => {
  * be parsed costs only itself: it is counted in `unreadable` with a message fit to show, and a file that lists no file
  * is counted in `empty`, so the other files in the artefact are still read.
  */
-export async function readCoverageArchive(bytes: Uint8Array, artefact: string): Promise<ArtefactContents> {
+export async function readCoverageArchive(
+  bytes: Uint8Array,
+  artefact: string,
+  limits: Readonly<ArchiveLimits> = ARCHIVE_LIMITS,
+): Promise<ArtefactContents> {
   const kinds = new Map<string, CoverageFormat | "xml">();
   const files = new Map<string, Uint8Array>();
   let scanned = 0;
@@ -102,15 +129,15 @@ export async function readCoverageArchive(bytes: Uint8Array, artefact: string): 
   let open = 0;
 
   const unzip = new Unzip((file) => {
-    if (++scanned > MAX_ENTRIES_SCANNED) throw overCap("entries");
+    if (++scanned > limits.entries) throw overCap("entries");
     const kind = file.name.endsWith("/") ? null : formatOf(file.name);
     if (!kind) return;
-    const limit = kind === "xml" ? MAX_XML_ENTRY_BYTES : MAX_ENTRY_BYTES;
+    const limit = kind === "xml" ? limits.xmlFileBytes : limits.fileBytes;
     const size = file.originalSize;
     if (size !== undefined) {
       if (size > limit) throw overCap("the size of one file");
       declared += size;
-      if (declared > MAX_TOTAL_BYTES) throw overCap("the total size");
+      if (declared > limits.totalBytes) throw overCap("the total size");
     }
     const chunks: Uint8Array[] = [];
     let count = 0;
@@ -120,7 +147,7 @@ export async function readCoverageArchive(bytes: Uint8Array, artefact: string): 
       count += chunk.length;
       produced += chunk.length;
       if (count > limit) throw overCap("the size of one file");
-      if (produced > MAX_TOTAL_BYTES) throw overCap("the total size");
+      if (produced > limits.totalBytes) throw overCap("the total size");
       if (size !== undefined && count > size) throw wrongSize();
       chunks.push(chunk);
       if (!final) return;

@@ -99,12 +99,14 @@ describe("codeHealth", () => {
     expect(empty.distribution.every((b) => b.count === 0)).toBe(true);
   });
 
+  // A test of scale, not speed: it takes under half a second on a laptop but nearly five on a shared CI runner under
+  // coverage, so it gets room beyond the default five seconds.
   it("copes with hundreds of thousands of functions", () => {
     const many = Array.from({ length: 200_000 }, (_, i) => fn(`f${i}`, "big.ts", (i % 40) + 1, 1));
     const big = codeHealth(snapshot(many));
     expect(big.functions).toBe(200_000);
     expect(big.ccn.max).toBe(40);
-  });
+  }, 20_000);
 });
 
 import { CODE_SNAPSHOT_VERSION, prsWithTests } from "../src/codeHealth.js";
