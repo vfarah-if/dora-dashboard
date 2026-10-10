@@ -1,10 +1,14 @@
 import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
 import type { CoverageFormat, CoverageReport } from "@dora-dashboard/core";
+import type { ArtefactContents } from "../../interfaces/coverage-source.js";
 import { UpstreamError } from "../../core/errors.js";
 import { parseCobertura } from "./parse-cobertura.js";
 import { parseIstanbulFinal, parseIstanbulSummary } from "./parse-istanbul.js";
 import { parseLcov } from "./parse-lcov.js";
 import { yieldToEventLoop } from "./yield-loop.js";
+
+// The caps below bound what one artefact can cost in time and memory. The reasoning is in ADR 0030:
+// docs/architecture/decisions/0030-read-measured-coverage-from-ci-artefacts-for-display-only.md
 
 /** The most entries looked at in one archive, wanted or not, so a zip of a million empty files costs little. */
 export const MAX_ENTRIES_SCANNED = 5_000;
@@ -76,17 +80,20 @@ const looksLikeCobertura = (text: string): boolean => {
  * Archives come from CI and are not trusted. The archive is fed to a streaming reader in small chunks, with a yield to
  * the event loop between groups of chunks. What is checked, and when:
  *
- * - The entries scanned, the size each wanted file declares and the total declared are capped before anything is
- *   inflated, and an XML file has a lower cap than the others.
+ * - The entries scanned, the size each wanted file declares and the total declared are capped. The entry count and each
+ *   declared size are checked as the entry's header arrives, before that file is inflated, and an XML file has a lower
+ *   cap than the others.
  * - The bytes each wanted file really produces are counted. The count must never pass the size the entry declares, and
  *   when the entry ends it must equal a declared size that is not zero. Either mismatch is refused, so a truncated
  *   file is never read as if it were whole.
  * - The archive must open with an entry and end with its central directory record, so one cut short is refused.
  * - An entry that declares no size (a streamed archive) is held to the per-file and total caps by the bytes produced.
  *
- * Every failure is an `UpstreamError` that names no path from inside the archive.
+ * A failure of the archive itself is an `UpstreamError` that names no path from inside it. A coverage file that cannot
+ * be parsed costs only itself: it is counted in `unreadable` with a message fit to show, and a file that lists no file
+ * is counted in `empty`, so the other files in the artefact are still read.
  */
-export async function readCoverageArchive(bytes: Uint8Array, artefact: string): Promise<CoverageReport[]> {
+export async function readCoverageArchive(bytes: Uint8Array, artefact: string): Promise<ArtefactContents> {
   const kinds = new Map<string, CoverageFormat | "xml">();
   const files = new Map<string, Uint8Array>();
   let scanned = 0;
@@ -146,32 +153,39 @@ export async function readCoverageArchive(bytes: Uint8Array, artefact: string): 
     if (open > 0) throw new Error("incomplete");
   } catch (error) {
     if (error instanceof UpstreamError) throw error;
-    throw new UpstreamError("The coverage artefact is not a readable zip archive", 502);
+    throw new UpstreamError("The coverage artefact is not a readable zip archive", 502, { cause: error });
   }
 
   const decoder = new TextDecoder();
   const reports: CoverageReport[] = [];
+  const unreadable: string[] = [];
+  let empty = 0;
   for (const name of [...files.keys()].sort()) {
     const text = decoder.decode(files.get(name));
     files.delete(name);
     const dir = directoryOf(name);
     const kind = kinds.get(name)!;
-    let report: CoverageReport | null = null;
-    if (kind === "lcov") report = { format: kind, artefact, dir, files: await parseLcov(text) };
-    else if (kind === "istanbul-final") report = { format: kind, artefact, dir, files: await parseIstanbulFinal(text) };
-    else if (kind === "istanbul-summary") report = { format: kind, artefact, dir, files: await parseIstanbulSummary(text) };
-    else if (kind === "xml" && looksLikeCobertura(text)) {
-      const parsed = await parseCobertura(text);
-      report = {
-        format: "cobertura",
-        artefact,
-        dir,
-        ...(parsed.sourceRoots.length > 0 ? { sourceRoots: parsed.sourceRoots } : {}),
-        files: parsed.files,
-      };
+    try {
+      let report: CoverageReport | null = null;
+      if (kind === "lcov") report = { format: kind, artefact, dir, files: await parseLcov(text) };
+      else if (kind === "istanbul-final") report = { format: kind, artefact, dir, files: await parseIstanbulFinal(text) };
+      else if (kind === "istanbul-summary") report = { format: kind, artefact, dir, files: await parseIstanbulSummary(text) };
+      else if (kind === "xml" && looksLikeCobertura(text)) {
+        const parsed = await parseCobertura(text);
+        report = {
+          format: "cobertura",
+          artefact,
+          dir,
+          ...(parsed.sourceRoots.length > 0 ? { sourceRoots: parsed.sourceRoots } : {}),
+          files: parsed.files,
+        };
+      }
+      if (report && report.files.length > 0) reports.push(report);
+      else if (report) empty++;
+    } catch (error) {
+      unreadable.push(error instanceof UpstreamError ? error.message : "A coverage file in the artefact could not be read");
     }
-    if (report && report.files.length > 0) reports.push(report);
     await yieldToEventLoop();
   }
-  return reports;
+  return { reports, unreadable, empty };
 }

@@ -41,10 +41,11 @@ An issue tracker that lives on the code host is not a `WorkItemProvider` either.
 
 ## CI artefacts (measured coverage)
 
-Reading what a CI run published is a **different port** again, `CoverageSource` in `interfaces/coverage-source.ts`, because it yields files from a run and not pull requests or issues. Its one adapter, `GitHubCoverageSource`, finds artefacts with the code host's token and downloads them. The archive is parsed inside the adapter and returned as core's `CoverageReport`, so a service never sees a file format. Read the contract in the port, and keep these rules when changing it.
+Reading what a CI run published is a **different port** again, `CoverageSource` in `interfaces/coverage-source.ts`, because it yields files from a run and not pull requests or issues. Its one adapter, `GitHubCoverageSource`, finds artefacts with the code host's token and downloads them. `findArtefacts` returns `{ artefacts, complete }`, where `complete` is false when the search stopped at its page limit, and `readArtefact` returns `{ reports, unreadable, empty }`. The archive is parsed inside the adapter and returned as core's `CoverageReport`s, so a service never sees a file format. Read the contract in the port, and keep these rules when changing it.
 
-- A download follows the redirect by hand, makes the second request with no `Authorization` header and accepts only https (ADR 0030).
-- Archives are untrusted. Cap the bytes downloaded, the entries scanned and the size inflated, refuse XML with a document type declaration, and never put a path from inside an archive, the token or an address in an error message.
+- A download follows the redirect by hand, makes the second request with no `Authorization` header and accepts only https, and refuses a redirect to localhost or to a loopback, private, shared, link-local, site-local or unspecified IP literal, including one carried inside a NAT64, 6to4 or IPv4-mapped IPv6 address (ADR 0030).
+- Archives are untrusted. Cap the bytes downloaded, the entries scanned and the size inflated, refuse XML with an internal DTD subset or any entity (an external DOCTYPE is read), and never put a path from inside an archive, the token or an address in an error message.
+- A coverage file that cannot be parsed costs only itself. Count it in `unreadable` (or in `empty` when it lists no file) and keep the rest of the artefact, and raise only for an archive that is corrupt or over a cap.
 - Choosing the run and mapping report paths onto repository files are pure functions in core (`chooseCoverageRun`, `alignCoverage`). A new format is a parser in `infrastructure/coverage-reports/` (not a directory named `coverage`, which the ignore files and lint skip) that returns `CoverageFileReport`s.
 - Coverage is for display only and must never reach `codeHealth` or `judge`.
 

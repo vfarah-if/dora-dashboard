@@ -1,4 +1,4 @@
-import type { CandidateFile } from "./codeTooling.js";
+import { baseName, type CandidateFile } from "./codeTooling.js";
 
 /**
  * How a repository is laid out: which files are manifests and which workspaces the root declares. Everything here is
@@ -32,8 +32,6 @@ const MAX_LINE = 1_000;
 const MAX_PATTERNS = 200;
 const MAX_PATTERN_LENGTH = 300;
 const MAX_SEGMENTS = 64;
-
-const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /** True when the file's base name marks a package, crate, module or project, in any directory. */
 export function isManifest(path: string): boolean {

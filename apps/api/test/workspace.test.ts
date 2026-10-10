@@ -314,7 +314,25 @@ describe("tooling in the code health service", () => {
   });
 
   it("keeps the files and the tooling when a workspace file cannot be read", async () => {
+    reader.files.set(".prettierrc.json", "{}");
+    reader.files.set("pnpm-workspace.yaml", "packages:\n  - 'libs/*'\n");
+    const read = reader.read.bind(reader);
+    reader.read = async (dir, path, max) => {
+      if (path === "pnpm-workspace.yaml") throw new Error("EIO");
+      return read(dir, path, max);
+    };
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(snapshot.files).toContain("src/index.ts");
+    expect(snapshot.layout?.workspaces).toBeNull();
+    expect(snapshot.tooling).not.toBeNull();
+    expect(logged).toContain("could not read the repository's workspace declaration files");
+  });
+
+  it("costs both the layout's workspaces and the tooling when the shared package.json cannot be read", async () => {
     reader.files.set("package.json", "{}");
+    reader.files.set(".prettierrc.json", "{}");
     const read = reader.read.bind(reader);
     reader.read = async (dir, path, max) => {
       if (path === "package.json") throw new Error("EIO");
@@ -325,6 +343,7 @@ describe("tooling in the code health service", () => {
 
     expect(snapshot.files).toContain("src/index.ts");
     expect(snapshot.layout).toEqual({ manifests: ["package.json"], workspaces: null });
+    expect(snapshot.tooling).toBeNull();
     expect(logged).toContain("could not read the repository's workspace declaration files");
   });
 

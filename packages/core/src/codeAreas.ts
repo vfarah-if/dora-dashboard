@@ -3,8 +3,8 @@ import { matchesWorkspaces } from "./codeLayout.js";
 import { isCodeFile, isTestPath } from "./codeTooling.js";
 
 /**
- * Breaks a repository into areas: the packages of a monorepo, or the top-level source folders of anything else. The
- * rules run on request over the stored file list, so changing them needs no new crawl.
+ * Breaks a repository into areas: the packages of a monorepo, or the main source folders of anything else (ADR 0029).
+ * The rules run on request over the stored file list, so changing them needs no new crawl.
  */
 
 /** `workspace` is a package or project with its own manifest, `folder` a source folder, `root` the files at the top. */
@@ -12,7 +12,8 @@ export type AreaKind = "workspace" | "folder" | "root";
 
 /**
  * How the areas were found. `workspace` means from workspace declarations or several manifests, `folder` from the source
- * layout, and `unknown` that the snapshot predates version 6, so only function paths were available.
+ * layout, and `unknown` that the snapshot has no file list, because it predates version 6 or its listing could not be
+ * read, so only function paths were available.
  */
 export type AreaMode = "workspace" | "folder" | "unknown";
 

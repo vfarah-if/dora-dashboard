@@ -28,6 +28,25 @@ describe("CodeAnalysisListPage", () => {
     expect(within(gadgets.closest("li")!).getByText(copy.repos.status.failed)).toBeInTheDocument();
   });
 
+  it("keeps the title and the introduction in the sticky panel at the top, so they stay in view as the list scrolls", async () => {
+    mockFetch({ "GET /api/repos": { body: [repo()] } });
+    renderRoute(<CodeAnalysisListPage />, route);
+    const panel = screen.getByRole("heading", { level: 1, name: copy.codeAnalysis.listTitle }).closest(".sticky-panel");
+    expect(panel).not.toBeNull();
+    expect(within(panel as HTMLElement).getByText(copy.codeAnalysis.listLede)).toBeInTheDocument();
+    // The list itself scrolls beneath the panel rather than inside it.
+    const row = await screen.findByRole("link", { name: copy.codeAnalysis.listOpen("acme/widgets") });
+    expect(panel!.contains(row)).toBe(false);
+  });
+
+  it("shows a loading skeleton until the repositories arrive", async () => {
+    mockFetch({ "GET /api/repos": { body: [repo()] } });
+    renderRoute(<CodeAnalysisListPage />, route);
+    expect(screen.getByText(copy.codeAnalysis.listLoading)).toBeInTheDocument();
+    await screen.findByRole("link", { name: copy.codeAnalysis.listOpen("acme/widgets") });
+    expect(screen.queryByText(copy.codeAnalysis.listLoading)).not.toBeInTheDocument();
+  });
+
   it("points to the repositories page when none has been added", async () => {
     mockFetch({ "GET /api/repos": { body: [] } });
     renderRoute(<CodeAnalysisListPage />, route);

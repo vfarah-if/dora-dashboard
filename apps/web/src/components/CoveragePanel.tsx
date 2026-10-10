@@ -79,7 +79,7 @@ function LeastCovered({ view }: { view: OkCoverage }) {
                         </th>
                         <td className="numeric">{c.coveredValue(file.lines.covered, file.lines.total)}</td>
                         <td className="mono wrap-anywhere">
-                          {view.lineDetail ? rangesLabel(file.uncovered) : copy.common.notAvailable}
+                          {file.uncovered === null ? copy.common.notAvailable : rangesLabel(file.uncovered)}
                         </td>
                       </tr>
                     ))}
@@ -142,6 +142,7 @@ function NotInReport({ view }: { view: OkCoverage }) {
           <CappedNote shown={files.length} total={view.notInReport.total} text={c.capped} />
         </>
       )}
+      {view.notInReportOtherKinds > 0 && <p className="chart-subtitle">{c.otherKinds(view.notInReportOtherKinds)}</p>}
     </section>
   );
 }
@@ -156,12 +157,24 @@ function Untested({ view, warn }: { view: OkCoverage; warn: number }) {
       </h3>
       <p className="chart-subtitle">{c.subtitle(warn)}</p>
       <OtherCommitNote view={view} />
-      <ShowAllList total={rows.length}>
-        {(limit) => (
-          <FunctionTable rows={rows.slice(0, limit)} caption={c.title} areaLabel={areaLabel} showAdvice={false} empty={c.empty} />
-        )}
-      </ShowAllList>
-      <CappedNote shown={rows.length} total={view.untestedComplex.total} text={c.capped} />
+      {view.lineDetail ? (
+        <>
+          <ShowAllList total={rows.length}>
+            {(limit) => (
+              <FunctionTable
+                rows={rows.slice(0, limit)}
+                caption={c.title}
+                areaLabel={areaLabel}
+                showAdvice={false}
+                empty={c.empty}
+              />
+            )}
+          </ShowAllList>
+          <CappedNote shown={rows.length} total={view.untestedComplex.total} text={c.capped} />
+        </>
+      ) : (
+        <p className="chart-empty">{c.totalsOnly}</p>
+      )}
     </section>
   );
 }
@@ -179,38 +192,63 @@ function Notices({ view, commitSha }: { view: OkCoverage; commitSha: string }) {
       {view.otherCommit && (
         <aside className="notice notice-warning">
           <p className="notice-title">{c.otherCommit.title}</p>
-          <p>{c.otherCommit.body(view.source.commitSha ? shortSha(view.source.commitSha) : null, shortSha(commitSha))}</p>
+          <p>{c.otherCommit.body(shortSha(view.source.commitSha), shortSha(commitSha))}</p>
         </aside>
       )}
     </>
   );
 }
 
+function SourceLine({ view }: { view: OkCoverage }) {
+  const c = copy.codeAnalysis.coverage;
+  const { source } = view;
+  return (
+    <>
+      <p className="chart-subtitle">
+        {c.source(
+          source.artefacts.join(", "),
+          source.runId,
+          formatDateTime(source.fetchedAt),
+          source.formats.join(", "),
+          formatDateTime(source.createdAt),
+        )}
+      </p>
+      {source.artefactsInRun > source.artefacts.length && (
+        <p className="chart-subtitle">{c.artefactsRead(source.artefacts.length, source.artefactsInRun)}</p>
+      )}
+      {source.unreadableFiles > 0 && <p className="chart-subtitle">{c.unreadable(source.unreadableFiles)}</p>}
+    </>
+  );
+}
+
 function CoverageFigures({ view, detail }: { view: OkCoverage; detail: CodeDetailReport }) {
   const c = copy.codeAnalysis.coverage;
-  const run = view.source.runId === null ? "" : c.sourceRun(view.source.runId);
+  const reaches = view.filesInScope > 0;
   return (
     <>
       <Notices view={view} commitSha={detail.commitSha} />
-      <div className="tile-grid tile-grid-flow">
-        <Tile label={c.tiles.lines} share={view.lines} hint={c.tiles.linesHint} />
-        <Tile label={c.tiles.branches} share={view.branches} hint={c.tiles.branchesHint} />
-        <Tile label={c.tiles.functions} share={view.functions} hint={c.tiles.functionsHint} />
-      </div>
-      <p className="chart-subtitle">
-        {c.source(
-          view.source.artefacts.join(", "),
-          run,
-          formatDateTime(view.source.fetchedAt),
-          view.source.formats.join(", "),
-          view.source.createdAt ? formatDateTime(view.source.createdAt) : null,
-        )}
-      </p>
+      {reaches ? (
+        <div className="tile-grid tile-grid-flow">
+          <Tile label={c.tiles.lines} share={view.lines} hint={c.tiles.linesHint} />
+          <Tile label={c.tiles.branches} share={view.branches} hint={c.tiles.branchesHint} />
+          <Tile label={c.tiles.functions} share={view.functions} hint={c.tiles.functionsHint} />
+        </div>
+      ) : (
+        <aside className="notice notice-info">
+          <p className="notice-title">{detail.area === null ? c.notCovered.titleWhole : c.notCovered.titleArea}</p>
+          <p>{c.notCovered.body}</p>
+        </aside>
+      )}
+      <SourceLine view={view} />
       <p className="chart-subtitle">{c.files(view.files.matched, view.files.inReport, view.files.unmatched)}</p>
       {!view.lineDetail && <p className="chart-subtitle">{c.totalsOnly}</p>}
-      <LeastCovered view={view} />
-      <NotInReport view={view} />
-      <Untested view={view} warn={detail.thresholds.warn} />
+      {reaches && (
+        <>
+          <LeastCovered view={view} />
+          <NotInReport view={view} />
+          <Untested view={view} warn={detail.thresholds.warn} />
+        </>
+      )}
     </>
   );
 }

@@ -17,7 +17,7 @@ import {
 import { describeHotspots, nextBand, type Hotspot, type NextBand } from "./codeAdvice.js";
 import type { Band } from "./dora.js";
 import { isBot } from "./pullRequests.js";
-import { mean, median, p75 } from "./stats.js";
+import { mean, median, p75, sum } from "./stats.js";
 import type { PullRequest } from "./types.js";
 
 /** One function found by a static analyser. `file` is relative to the repository root. */
@@ -43,7 +43,7 @@ export interface FunctionMetrics {
  * rather than with lizard (ADR 0025), so their figures differ, and records `unmeasuredFiles`, the files in languages
  * lizard reads that went unmeasured because lizard was not found. Version 6 records each function's `endLine`, the
  * listing of code files (`files`) and the manifests and workspace declarations (`layout`), so that a report can be
- * broken down by area.
+ * broken down by area (ADR 0029).
  */
 export const CODE_SNAPSHOT_VERSION = 6;
 
@@ -197,7 +197,6 @@ const BUCKETS: readonly { label: string; min: number; max: number | null }[] = [
 
 const HOTSPOT_COUNT = 10;
 
-const sum = (values: number[]) => values.reduce((total, v) => total + v, 0);
 const ratio = (part: number, whole: number) => (whole === 0 ? 0 : part / whole);
 
 const inRange = (mergedAt: string, from: string | undefined, to: string | undefined) =>
@@ -368,8 +367,8 @@ export interface CodeFigures {
   maintainability: MaintainabilityFigures;
   /** The four maintainability checks, each with the count of functions behind it. */
   maintainabilityChecks: GradeCheck[];
-  /** The maintainability band alone, which is not the overall grade. */
-  maintainabilityBand: Band;
+  /** The maintainability band alone, which is not the overall grade. Null when there is no source function to judge. */
+  maintainabilityBand: Band | null;
   longestFunction: FunctionMetrics | null;
 }
 
@@ -402,7 +401,7 @@ export function codeFigures(
     tests: { functions: testFns.length, nloc: sum(testFns.map((f) => f.nloc)) },
     maintainability,
     maintainabilityChecks: maintainabilityChecks(maintainability, maintainabilityCounts(fns)),
-    maintainabilityBand: maintainabilityGrade(maintainability).band,
+    maintainabilityBand: fns.length === 0 ? null : maintainabilityGrade(maintainability).band,
     longestFunction: longestOf(fns),
   };
 }

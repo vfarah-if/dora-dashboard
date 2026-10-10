@@ -569,4 +569,15 @@ describe("RepoPage code analysis button", () => {
     expect(link).toHaveAttribute("href", "/repos/1/code?from=2026-01-01&to=2026-02-01");
     expect(link).toHaveClass("button", "button-secondary");
   });
+
+  it("forwards only the date range, leaving out parameters the code page ignores", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1?from=2026-01-01&to=2026-02-01&exclude=bot-one" });
+    const link = await screen.findByRole("link", { name: copy.codeAnalysis.repoLink });
+    expect(link).toHaveAttribute("href", "/repos/1/code?from=2026-01-01&to=2026-02-01");
+  });
 });

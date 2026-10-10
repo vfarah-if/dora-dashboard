@@ -1,5 +1,5 @@
 import { Zip, ZipDeflate, strToU8, zipSync } from "fflate";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UpstreamError } from "../src/core/errors.js";
 import {
   MAX_ENTRIES_SCANNED,
@@ -57,7 +57,7 @@ function streamedZip(entries: { [name: string]: Uint8Array }): Uint8Array {
 
 describe("readCoverageArchive", () => {
   it("reads every format by base name and records the directory of each file", async () => {
-    const reports = await readCoverageArchive(
+    const { reports } = await readCoverageArchive(
       zip({
         "coverage/lcov.info": LCOV,
         "ui/coverage-final.json": FINAL,
@@ -79,13 +79,13 @@ describe("readCoverageArchive", () => {
   });
 
   it("accepts a .lcov file, coverage.xml and any letter case", async () => {
-    const reports = await readCoverageArchive(zip({ "a/UNIT.LCOV": LCOV, "b/Coverage.xml": COBERTURA }), "coverage");
+    const { reports } = await readCoverageArchive(zip({ "a/UNIT.LCOV": LCOV, "b/Coverage.xml": COBERTURA }), "coverage");
 
     expect(reports.map((r) => r.format)).toEqual(["lcov", "cobertura"]);
   });
 
   it("leaves out files by name that are not coverage, however they are nested", async () => {
-    const reports = await readCoverageArchive(
+    const { reports } = await readCoverageArchive(
       zip({
         "index.html": "<html/>",
         "node_modules/pkg/package.json": "{}",
@@ -106,30 +106,87 @@ describe("readCoverageArchive", () => {
     const cloverWithRate = '<coverage line-rate="1" clover="4.4"/>';
     const jacoco = '<report name="widgets"><package name="a"/></report>';
 
-    expect(
-      await readCoverageArchive(
-        zip({ "a/coverage.xml": clover, "b/coverage.xml": cloverWithRate, "c/coverage.xml": jacoco }),
-        "c",
-      ),
-    ).toEqual([]);
+    const contents = await readCoverageArchive(
+      zip({ "a/coverage.xml": clover, "b/coverage.xml": cloverWithRate, "c/coverage.xml": jacoco }),
+      "c",
+    );
+
+    expect(contents).toEqual({ reports: [], unreadable: [], empty: 0 });
   });
 
-  it("leaves out a report that holds no files", async () => {
-    expect(await readCoverageArchive(zip({ "lcov.info": "", "coverage-final.json": "{}" }), "coverage")).toEqual([]);
+  it("counts a report that holds no files as empty, and fails nothing", async () => {
+    const contents = await readCoverageArchive(zip({ "lcov.info": "", "coverage-final.json": "{}" }), "coverage");
+
+    expect(contents).toEqual({ reports: [], unreadable: [], empty: 2 });
+  });
+
+  it("counts an empty lcov.info as empty and still reads the report beside it", async () => {
+    const contents = await readCoverageArchive(zip({ "a/lcov.info": "", "b/lcov.info": LCOV }), "coverage");
+
+    expect(contents.empty).toBe(1);
+    expect(contents.unreadable).toEqual([]);
+    expect(contents.reports.map((r) => r.dir)).toEqual(["b"]);
+  });
+
+  it("keeps the good report and counts one unreadable file when another file cannot be parsed", async () => {
+    const contents = await readCoverageArchive(
+      zip({ "secret-client/coverage-final.json": "<html>", "ui/lcov.info": LCOV }),
+      "coverage",
+    );
+
+    expect(contents.reports.map((r) => r.format)).toEqual(["lcov"]);
+    expect(contents.empty).toBe(0);
+    expect(contents.unreadable).toEqual(["A coverage file in the artefact is not valid JSON of the expected shape"]);
+    expect(contents.unreadable[0]).not.toContain("secret-client");
+  });
+
+  it("gives a generic message when a parser fails with something that is not an UpstreamError", async () => {
+    vi.resetModules();
+    vi.doMock("../src/infrastructure/coverage-reports/parse-lcov.js", () => ({
+      parseLcov: () => Promise.reject(new TypeError("cannot read src/secret-client/a.ts")),
+    }));
+    try {
+      const { readCoverageArchive: read } = await import("../src/infrastructure/coverage-reports/read-coverage-archive.js");
+
+      const contents = await read(zip({ "lcov.info": LCOV }), "coverage");
+
+      expect(contents).toEqual({ reports: [], unreadable: ["A coverage file in the artefact could not be read"], empty: 0 });
+    } finally {
+      vi.doUnmock("../src/infrastructure/coverage-reports/parse-lcov.js");
+      vi.resetModules();
+    }
+  });
+
+  it("counts a truncated Cobertura file as unreadable", async () => {
+    const contents = await readCoverageArchive(zip({ "coverage.xml": COBERTURA.slice(0, 120) }), "coverage");
+
+    expect(contents.reports).toEqual([]);
+    expect(contents.unreadable).toEqual(["A coverage file in the artefact is not valid XML"]);
+  });
+
+  it("reads a Cobertura file with the document type declaration Istanbul writes", async () => {
+    const header = '<?xml version="1.0" ?>\n<!DOCTYPE coverage SYSTEM "http://cobertura.sourceforge.net/xml/coverage-04.dtd">\n';
+
+    const { reports, unreadable } = await readCoverageArchive(zip({ "coverage.xml": header + COBERTURA }), "coverage");
+
+    expect(unreadable).toEqual([]);
+    expect(reports.map((r) => r.format)).toEqual(["cobertura"]);
   });
 
   it("drops empty and parent segments from the directory hint", async () => {
-    const [report] = await readCoverageArchive(zip({ "../../etc//./lcov.info": LCOV }), "coverage");
+    const {
+      reports: [report],
+    } = await readCoverageArchive(zip({ "../../etc//./lcov.info": LCOV }), "coverage");
 
     expect(report!.dir).toBe("etc");
   });
 
   it("answers an empty list for an empty archive", async () => {
-    expect(await readCoverageArchive(zipSync({}), "coverage")).toEqual([]);
+    expect(await readCoverageArchive(zipSync({}), "coverage")).toEqual({ reports: [], unreadable: [], empty: 0 });
   });
 
   it("skips directory entries", async () => {
-    const reports = await readCoverageArchive(
+    const { reports } = await readCoverageArchive(
       zipSync({ "coverage/": new Uint8Array(0), "coverage/lcov.info": strToU8(LCOV) }),
       "c",
     );
@@ -183,7 +240,7 @@ describe("readCoverageArchive", () => {
       const entries: { [name: string]: Uint8Array } = { "lcov.info": strToU8(LCOV) };
       for (let i = 1; i < MAX_ENTRIES_SCANNED; i++) entries[`f${i}.txt`] = new Uint8Array(0);
 
-      expect(await readCoverageArchive(zipSync(entries), "coverage")).toHaveLength(1);
+      expect((await readCoverageArchive(zipSync(entries), "coverage")).reports).toHaveLength(1);
     });
 
     it("refuses a file that declares more than the per-file limit, before inflating it", async () => {
@@ -255,7 +312,7 @@ describe("readCoverageArchive", () => {
     });
 
     it("reads a streamed archive whose entries declare no size", async () => {
-      const reports = await readCoverageArchive(
+      const { reports } = await readCoverageArchive(
         streamedZip({ "a/lcov.info": strToU8(LCOV), "b/coverage.xml": strToU8(COBERTURA) }),
         "coverage",
       );
@@ -268,7 +325,9 @@ describe("readCoverageArchive", () => {
       const stored = zipSync({ "lcov.info": [strToU8(big), { level: 0 }] });
       expect(stored.length).toBeGreaterThan(16 * 16 * 1024);
 
-      const [report] = await readCoverageArchive(stored, "coverage");
+      const {
+        reports: [report],
+      } = await readCoverageArchive(stored, "coverage");
 
       expect(report!.files.length).toBeGreaterThan(1);
     });
@@ -282,15 +341,10 @@ describe("readCoverageArchive", () => {
       expect((error as UpstreamError).message).toMatch(/size of one file/);
     });
 
-    it("refuses a Cobertura file with a document type declaration", async () => {
-      const error = await refusal(zip({ "evil/coverage.xml": `<!DOCTYPE x [<!ENTITY a "b">]>${COBERTURA}` }));
+    it("keeps the reason on the error for a corrupt archive", async () => {
+      const error = await refusal(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
 
-      expect(error).toBeInstanceOf(UpstreamError);
-      expect((error as UpstreamError).message).not.toContain("evil");
-    });
-
-    it("refuses an Istanbul file that is not JSON", async () => {
-      expect(await refusal(zip({ "coverage-final.json": "<html>" }))).toBeInstanceOf(UpstreamError);
+      expect((error as UpstreamError).cause).toBeDefined();
     });
   });
 });

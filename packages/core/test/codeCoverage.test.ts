@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   alignCoverage,
   chooseCoverageRun,
+  coverageCount,
   isCoverageArtefactName,
+  joinRanges,
+  lineCount,
   type CoverageArtefact,
   type CoverageFileReport,
   type CoverageFormat,
@@ -35,22 +38,29 @@ describe("chooseCoverageRun", () => {
     artefact(4, "coverage", "2026-10-03T10:00:00Z", 300, "ccc"),
   ];
 
+  const ids = (run: ReturnType<typeof chooseCoverageRun>) => run?.artefacts.map((a) => a.id);
+
   it("prefers the newest run that built the analysed commit, whatever newer runs exist", () => {
-    expect(chooseCoverageRun(found, "aaa").map((a) => a.id)).toEqual([2, 1]);
+    expect(chooseCoverageRun(found, "aaa")).toEqual({
+      runId: 100,
+      commitSha: "aaa",
+      artefacts: [found[1], found[0]],
+      artefactsInRun: 2,
+    });
   });
 
   it("takes the newest run when none built the analysed commit", () => {
-    expect(chooseCoverageRun(found, "zzz").map((a) => a.id)).toEqual([4]);
-    expect(chooseCoverageRun(found, null).map((a) => a.id)).toEqual([4]);
+    expect(ids(chooseCoverageRun(found, "zzz"))).toEqual([4]);
+    expect(chooseCoverageRun(found, null)).toMatchObject({ runId: 300, commitSha: "ccc", artefactsInRun: 1 });
   });
 
-  it("keeps at most the limit from the chosen run", () => {
-    expect(chooseCoverageRun(found, "aaa", 1).map((a) => a.id)).toEqual([2]);
-    expect(chooseCoverageRun(found, "aaa", 0)).toEqual([]);
+  it("keeps at most the limit from the chosen run, never fewer than one, and says how many the run had", () => {
+    expect(chooseCoverageRun(found, "aaa", 1)).toMatchObject({ artefacts: [found[1]], artefactsInRun: 2 });
+    expect(ids(chooseCoverageRun(found, "aaa", 0))).toEqual([2]);
   });
 
-  it("is empty when nothing was found", () => {
-    expect(chooseCoverageRun([], "aaa")).toEqual([]);
+  it("is null when nothing was found", () => {
+    expect(chooseCoverageRun([], "aaa")).toBeNull();
   });
 
   it("breaks a tie on time by the higher artefact id", () => {
@@ -58,7 +68,58 @@ describe("chooseCoverageRun", () => {
       artefact(7, "coverage", "2026-10-01T10:00:00Z", 1, "x"),
       artefact(8, "coverage-b", "2026-10-01T10:00:00Z", 2, "y"),
     ];
-    expect(chooseCoverageRun(same, null).map((a) => a.id)).toEqual([8]);
+    expect(ids(chooseCoverageRun(same, null))).toEqual([8]);
+  });
+});
+
+describe("coverageCount", () => {
+  it("keeps whole, non-negative counts with no more covered than there are", () => {
+    expect(coverageCount(0, 0)).toEqual({ covered: 0, total: 0 });
+    expect(coverageCount(3, 10)).toEqual({ covered: 3, total: 10 });
+    expect(coverageCount(10, 10)).toEqual({ covered: 10, total: 10 });
+  });
+
+  it.each([
+    [12, 10],
+    [-3, 4],
+    [1, -1],
+    [1.5, 4],
+    [1, Number.NaN],
+    [1, Number.POSITIVE_INFINITY],
+    ["1", 4],
+    [null, 4],
+  ])("refuses %s of %s", (covered, total) => {
+    expect(coverageCount(covered, total)).toBeNull();
+  });
+});
+
+describe("line ranges", () => {
+  it("joins ranges that overlap or touch, in line order", () => {
+    expect(
+      joinRanges([
+        [8, 9],
+        [1, 3],
+        [4, 4],
+        [2, 6],
+        [11, 11],
+      ]),
+    ).toEqual([
+      [1, 6],
+      [8, 9],
+      [11, 11],
+    ]);
+  });
+
+  it("counts each line once, so a single-line range is one line", () => {
+    // [1,3] and [2,4] share lines 2 and 3, so together they are lines 1 to 4; [9,9] adds one.
+    expect(
+      lineCount([
+        [1, 3],
+        [2, 4],
+        [9, 9],
+      ]),
+    ).toBe(5);
+    expect(lineCount([])).toBe(0);
   });
 });
 
@@ -194,10 +255,10 @@ describe("alignCoverage", () => {
     expect(best(["istanbul-summary", "cobertura"])).toBe("cobertura");
   });
 
-  it("uses every format when they sit in different directories, and keeps the most detailed report of a file", () => {
+  it("uses every format when they sit in different directories, taking lines from the report with ranges and the higher branch and function counts", () => {
     const known = ["src/a.ts"];
     const summary = report([file("src/a.ts", 5, 10)], { format: "istanbul-summary", dir: "summary" });
-    const detailed = report([file("src/a.ts", 4, 10, { covered: [[1, 4]], uncovered: [[5, 10]] })], {
+    const detailed = report([file("src/a.ts", 4, 10, { ranges: { covered: [[1, 4]], uncovered: [[5, 10]] } })], {
       format: "lcov",
       dir: "lcov",
     });
@@ -213,18 +274,132 @@ describe("alignCoverage", () => {
       [withBranches, summary, detailed],
       [detailed, withBranches, summary],
     ]) {
-      expect(alignCoverage(order, known).files.get("src/a.ts")).toMatchObject({
+      expect(alignCoverage(order, known).files.get("src/a.ts")).toEqual({
+        path: "src/a.ts",
         format: "lcov",
+        artefact: "coverage",
         lines: { covered: 4, total: 10 },
+        ranges: { covered: [[1, 4]], uncovered: [[5, 10]] },
+        branches: { covered: 1, total: 2 },
+        functions: { covered: 1, total: 1 },
       });
     }
   });
 
-  it("keeps the first of two reports that say the same", () => {
+  it("keeps the report with more lines covered when neither has ranges, and the first when they agree", () => {
     const known = ["src/a.ts"];
     const a = report([file("src/a.ts", 1, 2)], { artefact: "first", dir: "x" });
     const b = report([file("src/a.ts", 2, 2)], { artefact: "second", dir: "y" });
-    expect(alignCoverage([a, b], known).files.get("src/a.ts")?.artefact).toBe("first");
+    const c = report([file("src/a.ts", 1, 2)], { artefact: "third", dir: "z" });
+    expect(alignCoverage([a, b], known).files.get("src/a.ts")?.artefact).toBe("second");
+    expect(alignCoverage([a, c], known).files.get("src/a.ts")?.artefact).toBe("first");
+  });
+
+  describe("joining two reports of one file that both carry ranges", () => {
+    const known = ["src/a.ts"];
+    const unit = (ranges: { covered: [number, number][]; uncovered: [number, number][] }) =>
+      file("src/a.ts", lineCount(ranges.covered), lineCount([...ranges.covered, ...ranges.uncovered]), { ranges });
+
+    it("counts a line as run when either report ran it", () => {
+      // Each report ran one of the two lines, so together both lines ran.
+      const a = report([unit({ covered: [[1, 1]], uncovered: [[2, 2]] })], { dir: "unit" });
+      const b = report([unit({ covered: [[2, 2]], uncovered: [[1, 1]] })], { dir: "integration" });
+      expect(alignCoverage([a, b], known).files.get("src/a.ts")).toMatchObject({
+        lines: { covered: 2, total: 2 },
+        ranges: { covered: [[1, 2]], uncovered: [] },
+      });
+    });
+
+    it("joins overlapping ranges and keeps what neither ran", () => {
+      // Instrumented: 1-10 from the first and 8-20 from the second, so 1-20 (20 lines).
+      // Covered: 1-3 and 8-15, so 3 + 8 = 11 lines; never run: 4-7 and 16-20.
+      const a = report([unit({ covered: [[1, 3]], uncovered: [[4, 10]] })], { dir: "unit" });
+      const b = report([unit({ covered: [[8, 15]], uncovered: [[16, 20]] })], { dir: "integration" });
+      expect(alignCoverage([a, b], known).files.get("src/a.ts")).toMatchObject({
+        lines: { covered: 11, total: 20 },
+        ranges: {
+          covered: [
+            [1, 3],
+            [8, 15],
+          ],
+          uncovered: [
+            [4, 7],
+            [16, 20],
+          ],
+        },
+      });
+    });
+
+    it("keeps the gaps between instrumented lines out of both lists", () => {
+      // Instrumented: 1-3 and 10-12, six lines with nothing between. Covered: 1-2 and 10. Never run: 3 and 11-12.
+      const a = report([unit({ covered: [[1, 2]], uncovered: [[3, 3]] })], { dir: "unit" });
+      const b = report([unit({ covered: [[10, 10]], uncovered: [[11, 12]] })], { dir: "integration" });
+      expect(alignCoverage([a, b], known).files.get("src/a.ts")).toMatchObject({
+        lines: { covered: 3, total: 6 },
+        ranges: {
+          covered: [
+            [1, 2],
+            [10, 10],
+          ],
+          uncovered: [
+            [3, 3],
+            [11, 12],
+          ],
+        },
+      });
+    });
+
+    it("keeps the higher branch and function counts, as reports do not say which ones ran", () => {
+      const a = report([unit({ covered: [[1, 1]], uncovered: [] }), file("src/b.ts", 0, 0)], { dir: "unit" });
+      const withCounts = { branches: { covered: 1, total: 4 }, functions: { covered: 2, total: 3 } };
+      const b = report([{ ...unit({ covered: [[1, 1]], uncovered: [] }), ...withCounts }], { dir: "integration" });
+      const c = report([{ ...unit({ covered: [[1, 1]], uncovered: [] }), branches: { covered: 1, total: 6 } }], { dir: "e2e" });
+      expect(alignCoverage([a, b, c], known).files.get("src/a.ts")).toMatchObject({
+        branches: { covered: 1, total: 6 },
+        functions: { covered: 2, total: 3 },
+      });
+    });
+  });
+
+  describe("figures a report cannot have", () => {
+    const known = ["src/a.ts", "src/b.ts"];
+
+    it("drops a file whose line count is impossible", () => {
+      const found = alignCoverage([report([file("src/a.ts", 12, 10), file("src/b.ts", 1, 2)])], known);
+      expect([...found.files.keys()]).toEqual(["src/b.ts"]);
+    });
+
+    it("drops an impossible branch or function count and keeps the lines", () => {
+      const found = alignCoverage(
+        [report([file("src/a.ts", 1, 2, { branches: { covered: 3, total: 2 }, functions: { covered: -1, total: 2 } })])],
+        known,
+      );
+      expect(found.files.get("src/a.ts")).toEqual({
+        path: "src/a.ts",
+        lines: { covered: 1, total: 2 },
+        format: "lcov",
+        artefact: "coverage",
+      });
+    });
+
+    it.each([
+      ["a range that runs backwards", { covered: [[3, 1]], uncovered: [] }],
+      ["a line number below one", { covered: [[0, 2]], uncovered: [] }],
+      ["ranges that disagree with the count", { covered: [[1, 1]], uncovered: [] }],
+      ["a line in both lists", { covered: [[1, 2]], uncovered: [[2, 2]] }],
+    ])("drops the ranges and keeps the totals for %s", (_, ranges) => {
+      const found = alignCoverage([report([file("src/a.ts", 2, 3, { ranges: ranges as never })])], known);
+      expect(found.files.get("src/a.ts")).toMatchObject({ lines: { covered: 2, total: 3 } });
+      expect(found.files.get("src/a.ts")?.ranges).toBeUndefined();
+      expect(found.lineDetail).toBe(false);
+    });
+  });
+
+  it("says whether any matched file carries ranges", () => {
+    const known = ["src/a.ts", "src/b.ts"];
+    expect(alignCoverage([report([file("src/a.ts", 1, 1)])], known).lineDetail).toBe(false);
+    const ranged = file("src/b.ts", 1, 1, { ranges: { covered: [[1, 1]], uncovered: [] } });
+    expect(alignCoverage([report([file("src/a.ts", 1, 1), ranged])], known).lineDetail).toBe(true);
   });
 
   it("returns nothing for no reports", () => {
@@ -295,15 +470,54 @@ describe("alignCoverage", () => {
       expect(alignCoverage([web], known)).toMatchObject({ inReport: 3, matched: 2, unmatched: 1 });
     });
 
-    it("stays quick and unmatched when thousands of files share the name", () => {
+    it("leaves unmatched every path whose only evidence is a name that thousands of files share", () => {
       const known = Array.from({ length: 5000 }, (_, i) => `pkg${i}/src/index.ts`);
       const entries = Array.from({ length: 300 }, (_, i) => file(`other${i}/index.ts`, 1, 1));
-      const started = Date.now();
-      const found = alignCoverage([report(entries)], known);
-      // The chosen transform places one of them; the rest end in a name that thousands of files share.
-      expect(found.matched).toBe(1);
-      expect(found.unmatched).toBe(299);
-      expect(Date.now() - started).toBeLessThan(2000);
+      // Each path could be any of the 5,000 files, and no two paths agree on a package, so none is placed.
+      expect(alignCoverage([report(entries)], known)).toMatchObject({ matched: 0, unmatched: 300 });
+    });
+
+    it("leaves unmatched two paths whose votes tie across packages, and places them when the directory hint decides", () => {
+      const known = Array.from({ length: 100 }, (_, i) => [`pkg${i}/src/index.ts`, `pkg${i}/src/main.ts`]).flat();
+      // Both paths sit in `x`, so they agree on every package that has both files: a tie the paths cannot break.
+      const entries = [file("x/index.ts", 1, 1), file("x/main.ts", 1, 1)];
+      expect(alignCoverage([report(entries)], known).matched).toBe(0);
+      expect(pathsOf([report(entries, { dir: "pkg7/src/coverage" })], known)).toEqual(["pkg7/src/index.ts", "pkg7/src/main.ts"]);
+    });
+
+    it("places paths held back by common names on the one package that they all agree on", () => {
+      // 60 files share each name, so both paths are held back, but only a0 holds both names.
+      const known = [
+        ...Array.from({ length: 60 }, (_, i) => `a${i}/src/index.ts`),
+        "a0/src/util.ts",
+        ...Array.from({ length: 59 }, (_, i) => `b${i}/src/util.ts`),
+      ];
+      const entries = [file("x/index.ts", 1, 1), file("x/util.ts", 1, 1)];
+      expect(pathsOf([report(entries)], known)).toEqual(["a0/src/index.ts", "a0/src/util.ts"]);
+    });
+
+    it("does not let a path outside the repository land on a root file by its name", () => {
+      const root = "/home/runner/work/widgets/widgets";
+      const found = alignCoverage(
+        [
+          report([
+            file(`${root}/node_modules/foo/index.ts`, 0, 10),
+            file(`${root}/index.ts`, 9, 10),
+            file(`${root}/src/q.ts`, 1, 1),
+          ]),
+        ],
+        ["index.ts", "src/q.ts"],
+      );
+      expect(found.files.get("index.ts")?.lines).toEqual({ covered: 9, total: 10 });
+      expect(found).toMatchObject({ matched: 2, unmatched: 1 });
+    });
+
+    it("still places a path from another checkout by a tail of two or more segments", () => {
+      const found = alignCoverage(
+        [report([file("/ci/a/src/x.ts", 1, 1), file("/ci/a/src/y.ts", 1, 1), file("/elsewhere/src/z.ts", 1, 1)])],
+        ["src/x.ts", "src/y.ts", "src/z.ts"],
+      );
+      expect([...found.files.keys()].sort()).toEqual(["src/x.ts", "src/y.ts", "src/z.ts"]);
     });
   });
 });

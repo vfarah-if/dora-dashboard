@@ -1,4 +1,12 @@
-import { ROOT_AREA, type AreaSummary, type Band, type Capped, type CodeFigures, type LineRange } from "@dora-dashboard/core";
+import {
+  ROOT_AREA,
+  type AreaSummary,
+  type Band,
+  type Capped,
+  type CodeFigures,
+  type LineRange,
+  type MaintainabilityCheck,
+} from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { shareLabel } from "./codeVerdict";
 
@@ -51,31 +59,48 @@ export function searchWithArea(search: string, area: string | null): string {
   return text ? `?${text}` : "";
 }
 
+/** The date range of an address and nothing else, which is all the code page reads, so `exclude` and the like are not carried over. */
+export function searchForCodePage(search: string): string {
+  const source = new URLSearchParams(search);
+  const params = new URLSearchParams();
+  for (const name of ["from", "to"]) {
+    const value = source.get(name);
+    if (value) params.set(name, value);
+  }
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
 export interface MaintainabilityLine {
-  check: string;
+  check: MaintainableCheck;
   band: Band;
   text: string;
 }
+
+type MaintainableCheck = Exclude<MaintainabilityCheck, "all">;
+type Figures = Pick<CodeFigures, "longestFunction">;
+
+/**
+ * The sentence for each maintainability check. `satisfies` makes a check added in core without a sentence here a compile
+ * error rather than a line that quietly disappears.
+ */
+const sentences = {
+  linesAboveWarn: (good, share) => copy.codeHealth.findings.linesAboveWarn(good, share),
+  linesAboveHigh: (good, share) => copy.codeHealth.findings.linesAboveHigh(good, share),
+  longFunctions: (good, share, count, figures) =>
+    copy.codeHealth.findings.longFunctions(good, share, count, figures.longestFunction),
+  manyParams: (good, share, count) => copy.codeHealth.findings.manyParams(good, share, count),
+} satisfies Record<MaintainableCheck, (good: boolean, share: string, count: number | undefined, figures: Figures) => string>;
+
+const isMaintainableCheck = (check: string): check is MaintainableCheck => Object.hasOwn(sentences, check);
 
 /** One sentence for each maintainability check of a scope, in the order core lists them, with the band that check allows. */
 export function maintainabilityLines(
   figures: Pick<CodeFigures, "maintainabilityChecks" | "longestFunction">,
 ): MaintainabilityLine[] {
-  const c = copy.codeHealth.findings;
   return figures.maintainabilityChecks.flatMap((check) => {
-    if (typeof check.value !== "number" || check.band === undefined) return [];
-    const share = shareLabel(check.value);
-    const good = check.band === "elite";
-    const text =
-      check.check === "linesAboveWarn"
-        ? c.linesAboveWarn(good, share)
-        : check.check === "linesAboveHigh"
-          ? c.linesAboveHigh(good, share)
-          : check.check === "longFunctions"
-            ? c.longFunctions(good, share, check.count, figures.longestFunction)
-            : check.check === "manyParams"
-              ? c.manyParams(good, share, check.count)
-              : null;
-    return text === null ? [] : [{ check: check.check, band: check.band, text }];
+    if (typeof check.value !== "number" || check.band === undefined || !isMaintainableCheck(check.check)) return [];
+    const text = sentences[check.check](check.band === "elite", shareLabel(check.value), check.count, figures);
+    return [{ check: check.check, band: check.band, text }];
   });
 }

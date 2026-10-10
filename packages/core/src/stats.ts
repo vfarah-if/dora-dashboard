@@ -37,6 +37,9 @@ export function percentile(values: readonly number[], p: number): number | null 
   return lo + (hi - lo) * (rank - lower);
 }
 
+/** The values added together; 0 for none. */
+export const sum = (values: readonly number[]): number => values.reduce((total, v) => total + v, 0);
+
 export const median = (values: readonly number[]) => percentile(values, 0.5);
 export const p75 = (values: readonly number[]) => percentile(values, 0.75);
 

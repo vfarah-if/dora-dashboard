@@ -4,6 +4,7 @@ import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
 import { hasIssueStatus } from "../lib/issues";
+import { searchForCodePage } from "../lib/codeDetail";
 import { copy } from "../copy";
 import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
@@ -221,7 +222,7 @@ function RepoView({ id }: { id: number }) {
         </Link>
         <RepoHeader report={report.data} leftOut={leftOut} />
         <p className="button-row">
-          <Link to={{ pathname: `/repos/${id}/code`, search }} className="button button-secondary">
+          <Link to={{ pathname: `/repos/${id}/code`, search: searchForCodePage(search) }} className="button button-secondary">
             {copy.codeAnalysis.repoLink}
           </Link>
           {showIssuesLink && (

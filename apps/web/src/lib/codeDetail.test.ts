@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { codeHealthReport } from "../test/fixtures";
 import { copy } from "../copy";
-import { areaChartRows, areaLabel, maintainabilityLines, rangesLabel, searchWithArea } from "./codeDetail";
+import { areaChartRows, areaLabel, maintainabilityLines, rangesLabel, searchForCodePage, searchWithArea } from "./codeDetail";
 
 describe("rangesLabel", () => {
   it("writes a span as 'first to last' and a single line on its own", () => {
@@ -113,5 +113,17 @@ describe("maintainabilityLines", () => {
       longestFunction: null,
     });
     expect(lines).toEqual([]);
+  });
+});
+
+describe("searchForCodePage", () => {
+  it("keeps the date range and drops everything else", () => {
+    expect(searchForCodePage("?from=2026-01-01&to=2026-02-01&exclude=bot&area=x&bots=1")).toBe("?from=2026-01-01&to=2026-02-01");
+  });
+
+  it("keeps one end of the range on its own, and is empty when there is no range", () => {
+    expect(searchForCodePage("?to=2026-02-01&exclude=bot")).toBe("?to=2026-02-01");
+    expect(searchForCodePage("?exclude=bot")).toBe("");
+    expect(searchForCodePage("")).toBe("");
   });
 });

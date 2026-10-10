@@ -57,15 +57,20 @@ describe("codeFigures", () => {
     expect(codeFigures(functions, { warn: 1, high: 11 })).toMatchObject({ countAboveWarn: 3, countAboveHigh: 2 });
   });
 
-  it("describes no functions as an elite, empty set", () => {
+  it("describes no functions as an empty set with no band, since there is nothing to judge", () => {
     expect(codeFigures([])).toMatchObject({
       functions: 0,
       nloc: 0,
       mostComplex: null,
       longestFunction: null,
       nextBand: null,
-      maintainabilityBand: "elite",
+      maintainabilityBand: null,
     });
+    // Test functions alone are still nothing to judge.
+    expect(
+      codeFigures([{ file: "src/a.test.ts", language: "TypeScript", name: "t", startLine: 1, ccn: 1, nloc: 1, params: 0 }])
+        .maintainabilityBand,
+    ).toBeNull();
   });
 });
 

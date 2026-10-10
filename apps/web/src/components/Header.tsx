@@ -45,12 +45,17 @@ function IssuesNavLink() {
   return <NavLink to="/issues">{copy.nav.issues}</NavLink>;
 }
 
+/** True on the code analysis page of any repository, which belongs to the Code analysis tab. */
+function useOnCodePage(): boolean {
+  return useMatch("/repos/:id/code") !== null;
+}
+
 /**
  * The Repositories tab covers the repository pages but not the code analysis page of a repository, which belongs to
  * the Code analysis tab. Otherwise two tabs would be lit at once.
  */
 function RepositoriesNavLink() {
-  const onCodePage = useMatch("/repos/:id/code") !== null;
+  const onCodePage = useOnCodePage();
   return (
     <NavLink to="/repos" className={({ isActive }) => (isActive && !onCodePage ? "active" : undefined)}>
       {copy.nav.repositories}
@@ -60,7 +65,7 @@ function RepositoriesNavLink() {
 
 /** Lit on the list at /code and on the code analysis page of any repository. */
 function CodeAnalysisNavLink() {
-  const onCodePage = useMatch("/repos/:id/code") !== null;
+  const onCodePage = useOnCodePage();
   return (
     <NavLink to="/code" className={({ isActive }) => (isActive || onCodePage ? "active" : undefined)}>
       {copy.nav.codeAnalysis}

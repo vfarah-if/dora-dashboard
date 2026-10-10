@@ -1,4 +1,4 @@
-import { Link, useLocation, useParams } from "react-router";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import type { CodeDetailReport, CodeDetailResponse } from "@dora-dashboard/core";
 import { isRecordId, useCodeDetail, useCodeHealth, useRepos } from "../api/hooks";
 import { copy } from "../copy";
@@ -58,7 +58,8 @@ function ScopeChecks({ detail }: { detail: CodeDetailReport }) {
       </h3>
       <p className="chart-subtitle">{k.subtitle}</p>
       <p className="band-line">
-        <span>{k.bandLabel}</span> <BandLabel band={detail.scope.maintainabilityBand} />
+        <span>{k.bandLabel}</span>{" "}
+        {detail.scope.maintainabilityBand ? <BandLabel band={detail.scope.maintainabilityBand} /> : <span>{k.noBand}</span>}
       </p>
       <p className="chart-subtitle">{k.bandNote}</p>
       <ul className="findings-list check-list">
@@ -129,19 +130,19 @@ function SelectedScope({ detail }: { detail: CodeDetailReport }) {
   );
 }
 
-function DetailBody({ detail, clearArea }: { detail: CodeDetailReport; clearArea: () => void }) {
+function DetailBody({ detail, clearArea, busy }: { detail: CodeDetailReport; clearArea: () => void; busy: boolean }) {
   return (
-    <>
+    <div className={busy ? "detail-body is-refreshing" : "detail-body"} aria-busy={busy}>
       <Notices detail={detail} clearArea={clearArea} />
       <AreasCard detail={detail} />
       <SelectedScope detail={detail} />
       <CoveragePanel detail={detail} />
-    </>
+    </div>
   );
 }
 
-function Outcome({ data, clearArea }: { data: CodeDetailResponse; clearArea: () => void }) {
-  if (data.status === "ok") return <DetailBody detail={data} clearArea={clearArea} />;
+function Outcome({ data, clearArea, busy }: { data: CodeDetailResponse; clearArea: () => void; busy: boolean }) {
+  if (data.status === "ok") return <DetailBody detail={data} clearArea={clearArea} busy={busy} />;
   if (data.status === "error") {
     return (
       <div className="notice notice-error" role="alert">
@@ -162,7 +163,9 @@ function GradeLine({ repoId }: { repoId: number }) {
   const [range] = useRangeParams();
   const health = useCodeHealth(repoId, { from: range.from, to: range.to });
   const band = health.data?.status === "ok" ? (health.data.grade?.overall.band ?? null) : null;
-  if (!health.data) return null;
+  if (!health.data) {
+    return health.isError ? <p className="grade-line">{c.gradeUnavailable}</p> : null;
+  }
   return (
     <p className="grade-line">
       <span>{band ? c.gradeLine : c.gradeNone}</span> {band && <BandLabel band={band} />}
@@ -172,7 +175,8 @@ function GradeLine({ repoId }: { repoId: number }) {
 
 function CodeAnalysisView({ id }: { id: number }) {
   const { search } = useLocation();
-  const [area, setArea] = useTextParam("area");
+  const [area] = useTextParam("area");
+  const navigate = useNavigate();
   const detail = useCodeDetail(id, area);
   const repos = useRepos();
   const listing = repos.data?.find((repo) => repo.id === id);
@@ -200,7 +204,13 @@ function CodeAnalysisView({ id }: { id: number }) {
 
       {detail.isPending && <SkeletonGrid count={4} height={120} label={c.loading} />}
       {detail.isError && <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />}
-      {data && <Outcome data={data} clearArea={() => setArea(null)} />}
+      {data && (
+        <Outcome
+          data={data}
+          clearArea={() => navigate({ search: searchWithArea(search, null) })}
+          busy={detail.isPlaceholderData}
+        />
+      )}
     </div>
   );
 }

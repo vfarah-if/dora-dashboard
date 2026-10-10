@@ -1,11 +1,11 @@
-import { isCoverageArtefactName, type CoverageArtefact, type CoverageReport } from "@dora-dashboard/core";
+import { isCoverageArtefactName, type CoverageArtefact } from "@dora-dashboard/core";
 import { UpstreamError } from "../../core/errors.js";
-import type { CoverageSource } from "../../interfaces/coverage-source.js";
+import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../../interfaces/coverage-source.js";
 import { readCoverageArchive } from "../coverage-reports/read-coverage-archive.js";
-import { API, download, type Fetch, RATE_LIMIT_MESSAGE, request } from "./github-http.js";
+import { API, download, type Fetch, request } from "./github-http.js";
 
 const PAGE_SIZE = 100;
-/** Three pages of 100 reach back past the newest 300 artefacts, which is far further than a run worth showing. */
+/** Three pages of 100 read exactly the newest 300 artefacts, of any name and branch. */
 const MAX_PAGES = 3;
 /** The most of a zip downloaded. Coverage reports compress well, so a larger artefact is almost certainly not one. */
 export const MAX_ARTEFACT_BYTES = 50 * 1024 * 1024;
@@ -26,19 +26,22 @@ interface RestArtefact {
 }
 
 interface RestArtefacts {
+  total_count?: number;
   artifacts?: RestArtefact[];
 }
 
-const noActionsAccess = () =>
-  new UpstreamError(
-    "GitHub refused access to this repository's Actions artefacts; a fine-grained token needs read access to Actions",
-    403,
-  );
+const NO_ACTIONS_ACCESS =
+  "GitHub refused access to this repository's Actions artefacts; a fine-grained token needs read access to Actions";
 
-/** A 403 that is not a rate limit means the token lacks the Actions permission, which the person can grant. */
+/**
+ * GitHub says "Resource not accessible by personal access token" (a fine-grained token) or "... by integration" (an
+ * app token) when the credential lacks a permission, which the person can grant. Any other 403, such as a storage
+ * host refusing an expired signed address, an organisation enforcing SAML or a secondary rate limit, keeps GitHub's own
+ * message, because the advice would be wrong for it.
+ */
 function explainForbidden(error: unknown): unknown {
-  return error instanceof UpstreamError && error.status === 403 && !error.message.startsWith(RATE_LIMIT_MESSAGE)
-    ? noActionsAccess()
+  return error instanceof UpstreamError && error.status === 403 && error.message.includes("Resource not accessible by")
+    ? new UpstreamError(NO_ACTIONS_ACCESS, 403, { cause: error })
     : error;
 }
 
@@ -55,8 +58,10 @@ export class GitHubCoverageSource implements CoverageSource {
     private readonly base: string = API,
   ) {}
 
-  async findArtefacts(token: string, owner: string, name: string, branch: string): Promise<CoverageArtefact[]> {
+  async findArtefacts(token: string, owner: string, name: string, branch: string): Promise<ArtefactSearch> {
     const found: CoverageArtefact[] = [];
+    let complete = true;
+    let listed = 0;
     try {
       for (let page = 1; page <= MAX_PAGES; page++) {
         const url = `${this.base}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/artifacts?per_page=${PAGE_SIZE}&page=${page}`;
@@ -66,15 +71,18 @@ export class GitHubCoverageSource implements CoverageSource {
           const mapped = this.map(artefact, branch);
           if (mapped) found.push(mapped);
         }
+        listed += artefacts.length;
         if (artefacts.length < PAGE_SIZE) break;
+        // The last page is full. GitHub's total says whether anything is left; without it, assume there is.
+        if (page === MAX_PAGES) complete = typeof body.total_count === "number" && listed >= body.total_count;
       }
     } catch (error) {
       throw explainForbidden(error);
     }
-    return found.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return { artefacts: found.sort((a, b) => b.createdAt.localeCompare(a.createdAt)), complete };
   }
 
-  async readArtefact(token: string, owner: string, name: string, artefact: CoverageArtefact): Promise<CoverageReport[]> {
+  async readArtefact(token: string, owner: string, name: string, artefact: CoverageArtefact): Promise<ArtefactContents> {
     if (artefact.sizeBytes > MAX_ARTEFACT_BYTES) {
       throw new UpstreamError("The coverage artefact is larger than the limit for reading coverage", 502);
     }

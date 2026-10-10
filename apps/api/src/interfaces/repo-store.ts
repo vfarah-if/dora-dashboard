@@ -2,6 +2,7 @@ import type {
   BoardAccess,
   BoardColumn,
   CodeSnapshot,
+  CoverageRead,
   CoverageSnapshot,
   CrawlStatus,
   DeployRun,
@@ -81,7 +82,13 @@ export interface RepoStore {
   /** The newest coverage read of any kind, including a failed attempt. */
   latestCoverageSnapshot(repoId: number): CoverageSnapshot | null;
   /** The newest coverage read that carries no error. */
-  latestSuccessfulCoverageSnapshot(repoId: number): CoverageSnapshot | null;
+  latestSuccessfulCoverageSnapshot(repoId: number): CoverageRead | null;
+  /**
+   * Deletes the repository's failed coverage reads and keeps the good ones. Used when a complete search finds no
+   * coverage artefact at all, so that an old failure, such as a missing permission since granted, is no longer
+   * shown as the current state.
+   */
+  clearCoverageFailures(repoId: number): void;
   /** `fetchedAt` of the newest coverage read and of the newest successful one, read without loading either. Null when none. */
   coverageSnapshotKeys(repoId: number): SnapshotKeys;
 

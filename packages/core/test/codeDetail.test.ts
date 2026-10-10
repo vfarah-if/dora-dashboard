@@ -7,7 +7,12 @@ import {
   type CoverageSnapshots,
 } from "../src/codeDetail.js";
 import type { CodeHealthThresholds } from "../src/codeHealth.js";
-import { COVERAGE_SNAPSHOT_VERSION, type CoverageFileReport, type CoverageSnapshot } from "../src/codeCoverage.js";
+import {
+  COVERAGE_SNAPSHOT_VERSION,
+  type CoverageFileReport,
+  type CoverageRead,
+  type CoverageReadFailure,
+} from "../src/codeCoverage.js";
 import { codeHealth, type CodeSnapshot, type FunctionMetrics } from "../src/codeHealth.js";
 
 const fn = (
@@ -53,25 +58,43 @@ const snapshot: CodeSnapshot = {
   },
 };
 
-const lcov = (files: CoverageFileReport[], extra: Partial<CoverageSnapshot> = {}): CoverageSnapshot => ({
+const lcov = (files: CoverageFileReport[], extra: Partial<CoverageRead> = {}): CoverageRead => ({
   fetchedAt: "2026-10-01T11:00:00Z",
   version: COVERAGE_SNAPSHOT_VERSION,
   artefacts: [{ id: 1, name: "coverage", sizeBytes: 10, createdAt: "2026-10-01T10:30:00Z", runId: 9, commitSha: "abc123" }],
+  artefactsInRun: 1,
   runId: 9,
   commitSha: "abc123",
   reports: [{ format: "lcov", artefact: "coverage", dir: "coverage", files }],
+  unreadableFiles: 0,
+  error: null,
   ...extra,
 });
 
-const covered: CoverageSnapshot = lcov([
-  { path: "apps/api/src/a.ts", lines: { covered: 6, total: 14 }, covered: [[20, 25]], uncovered: [[2, 9]] },
-  {
-    path: "apps/api/src/b.ts",
-    lines: { covered: 5, total: 5 },
-    covered: [[1, 5]],
-    uncovered: [],
-    branches: { covered: 1, total: 2 },
-  },
+const failure = (error: string, extra: Partial<CoverageReadFailure> = {}): CoverageReadFailure => ({
+  fetchedAt: "2026-10-02T00:00:00Z",
+  version: COVERAGE_SNAPSHOT_VERSION,
+  artefacts: [],
+  runId: null,
+  commitSha: null,
+  reports: [],
+  error,
+  ...extra,
+});
+
+/** A file report whose counts come from its ranges, as a parser builds it. */
+const ranged = (path: string, covered: [number, number][], uncovered: [number, number][]): CoverageFileReport => {
+  const lines = (ranges: [number, number][]) => ranges.reduce((n, [a, b]) => n + b - a + 1, 0);
+  return {
+    path,
+    lines: { covered: lines(covered), total: lines(covered) + lines(uncovered) },
+    ranges: { covered, uncovered },
+  };
+};
+
+const covered: CoverageRead = lcov([
+  ranged("apps/api/src/a.ts", [[20, 25]], [[2, 9]]),
+  { ...ranged("apps/api/src/b.ts", [[1, 5]], []), branches: { covered: 1, total: 2 } },
   { path: "packages/core/src/c.ts", lines: { covered: 4, total: 4 } },
   { path: "/home/runner/secret-client/x/ghost.ts", lines: { covered: 0, total: 9 } },
 ]);
@@ -240,7 +263,7 @@ describe("codeDetail coverage", () => {
   });
 
   it("is an error when the newest read failed and none ever succeeded", () => {
-    const failed = lcov([], { error: "No artefact", reports: [], artefacts: [], runId: null, commitSha: null });
+    const failed = failure("No artefact");
     expect(codeDetail(snapshot, { latest: failed, good: null }).coverage).toEqual({
       status: "error",
       message: "No artefact",
@@ -248,12 +271,10 @@ describe("codeDetail coverage", () => {
     });
   });
 
-  it("falls back to an unknown message for an error snapshot without one", () => {
-    const failed = lcov([], { error: null });
-    expect(codeDetail(snapshot, { latest: failed, good: null }).coverage).toMatchObject({
-      status: "error",
-      message: "Unknown error",
-    });
+  it("shows nothing from a read stored in an older shape, which the next crawl reads again", () => {
+    const old = { ...covered, version: COVERAGE_SNAPSHOT_VERSION - 1 };
+    expect(codeDetail(snapshot, { latest: old, good: old }).coverage).toEqual({ status: "none" });
+    expect(codeDetail(snapshot, { latest: old, good: old }).areas.items.every((a) => a.coverage === null)).toBe(true);
   });
 
   describe("with a report", () => {
@@ -262,14 +283,17 @@ describe("codeDetail coverage", () => {
     it("names its source", () => {
       expect(view.source).toEqual({
         artefacts: ["coverage"],
+        artefactsInRun: 1,
         runId: 9,
         commitSha: "abc123",
         fetchedAt: covered.fetchedAt,
         createdAt: "2026-10-01T10:30:00Z",
         formats: ["lcov"],
+        unreadableFiles: 0,
       });
       expect(view.otherCommit).toBe(false);
       expect(view.lineDetail).toBe(true);
+      expect(view.filesInScope).toBe(3);
     });
 
     it("totals lines, branches and functions over the matched files", () => {
@@ -301,17 +325,22 @@ describe("codeDetail coverage", () => {
 
     it("caps the ranges of one file", () => {
       const ranges = Array.from({ length: 25 }, (_, i): [number, number] => [i * 3 + 1, i * 3 + 1]);
-      const many = lcov([{ path: "apps/api/src/a.ts", lines: { covered: 0, total: 25 }, covered: [], uncovered: ranges }]);
+      const many = lcov([ranged("apps/api/src/a.ts", [], ranges)]);
       const result = okView(codeDetail(snapshot, { latest: many, good: many })).leastCovered.items[0]!;
-      expect(result.uncovered.items).toHaveLength(CODE_DETAIL_CAPS.rangesPerFile);
-      expect(result.uncovered.total).toBe(25);
+      expect(result.uncovered!.items).toHaveLength(CODE_DETAIL_CAPS.rangesPerFile);
+      expect(result.uncovered!.total).toBe(25);
+    });
+
+    it("gives no ranges for a file whose report has none", () => {
+      const totals = lcov([{ path: "apps/api/src/a.ts", lines: { covered: 1, total: 4 } }]);
+      expect(okView(codeDetail(snapshot, { latest: totals, good: totals })).leastCovered.items[0]!.uncovered).toBeNull();
     });
 
     it("orders files by uncovered lines, then by path", () => {
       const ordered = lcov([
-        { path: "apps/api/src/b.ts", lines: { covered: 1, total: 3 }, uncovered: [[2, 3]] },
-        { path: "apps/api/src/a.ts", lines: { covered: 1, total: 3 }, uncovered: [[2, 3]] },
-        { path: "apps/api/src/extra.ts", lines: { covered: 0, total: 4 }, uncovered: [[1, 4]] },
+        ranged("apps/api/src/b.ts", [[1, 1]], [[2, 3]]),
+        ranged("apps/api/src/a.ts", [[1, 1]], [[2, 3]]),
+        ranged("apps/api/src/extra.ts", [], [[1, 4]]),
       ]);
       const paths = okView(codeDetail(snapshot, { latest: ordered, good: ordered })).leastCovered.items.map((f) => f.path);
       expect(paths).toEqual(["apps/api/src/extra.ts", "apps/api/src/a.ts", "apps/api/src/b.ts"]);
@@ -324,6 +353,8 @@ describe("codeDetail coverage", () => {
         total: 1,
         items: [{ path: "apps/api/src/extra.ts", area: "apps/api", functions: 1, nloc: 3 }],
       });
+      // w.ts and p.py are missing too, but are left off the list as kinds of code the report does not try to cover.
+      expect(view.notInReportOtherKinds).toBe(2);
     });
 
     it("lists complex functions whose instrumented lines never ran", () => {
@@ -357,21 +388,102 @@ describe("codeDetail coverage", () => {
       expect(areas.find((a) => a.path === "apps/web")?.coverage).toBeNull();
     });
 
-    it("scopes the shares and lists to the selected area", () => {
+    it("scopes the shares and lists to the selected area, and keeps line detail a property of the whole report", () => {
       const core = okView(codeDetail(snapshot, withCoverage, { area: "packages/core" }));
       expect(core.lines).toMatchObject({ covered: 4, total: 4, share: 1 });
       expect(core.branches).toBeNull();
       expect(core.leastCovered.total).toBe(0);
       expect(core.notInReport.total).toBe(0);
-      expect(core.lineDetail).toBe(false);
+      // p.py is the only Python file, so the report plainly does not try to cover it.
+      expect(core.notInReportOtherKinds).toBe(1);
+      expect(core.filesInScope).toBe(1);
+      // c.ts has totals only, but the report itself carries line ranges for other files.
+      expect(core.lineDetail).toBe(true);
       expect(core.files).toEqual({ inReport: 4, matched: 3, unmatched: 1 });
     });
 
-    it("gives no shares for a scope the report does not touch", () => {
+    it("says when the report does not reach the selected area, so empty lists are not read as good news", () => {
       const web = okView(codeDetail(snapshot, withCoverage, { area: "apps/web" }));
+      expect(web.filesInScope).toBe(0);
       expect(web.lines).toBeNull();
       expect(web.untestedComplex.total).toBe(0);
+      // w.ts has a function of CCN 25 and is absent from the report, but nothing in apps/web was matched.
+      expect(web.notInReport.total).toBe(0);
+      expect(web.notInReportOtherKinds).toBe(1);
     });
+  });
+
+  describe("coverage of a function over its own lines", () => {
+    const rowsFor = (...files: CoverageFileReport[]) => {
+      const read = lcov(files);
+      const report = codeDetail(snapshot, { latest: read, good: read });
+      return { rows: report.functions.items, view: okView(report) };
+    };
+
+    it("counts the lines of its range that ran over the lines of its range that are instrumented", () => {
+      // a1 spans lines 1 to 10: lines 1 to 3 ran and 4 to 10 did not, so 3 of 10.
+      const { rows, view } = rowsFor(ranged("apps/api/src/a.ts", [[1, 3]], [[4, 10]]));
+      expect(rows.find((f) => f.name === "a1")?.coverage).toBeCloseTo(0.3);
+      // a1 is complex but partly run, so it is not among the functions with no coverage.
+      expect(view.untestedComplex.total).toBe(0);
+    });
+
+    it("counts only the part of a range inside the function", () => {
+      // b1 spans 1 to 5. Lines 4 to 8 ran, of which 4 and 5 are inside; lines 1 to 3 did not. So 2 of 5.
+      const { rows } = rowsFor(ranged("apps/api/src/b.ts", [[4, 8]], [[1, 3]]));
+      expect(rows.find((f) => f.name === "b1")?.coverage).toBeCloseTo(0.4);
+    });
+
+    it("counts a single-line range as one line", () => {
+      // a1 spans 1 to 10 and only line 5 ran, so 1 of 10.
+      const { rows } = rowsFor(
+        ranged(
+          "apps/api/src/a.ts",
+          [[5, 5]],
+          [
+            [1, 4],
+            [6, 10],
+          ],
+        ),
+      );
+      expect(rows.find((f) => f.name === "a1")?.coverage).toBeCloseTo(0.1);
+    });
+
+    it("is unknown for a function none of whose lines is instrumented", () => {
+      // a2 spans 20 to 25, and the report instruments lines 1 to 10 only.
+      const { rows } = rowsFor(ranged("apps/api/src/a.ts", [[1, 10]], []));
+      expect(rows.find((f) => f.name === "a2")?.coverage).toBeNull();
+    });
+  });
+
+  describe("files that instrument no line", () => {
+    const empty = lcov([{ path: "packages/core/src/c.ts", lines: { covered: 0, total: 0 } }]);
+    const both = { latest: empty, good: empty };
+
+    it("give no share rather than 0%, for the area and for the scope", () => {
+      expect(codeDetail(snapshot, both).areas.items.find((a) => a.path === "packages/core")?.coverage).toBeNull();
+      const core = okView(codeDetail(snapshot, both, { area: "packages/core" }));
+      expect(core.lines).toBeNull();
+      expect(core.filesInScope).toBe(1);
+    });
+  });
+
+  it("caps the least covered, the missing and the untested lists, and still counts them all", () => {
+    // 306 files in one folder, each with one function of CCN 20 on line 1. The report covers the first 103, none of
+    // whose lines ran, so 103 are least covered and untested, and the other 203 are missing from the report.
+    const paths = Array.from({ length: 306 }, (_, i) => `lib/f${String(i).padStart(3, "0")}.ts`);
+    const big: CodeSnapshot = {
+      ...snapshot,
+      functions: paths.map((path) => fn(path, "f", 20, 1, 1, 1)),
+      files: paths,
+      layout: { manifests: [], workspaces: null },
+      partlyMeasured: [],
+    };
+    const read = lcov(paths.slice(0, 103).map((path) => ranged(path, [], [[1, 1]])));
+    const view = okView(codeDetail(big, { latest: read, good: read }));
+    expect([view.leastCovered.items.length, view.leastCovered.total]).toEqual([CODE_DETAIL_CAPS.leastCovered, 103]);
+    expect([view.untestedComplex.items.length, view.untestedComplex.total]).toEqual([CODE_DETAIL_CAPS.untestedComplex, 103]);
+    expect([view.notInReport.items.length, view.notInReport.total]).toEqual([CODE_DETAIL_CAPS.notInReport, 203]);
   });
 
   it("says when the coverage was measured on another commit", () => {
@@ -380,7 +492,7 @@ describe("codeDetail coverage", () => {
   });
 
   it("keeps the last good figures and shows the newer failure", () => {
-    const failed = lcov([], { error: "Artefact expired", reports: [], fetchedAt: "2026-10-02T00:00:00Z" });
+    const failed = failure("Artefact expired");
     const view = okView(codeDetail(snapshot, { latest: failed, good: covered }));
     expect(view.lastError).toEqual({ message: "Artefact expired", fetchedAt: "2026-10-02T00:00:00Z" });
     expect(view.lines).toMatchObject({ covered: 15, total: 23 });
@@ -406,6 +518,7 @@ describe("codeDetail coverage", () => {
         { id: 1, name: "coverage-api", sizeBytes: 1, createdAt: "2026-10-01T10:00:00Z", runId: 9, commitSha: "abc123" },
         { id: 2, name: "coverage-web", sizeBytes: 1, createdAt: "2026-10-01T10:00:00Z", runId: 9, commitSha: "abc123" },
       ],
+      artefactsInRun: 2,
     });
     expect(okView(codeDetail(snapshot, { latest: two, good: two })).source).toMatchObject({
       artefacts: ["coverage-api", "coverage-web"],
@@ -474,9 +587,17 @@ describe("prepareCodeDetail", () => {
     expect(okView(codeDetail(snapshot, { latest: two, good: two })).source.createdAt).toBe("2026-10-01T10:30:00Z");
   });
 
-  it("gives a null date when no artefact is listed", () => {
-    const bare = lcov(covered.reports[0]!.files, { artefacts: [] });
-    expect(okView(codeDetail(snapshot, { latest: bare, good: bare })).source.createdAt).toBeNull();
+  it("says how many artefacts the run had and how many coverage files could not be read", () => {
+    const partial = lcov(covered.reports[0]!.files, { artefactsInRun: 8, unreadableFiles: 2 });
+    expect(okView(codeDetail(snapshot, { latest: partial, good: partial })).source).toMatchObject({
+      artefacts: ["coverage"],
+      artefactsInRun: 8,
+      unreadableFiles: 2,
+    });
+  });
+
+  it("gives an area with no source function, and so a scope with none, no maintainability band", () => {
+    expect(codeDetail(snapshot, none, { area: "scripts" }).scope.maintainabilityBand).toBeNull();
   });
 
   it("keeps the most complex functions when it caps the list, and still counts them all", () => {

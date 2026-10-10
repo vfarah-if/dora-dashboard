@@ -16,7 +16,7 @@ System_Boundary(dashboard, "DORA Dashboard") {
   Container(api, "API", "Node 22, Fastify, @babel/parser", "Listens on 127.0.0.1:8787. Routes call services, services call ports, adapters implement them (ADR 0003). Holds tokens and sessions in memory only (ADR 0004). Measures JavaScript and TypeScript in process from a syntax tree, and every other language with lizard (ADR 0025). Reads coverage reports from CI artefacts with fflate and fast-xml-parser, for display only (ADR 0030).")
   Container(cli, "Crawl CLI", "Node 22, @babel/parser, apps/api/src/cli.ts", "Runs the same crawl and code health analysis as the API from the terminal, including the in-process syntax tree analysis, with the local GitHub CLI login and no server. Run by make crawl and make crawl-all.")
   Container(core, "Core", "TypeScript package", "Domain types and every metric as a pure function, with no I/O (ADR 0006). Linked into the API and CLI; the web app imports its types only.")
-  ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys and code health results (ADR 0005).")
+  ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys, code health results and the `coverage_snapshots` table of measured coverage reads (ADR 0005, ADR 0030).")
   ContainerDb(clone, "Shallow clone", "Temporary directory", "The deploy branch at its tip. Source and tooling files are read, never run, then the clone is deleted (ADR 0011, ADR 0013).")
 }
 

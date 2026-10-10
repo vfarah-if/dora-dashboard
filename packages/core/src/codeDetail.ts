@@ -1,10 +1,12 @@
 import { areaLocator, codeAreas, type AreaKind, type AreaMode } from "./codeAreas.js";
 import {
+  COVERAGE_SNAPSHOT_VERSION,
   alignCoverage,
   type AlignedCoverage,
   type AlignedFile,
   type CoverageCount,
   type CoverageFormat,
+  type CoverageRead,
   type CoverageSnapshot,
   type LineRange,
 } from "./codeCoverage.js";
@@ -20,12 +22,13 @@ import {
 } from "./codeHealth.js";
 import { isCodeFile, isTestPath } from "./codeTooling.js";
 import type { Band } from "./dora.js";
+import { sum } from "./stats.js";
 
 /**
  * The report behind the detailed code analysis page: the repository broken down by area, the figures for one area, and
  * measured coverage when CI published it. Coverage is display only. It is read here to describe what ran and never feeds
- * `codeHealth`, `judge` or any grade, and an area carries a maintainability band but no overall grade, because testing
- * and hygiene are repository-wide (ADR 0013).
+ * `codeHealth`, `judge` or any grade (ADR 0030), and an area carries a maintainability band but no overall grade,
+ * because testing and hygiene are repository-wide (ADR 0029).
  */
 
 /** How many entries each list keeps. Each capped list says how many there were before the cut. */
@@ -38,20 +41,30 @@ export const CODE_DETAIL_CAPS = {
   rangesPerFile: 20,
 } as const;
 
+/** A list cut at a limit, with how many there were before the cut. Read-only, as a prepared one is shared between requests. */
 export interface Capped<T> {
-  items: T[];
+  readonly items: readonly T[];
   /** How many there were before the cap. */
-  total: number;
+  readonly total: number;
 }
 
-const capped = <T>(all: T[], limit: number): Capped<T> => ({ items: all.slice(0, limit), total: all.length });
+/** The first `limit` of `all`, mapped when `map` is given, so `items.length <= total` always holds. */
+function capped<T>(all: readonly T[], limit: number): Capped<T>;
+function capped<T, U>(all: readonly T[], limit: number, map: (item: T) => U): Capped<U>;
+function capped<T, U>(all: readonly T[], limit: number, map?: (item: T) => U): Capped<T | U> {
+  const items = all.slice(0, limit);
+  return { items: map ? items.map(map) : items, total: all.length };
+}
 
 /** The figures for one area. `maintainabilityBand` is the maintainability part only, never the repository's grade. */
 export interface AreaSummary {
   /** Directory relative to the repository root, or "." for the files at the root. */
   path: string;
   kind: AreaKind;
-  /** Source files (code files that are not tests) in the area. */
+  /**
+   * Source files (code files that are not tests) in the area. A fixture file counts here, as its functions count in the
+   * figures, although a fixture directory is never chosen as an area of its own.
+   */
   files: number;
   functions: number;
   nloc: number;
@@ -62,7 +75,7 @@ export interface AreaSummary {
   nlocAboveWarn: number;
   testFunctions: number;
   testNloc: number;
-  /** Measured line coverage of the area's files that a report matched, from 0 to 1, or null when none were. */
+  /** Measured line coverage of the area's files that a report matched, from 0 to 1, or null when none were or they instrument no line. */
   coverage: number | null;
   /** Null when the area has no source function. */
   maintainabilityBand: Band | null;
@@ -74,7 +87,7 @@ export interface FunctionRow extends FunctionMetrics {
   coverage: number | null;
 }
 
-/** Covered over instrumented lines, from 0 to 1, with the counts behind it. */
+/** Covered over instrumented lines, from 0 to 1, with the counts behind it. Never built for a total of 0. */
 export interface CoverageShare extends CoverageCount {
   share: number;
 }
@@ -83,8 +96,8 @@ export interface LeastCoveredFile {
   path: string;
   area: string | null;
   lines: CoverageCount;
-  /** The lines never run, as ranges, at most `CODE_DETAIL_CAPS.rangesPerFile` of them. */
-  uncovered: Capped<LineRange>;
+  /** The lines never run, as ranges, at most `CODE_DETAIL_CAPS.rangesPerFile` of them; null when this file's report has no line ranges. */
+  uncovered: Capped<LineRange> | null;
 }
 
 /** A source file with functions that the coverage report does not mention. */
@@ -101,19 +114,26 @@ export type CoverageView =
   | {
       status: "ok";
       source: {
+        /** The names of the artefacts read. */
         artefacts: string[];
-        runId: number | null;
-        commitSha: string | null;
+        /** How many coverage artefacts the run had, which is more than `artefacts.length` when some were left unread. */
+        artefactsInRun: number;
+        runId: number;
+        commitSha: string;
         fetchedAt: string;
-        /** When the newest artefact was created, or null when none carried a date. Says how old the coverage is. */
-        createdAt: string | null;
+        /** When the newest artefact read was created, which says how old the coverage is. */
+        createdAt: string;
         formats: CoverageFormat[];
+        /** Coverage files in the artefacts that could not be parsed and were left out. */
+        unreadableFiles: number;
       };
       /** True when the coverage was measured on a different commit from the one analysed. */
       otherCommit: boolean;
-      /** True when any matched file carries which lines ran, rather than only totals. */
+      /** True when any matched file in the whole report carries which lines ran, rather than only totals. */
       lineDetail: boolean;
-      /** The three shares are over the selected scope; null when no matched file in scope carries that figure. */
+      /** Matched files in the selected scope. When 0 the report does not reach this scope, which is why every list is empty. */
+      filesInScope: number;
+      /** The three shares are over the selected scope; null when no matched file in scope carries that figure, or it counts nothing. */
       lines: CoverageShare | null;
       branches: CoverageShare | null;
       functions: CoverageShare | null;
@@ -123,7 +143,12 @@ export type CoverageView =
       leastCovered: Capped<LeastCoveredFile>;
       /** In scope. Listed only when the file's area and language appear among the matched files. */
       notInReport: Capped<NotInReportFile>;
-      /** In scope: functions above the warning complexity with instrumented lines but none covered. Needs `endLine`. */
+      /**
+       * In scope: source files with functions that the report does not name and that are not listed above, because no
+       * matched file shares their area and language, so the report plainly does not try to cover them.
+       */
+      notInReportOtherKinds: number;
+      /** In scope: functions above the warning complexity with instrumented lines but none covered. Needs `endLine` and line ranges. */
       untestedComplex: Capped<FunctionRow>;
       /** Present when a newer read failed; the figures above then come from the last successful one. */
       lastError?: { message: string; fetchedAt: string };
@@ -134,7 +159,10 @@ export interface CodeDetailReport {
   commitSha: string;
   analysedAt: string;
   thresholds: CodeHealthThresholds;
-  /** How the areas were found. `unknown` means the snapshot predates version 6 and a crawl will find workspaces. */
+  /**
+   * How the areas were found. `unknown` means the snapshot has no file list, because it predates version 6 or its
+   * listing could not be read, so only function paths were available; a full re-crawl or a new commit finds workspaces.
+   */
   mode: AreaMode;
   /** Largest first by source lines, then by path. */
   areas: Capped<AreaSummary>;
@@ -163,12 +191,8 @@ export interface CodeDetailOptions {
 /** The newest coverage read, and the newest that succeeded. Either may be null. */
 export interface CoverageSnapshots {
   latest: CoverageSnapshot | null;
-  good: CoverageSnapshot | null;
+  good: CoverageRead | null;
 }
-
-const sum = (values: number[]) => values.reduce((total, v) => total + v, 0);
-
-const share = (count: CoverageCount): CoverageShare => ({ ...count, share: count.total === 0 ? 0 : count.covered / count.total });
 
 /** The list for `key`, created on first use, so a group is built by pushing rather than by copying. */
 function bucket<K, V>(map: Map<K, V[]>, key: K): V[] {
@@ -183,16 +207,20 @@ function bucket<K, V>(map: Map<K, V[]>, key: K): V[] {
 const rangeLines = ([first, last]: LineRange, from: number, to: number) =>
   Math.max(0, Math.min(last, to) - Math.max(first, from) + 1);
 
-/** Covered and instrumented lines of one file inside `[from, to]`, or null when the file has no line detail. */
+/** Covered and instrumented lines of one file inside `[from, to]`, or null when the file has no line ranges. */
 function linesWithin(file: AlignedFile | undefined, from: number, to: number): CoverageCount | null {
-  if (!file || (!file.covered && !file.uncovered)) return null;
-  const covered = sum((file.covered ?? []).map((r) => rangeLines(r, from, to)));
-  const uncovered = sum((file.uncovered ?? []).map((r) => rangeLines(r, from, to)));
+  if (!file?.ranges) return null;
+  const covered = sum(file.ranges.covered.map((r) => rangeLines(r, from, to)));
+  const uncovered = sum(file.ranges.uncovered.map((r) => rangeLines(r, from, to)));
   return { covered, total: covered + uncovered };
 }
 
-const total = (counts: CoverageCount[]): CoverageShare | null =>
-  counts.length === 0 ? null : share({ covered: sum(counts.map((c) => c.covered)), total: sum(counts.map((c) => c.total)) });
+/** The counts added together as a share, or null when there are none or they count nothing, which is not 0%. */
+function total(counts: readonly CoverageCount[]): CoverageShare | null {
+  const covered = sum(counts.map((c) => c.covered));
+  const all = sum(counts.map((c) => c.total));
+  return all === 0 ? null : { covered, total: all, share: covered / all };
+}
 
 /** A function with its area and the share of its own lines that ran, which needs `endLine` and a report with line detail. */
 function functionRow(f: FunctionMetrics, aligned: AlignedCoverage | null, areaOf: (file: string) => string | null): FunctionRow {
@@ -221,12 +249,17 @@ export interface PreparedCodeDetail {
   readonly coveredKinds: ReadonlySet<string>;
 }
 
+/** A coverage snapshot stored in another shape is not shown; the next crawl reads its run again. */
+const current = <T extends CoverageSnapshot>(snapshot: T | null): T | null =>
+  snapshot && snapshot.version === COVERAGE_SNAPSHOT_VERSION ? snapshot : null;
+
 /** Decides the areas, summarises each and aligns the coverage. Pure: the snapshots carry their own timestamps. */
 export function prepareCodeDetail(
   snapshot: CodeSnapshot,
-  coverage: CoverageSnapshots,
+  stored: CoverageSnapshots,
   thresholds: CodeHealthThresholds = DEFAULT_CODE_THRESHOLDS,
 ): PreparedCodeDetail {
+  const coverage: CoverageSnapshots = { latest: current(stored.latest), good: current(stored.good) };
   const functionPaths = new Set([...snapshot.functions.map((f) => f.file), ...(snapshot.partlyMeasured ?? [])]);
   // Before version 6 there is no file list or layout, so the function paths stand in and the areas are a guess.
   const files = snapshot.files ?? [...functionPaths].sort();
@@ -246,7 +279,7 @@ export function prepareCodeDetail(
     sourceFilesIn.set(key, (sourceFilesIn.get(key) ?? 0) + 1);
   }
 
-  const aligned = coverage.good && !coverage.good.error ? alignCoverage(coverage.good.reports, files) : null;
+  const aligned = coverage.good ? alignCoverage(coverage.good.reports, files) : null;
   const alignedByArea = new Map<string | null, AlignedFile[]>();
   // A file is blamed only where a report plainly covers its kind of code: the same area and language as a matched file.
   const coveredKinds = new Set<string>();
@@ -275,7 +308,7 @@ export function prepareCodeDetail(
       testFunctions: fns.tests.functions,
       testNloc: fns.tests.nloc,
       coverage: lines ? lines.share : null,
-      maintainabilityBand: fns.functions === 0 ? null : fns.maintainabilityBand,
+      maintainabilityBand: fns.maintainabilityBand,
     };
   });
   summaries.sort((a, b) => b.nloc - a.nloc || a.path.localeCompare(b.path));
@@ -305,29 +338,25 @@ function coverageView(prepared: PreparedCodeDetail, sourceFns: readonly Function
   const { latest, good } = prepared.coverage;
   const { aligned, areaOf, thresholds } = prepared;
   if (!good || !aligned) {
-    return latest
-      ? { status: "error", message: latest.error ?? "Unknown error", fetchedAt: latest.fetchedAt }
-      : { status: "none" };
+    return latest?.error ? { status: "error", message: latest.error, fetchedAt: latest.fetchedAt } : { status: "none" };
   }
   const scoped = scope.selected === null ? [...aligned.files.values()] : [...(prepared.alignedByArea.get(scope.selected) ?? [])];
 
   const unfinished = scoped
     .filter((f) => f.lines.total > f.lines.covered)
     .sort((a, b) => b.lines.total - b.lines.covered - (a.lines.total - a.lines.covered) || a.path.localeCompare(b.path));
-  const leastCovered: Capped<LeastCoveredFile> = {
-    total: unfinished.length,
-    items: unfinished.slice(0, CODE_DETAIL_CAPS.leastCovered).map((f) => ({
-      path: f.path,
-      area: areaOf(f.path),
-      lines: f.lines,
-      uncovered: capped(f.uncovered ?? [], CODE_DETAIL_CAPS.rangesPerFile),
-    })),
-  };
+  const leastCovered = capped(unfinished, CODE_DETAIL_CAPS.leastCovered, (f) => ({
+    path: f.path,
+    area: areaOf(f.path),
+    lines: f.lines,
+    uncovered: f.ranges ? capped(f.ranges.uncovered, CODE_DETAIL_CAPS.rangesPerFile) : null,
+  }));
 
   const byFile = new Map<string, FunctionMetrics[]>();
   for (const f of sourceFns) bucket(byFile, f.file).push(f);
-  const notInReport = [...byFile.entries()]
-    .filter(([path, list]) => !aligned.files.has(path) && prepared.coveredKinds.has(`${areaOf(path)}\u0000${list[0]!.language}`))
+  const absent = [...byFile.entries()].filter(([path]) => !aligned.files.has(path));
+  const notInReport = absent
+    .filter(([path, list]) => prepared.coveredKinds.has(`${areaOf(path)}\u0000${list[0]!.language}`))
     .map(([path, list]) => ({ path, area: areaOf(path), functions: list.length, nloc: sum(list.map((f) => f.nloc)) }))
     .sort((a, b) => b.nloc - a.nloc || a.path.localeCompare(b.path));
 
@@ -339,32 +368,33 @@ function coverageView(prepared: PreparedCodeDetail, sourceFns: readonly Function
     })
     .sort(compareComplexity);
 
-  const newest = good.artefacts.reduce<string | null>(
-    (latestAt, a) => (latestAt === null || a.createdAt > latestAt ? a.createdAt : latestAt),
-    null,
+  const newest = good.artefacts.reduce(
+    (at, a) => (a.createdAt > at ? a.createdAt : at),
+    good.artefacts[0]?.createdAt ?? good.fetchedAt,
   );
   const view: CoverageView = {
     status: "ok",
     source: {
       artefacts: good.artefacts.map((a) => a.name),
+      artefactsInRun: Math.max(good.artefactsInRun, good.artefacts.length),
       runId: good.runId,
       commitSha: good.commitSha,
       fetchedAt: good.fetchedAt,
       createdAt: newest,
       formats: [...new Set(good.reports.map((r) => r.format))],
+      unreadableFiles: good.unreadableFiles,
     },
     otherCommit: good.commitSha !== prepared.snapshot.commitSha,
-    lineDetail: scoped.some((f) => f.covered || f.uncovered),
+    lineDetail: aligned.lineDetail,
+    filesInScope: scoped.length,
     lines: total(scoped.map((f) => f.lines)),
     branches: total(scoped.flatMap((f) => (f.branches ? [f.branches] : []))),
     functions: total(scoped.flatMap((f) => (f.functions ? [f.functions] : []))),
     files: { inReport: aligned.inReport, matched: aligned.matched, unmatched: aligned.unmatched },
     leastCovered,
     notInReport: capped(notInReport, CODE_DETAIL_CAPS.notInReport),
-    untestedComplex: {
-      total: untested.length,
-      items: untested.slice(0, CODE_DETAIL_CAPS.untestedComplex).map((f) => functionRow(f, aligned, areaOf)),
-    },
+    notInReportOtherKinds: absent.length - notInReport.length,
+    untestedComplex: capped(untested, CODE_DETAIL_CAPS.untestedComplex, (f) => functionRow(f, aligned, areaOf)),
   };
   return latest?.error ? { ...view, lastError: { message: latest.error, fetchedAt: latest.fetchedAt } } : view;
 }
@@ -387,10 +417,7 @@ export function codeDetail(prepared: PreparedCodeDetail, options: CodeDetailOpti
 
   // Sort and cap before the per-function coverage work, which is the expensive part.
   const ranked = [...sourceInScope].sort(compareComplexity);
-  const rows: Capped<FunctionRow> = {
-    total: ranked.length,
-    items: ranked.slice(0, CODE_DETAIL_CAPS.functions).map((f) => functionRow(f, lineView, areaOf)),
-  };
+  const rows = capped(ranked, CODE_DETAIL_CAPS.functions, (f) => functionRow(f, lineView, areaOf));
 
   return {
     status: "ok",

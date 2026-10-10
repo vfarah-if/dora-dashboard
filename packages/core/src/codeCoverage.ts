@@ -2,34 +2,58 @@ import { isTestPath } from "./codeTooling.js";
 
 /**
  * Measured test coverage, read from a CI artefact for display only. Nothing here feeds `codeHealth`, `judge` or any
- * grade: a figure that CI published says what ran, not whether the tests are good (ADR 0013).
+ * grade: a figure that CI published says what ran, not whether the tests are good (ADR 0030).
  *
  * The API reads the artefact and parses it; this module holds the shapes it stores and the pure steps that turn
  * reports into figures about this repository's own files.
  */
 
-/** A coverage file format, in the order `alignCoverage` prefers when one directory holds several. */
-export type CoverageFormat = "lcov" | "istanbul-final" | "cobertura" | "istanbul-summary";
+/** The coverage file formats that are read, in the order `alignCoverage` prefers when one directory holds several. */
+export const COVERAGE_FORMATS = ["lcov", "istanbul-final", "cobertura", "istanbul-summary"] as const;
 
+export type CoverageFormat = (typeof COVERAGE_FORMATS)[number];
+
+/** Whole numbers, never negative, with `covered` no greater than `total`. Build one with `coverageCount`. */
 export interface CoverageCount {
   covered: number;
   total: number;
 }
 
+/**
+ * A count, or null when the pair is impossible: not whole, negative, or more covered than there are. Reports come from
+ * CI and are not trusted, so every count read from one goes through here before it can reach a share.
+ */
+export function coverageCount(covered: unknown, total: unknown): CoverageCount | null {
+  if (!Number.isSafeInteger(covered) || !Number.isSafeInteger(total)) return null;
+  const c = covered as number;
+  const t = total as number;
+  return c >= 0 && c <= t ? { covered: c, total: t } : null;
+}
+
 /** An inclusive range of line numbers, `[first, last]`. */
 export type LineRange = [number, number];
 
-/** What a report says about one file. Ranges are present only when the format carries per-line hits. */
+/**
+ * Which instrumented lines ran and which never did, as ranges. Every instrumented line is in exactly one list, so the
+ * two together also say which lines carry code, and a file has both lists or neither.
+ */
+export interface LineRanges {
+  covered: LineRange[];
+  uncovered: LineRange[];
+}
+
+/** What a report says about one file. */
 export interface CoverageFileReport {
   /** The path as the report wrote it, normalised by the parser. After `alignCoverage` it is the repository path. */
   path: string;
   lines: CoverageCount;
   branches?: CoverageCount;
   functions?: CoverageCount;
-  /** Lines that ran at least once, as ranges. Kept as well as `uncovered`, so a line with no code can be told from one never run. */
-  covered?: LineRange[];
-  /** Instrumented lines that never ran, as ranges. */
-  uncovered?: LineRange[];
+  /**
+   * Absent when the format has no per-line hits, or when the file has more runs of lines than the reader keeps; the
+   * file then has its exact totals and nothing finer, so no figure is worked out from a list that was cut short.
+   */
+  ranges?: LineRanges;
 }
 
 /** One coverage file parsed from an artefact. */
@@ -57,42 +81,177 @@ export interface CoverageArtefact {
   commitSha: string;
 }
 
-/** Bumped when the stored shape changes, so older snapshots are read again. */
-export const COVERAGE_SNAPSHOT_VERSION = 1;
+/**
+ * Bumped when the stored shape changes. A snapshot of another version is not shown, and the next crawl reads its run
+ * again because `CoverageService` only skips a run it has already read at this version.
+ */
+export const COVERAGE_SNAPSHOT_VERSION = 2;
 
-/** What one read of a repository's coverage found. `error` is set, with no reports, when the read failed. */
-export interface CoverageSnapshot {
+/** The run that coverage is read from. */
+export interface CoverageRun {
+  runId: number;
+  /** The commit the run built. */
+  commitSha: string;
+  /** The run's coverage artefacts that are read, newest first. Never empty. */
+  artefacts: CoverageArtefact[];
+  /** How many coverage artefacts the run had, which is more than `artefacts.length` when some were left unread. */
+  artefactsInRun: number;
+}
+
+interface CoverageReadBase {
   fetchedAt: string;
   version: number;
-  artefacts: CoverageArtefact[];
-  /** Null on an error snapshot that never found a run. */
+}
+
+/** A read that found a run and parsed at least one report from it. */
+export interface CoverageRead extends CoverageReadBase, CoverageRun {
+  reports: CoverageReport[];
+  /** Coverage files in the artefacts that could not be parsed. They are left out and the rest are kept. */
+  unreadableFiles: number;
+  error: null;
+}
+
+/** A read that failed. The run and commit are null when it failed before a run was chosen. */
+export interface CoverageReadFailure extends CoverageReadBase {
   runId: number | null;
   commitSha: string | null;
-  reports: CoverageReport[];
-  error?: string | null;
+  artefacts: CoverageArtefact[];
+  reports: [];
+  error: string;
 }
+
+/** What one read of a repository's coverage found. `error` tells the two apart, and is null exactly when the read succeeded. */
+export type CoverageSnapshot = CoverageRead | CoverageReadFailure;
 
 /** The artefacts whose name says they hold coverage, in any letter case. */
 export const isCoverageArtefactName = (name: string): boolean => /coverage/i.test(name);
 
-const MAX_RUN_ARTEFACTS = 5;
+export const MAX_RUN_ARTEFACTS = 5;
 
 /**
- * The run to read coverage from: the newest run that built the analysed commit, otherwise the newest run. All of that
- * run's artefacts are returned, newest first and at most `max`, so a matrix that uploads `coverage-api` and
- * `coverage-web` keeps both. Empty when nothing was found.
+ * The run to read coverage from: the newest run that built the analysed commit, otherwise the newest run. That run's
+ * artefacts are returned, newest first and at most `max` (at least one), so a matrix that uploads `coverage-api` and
+ * `coverage-web` keeps both. Null when nothing was found.
  */
 export function chooseCoverageRun(
   found: readonly CoverageArtefact[],
   analysedSha: string | null,
   max = MAX_RUN_ARTEFACTS,
-): CoverageArtefact[] {
+): CoverageRun | null {
   const newest = (a: CoverageArtefact, b: CoverageArtefact) =>
     a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : b.id - a.id;
   const sorted = [...found].sort(newest);
   const chosen = (analysedSha ? sorted.find((a) => a.commitSha === analysedSha) : undefined) ?? sorted[0];
-  if (!chosen) return [];
-  return sorted.filter((a) => a.runId === chosen.runId).slice(0, Math.max(max, 0));
+  if (!chosen) return null;
+  const inRun = sorted.filter((a) => a.runId === chosen.runId);
+  return {
+    runId: chosen.runId,
+    commitSha: chosen.commitSha,
+    artefacts: inRun.slice(0, Math.max(max, 1)),
+    artefactsInRun: inRun.length,
+  };
+}
+
+// ---- line ranges ----------------------------------------------------------------------------------------------
+
+const isLineRange = (range: unknown): range is LineRange =>
+  Array.isArray(range) &&
+  range.length === 2 &&
+  Number.isSafeInteger(range[0]) &&
+  Number.isSafeInteger(range[1]) &&
+  (range[0] as number) >= 1 &&
+  (range[0] as number) <= (range[1] as number);
+
+/** The lines in a set of ranges, counting each line once however the ranges overlap. */
+export const lineCount = (ranges: readonly LineRange[]): number => joinRanges(ranges).reduce((n, [a, b]) => n + b - a + 1, 0);
+
+/** The same lines as sorted, disjoint ranges, with ranges that overlap or touch joined into one. */
+export function joinRanges(ranges: readonly LineRange[]): LineRange[] {
+  const out: LineRange[] = [];
+  for (const [first, last] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    const previous = out[out.length - 1];
+    if (previous && first <= previous[1] + 1) previous[1] = Math.max(previous[1], last);
+    else out.push([first, last]);
+  }
+  return out;
+}
+
+/** The lines of `from` that are not in `remove`. Both must be sorted and disjoint, as `joinRanges` returns them. */
+function withoutRanges(from: readonly LineRange[], remove: readonly LineRange[]): LineRange[] {
+  const out: LineRange[] = [];
+  let next = 0;
+  for (const [first, last] of from) {
+    while (next < remove.length && remove[next]![1] < first) next++;
+    let start = first;
+    for (let i = next; start <= last; i++) {
+      const cut = remove[i];
+      if (!cut || cut[0] > last) {
+        out.push([start, last]);
+        break;
+      }
+      if (cut[0] > start) out.push([start, cut[0] - 1]);
+      start = Math.max(start, cut[1] + 1);
+    }
+  }
+  return out;
+}
+
+/**
+ * One file as two reports saw it, such as the unit and the integration artefacts of a matrix. With line ranges on both
+ * sides a line ran when it ran in either, which is the true figure. Without them the side with line ranges wins, then
+ * the side with more lines covered. Branch and function counts cannot be joined, as reports do not say which branch or
+ * function each count is, so the higher of the two is kept.
+ */
+function mergeFile(a: AlignedFile, b: AlignedFile): AlignedFile {
+  const better = (x: CoverageCount | undefined, y: CoverageCount | undefined) =>
+    !x ? y : !y ? x : y.covered > x.covered || (y.covered === x.covered && y.total > x.total) ? y : x;
+  let base: AlignedFile;
+  if (a.ranges && b.ranges) {
+    const instrumented = joinRanges([...a.ranges.covered, ...a.ranges.uncovered, ...b.ranges.covered, ...b.ranges.uncovered]);
+    const covered = joinRanges([...a.ranges.covered, ...b.ranges.covered]);
+    const uncovered = withoutRanges(instrumented, covered);
+    base = { ...a, lines: { covered: lineCount(covered), total: lineCount(instrumented) }, ranges: { covered, uncovered } };
+  } else if (a.ranges || b.ranges) {
+    base = a.ranges ? a : b;
+  } else {
+    base = b.lines.covered > a.lines.covered ? b : a;
+  }
+  const merged: AlignedFile = { ...base };
+  delete merged.branches;
+  delete merged.functions;
+  const branches = better(a.branches, b.branches);
+  const functions = better(a.functions, b.functions);
+  if (branches) merged.branches = branches;
+  if (functions) merged.functions = functions;
+  return merged;
+}
+
+/**
+ * A file report with every impossible figure removed, or null when its line count is impossible. Ranges that are not
+ * whole, ascending line numbers, or whose lines disagree with the line count, are dropped and the totals kept.
+ */
+function trusted(file: CoverageFileReport): CoverageFileReport | null {
+  const lines = coverageCount(file.lines?.covered, file.lines?.total);
+  if (!lines) return null;
+  const out: CoverageFileReport = { path: file.path, lines };
+  const branches = file.branches && coverageCount(file.branches.covered, file.branches.total);
+  const functions = file.functions && coverageCount(file.functions.covered, file.functions.total);
+  if (branches) out.branches = branches;
+  if (functions) out.functions = functions;
+  const ranges = file.ranges;
+  if (
+    ranges &&
+    Array.isArray(ranges.covered) &&
+    Array.isArray(ranges.uncovered) &&
+    ranges.covered.every(isLineRange) &&
+    ranges.uncovered.every(isLineRange) &&
+    lineCount(ranges.covered) === lines.covered &&
+    lineCount(ranges.uncovered) === lines.total - lines.covered &&
+    lineCount([...ranges.covered, ...ranges.uncovered]) === lines.total
+  ) {
+    out.ranges = { covered: ranges.covered, uncovered: ranges.uncovered };
+  }
+  return out;
 }
 
 // ---- alignment ----------------------------------------------------------------------------------------------
@@ -105,15 +264,16 @@ export interface AlignedFile extends CoverageFileReport {
 
 export interface AlignedCoverage {
   /** Source files of this repository that the reports cover, by repository path. */
-  files: Map<string, AlignedFile>;
+  readonly files: ReadonlyMap<string, AlignedFile>;
   /** Distinct source files the reports name, whether or not they match a file here. Test files are not counted. */
-  inReport: number;
-  matched: number;
+  readonly inReport: number;
+  readonly matched: number;
   /** `inReport - matched`. Their paths never leave the API, because a runner path can hold a person's or a client's name. */
-  unmatched: number;
+  readonly unmatched: number;
+  /** True when any matched file carries line ranges, so the report says which lines ran and not only totals. */
+  readonly lineDetail: boolean;
 }
 
-const FORMAT_PRIORITY: readonly CoverageFormat[] = ["lcov", "istanbul-final", "cobertura", "istanbul-summary"];
 const MAX_NAME_CANDIDATES = 50;
 
 const isAbsolute = (raw: string) => /^(file:|[\\/]|[A-Za-z]:)/.test(raw);
@@ -230,7 +390,9 @@ function vote(votes: Votes, keys: Set<string>, transform: Transform): void {
  * A path whose best matches are more than `MAX_NAME_CANDIDATES` files (a package full of `index.ts`) cannot say much by
  * itself, so it is held back. The paths that name few files vote first. The held-back paths then vote only for the
  * leading transforms, by a single lookup each, so that they back the right package without a vote for every package. If
- * nothing else voted, they vote for the first candidates so that something is chosen.
+ * nothing else voted, they vote for their first candidates, and a transform stands only when it alone leads with at
+ * least two paths behind it (or alone matches the directory hint among the leaders), so that a name shared by many
+ * files never puts a report on an arbitrary package. Such paths are then left unmatched and counted.
  */
 function bestTransform(entries: readonly Entry[], index: KnownIndex, dir: string): Transform | null {
   const votes: Votes = new Map();
@@ -256,6 +418,13 @@ function bestTransform(entries: readonly Entry[], index: KnownIndex, dir: string
         if (transform) vote(votes, keys, transform);
       }
     }
+    // One path alone, or several whose votes tie across packages, would pick an arbitrary package among the files that
+    // share a name, so only a single leader backed by at least two paths stands, with the directory hint as tie-break.
+    const top = [...votes.values()].reduce((most, v) => Math.max(most, v.count), 0);
+    let leaders = top >= 2 ? [...votes.entries()].filter(([, v]) => v.count === top) : [];
+    if (leaders.length > 1) leaders = leaders.filter(([, v]) => hintScore(dir, v.transform.add) > 0);
+    const keep = leaders.length === 1 ? leaders[0]![0] : null;
+    for (const key of [...votes.keys()]) if (key !== keep) votes.delete(key);
   } else if (held.length > 0) {
     const leaders = [...votes.values()]
       .sort((a, b) => b.count - a.count || (keyOf(a.transform) < keyOf(b.transform) ? -1 : 1))
@@ -284,10 +453,14 @@ function bestTransform(entries: readonly Entry[], index: KnownIndex, dir: string
 
 /**
  * The one known file whose path ends the report's path or is ended by it, or null when none or several do. Both
- * directions are lookups in the index (a known file ending the text, and each tail of the text that is a known file),
- * and the search stops at the second file, so the cost is bounded by the depth of the path.
+ * directions are lookups in the index (the known files that end with the whole text, and each tail of the text that is
+ * itself a known file), and the search stops at the second file, so the cost is bounded by the depth of the path.
+ *
+ * A tail is tried only when it has at least two segments, and never when the report's own layout (`winner`) already
+ * places the path under the root it strips: such a path sits in the checkout but is not a file of this repository, such
+ * as `node_modules/foo/index.ts`, and a tail like `index.ts` would otherwise put its figures on an unrelated file.
  */
-function uniqueSuffixMatch(variants: readonly string[][], index: KnownIndex): string | null {
+function uniqueSuffixMatch(variants: readonly string[][], index: KnownIndex, winner: Transform | null): string | null {
   const found = new Set<string>();
   for (const variant of variants) {
     if (variant.length === 0) continue;
@@ -295,7 +468,8 @@ function uniqueSuffixMatch(variants: readonly string[][], index: KnownIndex): st
       found.add(known.join("/"));
       if (found.size > 1) return null;
     }
-    for (let k = 1; k < variant.length; k++) {
+    if (winner && winner.strip !== "" && apply(variant, winner) !== "") continue;
+    for (let k = 2; k < variant.length; k++) {
       const tail = variant.slice(variant.length - k).join("/");
       if (index.paths.has(tail)) found.add(tail);
       if (found.size > 1) return null;
@@ -306,7 +480,7 @@ function uniqueSuffixMatch(variants: readonly string[][], index: KnownIndex): st
 
 /** Keeps only the best-ranked format among the reports that share an artefact and directory. */
 function bestFormatPerDirectory(reports: readonly CoverageReport[]): CoverageReport[] {
-  const rank = (r: CoverageReport) => FORMAT_PRIORITY.indexOf(r.format);
+  const rank = (r: CoverageReport) => COVERAGE_FORMATS.indexOf(r.format);
   const best = new Map<string, number>();
   for (const r of reports) {
     const key = `${r.artefact}\u0000${r.dir}`;
@@ -315,18 +489,16 @@ function bestFormatPerDirectory(reports: readonly CoverageReport[]): CoverageRep
   return reports.filter((r) => rank(r) === best.get(`${r.artefact}\u0000${r.dir}`));
 }
 
-/** How much a file report says, so that the most detailed one wins when several cover the same file. */
-const detail = (f: CoverageFileReport) => (f.covered || f.uncovered ? 4 : 0) + (f.branches ? 1 : 0) + (f.functions ? 1 : 0);
-
 /**
  * Maps the paths in coverage reports onto this repository's files.
  *
  * Reports name files in their own way: relative to a package, or as absolute runner paths such as
  * `/home/runner/work/widgets/widgets/src/a.ts`. For each report the paths vote on the transform that adds a prefix or
- * strips one so that they land on known files by base name, and the transform with most votes is applied. A path
- * still unmatched falls back to a suffix match that must be unique. Several formats in one directory are reduced to
- * the best one (lcov, then Istanbul final, then Cobertura, then Istanbul summary), a file covered by several reports
- * keeps the most detailed, and test files are dropped.
+ * strips one so that they land on the known files that share the most trailing segments with them, and the transform
+ * with most votes is applied. A path still unmatched falls back to a suffix match that must be unique. Several formats
+ * in one directory are reduced to the best one (lcov, then Istanbul final, then Cobertura, then Istanbul summary), a
+ * file covered by several reports is merged (`mergeFile`), impossible figures are dropped (`trusted`), and test files
+ * are dropped.
  */
 export function alignCoverage(reports: readonly CoverageReport[], knownFiles: readonly string[]): AlignedCoverage {
   const known = new Set(knownFiles);
@@ -339,13 +511,15 @@ export function alignCoverage(reports: readonly CoverageReport[], knownFiles: re
   const winners: Transform[] = [];
   for (const report of bestFormatPerDirectory(reports)) {
     const entries: Entry[] = report.files
+      .map((raw) => trusted(raw))
+      .filter((file): file is CoverageFileReport => file !== null)
       .map((file) => ({ raw: file.path, variants: variantsOf(file.path, report.sourceRoots), file }))
       .filter((entry) => !isTestPath(entry.variants[entry.variants.length - 1]!.join("/")));
     const winner = bestTransform(entries, index, report.dir);
     if (winner) winners.push(winner);
     for (const entry of entries) {
       const viaVote = winner ? entry.variants.map((v) => apply(v, winner)).find((p) => known.has(p)) : undefined;
-      const target = viaVote ?? uniqueSuffixMatch(entry.variants, index);
+      const target = viaVote ?? uniqueSuffixMatch(entry.variants, index, winner);
       if (!target || isTestPath(target)) {
         if (!target) {
           const path = entry.variants[entry.variants.length - 1]!.join("/");
@@ -355,7 +529,7 @@ export function alignCoverage(reports: readonly CoverageReport[], knownFiles: re
       }
       const candidate: AlignedFile = { ...entry.file, path: target, format: report.format, artefact: report.artefact };
       const existing = files.get(target);
-      if (!existing || detail(candidate) > detail(existing)) files.set(target, candidate);
+      files.set(target, existing ? mergeFile(existing, candidate) : candidate);
     }
   }
   // A path that one report could not place is not a stray file when another report's layout puts it on a file that
@@ -365,5 +539,6 @@ export function alignCoverage(reports: readonly CoverageReport[], knownFiles: re
     const placedElsewhere = winners.some((w) => variants.some((v) => files.has(apply(v, w))));
     if (!placedElsewhere) strays++;
   }
-  return { files, inReport: files.size + strays, matched: files.size, unmatched: strays };
+  const lineDetail = [...files.values()].some((f) => f.ranges !== undefined);
+  return { files, inReport: files.size + strays, matched: files.size, unmatched: strays, lineDetail };
 }

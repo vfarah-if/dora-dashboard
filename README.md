@@ -66,7 +66,7 @@ The testing grade can rise after ADR 0027. A change to a tool's configuration al
 
 The detailed code analysis page (`/repos/:id/code`, linked from the code health section of each repository page) breaks the code down by package or folder (ADR 0029). Upgrading to it analyses every repository once more on its next crawl, because the stored snapshot gains function end lines and a file list. When your CI publishes a coverage report, the page also shows measured coverage, the least covered files and the complex functions that no test runs. Coverage is for display only and never changes a grade (ADR 0030).
 
-The dashboard reads a GitHub Actions artefact whose name contains `coverage`, from a run on the deploy branch of the repository itself (a fork's run is ignored), and it looks again on every crawl. The artefact can hold lcov (`lcov.info`), Istanbul (`coverage-final.json` or `coverage-summary.json`) or Cobertura XML. JaCoCo, Clover and Go profiles are not read. Add a step like this to the workflow that runs on the deploy branch, with the path of your own report.
+The dashboard reads a GitHub Actions artefact whose name contains `coverage`, from a run on the deploy branch of the repository itself (a fork's run is ignored), and it looks again on every crawl while code analysis is on. Files are picked by name. The artefact can hold lcov (`lcov.info` or any `*.lcov`), Istanbul (`coverage-final.json` or `coverage-summary.json`) or Cobertura XML (named `coverage.xml`, or containing `cobertura` and ending `.xml`). JaCoCo, Clover and Go profiles are not read. Add a step like this to the workflow that runs on the deploy branch, with the path of your own report.
 
 ```yaml
 - uses: actions/upload-artifact@v4
@@ -75,7 +75,7 @@ The dashboard reads a GitHub Actions artefact whose name contains `coverage`, fr
     path: coverage/lcov.info
 ```
 
-A repository with several packages can upload one artefact each, such as `coverage-api` and `coverage-web`, and up to five artefacts from the newest run are read together. The token the API holds must be able to read Actions, which the `repo` scope of a classic token and of the local `gh` login already allows, and a fine-grained token needs read access to Actions. The API also downloads the artefact from the storage address GitHub redirects to, so it needs network access to it. Artefacts expire after the retention period set on GitHub, and the page says when the coverage it shows was measured on a different commit.
+A repository with several packages can upload one artefact each, such as `coverage-api` and `coverage-web`, and up to five artefacts from the newest run that built the analysed commit, otherwise the newest run, are read together. The token the API holds must be able to read Actions, which the `repo` scope of a classic token and of the local `gh` login already allows, and a fine-grained token needs read access to Actions. The API also downloads the artefact from the storage address GitHub redirects to, so it needs network access to it. Artefacts expire after the retention period set on GitHub, and the page says when the coverage it shows was measured on a different commit.
 
 ## Signing in
 

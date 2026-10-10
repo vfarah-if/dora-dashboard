@@ -1,4 +1,4 @@
-import type { CodeSnapshot } from "@dora-dashboard/core";
+import { COVERAGE_SNAPSHOT_VERSION, type CodeSnapshot } from "@dora-dashboard/core";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -11,6 +11,8 @@ import { CodeHealthService } from "../src/services/code-health-service.js";
 import {
   config,
   coverageArtefact,
+  coverageFailure,
+  coverageReport,
   coverageSnapshot,
   FakeCli,
   FakeCodeAnalyser,
@@ -24,6 +26,15 @@ import {
 } from "./fakes.js";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 29, 10, minute));
+
+/** A logger that keeps what it is told, so a test can say what was logged and with which fields. */
+const recordingLog = () => {
+  const lines: { level: "info" | "warn" | "error"; context: Record<string, unknown>; message: string }[] = [];
+  const at = (level: "info" | "warn" | "error") => (context: object, message: string) => {
+    lines.push({ level, context: context as Record<string, unknown>, message });
+  };
+  return { lines, log: { info: at("info"), warn: at("warn"), error: at("error") } };
+};
 
 const codeSnapshot = (overrides: Partial<CodeSnapshot> = {}): CodeSnapshot => ({
   commitSha: "abc1234",
@@ -59,7 +70,7 @@ describe("coverage snapshots in the store", () => {
 
   it("keeps the newest read apart from the newest successful one", () => {
     const good = coverageSnapshot({ fetchedAt: "2026-09-29T10:00:00.000Z" });
-    const failed = coverageSnapshot({ fetchedAt: "2026-09-29T10:05:00.000Z", reports: [], error: "boom" });
+    const failed = coverageFailure({ fetchedAt: "2026-09-29T10:05:00.000Z", error: "boom" });
     store.saveCoverageSnapshot(id, good);
     store.saveCoverageSnapshot(id, failed);
 
@@ -70,15 +81,36 @@ describe("coverage snapshots in the store", () => {
   it("keeps the newest five and the newest successful one", () => {
     store.saveCoverageSnapshot(id, coverageSnapshot({ fetchedAt: "2026-09-29T10:00:00.000Z" }));
     for (let minute = 1; minute <= 6; minute++) {
-      store.saveCoverageSnapshot(id, coverageSnapshot({ fetchedAt: at(minute).toISOString(), reports: [], error: "boom" }));
+      store.saveCoverageSnapshot(id, coverageFailure({ fetchedAt: at(minute).toISOString(), error: `boom ${minute}` }));
     }
 
     // Seven were saved; the five newest are failures, and the oldest successful one is spared.
-    const rows = (store as unknown as { db: { prepare(s: string): { all(): unknown[] } } }).db
-      .prepare("SELECT fetched_at FROM coverage_snapshots ORDER BY fetched_at")
-      .all();
-    expect(rows).toHaveLength(6);
+    expect(store.latestCoverageSnapshot(id)).toMatchObject({ error: "boom 6" });
     expect(store.latestSuccessfulCoverageSnapshot(id)?.fetchedAt).toBe("2026-09-29T10:00:00.000Z");
+    expect(store.coverageSnapshotKeys(id)).toEqual({ latest: at(6).toISOString(), good: "2026-09-29T10:00:00.000Z" });
+    // Dropping the failures leaves the good read, which shows that it was spared and not merely the newest.
+    store.clearCoverageFailures(id);
+    expect(store.latestCoverageSnapshot(id)?.fetchedAt).toBe("2026-09-29T10:00:00.000Z");
+  });
+
+  it("clears failed reads and keeps good ones, for that repository only", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    store.saveCoverageSnapshot(id, coverageSnapshot({ fetchedAt: "2026-09-29T10:00:00.000Z" }));
+    store.saveCoverageSnapshot(id, coverageFailure({ fetchedAt: "2026-09-29T10:05:00.000Z" }));
+    store.saveCoverageSnapshot(other, coverageFailure({ fetchedAt: "2026-09-29T10:05:00.000Z", error: "other" }));
+
+    store.clearCoverageFailures(id);
+
+    expect(store.latestCoverageSnapshot(id)).toMatchObject({ error: null, fetchedAt: "2026-09-29T10:00:00.000Z" });
+    expect(store.latestCoverageSnapshot(other)).toMatchObject({ error: "other" });
+  });
+
+  it("leaves nothing behind when only failures are cleared", () => {
+    store.saveCoverageSnapshot(id, coverageFailure());
+
+    store.clearCoverageFailures(id);
+
+    expect(store.latestCoverageSnapshot(id)).toBeNull();
   });
 
   it("removes a repository's snapshots with it", () => {
@@ -95,13 +127,15 @@ describe("CoverageService", () => {
   let source: FakeCoverageSource;
   let service: CoverageService;
   let clock: number;
+  let logged: ReturnType<typeof recordingLog>;
   let repo: NonNullable<ReturnType<SqliteRepoStore["getRepo"]>>;
 
   beforeEach(() => {
     store = new SqliteRepoStore(":memory:");
     source = new FakeCoverageSource();
     clock = 0;
-    service = new CoverageService(store, source, () => at(clock++));
+    logged = recordingLog();
+    service = new CoverageService(store, source, () => at(clock++), logged.log);
     repo = store.addRepo("acme", "widgets", [], "release");
     store.saveCodeSnapshot(repo.id, codeSnapshot());
   });
@@ -113,8 +147,10 @@ describe("CoverageService", () => {
 
     expect(source.finds).toEqual([{ token: "secret-token", owner: "acme", name: "widgets", branch: "release" }]);
     expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({
-      version: 1,
+      version: COVERAGE_SNAPSHOT_VERSION,
       runId: 100,
+      artefactsInRun: 1,
+      unreadableFiles: 0,
       commitSha: "abc1234",
       error: null,
       artefacts: [expect.objectContaining({ id: 1 })],
@@ -122,10 +158,73 @@ describe("CoverageService", () => {
     });
   });
 
-  it("changes nothing when no artefact is found", async () => {
+  it("changes nothing when a complete search finds no artefact and nothing failed before", async () => {
     await service.read("t", repo, false);
 
     expect(store.latestCoverageSnapshot(repo.id)).toBeNull();
+    expect(logged.lines).toEqual([]);
+  });
+
+  it("stores a failure, and logs it, when the search stopped at its limit before finding any artefact", async () => {
+    source.complete = false;
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({
+      runId: null,
+      artefacts: [],
+      reports: [],
+      error: expect.stringMatching(/No coverage artefact from the deploy branch was among the newest 300 artefacts on GitHub/),
+    });
+    expect(logged.lines).toEqual([
+      { level: "warn", context: { repoId: repo.id, runId: null, artefactIds: [] }, message: expect.stringMatching(/newest 300/) },
+    ]);
+  });
+
+  it("keeps the last good read when an incomplete search finds nothing", async () => {
+    store.saveCoverageSnapshot(repo.id, coverageSnapshot({ fetchedAt: "2026-09-28T10:00:00.000Z" }));
+    source.complete = false;
+
+    await service.read("t", repo, false);
+
+    expect(store.latestSuccessfulCoverageSnapshot(repo.id)?.fetchedAt).toBe("2026-09-28T10:00:00.000Z");
+    expect(store.latestCoverageSnapshot(repo.id)?.error).not.toBeNull();
+  });
+
+  it("clears an earlier failure when a complete search finds no artefact, and logs it", async () => {
+    store.saveCoverageSnapshot(repo.id, coverageSnapshot({ fetchedAt: "2026-09-28T10:00:00.000Z" }));
+    store.saveCoverageSnapshot(
+      repo.id,
+      coverageFailure({
+        fetchedAt: "2026-09-29T10:00:00.000Z",
+        error: "GitHub refused access to this repository's Actions artefacts",
+      }),
+    );
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({ error: null, fetchedAt: "2026-09-28T10:00:00.000Z" });
+    expect(logged.lines).toEqual([
+      { level: "info", context: { repoId: repo.id, runId: null, artefactIds: [] }, message: expect.stringMatching(/cleared/) },
+    ]);
+  });
+
+  it("clears an earlier failure that was the only read", async () => {
+    store.saveCoverageSnapshot(repo.id, coverageFailure());
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toBeNull();
+  });
+
+  it("leaves a good read alone when a complete search finds no artefact", async () => {
+    const good = coverageSnapshot();
+    store.saveCoverageSnapshot(repo.id, good);
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toEqual(good);
+    expect(logged.lines).toEqual([]);
   });
 
   it("does not read again while the run, artefacts and version are unchanged", async () => {
@@ -135,6 +234,29 @@ describe("CoverageService", () => {
     await service.read("t", repo, false);
 
     expect(source.reads).toEqual([1]);
+  });
+
+  it("reads again, without force, when a new artefact joins a run that was already read", async () => {
+    source.publish(coverageArtefact({ id: 1, name: "coverage-api" }));
+    await service.read("t", repo, false);
+    source.publish(coverageArtefact({ id: 2, name: "coverage-web", createdAt: "2026-09-29T09:05:00Z" }));
+
+    await service.read("t", repo, false);
+
+    expect(source.reads).toEqual([1, 2, 1]);
+    expect(store.latestCoverageSnapshot(repo.id)?.artefacts.map((a) => a.id)).toEqual([2, 1]);
+  });
+
+  it("stores how many artefacts the run had when only some are read", async () => {
+    for (let id = 1; id <= 6; id++) {
+      source.publish(coverageArtefact({ id, name: `coverage-${id}`, createdAt: `2026-09-29T09:0${id}:00Z` }));
+    }
+
+    await service.read("t", repo, false);
+
+    const saved = store.latestCoverageSnapshot(repo.id);
+    expect(saved).toMatchObject({ artefactsInRun: 6, error: null });
+    expect(saved?.artefacts).toHaveLength(5);
   });
 
   it("reads again when forced", async () => {
@@ -153,7 +275,7 @@ describe("CoverageService", () => {
     await service.read("t", repo, false);
 
     expect(source.reads).toEqual([1]);
-    expect(store.latestCoverageSnapshot(repo.id)?.version).toBe(1);
+    expect(store.latestCoverageSnapshot(repo.id)?.version).toBe(COVERAGE_SNAPSHOT_VERSION);
   });
 
   it("prefers the run that built the analysed commit over a newer one", async () => {
@@ -195,6 +317,13 @@ describe("CoverageService", () => {
     await service.read("t", repo, false);
 
     expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({ error: "The archive is corrupt", reports: [], runId: 101 });
+    expect(logged.lines).toEqual([
+      {
+        level: "warn",
+        context: { err: expect.any(UpstreamError), repoId: repo.id, runId: 101, artefactIds: [2] },
+        message: "coverage step failed",
+      },
+    ]);
     expect(store.latestSuccessfulCoverageSnapshot(repo.id)).toMatchObject({ runId: 100, error: null });
   });
 
@@ -229,14 +358,88 @@ describe("CoverageService", () => {
     await service.read("t", repo, false);
 
     expect(store.latestCoverageSnapshot(repo.id)?.error).toBe("Reading coverage failed unexpectedly. See the API log.");
+    expect(logged.lines).toMatchObject([
+      {
+        level: "error",
+        context: { repoId: repo.id, runId: 100, artefactIds: [1] },
+        message: "coverage step failed unexpectedly",
+      },
+    ]);
   });
 
-  it("stores an error when the artefacts held no readable report", async () => {
+  it("stores an error naming the files that are read when the artefacts held no report in a format that is read", async () => {
     source.publish(coverageArtefact({ id: 1 }), []);
 
     await service.read("t", repo, false);
 
-    expect(store.latestCoverageSnapshot(repo.id)?.error).toMatch(/no report in a format that is read/);
+    const error = store.latestCoverageSnapshot(repo.id)?.error;
+    expect(error).toMatch(/no report in a format that is read/);
+    expect(error).toContain("lcov.info or a .lcov file");
+    expect(error).toContain("coverage-final.json");
+    expect(error).toContain("coverage-summary.json");
+    expect(error).toContain("coverage.xml or with cobertura in its name");
+    expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({ runId: 100, reports: [] });
+  });
+
+  it("says the coverage files list no files when every file read was empty", async () => {
+    source.publish(coverageArtefact({ id: 1, name: "coverage-api" }), [], { empty: 1 });
+    source.publish(coverageArtefact({ id: 2, name: "coverage-web" }), [], { empty: 2 });
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)?.error).toBe(
+      "The coverage files in the artefacts list no files, so the tests may not have run",
+    );
+  });
+
+  it("stores the one reason when the only coverage file could not be read", async () => {
+    source.publish(coverageArtefact({ id: 1 }), [], { unreadable: ["The Cobertura file is not valid XML"] });
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({ error: "The Cobertura file is not valid XML", reports: [] });
+  });
+
+  it("stores the first reason and a count of the others when no coverage file could be read", async () => {
+    // The newest artefact is read first, so its reason comes first.
+    source.publish(coverageArtefact({ id: 1, name: "coverage-api", createdAt: "2026-09-29T09:30:00Z" }), [], {
+      unreadable: ["The Cobertura file is not valid XML.", "The summary is not valid JSON"],
+      empty: 1,
+    });
+    source.publish(coverageArtefact({ id: 2, name: "coverage-web" }), [], { unreadable: ["The lcov file is cut short"] });
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)?.error).toBe(
+      "The Cobertura file is not valid XML; 2 other coverage files could not be read",
+    );
+  });
+
+  it("counts a single other file in the singular", async () => {
+    source.publish(coverageArtefact({ id: 1 }), [], { unreadable: ["First", "Second"] });
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)?.error).toBe("First; 1 other coverage file could not be read");
+  });
+
+  it("keeps what was readable and counts the files that were not", async () => {
+    source.publish(coverageArtefact({ id: 1, name: "coverage-api" }), [coverageReport({ artefact: "coverage-api" })], {
+      unreadable: ["The summary is not valid JSON"],
+    });
+    source.publish(coverageArtefact({ id: 2, name: "coverage-web" }), [], {
+      unreadable: ["The lcov file is cut short"],
+      empty: 1,
+    });
+
+    await service.read("t", repo, false);
+
+    expect(store.latestCoverageSnapshot(repo.id)).toMatchObject({
+      error: null,
+      unreadableFiles: 2,
+      reports: [expect.objectContaining({ artefact: "coverage-api" })],
+    });
+    expect(store.latestSuccessfulCoverageSnapshot(repo.id)?.unreadableFiles).toBe(2);
   });
 
   it("rethrows a rejected credential and stores nothing", async () => {
@@ -297,6 +500,47 @@ describe("coverage during a crawl", () => {
     await crawler.crawl("t", repoId);
 
     expect(source.finds).toEqual([]);
+  });
+
+  it("says it is reading coverage while it does", async () => {
+    build();
+    const seen: (string | null)[] = [];
+    source.findArtefacts = async () => {
+      seen.push(store.getRepo(repoId)?.crawlProgress ?? null);
+      return { artefacts: [], complete: true };
+    };
+
+    await crawler.crawl("t", repoId);
+
+    expect(seen).toEqual(["Reading coverage"]);
+  });
+
+  it("reads coverage again on a full crawl and not on an ordinary one", async () => {
+    build();
+    source.publish(coverageArtefact({ id: 1 }));
+    await crawler.crawl("t", repoId);
+
+    await crawler.crawl("t", repoId);
+    expect(source.reads).toEqual([1]);
+
+    await crawler.crawl("t", repoId, true);
+    expect(source.reads).toEqual([1, 1]);
+  });
+
+  it("logs a coverage step that throws apart from the service's own log", async () => {
+    build();
+    const logged = recordingLog();
+    const broken = new CrawlService(store, provider, undefined, logged.log, undefined, {
+      read: async () => {
+        throw new Error("boom");
+      },
+    } as unknown as CoverageService);
+
+    await broken.crawl("t", repoId);
+
+    expect(logged.lines).toMatchObject([
+      { level: "warn", context: { repoId }, message: "coverage could not be read, and the crawl went on" },
+    ]);
   });
 
   it("is not failed by a coverage error", async () => {
@@ -386,6 +630,17 @@ describe("code detail route", () => {
       message: "clone failed",
       analysedAt: "2026-09-29T10:00:00.000Z",
       reason: "failed",
+    });
+  });
+
+  it("answers the failure when coverage has only ever failed", async () => {
+    store.saveCodeSnapshot(id, codeSnapshot());
+    store.saveCoverageSnapshot(id, coverageFailure({ fetchedAt: "2026-09-29T11:00:00.000Z", error: "GitHub is unavailable" }));
+
+    expect((await detail()).json().coverage).toEqual({
+      status: "error",
+      message: "GitHub is unavailable",
+      fetchedAt: "2026-09-29T11:00:00.000Z",
     });
   });
 
@@ -483,5 +738,33 @@ describe("code detail route", () => {
     await crawler.crawl("t", id);
 
     expect(source.finds).toEqual([]);
+  });
+});
+
+describe("code analysis routes in OAuth mode", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    const store = new SqliteRepoStore(":memory:");
+    const id = store.addRepo("acme", "widgets", [], "main").id;
+    store.saveCodeSnapshot(id, codeSnapshot());
+    store.saveCoverageSnapshot(id, coverageSnapshot());
+    ({ app } = await buildApp({
+      config: config({ authMode: "oauth" }),
+      store,
+      provider: new FakeProvider(),
+      sessions: new MemorySessionStore(),
+      cli: new FakeCli(),
+      exchangeCode: async () => "unused",
+    }));
+  });
+
+  afterEach(() => app.close());
+
+  it.each(["code-detail", "code-health"])("answers 401 to /%s without a session, so no path or line is served", async (route) => {
+    const res = await app.inject(`/api/repos/1/${route}`);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body).not.toContain("src/index.ts");
   });
 });

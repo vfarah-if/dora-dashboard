@@ -1,5 +1,7 @@
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { Link, useLocation, useNavigate } from "react-router";
 import userEvent from "@testing-library/user-event";
 import type { CodeDetailReport } from "@dora-dashboard/core";
 import { CodeAnalysisPage } from "./CodeAnalysisPage";
@@ -11,14 +13,37 @@ import { copy } from "../copy";
 
 const c = copy.codeAnalysis;
 
-function show(body: unknown, { status = 200, route = "/repos/1/code" }: { status?: number; route?: string } = {}) {
+/** Shows where the address is, and can go back, so a test can tell a pushed entry from a replaced one. */
+function History() {
+  const { search } = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output aria-label="address">{search}</output>
+      <button type="button" onClick={() => void navigate(-1)}>
+        go back
+      </button>
+    </>
+  );
+}
+
+function show(
+  body: unknown,
+  { status = 200, route = "/repos/1/code", extra = null }: { status?: number; route?: string; extra?: ReactNode } = {},
+) {
   const detail: Handler = () => ({ body, status });
   const fetchMock = mockFetch({
     "GET /api/repos/1/code-detail": detail,
     "GET /api/repos/1/code-health": { body: codeHealthReport() },
     "GET /api/repos": { body: [repo()] },
   });
-  const rendered = renderRoute(<CodeAnalysisPage />, { path: "/repos/:id/code", route });
+  const rendered = renderRoute(
+    <>
+      {extra}
+      <CodeAnalysisPage />
+    </>,
+    { path: "/repos/:id/code", route },
+  );
   return { fetchMock, ...rendered };
 }
 
@@ -57,10 +82,13 @@ describe("CodeAnalysisPage", () => {
     expect(alert).toHaveTextContent(c.error.when("1 Mar 2026, 10:00"));
   });
 
-  it("shows the request failure and offers a retry", async () => {
-    show({ error: "Unknown repository" }, { status: 404 });
+  it("shows the request failure and asks again when retry is pressed", async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = show({ error: "Unknown repository" }, { status: 404 });
     expect(await screen.findByText("Unknown repository")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
+    expect(detailUrls(fetchMock)).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: copy.common.retry }));
+    await waitFor(() => expect(detailUrls(fetchMock)).toHaveLength(2));
   });
 
   it("answers an address that names no repository without asking the API", () => {
@@ -204,7 +232,8 @@ describe("CodeAnalysisPage", () => {
     it("explains that older snapshots guess the areas and a crawl will find workspaces", async () => {
       show(codeDetailReport({ mode: "unknown" }));
       const notice = (await screen.findByText(c.unknownMode.title)).closest("aside")!;
-      expect(notice).toHaveTextContent("Crawl this repository again to find its workspaces");
+      expect(notice).toHaveTextContent("has no list of this repository's files");
+      expect(notice).toHaveTextContent("A full re-crawl of the repository finds its workspaces");
     });
 
     it("says there are no areas when the list is empty", async () => {
@@ -225,9 +254,10 @@ describe("CodeAnalysisPage", () => {
       const empty = (await screen.findByText(c.coverage.empty.title)).closest(".empty-state")!;
       expect(empty).toHaveTextContent(c.coverage.empty.intro);
       expect(empty).toHaveTextContent("The artefact name must contain the word coverage");
-      expect(empty).toHaveTextContent("lcov.info, coverage-final.json, coverage-summary.json or a Cobertura XML file");
+      expect(empty).toHaveTextContent("lcov.info or a .lcov file, coverage-final.json, coverage-summary.json");
+      expect(empty).toHaveTextContent("Cobertura XML file named coverage.xml or with cobertura in its name");
       expect(empty).toHaveTextContent("deploy branch");
-      expect(empty).toHaveTextContent("read on the next crawl");
+      expect(empty).toHaveTextContent("read on the next crawl while code analysis is switched on");
     });
 
     it("shows a failed read that has no earlier figures", async () => {
@@ -248,18 +278,91 @@ describe("CodeAnalysisPage", () => {
       expect(screen.queryByText(c.coverage.otherCommit.title)).not.toBeInTheDocument();
     });
 
-    it("leaves the creation time out when no artefact carried one", async () => {
-      show(withCoverage(coverageOk({ source: { ...okSource(), createdAt: null } })));
-      await screen.findByRole("heading", { name: c.coverage.least.title });
-      expect(screen.getByText(/Read from coverage-api/)).not.toHaveTextContent("created");
-    });
-
     it("says a figure is not reported when the report does not carry it", async () => {
       show(withCoverage(coverageOk({ branches: null })));
       await screen.findByRole("heading", { name: c.coverage.least.title });
       const tile = screen.getByRole("heading", { name: c.coverage.tiles.branches }).closest("article")!;
       expect(tile).toHaveTextContent(c.coverage.tiles.notReported);
       expect(tile).toHaveTextContent(c.coverage.tiles.notReportedHint);
+    });
+
+    it("says what was read when the run held more coverage artefacts than were used", async () => {
+      show(withCoverage(coverageOk({ source: { ...okSource(), artefacts: ["a", "b", "c", "d", "e"], artefactsInRun: 8 } })));
+      expect(await screen.findByText(c.coverage.artefactsRead(5, 8))).toHaveTextContent("5 of the 8 coverage artefacts");
+    });
+
+    it("says nothing about unread artefacts when every one was read", async () => {
+      show(withCoverage(coverageOk()));
+      await screen.findByRole("heading", { name: c.coverage.least.title });
+      expect(screen.queryByText(/coverage artefacts in that run/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/could not be read and/)).not.toBeInTheDocument();
+    });
+
+    it("says how many coverage files could not be read and were left out", async () => {
+      show(withCoverage(coverageOk({ source: { ...okSource(), unreadableFiles: 3 } })));
+      expect(await screen.findByText("3 coverage files could not be read and were left out.")).toBeInTheDocument();
+    });
+
+    it("says one coverage file in the singular", async () => {
+      show(withCoverage(coverageOk({ source: { ...okSource(), unreadableFiles: 1 } })));
+      expect(await screen.findByText("1 coverage file could not be read and was left out.")).toBeInTheDocument();
+    });
+
+    it("explains a share that is not reported while the scope has matched files", async () => {
+      show(withCoverage(coverageOk({ lines: null })));
+      const tile = (await screen.findByRole("heading", { name: c.coverage.tiles.lines })).closest("article")!;
+      expect(tile).toHaveTextContent("have nothing that can be measured for it");
+    });
+
+    it("says the report does not reach the selected area, with no cards or tile hints", async () => {
+      show(
+        withCoverage(
+          coverageOk({
+            filesInScope: 0,
+            lines: null,
+            branches: null,
+            functions: null,
+            leastCovered: { items: [], total: 0 },
+            notInReport: { items: [], total: 0 },
+            untestedComplex: { items: [], total: 0 },
+          }),
+          { area: "apps/api" },
+        ),
+      );
+      const notice = (await screen.findByText(c.coverage.notCovered.titleArea)).closest("aside")!;
+      expect(notice).toHaveTextContent("Your CI may upload coverage for other packages only");
+      expect(screen.queryByRole("heading", { name: c.coverage.tiles.lines })).not.toBeInTheDocument();
+      expect(screen.queryByText(c.coverage.tiles.notReportedHint)).not.toBeInTheDocument();
+      for (const title of [c.coverage.least.title, c.coverage.notInReport.title, c.coverage.untested.title]) {
+        expect(screen.queryByRole("heading", { name: title })).not.toBeInTheDocument();
+      }
+      expect(screen.queryByText(c.coverage.least.empty)).not.toBeInTheDocument();
+      expect(screen.queryByText(c.coverage.untested.empty)).not.toBeInTheDocument();
+    });
+
+    it("says the report matches nothing when the whole repository has no matched file", async () => {
+      show(withCoverage(coverageOk({ filesInScope: 0, lines: null, branches: null, functions: null })));
+      expect(await screen.findByText(c.coverage.notCovered.titleWhole)).toBeInTheDocument();
+    });
+
+    it("says how many files in kinds of code the report does not cover are not listed", async () => {
+      show(withCoverage(coverageOk({ notInReportOtherKinds: 4 })));
+      expect(await screen.findByText(c.coverage.notInReport.otherKinds(4))).toHaveTextContent(
+        "4 source files in areas or languages the report does not cover are not listed.",
+      );
+    });
+
+    it("says a single such file in the singular and leaves the note out when there are none", async () => {
+      show(withCoverage(coverageOk({ notInReportOtherKinds: 1 })));
+      expect(
+        await screen.findByText(/1 source file in areas or languages the report does not cover is not listed/),
+      ).toBeInTheDocument();
+    });
+
+    it("leaves the other kinds note out when every unlisted file is accounted for", async () => {
+      show(withCoverage(coverageOk()));
+      await screen.findByRole("heading", { name: c.coverage.notInReport.title });
+      expect(screen.queryByText(/does not cover are not listed/)).not.toBeInTheDocument();
     });
 
     it("warns when the coverage was measured on a different commit", async () => {
@@ -285,15 +388,9 @@ describe("CodeAnalysisPage", () => {
       expect(screen.queryByRole("note")).not.toBeInTheDocument();
     });
 
-    it("says when the newest report was created, and leaves that out when it is not known", async () => {
+    it("says when the newest report was created", async () => {
       show(withCoverage(coverageOk()));
       expect(await screen.findByText(/The newest report was created on 28 Feb 2026, 16:30\./)).toBeInTheDocument();
-    });
-
-    it("warns, without a sha, when the commit of the coverage is not known", async () => {
-      show(withCoverage(coverageOk({ otherCommit: true, source: { ...okSource(), commitSha: null } })));
-      const notice = (await screen.findByText(c.coverage.otherCommit.title)).closest("aside")!;
-      expect(notice).toHaveTextContent(c.coverage.otherCommit.body(null, "abcdef0"));
     });
 
     it("warns that the latest read failed and keeps the earlier figures", async () => {
@@ -321,10 +418,30 @@ describe("CodeAnalysisPage", () => {
     });
 
     it("says totals only when the report carries no line detail", async () => {
-      show(withCoverage(coverageOk({ lineDetail: false })));
+      const ok = coverageOk() as Extract<CodeDetailReport["coverage"], { status: "ok" }>;
+      const file = { ...ok.leastCovered.items[0]!, uncovered: null };
+      show(withCoverage({ ...ok, lineDetail: false, leastCovered: { items: [file], total: 1 } }));
       expect(await screen.findByText(c.coverage.totalsOnly)).toBeInTheDocument();
       const table = screen.getByRole("table", { name: c.coverage.least.title });
       expect(table).not.toHaveTextContent("12 to 30");
+      expect(table).toHaveTextContent(copy.common.notAvailable);
+    });
+
+    it("says per-function coverage is not available, not that nothing is uncovered, for a totals only report", async () => {
+      show(withCoverage(coverageOk({ lineDetail: false, untestedComplex: { items: [], total: 0 } })));
+      const card = (await screen.findByRole("heading", { name: c.coverage.untested.title })).closest("section")!;
+      expect(card).toHaveTextContent(c.coverage.untested.totalsOnly);
+      expect(card).not.toHaveTextContent(c.coverage.untested.empty);
+    });
+
+    it("decides each file's not-run cell by that file's own ranges, not the report's", async () => {
+      const ok = coverageOk() as Extract<CodeDetailReport["coverage"], { status: "ok" }>;
+      const withRanges = ok.leastCovered.items[0]!;
+      const without = { ...withRanges, path: "apps/api/src/totals.ts", uncovered: null };
+      show(withCoverage({ ...ok, leastCovered: { items: [withRanges, without], total: 2 } }));
+      const table = await screen.findByRole("table", { name: c.coverage.least.title });
+      expect(within(table).getByRole("row", { name: /pipeline\.ts/ })).toHaveTextContent("12 to 30, 44");
+      expect(within(table).getByRole("row", { name: /totals\.ts/ })).toHaveTextContent(copy.common.notAvailable);
     });
 
     it("lists the files that are not in the report, and the complex functions with no coverage", async () => {
@@ -352,6 +469,7 @@ describe("CodeAnalysisPage", () => {
       expect(screen.getByText(c.coverage.notInReport.empty)).toBeInTheDocument();
       expect(screen.getByText(c.coverage.untested.empty)).toBeInTheDocument();
       expect(screen.getByText(c.coverage.files(7, 10, 3))).toBeInTheDocument();
+      expect(screen.getByText(c.coverage.least.empty)).toHaveTextContent("kinds of code this report covers");
     });
 
     it("shows coverage beside each function when it was read", async () => {
@@ -359,6 +477,115 @@ describe("CodeAnalysisPage", () => {
       show({ ...base, functions: { total: 1, items: [{ ...base.functions.items[0]!, coverage: 0.5 }] } });
       const table = await screen.findByRole("table", { name: c.functions.title });
       expect(within(table).getByRole("row", { name: /runPipeline/ })).toHaveTextContent("50%");
+    });
+  });
+
+  describe("grade line", () => {
+    it("says the grade is unavailable when the code health request fails", async () => {
+      mockFetch({
+        "GET /api/repos/1/code-detail": { body: codeDetailReport() },
+        "GET /api/repos/1/code-health": { status: 500, body: { error: "boom" } },
+        "GET /api/repos": { body: [repo()] },
+      });
+      renderRoute(<CodeAnalysisPage />, { path: "/repos/:id/code", route: "/repos/1/code" });
+      expect(await screen.findByText(c.gradeUnavailable)).toBeInTheDocument();
+      expect(screen.queryByText(c.gradeLine)).not.toBeInTheDocument();
+    });
+
+    it("tells people the grade is the one part that follows the date range", async () => {
+      show(codeDetailReport());
+      expect(
+        await screen.findByText(/Apart from the overall grade, nothing on this page follows the date range/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows no band, and says why, when the scope has no source function to judge", async () => {
+    show(codeDetailReport({ scope: { ...codeDetailReport().scope, maintainabilityBand: null } }));
+    const checks = (await screen.findByRole("heading", { name: c.scope.checks.title })).closest("section")!;
+    const line = checks.querySelector(".band-line")!;
+    expect(line).toHaveTextContent(c.scope.checks.noBand);
+    expect(line).not.toHaveTextContent(/Elite|High|Medium|Low/);
+  });
+
+  describe("while another area loads", () => {
+    it("keeps the old figures, marks the body busy and dims it until the new area arrives", async () => {
+      const user = userEvent.setup();
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      mockFetch({
+        "GET /api/repos/1/code-detail": async (url) => {
+          if (url.searchParams.get("area") === "packages/core") {
+            await gate;
+            return { body: codeDetailReport({ area: "packages/core" }) };
+          }
+          return { body: codeDetailReport() };
+        },
+        "GET /api/repos/1/code-health": { body: codeHealthReport() },
+        "GET /api/repos": { body: [repo()] },
+      });
+      const { container } = renderRoute(<CodeAnalysisPage />, { path: "/repos/:id/code", route: "/repos/1/code" });
+      const table = await screen.findByRole("table", { name: c.areas.packagesTitle });
+      const body = () => container.querySelector(".detail-body")!;
+      expect(body()).toHaveAttribute("aria-busy", "false");
+      expect(body()).not.toHaveClass("is-refreshing");
+
+      await user.click(within(table).getByRole("link", { name: "packages/core" }));
+      await waitFor(() => expect(body()).toHaveAttribute("aria-busy", "true"));
+      expect(body()).toHaveClass("is-refreshing");
+      expect(screen.getByRole("heading", { name: c.scope.titleWhole })).toBeInTheDocument();
+
+      release?.();
+      expect(await screen.findByRole("heading", { name: c.scope.titleArea("packages/core") })).toBeInTheDocument();
+      expect(body()).toHaveAttribute("aria-busy", "false");
+      expect(body()).not.toHaveClass("is-refreshing");
+    });
+  });
+
+  describe("moving between repositories", () => {
+    it("never shows the first repository's analysis under the second one's address", async () => {
+      const user = userEvent.setup();
+      const never = new Promise<never>(() => undefined);
+      mockFetch({
+        "GET /api/repos/1/code-detail": { body: codeDetailReport() },
+        "GET /api/repos/2/code-detail": () => never,
+        "GET /api/repos/1/code-health": { body: codeHealthReport() },
+        "GET /api/repos/2/code-health": () => never,
+        "GET /api/repos": { body: [repo()] },
+      });
+      renderRoute(
+        <>
+          <Link to="/repos/2/code">next repository</Link>
+          <CodeAnalysisPage />
+        </>,
+        { path: "/repos/:id/code", route: "/repos/1/code" },
+      );
+      expect(await screen.findByText(c.analysedAt("abcdef0", "1 Mar 2026, 10:00"))).toBeInTheDocument();
+      expect(await screen.findByText(c.gradeLine)).toBeInTheDocument();
+
+      await user.click(screen.getByRole("link", { name: "next repository" }));
+      expect(await screen.findByText(c.loading)).toBeInTheDocument();
+      expect(screen.queryByText(c.analysedAt("abcdef0", "1 Mar 2026, 10:00"))).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: c.areas.packagesTitle })).not.toBeInTheDocument();
+      expect(screen.queryByText(c.gradeLine)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("clearing an area", () => {
+    it("adds a history entry, so Back returns to the area that was cleared", async () => {
+      const user = userEvent.setup();
+      show(codeDetailReport({ missingArea: "gone/away" }), {
+        route: "/repos/1/code?area=gone%2Faway&from=2026-01-01",
+        extra: <History />,
+      });
+      const notice = (await screen.findByText(c.missingArea.title)).closest("aside")!;
+      expect(screen.getByLabelText("address")).toHaveTextContent("?area=gone%2Faway&from=2026-01-01");
+
+      await user.click(within(notice).getByRole("button", { name: c.missingArea.clear }));
+      await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent(/^\?from=2026-01-01$/));
+
+      await user.click(screen.getByRole("button", { name: "go back" }));
+      await waitFor(() => expect(screen.getByLabelText("address")).toHaveTextContent("?area=gone%2Faway&from=2026-01-01"));
     });
   });
 

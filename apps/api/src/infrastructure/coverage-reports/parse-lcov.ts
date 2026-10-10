@@ -1,34 +1,31 @@
-import type { CoverageFileReport } from "@dora-dashboard/core";
+import { coverageCount, type CoverageCount, type CoverageFileReport } from "@dora-dashboard/core";
 import { addHit, lineRanges } from "./line-ranges.js";
 import { YIELD_EVERY, yieldToEventLoop } from "./yield-loop.js";
 
 interface Tally {
   hits: Map<number, number>;
-  linesFound: number | null;
-  linesHit: number | null;
-  functionsFound: number | null;
-  functionsHit: number | null;
-  branchesFound: number | null;
-  branchesHit: number | null;
-  /** Function names seen in `FN`, and those with a count above zero in `FNDA`, for a report that has no `FNF`. */
+  /** The `LF` and `LH` totals, `FNF` and `FNH`, `BRF` and `BRH` as written, until the record ends and they are checked. */
+  raw: { [tag: string]: number };
+  /** The checked totals, null when a report did not give a pair or gave an impossible one. */
+  lines: CoverageCount | null;
+  functions: CoverageCount | null;
+  branches: CoverageCount | null;
+  /** Every function named in `FN` or `FNDA`, and those with a count above zero in `FNDA`. */
   functionNames: Set<string>;
   functionsRun: Set<string>;
-  branchLines: number;
-  branchesTaken: number;
+  /** Each branch arm by line, block and branch number, true when taken. */
+  branchArms: Map<string, boolean>;
 }
 
 const newRecord = (): Tally => ({
   hits: new Map(),
-  linesFound: null,
-  linesHit: null,
-  functionsFound: null,
-  functionsHit: null,
-  branchesFound: null,
-  branchesHit: null,
+  raw: {},
+  lines: null,
+  functions: null,
+  branches: null,
   functionNames: new Set(),
   functionsRun: new Set(),
-  branchLines: 0,
-  branchesTaken: 0,
+  branchArms: new Map(),
 });
 
 const whole = (text: string | undefined): number | null => {
@@ -36,37 +33,66 @@ const whole = (text: string | undefined): number | null => {
   return text !== undefined && text.trim() !== "" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
 };
 
+/** A number exactly as written, or NaN, so that `coverageCount` can refuse a negative or fractional one. */
+const exact = (text: string): number => (text.trim() === "" ? Number.NaN : Number(text));
+
 /** Paths are kept as the report wrote them apart from separators; `alignCoverage` does the rest. */
 const normalise = (path: string): string => path.trim().replace(/\\/g, "/");
 
+/** The name in an `FN` record: `FN:<line>,<name>`, or `FN:<start>,<end>,<name>` as lcov 2.x writes it. */
+function functionName(value: string): string {
+  const first = value.indexOf(",");
+  const second = value.indexOf(",", first + 1);
+  const twoNumbers =
+    second > first && /^\d+$/.test(value.slice(0, first).trim()) && /^\d+$/.test(value.slice(first + 1, second).trim());
+  return value.slice((twoNumbers ? second : first) + 1);
+}
+
+/** Checks the totals a record gave, once the record is complete. A pair that is impossible is dropped. */
+function seal(record: Tally): void {
+  const pair = (covered: string, total: string) => {
+    const [c, t] = [record.raw[covered], record.raw[total]];
+    return c === undefined || t === undefined ? null : coverageCount(c, t);
+  };
+  record.lines = pair("LH", "LF");
+  record.functions = pair("FNH", "FNF");
+  record.branches = pair("BRH", "BRF");
+}
+
+const larger = (a: CoverageCount | null, b: CoverageCount | null): CoverageCount | null =>
+  !a || !b ? (a ?? b) : { covered: Math.max(a.covered, b.covered), total: Math.max(a.total, b.total) };
+
 function merge(into: Tally, from: Tally): void {
   for (const [line, count] of from.hits) addHit(into.hits, line, count);
-  for (const key of ["linesFound", "linesHit", "functionsFound", "functionsHit", "branchesFound", "branchesHit"] as const) {
-    if (from[key] !== null) into[key] = Math.max(into[key] ?? 0, from[key]!);
-  }
+  into.lines = larger(into.lines, from.lines);
+  into.functions = larger(into.functions, from.functions);
+  into.branches = larger(into.branches, from.branches);
   for (const name of from.functionNames) into.functionNames.add(name);
   for (const name of from.functionsRun) into.functionsRun.add(name);
-  into.branchLines = Math.max(into.branchLines, from.branchLines);
-  into.branchesTaken = Math.max(into.branchesTaken, from.branchesTaken);
+  for (const [arm, taken] of from.branchArms) into.branchArms.set(arm, (into.branchArms.get(arm) ?? false) || taken);
+}
+
+/** The larger of a reported count and what the lines of the record add up to, with covered never above total. */
+function joined(reported: CoverageCount | null, seen: number, ran: number): CoverageCount {
+  const total = Math.max(reported?.total ?? 0, seen);
+  return { covered: Math.min(Math.max(reported?.covered ?? 0, ran), total), total };
 }
 
 function toReport(path: string, record: Tally): CoverageFileReport {
-  const file: CoverageFileReport = { path, lines: { covered: record.linesHit ?? 0, total: record.linesFound ?? 0 } };
+  const file: CoverageFileReport = { path, lines: record.lines ?? { covered: 0, total: 0 } };
   if (record.hits.size > 0) {
-    const ranges = lineRanges(record.hits);
-    file.lines = ranges.lines;
-    file.covered = ranges.covered;
-    file.uncovered = ranges.uncovered;
+    const detail = lineRanges(record.hits);
+    file.lines = detail.lines;
+    if (detail.ranges) file.ranges = detail.ranges;
   }
-  const functions =
-    record.functionsFound !== null
-      ? { covered: record.functionsHit ?? 0, total: record.functionsFound }
-      : { covered: record.functionsRun.size, total: record.functionNames.size };
+  // Records of one file can run different functions and take different branches, so the lines that name them can say more
+  // than any one record's totals. Neither is trusted alone: the figure is the larger of the highest valid total a record
+  // gave and the distinct names (or arms) seen, so it never falls below what one record says and still joins disjoint
+  // runs. Names can repeat in a file (two constructors), which is why the totals matter; arms are keyed by line.
+  const functions = joined(record.functions, record.functionNames.size, record.functionsRun.size);
   if (functions.total > 0) file.functions = functions;
-  const branches =
-    record.branchesFound !== null
-      ? { covered: record.branchesHit ?? 0, total: record.branchesFound }
-      : { covered: record.branchesTaken, total: record.branchLines };
+  const taken = [...record.branchArms.values()].filter(Boolean).length;
+  const branches = joined(record.branches, record.branchArms.size, taken);
   if (branches.total > 0) file.branches = branches;
   return file;
 }
@@ -74,7 +100,8 @@ function toReport(path: string, record: Tally): CoverageFileReport {
 /**
  * Reads an lcov tracefile. Line hits come from `DA` records and, when a file has none, only the `LF` and `LH` totals
  * are kept, so such a file has counts and no ranges. A path that appears in several records (a merged report) is
- * combined, taking the highest hit count of each line.
+ * combined: the highest hit count of each line, the union of the functions and branch arms the records name, and the
+ * larger of their totals only where they name none. Counts that cannot be true (more covered than there are) are dropped.
  */
 export async function parseLcov(text: string): Promise<CoverageFileReport[]> {
   const records = new Map<string, Tally>();
@@ -84,6 +111,7 @@ export async function parseLcov(text: string): Promise<CoverageFileReport[]> {
 
   const flush = async (): Promise<void> => {
     if (path !== null && path !== "") {
+      seal(current);
       const existing = records.get(path);
       if (existing) merge(existing, current);
       else records.set(path, current);
@@ -118,37 +146,29 @@ export async function parseLcov(text: string): Promise<CoverageFileReport[]> {
         break;
       }
       case "LF":
-        current.linesFound = whole(value);
-        break;
       case "LH":
-        current.linesHit = whole(value);
-        break;
       case "FNF":
-        current.functionsFound = whole(value);
-        break;
       case "FNH":
-        current.functionsHit = whole(value);
+      case "BRF":
+      case "BRH":
+        current.raw[tag] = exact(value);
         break;
-      case "FN": {
-        const name = value.slice(value.indexOf(",") + 1);
-        current.functionNames.add(name);
+      case "FN":
+        current.functionNames.add(functionName(value));
         break;
-      }
       case "FNDA": {
         const comma = value.indexOf(",");
-        if ((whole(value.slice(0, comma)) ?? 0) > 0) current.functionsRun.add(value.slice(comma + 1));
+        const name = value.slice(comma + 1);
+        current.functionNames.add(name);
+        if ((whole(value.slice(0, comma)) ?? 0) > 0) current.functionsRun.add(name);
         break;
       }
-      case "BRF":
-        current.branchesFound = whole(value);
-        break;
-      case "BRH":
-        current.branchesHit = whole(value);
-        break;
       case "BRDA": {
-        const taken = value.split(",")[3];
-        current.branchLines++;
-        if (taken !== undefined && taken !== "-" && (whole(taken) ?? 0) > 0) current.branchesTaken++;
+        const [at, block, branch, taken] = value.split(",");
+        if (taken === undefined) break;
+        const key = `${at},${block},${branch}`;
+        const hit = taken !== "-" && (whole(taken) ?? 0) > 0;
+        current.branchArms.set(key, (current.branchArms.get(key) ?? false) || hit);
         break;
       }
     }

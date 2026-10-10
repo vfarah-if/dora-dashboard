@@ -60,7 +60,7 @@ export class CrawlService {
       await this.coverage.read(token, repo, full);
     } catch (err) {
       if (err instanceof UnauthorisedError) throw err;
-      this.log.warn({ err, repoId: repo.id }, "coverage step failed");
+      this.log.warn({ err, repoId: repo.id }, "coverage could not be read, and the crawl went on");
     }
   }
 

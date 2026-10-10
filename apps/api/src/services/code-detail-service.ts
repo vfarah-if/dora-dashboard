@@ -12,7 +12,7 @@ import type { RepoStore, SnapshotKeys } from "../interfaces/repo-store.js";
 import { codeFailure } from "./code-snapshot-state.js";
 
 /** How many repositories keep a prepared analysis in memory. */
-export const PREPARED_MEMO_SIZE = 8;
+export const PREPARED_MEMO_SIZE = 4;
 
 interface Prepared {
   prepared: PreparedCodeDetail;
@@ -67,6 +67,8 @@ export class CodeDetailService {
     const value = this.build(repoId, good, code, coverage);
     this.memo.delete(repoId);
     this.memo.set(repoId, { key, value });
+    // A deleted repository's analysis is dropped now, so it does not stay in memory until it ages out.
+    for (const id of [...this.memo.keys()]) if (id !== repoId && !this.store.getRepo(id)) this.memo.delete(id);
     while (this.memo.size > this.memoSize) this.memo.delete(this.memo.keys().next().value!);
     return value;
   }

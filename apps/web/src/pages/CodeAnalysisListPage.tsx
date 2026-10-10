@@ -3,6 +3,7 @@ import type { RepoListing } from "@dora-dashboard/core";
 import { useRepos } from "../api/hooks";
 import { copy } from "../copy";
 import { EmptyState, ErrorState, Skeleton } from "../components/States";
+import { StickyPanel } from "../components/StickyPanel";
 import { formatDateTime } from "../lib/format";
 
 function CodeRepoRow({ repo }: { repo: RepoListing }) {
@@ -57,10 +58,12 @@ function CodeRepoList() {
 export function CodeAnalysisListPage() {
   return (
     <div className="page">
-      <header className="page-header">
-        <h1>{copy.codeAnalysis.listTitle}</h1>
-        <p className="lede">{copy.codeAnalysis.listLede}</p>
-      </header>
+      <StickyPanel>
+        <header className="page-header">
+          <h1>{copy.codeAnalysis.listTitle}</h1>
+          <p className="lede">{copy.codeAnalysis.listLede}</p>
+        </header>
+      </StickyPanel>
       <CodeRepoList />
     </div>
   );

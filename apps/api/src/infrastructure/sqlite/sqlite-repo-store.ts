@@ -5,6 +5,7 @@ import type {
   BoardAccess,
   BoardColumn,
   CodeSnapshot,
+  CoverageRead,
   CoverageSnapshot,
   CrawlStatus,
   DeployRun,
@@ -20,6 +21,17 @@ import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
+
+/** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
+const failedFlag = (error: string | null | undefined): number => (error === null || error === undefined ? 0 : 1);
+
+/**
+ * Whether a snapshot row is a failed attempt. A row written by an older build after the migration has no `failed`, so
+ * it is judged by its stored error; `COALESCE` stops at the first non-null argument, so the JSON is parsed only for
+ * such a row.
+ */
+const FAILED = "COALESCE(failed, json_extract(data, '$.error') IS NOT NULL)";
+const NOT_FAILED = `${FAILED} = 0`;
 
 const SNAPSHOTS_KEPT = 10;
 const COVERAGE_SNAPSHOTS_KEPT = 5;
@@ -69,12 +81,14 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
   commit_sha TEXT NOT NULL,
   analysed_at TEXT NOT NULL,
   data TEXT NOT NULL,
+  failed INTEGER,
   PRIMARY KEY (repo_id, analysed_at)
 );
 CREATE TABLE IF NOT EXISTS coverage_snapshots (
   repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   fetched_at TEXT NOT NULL,
   data TEXT NOT NULL,
+  failed INTEGER,
   PRIMARY KEY (repo_id, fetched_at)
 );
 CREATE TABLE IF NOT EXISTS tracker_spaces (
@@ -295,6 +309,13 @@ export class SqliteRepoStore implements RepoStore {
       ["issue_error", "TEXT"],
     ] as const) {
       if (!repoColumns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE repos ADD COLUMN ${column} ${type}`);
+    }
+    // Whether a snapshot is a failed attempt, kept beside its JSON so that picking the newest good one never parses
+    // the data. Null only on rows written before the column existed, which the backfill sets once.
+    for (const table of ["code_snapshots", "coverage_snapshots"] as const) {
+      const snapshotColumns = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+      if (!snapshotColumns.some((c) => c.name === "failed")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN failed INTEGER`);
+      this.db.exec(`UPDATE ${table} SET failed = (json_extract(data, '$.error') IS NOT NULL) WHERE failed IS NULL`);
     }
     const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string; notnull: number }[];
     // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
@@ -525,14 +546,14 @@ export class SqliteRepoStore implements RepoStore {
 
   saveCodeSnapshot(repoId: number, snapshot: CodeSnapshot): void {
     this.db
-      .prepare("INSERT OR REPLACE INTO code_snapshots (repo_id, commit_sha, analysed_at, data) VALUES (?, ?, ?, ?)")
-      .run(repoId, snapshot.commitSha, snapshot.analysedAt, JSON.stringify(snapshot));
+      .prepare("INSERT OR REPLACE INTO code_snapshots (repo_id, commit_sha, analysed_at, data, failed) VALUES (?, ?, ?, ?, ?)")
+      .run(repoId, snapshot.commitSha, snapshot.analysedAt, JSON.stringify(snapshot), failedFlag(snapshot.error));
     // Keep the newest few, and always the newest good one so a run of failures cannot erase the last real figures.
     this.db
       .prepare(
         `DELETE FROM code_snapshots WHERE repo_id = ?
            AND analysed_at NOT IN (SELECT analysed_at FROM code_snapshots WHERE repo_id = ? ORDER BY analysed_at DESC LIMIT ${SNAPSHOTS_KEPT})
-           AND analysed_at NOT IN (SELECT analysed_at FROM code_snapshots WHERE repo_id = ? AND json_extract(data, '$.error') IS NULL ORDER BY analysed_at DESC LIMIT 1)`,
+           AND analysed_at NOT IN (SELECT analysed_at FROM code_snapshots WHERE repo_id = ? AND ${NOT_FAILED} ORDER BY analysed_at DESC LIMIT 1)`,
       )
       .run(repoId, repoId, repoId);
   }
@@ -542,7 +563,7 @@ export class SqliteRepoStore implements RepoStore {
   }
 
   latestSuccessfulCodeSnapshot(repoId: number): CodeSnapshot | null {
-    return this.snapshotWhere(repoId, "AND json_extract(data, '$.error') IS NULL");
+    return this.snapshotWhere(repoId, `AND ${NOT_FAILED}`);
   }
 
   codeSnapshotKeys(repoId: number): SnapshotKeys {
@@ -561,7 +582,7 @@ export class SqliteRepoStore implements RepoStore {
         .get(repoId) as unknown as { key: string } | undefined;
       return row?.key ?? null;
     };
-    return { latest: pick(""), good: pick("AND json_extract(data, '$.error') IS NULL") };
+    return { latest: pick(""), good: pick(`AND ${NOT_FAILED}`) };
   }
 
   private snapshotWhere(repoId: number, condition: string): CodeSnapshot | null {
@@ -573,14 +594,14 @@ export class SqliteRepoStore implements RepoStore {
 
   saveCoverageSnapshot(repoId: number, snapshot: CoverageSnapshot): void {
     this.db
-      .prepare("INSERT OR REPLACE INTO coverage_snapshots (repo_id, fetched_at, data) VALUES (?, ?, ?)")
-      .run(repoId, snapshot.fetchedAt, JSON.stringify(snapshot));
+      .prepare("INSERT OR REPLACE INTO coverage_snapshots (repo_id, fetched_at, data, failed) VALUES (?, ?, ?, ?)")
+      .run(repoId, snapshot.fetchedAt, JSON.stringify(snapshot), failedFlag(snapshot.error));
     // As for code snapshots: the newest few, and always the newest good one.
     this.db
       .prepare(
         `DELETE FROM coverage_snapshots WHERE repo_id = ?
            AND fetched_at NOT IN (SELECT fetched_at FROM coverage_snapshots WHERE repo_id = ? ORDER BY fetched_at DESC LIMIT ${COVERAGE_SNAPSHOTS_KEPT})
-           AND fetched_at NOT IN (SELECT fetched_at FROM coverage_snapshots WHERE repo_id = ? AND json_extract(data, '$.error') IS NULL ORDER BY fetched_at DESC LIMIT 1)`,
+           AND fetched_at NOT IN (SELECT fetched_at FROM coverage_snapshots WHERE repo_id = ? AND ${NOT_FAILED} ORDER BY fetched_at DESC LIMIT 1)`,
       )
       .run(repoId, repoId, repoId);
   }
@@ -589,8 +610,12 @@ export class SqliteRepoStore implements RepoStore {
     return this.coverageWhere(repoId, "");
   }
 
-  latestSuccessfulCoverageSnapshot(repoId: number): CoverageSnapshot | null {
-    return this.coverageWhere(repoId, "AND json_extract(data, '$.error') IS NULL");
+  latestSuccessfulCoverageSnapshot(repoId: number): CoverageRead | null {
+    return this.coverageWhere(repoId, `AND ${NOT_FAILED}`) as CoverageRead | null;
+  }
+
+  clearCoverageFailures(repoId: number): void {
+    this.db.prepare(`DELETE FROM coverage_snapshots WHERE repo_id = ? AND ${FAILED} = 1`).run(repoId);
   }
 
   private coverageWhere(repoId: number, condition: string): CoverageSnapshot | null {

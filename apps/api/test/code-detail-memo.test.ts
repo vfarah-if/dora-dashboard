@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotFoundError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { CodeDetailService } from "../src/services/code-detail-service.js";
-import { coverageSnapshot, fn } from "./fakes.js";
+import { coverageFailure, coverageSnapshot, fn } from "./fakes.js";
 
 const snapshot = (overrides: Partial<CodeSnapshot> = {}): CodeSnapshot => ({
   commitSha: "abc1234",
@@ -106,10 +106,7 @@ describe("code detail memo", () => {
   });
 
   it("reads a newer failed coverage read separately from the last good one", () => {
-    store.saveCoverageSnapshot(
-      id,
-      coverageSnapshot({ fetchedAt: "2026-09-30T10:00:00.000Z", error: "Artefact expired", reports: [], artefacts: [] }),
-    );
+    store.saveCoverageSnapshot(id, coverageFailure({ fetchedAt: "2026-09-30T10:00:00.000Z", error: "Artefact expired" }));
     const latest = vi.spyOn(store, "latestCoverageSnapshot");
 
     const body = service.detail(id, null);
@@ -130,6 +127,25 @@ describe("code detail memo", () => {
     expect(() => service.detail(99)).toThrow(NotFoundError);
   });
 
+  it("drops the analysis of a repository that was deleted when another is prepared", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    store.saveCodeSnapshot(other, snapshot());
+    service.detail(id);
+    store.deleteRepo(id);
+    const before = reads.good.mock.calls.length;
+
+    service.detail(other);
+    // Recreated under the same id, the old entry must not answer for it: it would hold the deleted analysis.
+    const again = store.addRepo("acme", "widgets", [], "main").id;
+    store.saveCodeSnapshot(again, snapshot({ commitSha: "fff0000" }));
+    const body = service.detail(again);
+
+    expect(again).not.toBe(other);
+    expect(reads.good.mock.calls.length).toBe(before + 2);
+    expect(body).toMatchObject({ commitSha: "fff0000" });
+    expect((service as unknown as { memo: Map<number, unknown> }).memo.has(id)).toBe(false);
+  });
+
   it("keeps only the most recently used repositories", () => {
     const small = new CodeDetailService(store, 1);
     const other = store.addRepo("acme", "gadgets", [], "main").id;
@@ -141,6 +157,13 @@ describe("code detail memo", () => {
     small.detail(id);
 
     expect(reads.good.mock.calls.length).toBe(before + 1);
+  });
+});
+
+describe("memo size", () => {
+  it("defaults to four repositories", async () => {
+    const { PREPARED_MEMO_SIZE } = await import("../src/services/code-detail-service.js");
+    expect(PREPARED_MEMO_SIZE).toBe(4);
   });
 });
 
@@ -158,7 +181,7 @@ describe("snapshot keys in the store", () => {
     store.saveCodeSnapshot(id, snapshot());
     store.saveCodeSnapshot(id, snapshot({ analysedAt: "2026-09-30T10:00:00.000Z", error: "clone failed", functions: [] }));
     store.saveCoverageSnapshot(id, coverageSnapshot({ fetchedAt: "2026-09-28T10:00:00.000Z" }));
-    store.saveCoverageSnapshot(id, coverageSnapshot({ fetchedAt: "2026-09-30T10:00:00.000Z", error: "gone", reports: [] }));
+    store.saveCoverageSnapshot(id, coverageFailure({ fetchedAt: "2026-09-30T10:00:00.000Z", error: "gone" }));
 
     expect(store.codeSnapshotKeys(id)).toEqual({ latest: "2026-09-30T10:00:00.000Z", good: "2026-09-29T10:00:00.000Z" });
     expect(store.coverageSnapshotKeys(id)).toEqual({ latest: "2026-09-30T10:00:00.000Z", good: "2026-09-28T10:00:00.000Z" });

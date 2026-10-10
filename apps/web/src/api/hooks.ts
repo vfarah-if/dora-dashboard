@@ -233,7 +233,8 @@ export function useCodeHealth(id: number, range: CodeHealthRange = { from: null,
     queryKey: queryKeys.codeHealth(id, { from: range.from, to: range.to }),
     queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(withQuery(`/api/repos/${id}/code-health`, query), { signal }),
     enabled: isRecordId(id),
-    placeholderData: keepPreviousData,
+    // Kept only within one repository, so moving between two repositories' addresses never shows the first one's figures.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === id ? previous : undefined),
   });
 }
 
@@ -251,7 +252,8 @@ export function useCodeDetail(id: number, area: string | null) {
     queryFn: ({ signal }) =>
       apiRequest<CodeDetailResponse>(withQuery(`/api/repos/${id}/code-detail`, params.toString()), { signal }),
     enabled: isRecordId(id),
-    placeholderData: keepPreviousData,
+    // Kept only within one repository, so moving between two repositories' addresses never shows the first one's figures.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === id ? previous : undefined),
   });
 }
 
