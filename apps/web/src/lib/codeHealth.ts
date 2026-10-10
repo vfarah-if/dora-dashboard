@@ -1,4 +1,4 @@
-import type { CodeHealthReport, FunctionMetrics } from "@dora-dashboard/core";
+import type { CodeFigures, FunctionMetrics } from "@dora-dashboard/core";
 
 /** The first seven characters of a commit sha, as git prints it. */
 export function shortSha(sha: string): string {
@@ -10,7 +10,7 @@ export interface DistributionRow {
   count: number;
 }
 
-export function distributionRows(report: Pick<CodeHealthReport, "distribution">): DistributionRow[] {
+export function distributionRows(report: Pick<CodeFigures, "distribution">): DistributionRow[] {
   return report.distribution.map((bucket) => ({ label: bucket.label, count: bucket.count }));
 }
 

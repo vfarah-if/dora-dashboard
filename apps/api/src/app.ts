@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { Config } from "./core/config.js";
 import { RateLimitedError } from "./core/errors.js";
 import type { DeviceAuthorisation } from "./interfaces/device-authorisation.js";
+import type { CoverageSource } from "./interfaces/coverage-source.js";
 import type { IssueProvider } from "./interfaces/issue-provider.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
@@ -22,6 +23,8 @@ import { registerRepoRoutes } from "./routes/repos.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
 import { DeviceSignInService } from "./services/device-sign-in-service.js";
 import { CodeHealthService } from "./services/code-health-service.js";
+import { CodeDetailService } from "./services/code-detail-service.js";
+import { CoverageService } from "./services/coverage-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { IssueCrawlService } from "./services/issue-crawl-service.js";
 import { IssueReportService } from "./services/issue-report-service.js";
@@ -49,6 +52,11 @@ export interface AppDeps {
   analyser?: CodeAnalyser;
   /** Reads tooling files from the clone so the report can grade testing and hygiene. Optional. */
   reader?: WorkspaceReader;
+  /**
+   * Measured coverage, read from CI artefacts during the crawl. Used only when code analysis is on; leave it out and
+   * a crawl reads no coverage, while stored coverage is still shown.
+   */
+  coverage?: CoverageSource;
   /** The time source for review waits and the review queue cache; tests pass a fixed one. */
   clock?: () => Date;
   /**
@@ -98,7 +106,9 @@ function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHeal
   // With analysis off the crawl never clones, but earlier snapshots can still be read back.
   const analyseDuringCrawl = deps.config.codeAnalysis && deps.checkout && deps.analyser;
   const issues = deps.issues && new IssueCrawlService(deps.store, deps.issues, app.log);
-  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log, issues);
+  const coverage =
+    analyseDuringCrawl && deps.coverage ? new CoverageService(deps.store, deps.coverage, deps.clock, app.log) : undefined;
+  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log, issues, coverage);
 }
 
 /** Jira is on only when the config carries the Atlassian app (ADR 0020) and the adapters were handed in. */
@@ -152,6 +162,7 @@ function registerRoutes(
     crawler,
     reports: new ReportService(deps.store, deps.clock),
     codeHealth,
+    codeDetail: new CodeDetailService(deps.store),
   });
   registerIssueRoutes(app, {
     guard: requireSession(auth),

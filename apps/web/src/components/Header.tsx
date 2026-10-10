@@ -1,4 +1,4 @@
-import { NavLink } from "react-router";
+import { NavLink, useMatch } from "react-router";
 import type { AuthState } from "../api/hooks";
 import { useHealth, useLogout, useRepos } from "../api/hooks";
 import { copy } from "../copy";
@@ -45,6 +45,34 @@ function IssuesNavLink() {
   return <NavLink to="/issues">{copy.nav.issues}</NavLink>;
 }
 
+/** True on the code analysis page of any repository, which belongs to the Code analysis tab. */
+function useOnCodePage(): boolean {
+  return useMatch("/repos/:id/code") !== null;
+}
+
+/**
+ * The Repositories tab covers the repository pages but not the code analysis page of a repository, which belongs to
+ * the Code analysis tab. Otherwise two tabs would be lit at once.
+ */
+function RepositoriesNavLink() {
+  const onCodePage = useOnCodePage();
+  return (
+    <NavLink to="/repos" className={({ isActive }) => (isActive && !onCodePage ? "active" : undefined)}>
+      {copy.nav.repositories}
+    </NavLink>
+  );
+}
+
+/** Lit on the list at /code and on the code analysis page of any repository. */
+function CodeAnalysisNavLink() {
+  const onCodePage = useOnCodePage();
+  return (
+    <NavLink to="/code" className={({ isActive }) => (isActive || onCodePage ? "active" : undefined)}>
+      {copy.nav.codeAnalysis}
+    </NavLink>
+  );
+}
+
 /** Sign out applies to browser sign-ins only. A CLI session belongs to the machine, not the page. */
 const canSignOut = (auth: AuthState | undefined) =>
   auth?.source ? auth.source === "device" || auth.source === "oauth" : auth?.mode === "oauth";
@@ -69,7 +97,8 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
             <NavLink to="/" end>
               {copy.nav.home}
             </NavLink>
-            <NavLink to="/repos">{copy.nav.repositories}</NavLink>
+            <RepositoriesNavLink />
+            <CodeAnalysisNavLink />
             {jira && <NavLink to="/spaces">{copy.nav.jira}</NavLink>}
             <IssuesNavLink />
             <NavLink to="/review-queue">{copy.nav.reviewQueue}</NavLink>

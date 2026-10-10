@@ -56,6 +56,12 @@ export const codeHealthQuery = {
   properties: { from: date, to: date },
 } as const;
 
+/** An area is a repository path from the report's own list: no control characters and no backslashes. */
+export const codeDetailQuery = {
+  type: "object",
+  properties: { area: { type: "string", maxLength: 500, pattern: "^[^\\\\\\u0000-\\u001f\\u007f]*$" } },
+} as const;
+
 export const spaceReportQuery = {
   type: "object",
   properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },

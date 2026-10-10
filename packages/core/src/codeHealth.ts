@@ -6,6 +6,7 @@ import {
   WARN_CCN,
   gradeCodeHealth,
   maintainabilityChecks,
+  maintainabilityGrade,
   testingChecks,
   type CodeGrade,
   type GradeCheck,
@@ -14,8 +15,9 @@ import {
   type MaintainabilityFigures,
 } from "./codeGrade.js";
 import { describeHotspots, nextBand, type Hotspot, type NextBand } from "./codeAdvice.js";
+import type { Band } from "./dora.js";
 import { isBot } from "./pullRequests.js";
-import { mean, median, p75 } from "./stats.js";
+import { mean, median, p75, sum } from "./stats.js";
 import type { PullRequest } from "./types.js";
 
 /** One function found by a static analyser. `file` is relative to the repository root. */
@@ -24,6 +26,8 @@ export interface FunctionMetrics {
   language: string;
   name: string;
   startLine: number;
+  /** The last line of the function, so a range such as coverage can be read over it. Absent before snapshot version 6. */
+  endLine?: number;
   /** Cyclomatic complexity: the number of independent paths through the function. */
   ccn: number;
   /** Lines of code, excluding blank lines and comments. */
@@ -37,9 +41,11 @@ export interface FunctionMetrics {
  * strictly (comments, `continue-on-error`, installs), so version 2 tooling facts may differ. Version 4 records
  * the files the analyser may have read only in part. Version 5 measures JavaScript and TypeScript from a syntax tree
  * rather than with lizard (ADR 0025), so their figures differ, and records `unmeasuredFiles`, the files in languages
- * lizard reads that went unmeasured because lizard was not found.
+ * lizard reads that went unmeasured because lizard was not found. Version 6 records each function's `endLine`, the
+ * listing of code files (`files`) and the manifests and workspace declarations (`layout`), so that a report can be
+ * broken down by area (ADR 0029).
  */
-export const CODE_SNAPSHOT_VERSION = 5;
+export const CODE_SNAPSHOT_VERSION = 6;
 
 /** What one analysis of one commit found. `error` is set, with no functions, when the analysis could not run. */
 export interface CodeSnapshot {
@@ -63,6 +69,24 @@ export interface CodeSnapshot {
    * included. 0 when lizard ran. Absent before version 5.
    */
   unmeasuredFiles?: number;
+  /**
+   * Every code file in the clone's listing, tests included, sorted and capped at 200,000. Absent before version 6 and
+   * when the listing could not be read.
+   */
+  files?: string[];
+  /**
+   * What decides the areas: the paths of manifests such as `package.json`, and the workspace patterns the root declares
+   * (null when it declares none). Absent before version 6 and when the listing could not be read.
+   */
+  layout?: CodeLayout;
+}
+
+/** The facts about a clone that `codeAreas` needs beyond its file list. */
+export interface CodeLayout {
+  /** Paths of the manifest files in the listing, such as `packages/core/package.json`. */
+  manifests: string[];
+  /** The workspace patterns the root declares, or null when it declares none. */
+  workspaces: string[] | null;
 }
 
 export interface CodeHealthThresholds {
@@ -105,6 +129,8 @@ export interface CodeHealthReport {
   status: "ok";
   commitSha: string;
   analysedAt: string;
+  /** The complexity thresholds the counts above were taken at, so a front end holds none of its own (ADR 0013). */
+  thresholds: CodeHealthThresholds;
   /** Source functions only; test functions are counted in `tests`. */
   functions: number;
   /** Source lines (NLOC). */
@@ -171,7 +197,6 @@ const BUCKETS: readonly { label: string; min: number; max: number | null }[] = [
 
 const HOTSPOT_COUNT = 10;
 
-const sum = (values: number[]) => values.reduce((total, v) => total + v, 0);
 const ratio = (part: number, whole: number) => (whole === 0 ? 0 : part / whole);
 
 const inRange = (mergedAt: string, from: string | undefined, to: string | undefined) =>
@@ -202,8 +227,8 @@ export function prsWithTests(prs: readonly PullRequest[], range: CodeHealthRange
   return verdicts.length === 0 ? null : { share: withTests / verdicts.length, withTests, total: verdicts.length };
 }
 
-/** Most complex first; ties fall to size, then to file and name so the order never depends on input order. */
-const compareComplexity = (a: FunctionMetrics, b: FunctionMetrics) =>
+/** Orders functions most complex first; ties fall to size, then to file and name so the order never depends on input order. */
+export const compareComplexity = (a: FunctionMetrics, b: FunctionMetrics) =>
   b.ccn - a.ccn || b.nloc - a.nloc || a.file.localeCompare(b.file) || a.name.localeCompare(b.name);
 
 function ccnSummary(ccns: number[]): CodeHealthReport["ccn"] {
@@ -319,6 +344,69 @@ const longestOf = (fns: FunctionMetrics[]): FunctionMetrics | null =>
   );
 
 /**
+ * The figures that describe a set of functions on their own, whether that is a whole repository or one area of it:
+ * size, complexity, distribution, languages, hotspots and the maintainability band. Nothing here needs tooling facts or
+ * pull requests, so nothing here is a grade. Test functions are counted in `tests` and left out of every other figure.
+ */
+export interface CodeFigures {
+  /** Source functions only; test functions are counted in `tests`. */
+  functions: number;
+  /** Source lines (NLOC). */
+  nloc: number;
+  ccn: CodeHealthReport["ccn"];
+  shareAboveWarn: number;
+  shareAboveHigh: number;
+  countAboveWarn: number;
+  countAboveHigh: number;
+  mostComplex: FunctionMetrics | null;
+  distribution: CcnBucket[];
+  languages: LanguageHealth[];
+  hotspots: Hotspot[];
+  nextBand: NextBand | null;
+  tests: { functions: number; nloc: number };
+  maintainability: MaintainabilityFigures;
+  /** The four maintainability checks, each with the count of functions behind it. */
+  maintainabilityChecks: GradeCheck[];
+  /** The maintainability band alone, which is not the overall grade. Null when there is no source function to judge. */
+  maintainabilityBand: Band | null;
+  longestFunction: FunctionMetrics | null;
+}
+
+/** Summarises functions as they are, with test functions told apart by path. Pure, and needs no snapshot. */
+export function codeFigures(
+  allFunctions: readonly FunctionMetrics[],
+  thresholds: CodeHealthThresholds = DEFAULT_CODE_THRESHOLDS,
+): CodeFigures {
+  const fns = allFunctions.filter((f) => !isTestPath(f.file));
+  const testFns = allFunctions.filter((f) => isTestPath(f.file));
+  const nloc = sum(fns.map((f) => f.nloc));
+  const above = (limit: number) => fns.filter((f) => f.ccn > limit).length;
+  const byComplexity = [...fns].sort(compareComplexity);
+  const maintainability = maintainabilityFigures(fns);
+  const path = nextBand(fns, maintainability);
+
+  return {
+    functions: fns.length,
+    nloc,
+    ccn: ccnSummary(fns.map((f) => f.ccn)),
+    shareAboveWarn: ratio(above(thresholds.warn), fns.length),
+    shareAboveHigh: ratio(above(thresholds.high), fns.length),
+    countAboveWarn: above(thresholds.warn),
+    countAboveHigh: above(thresholds.high),
+    mostComplex: byComplexity[0] ?? null,
+    distribution: distributionOf(fns),
+    languages: languageBreakdown(fns),
+    hotspots: describeHotspots(byComplexity.slice(0, HOTSPOT_COUNT), nloc, path),
+    nextBand: path,
+    tests: { functions: testFns.length, nloc: sum(testFns.map((f) => f.nloc)) },
+    maintainability,
+    maintainabilityChecks: maintainabilityChecks(maintainability, maintainabilityCounts(fns)),
+    maintainabilityBand: fns.length === 0 ? null : maintainabilityGrade(maintainability).band,
+    longestFunction: longestOf(fns),
+  };
+}
+
+/**
  * Summarises one analysed commit and grades it. Pure: the snapshot carries its own timestamp, and the pull
  * requests and range are passed in. Only source functions feed the maintainability figures.
  */
@@ -329,43 +417,22 @@ export function codeHealth(
   thresholds: CodeHealthThresholds = DEFAULT_CODE_THRESHOLDS,
 ): CodeHealthReport {
   const fns = snapshot.functions.filter((f) => !isTestPath(f.file));
-  const testFns = snapshot.functions.filter((f) => isTestPath(f.file));
-  const ccns = fns.map((f) => f.ccn);
-  const nloc = sum(fns.map((f) => f.nloc));
-  const testNloc = sum(testFns.map((f) => f.nloc));
-  const above = (limit: number) => fns.filter((f) => f.ccn > limit).length;
-  const byComplexity = [...fns].sort(compareComplexity);
-
-  const maintainability = maintainabilityFigures(fns);
+  const { maintainabilityChecks: _checks, maintainabilityBand: _band, ...figures } = codeFigures(snapshot.functions, thresholds);
   const tooling = snapshot.tooling ?? null;
   const withTests = prsWithTests(prs, range);
-  const testRatio = ratio(testNloc, nloc);
-  const path = nextBand(fns, maintainability);
+  const testRatio = ratio(figures.tests.nloc, figures.nloc);
 
   return {
     status: "ok",
     commitSha: snapshot.commitSha,
     analysedAt: snapshot.analysedAt,
-    functions: fns.length,
-    nloc,
-    ccn: ccnSummary(ccns),
-    shareAboveWarn: ratio(above(thresholds.warn), fns.length),
-    shareAboveHigh: ratio(above(thresholds.high), fns.length),
-    countAboveWarn: above(thresholds.warn),
-    countAboveHigh: above(thresholds.high),
-    mostComplex: byComplexity[0] ?? null,
-    distribution: distributionOf(fns),
-    languages: languageBreakdown(fns),
-    hotspots: describeHotspots(byComplexity.slice(0, HOTSPOT_COUNT), nloc, path),
-    nextBand: path,
+    thresholds,
+    ...figures,
     partlyMeasured: (snapshot.partlyMeasured ?? []).filter((f) => !isTestPath(f)).sort(),
     unmeasuredFiles: snapshot.unmeasuredFiles ?? 0,
-    tests: { functions: testFns.length, nloc: testNloc },
-    maintainability,
     testing: testingFigures(testRatio, withTests, tooling),
     hygiene: tooling && hygieneFigures(tooling),
     tooling,
-    ...judge(fns, maintainability, testRatio, withTests, tooling),
-    longestFunction: longestOf(fns),
+    ...judge(fns, figures.maintainability, testRatio, withTests, tooling),
   };
 }

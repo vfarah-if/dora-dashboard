@@ -552,6 +552,14 @@ a:hover {
   transition: opacity 150ms ease;
 }
 
+/** The body of the code analysis page, which keeps the page's spacing and dims while another area loads. */
+.detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
 .sign-in {
   max-width: 560px;
   margin: 48px auto;
@@ -3251,4 +3259,69 @@ a:hover {
   .hygiene-card {
     break-inside: avoid;
   }
+}
+
+/* Detailed code analysis */
+
+.band-line,
+.grade-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+}
+
+.check-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.area-table tbody tr.row-selected {
+  background: var(--accent-soft);
+}
+
+.empty-points {
+  margin: 0;
+  padding-left: 1.25rem;
+  text-align: left;
+  max-width: 60ch;
+}
+
+.function-table .numeric,
+.coverage-table .numeric {
+  white-space: nowrap;
+}
+
+@media print {
+  /* A page cannot scroll, so these tables wrap their text inside the page instead. */
+  .area-table,
+  .function-table,
+  .coverage-table {
+    table-layout: auto;
+    width: 100%;
+  }
+
+  .area-table thead th,
+  .function-table thead th,
+  .coverage-table thead th {
+    white-space: normal;
+  }
+
+  .area-table tbody tr,
+  .coverage-table tbody tr {
+    break-inside: avoid;
+  }
+
+  .area-table tbody tr.row-selected {
+    background: none;
+  }
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }

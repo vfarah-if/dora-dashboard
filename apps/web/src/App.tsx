@@ -4,6 +4,8 @@ import { copy } from "./copy";
 import { Header } from "./components/Header";
 import { SignIn } from "./components/SignIn";
 import { ErrorState, Skeleton } from "./components/States";
+import { CodeAnalysisListPage } from "./pages/CodeAnalysisListPage";
+import { CodeAnalysisPage } from "./pages/CodeAnalysisPage";
 import { IssuePage } from "./pages/IssuePage";
 import { IssuesPage } from "./pages/IssuesPage";
 import { HomePage } from "./pages/HomePage";
@@ -27,6 +29,8 @@ export function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/repos" element={<ReposPage />} />
         <Route path="/repos/:id" element={<RepoPage />} />
+        <Route path="/repos/:id/code" element={<CodeAnalysisPage />} />
+        <Route path="/code" element={<CodeAnalysisListPage />} />
         <Route path="/compare" element={<ComparePage />} />
         <Route path="/spaces" element={<SpacesPage />} />
         <Route path="/spaces/:id" element={<SpacePage />} />

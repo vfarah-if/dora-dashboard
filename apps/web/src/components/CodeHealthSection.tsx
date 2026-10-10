@@ -1,81 +1,21 @@
-import { Fragment } from "react";
+import { Link, useLocation } from "react-router";
 import type { CodeHealthReport, CodeHealthResponse } from "@dora-dashboard/core";
 import { useCodeHealth, type CodeHealthRange } from "../api/hooks";
 import { copy } from "../copy";
-import { adviceFor, splitPartlyMeasured } from "../lib/codeAdvice";
-import { locationLabel, shortSha } from "../lib/codeHealth";
-import { checkOf, goodAndImprove, limitingSentence, shareLabel, toolName, verdictSentence } from "../lib/codeVerdict";
-import { formatDate, formatDateTime, formatNumber, formatPercent } from "../lib/format";
+import { splitPartlyMeasured } from "../lib/codeAdvice";
+import { shortSha } from "../lib/codeHealth";
+import { checkOf, goodAndImprove, limitingSentence, toolName, verdictSentence } from "../lib/codeVerdict";
+import { formatDate, formatDateTime, formatPercent } from "../lib/format";
+import { FigureTiles, StartCard } from "./CodeFigureParts";
+import { FunctionTable } from "./FunctionTable";
 import { GradeTile } from "./GradeTile";
 import { SizeDistributionChart } from "./SizeDistributionChart";
-import { StatTile } from "./StatTile";
 import { EmptyState, ErrorState, SkeletonGrid } from "./States";
 
-const WARN = 10;
-const HIGH = 20;
 const yesNo = (value: boolean) => (value ? copy.codeHealth.yes : copy.codeHealth.no);
 
-/**
- * Text holding a path, which may wrap after each slash, so a narrow column or a printed page breaks it at folder
- * boundaries rather than mid-name or past the edge of its box. Any other slash in the text may wrap too.
- */
-function PathText({ text }: { text: string }) {
-  const parts = text.split("/");
-  return (
-    <>
-      {parts.map((part, i) => (
-        <Fragment key={i}>
-          {part}
-          {i < parts.length - 1 && (
-            <>
-              /<wbr />
-            </>
-          )}
-        </Fragment>
-      ))}
-    </>
-  );
-}
-
 function Hotspots({ report }: { report: CodeHealthReport }) {
-  if (report.hotspots.length === 0) return <p className="chart-empty">{copy.codeHealth.hotspots.empty}</p>;
-  return (
-    <div className="table-scroll">
-      <table className="data-table hotspots-table">
-        <caption className="visually-hidden">{copy.codeHealth.hotspots.title}</caption>
-        <thead>
-          <tr>
-            <th scope="col">{copy.codeHealth.hotspots.function}</th>
-            <th scope="col">{copy.codeHealth.hotspots.location}</th>
-            <th scope="col" className="numeric">
-              {copy.codeHealth.hotspots.ccn}
-            </th>
-            <th scope="col" className="numeric">
-              {copy.codeHealth.hotspots.nloc}
-            </th>
-            <th scope="col">{copy.codeHealth.hotspots.advice}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {report.hotspots.map((fn, i) => (
-            // Two functions can share a file, line and name, such as callbacks written side by side.
-            <tr key={`${fn.file}:${fn.startLine}:${fn.name}:${i}`}>
-              <th scope="row" className="mono wrap-anywhere">
-                {fn.name}
-                {fn.onPath && <span className="start-tag">{copy.codeHealth.hotspots.startHere}</span>}
-              </th>
-              <td className="mono wrap-anywhere">
-                <PathText text={locationLabel(fn)} />
-              </td>
-              <td className="numeric">{fn.ccn}</td>
-              <td className="numeric">{fn.nloc}</td>
-              <td className="advice-cell">{adviceFor(fn.shape)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  return <FunctionTable rows={report.hotspots} caption={copy.codeHealth.hotspots.title} />;
 }
 
 function Verdict({ report }: { report: CodeHealthReport }) {
@@ -162,36 +102,6 @@ function Lists({ report }: { report: CodeHealthReport }) {
           </ol>
         )}
       </section>
-    </div>
-  );
-}
-
-function Tiles({ report }: { report: CodeHealthReport }) {
-  const d = copy.codeHealth.detail;
-  const most = report.mostComplex;
-  return (
-    <div className="tile-grid tile-grid-flow">
-      <StatTile
-        label={d.above(WARN)}
-        value={d.aboveValue(formatNumber(report.countAboveWarn, 0), shareLabel(report.shareAboveWarn))}
-        hint={d.aboveHint(WARN)}
-      />
-      <StatTile
-        label={d.above(HIGH)}
-        value={d.aboveValue(formatNumber(report.countAboveHigh, 0), shareLabel(report.shareAboveHigh))}
-        hint={d.aboveHint(HIGH)}
-      />
-      <StatTile
-        label={d.mostComplex}
-        value={most ? d.mostComplexValue(formatNumber(most.ccn, 0)) : d.mostComplexNone}
-        hint={most ? <PathText text={d.mostComplexHint(most.name, locationLabel(most))} /> : undefined}
-      />
-      <StatTile label={d.nloc} value={formatNumber(report.nloc, 0)} hint={d.nlocHint} />
-      <StatTile
-        label={d.functions}
-        value={formatNumber(report.functions, 0)}
-        hint={d.functionsHint(formatNumber(report.tests.functions, 0))}
-      />
     </div>
   );
 }
@@ -319,38 +229,6 @@ function StaleNotice({ report }: { report: CodeHealthReport }) {
   );
 }
 
-function StartCard({ report }: { report: CodeHealthReport }) {
-  const c = copy.codeHealth.start;
-  const path = report.nextBand;
-  if (report.functions === 0) return null;
-  if (!path) {
-    return report.grade ? (
-      <section aria-labelledby="start-title" className="card start-card">
-        <h3 id="start-title" className="chart-title">
-          {c.title}
-        </h3>
-        <p>{c.elite}</p>
-      </section>
-    ) : null;
-  }
-  return (
-    <section aria-labelledby="start-title" className="card start-card">
-      <h3 id="start-title" className="chart-title">
-        {c.title}
-      </h3>
-      <p>{c.lift(path.functions.length, path.lines, path.from, path.to)}</p>
-      <ul className="start-list">
-        {path.functions.map((fn, i) => (
-          <li key={`${fn.file}:${fn.startLine}:${fn.name}:${i}`} className="mono">
-            <PathText text={c.functionItem(fn.name, locationLabel(fn), fn.nloc)} />
-          </li>
-        ))}
-      </ul>
-      <p className="chart-subtitle">{c.floor}</p>
-    </section>
-  );
-}
-
 function PartlyMeasuredNotice({ report }: { report: CodeHealthReport }) {
   const c = copy.codeHealth.partly;
   const files = report.partlyMeasured;
@@ -394,11 +272,17 @@ function HotspotsCard({ report }: { report: CodeHealthReport }) {
   );
 }
 
-function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
+function CodeHealthReportView({ report, repoId }: { report: CodeHealthReport; repoId: number }) {
   const c = copy.codeHealth;
+  const { search } = useLocation();
   return (
     <>
       <p className="chart-subtitle">{c.analysedAt(shortSha(report.commitSha), formatDateTime(report.analysedAt))}</p>
+      <p>
+        <Link to={{ pathname: `/repos/${repoId}/code`, search }} className="button button-secondary">
+          {c.detailedLink}
+        </Link>
+      </p>
       <StaleNotice report={report} />
 
       <Verdict report={report} />
@@ -406,9 +290,9 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
       <Parts report={report} />
 
       <h3 className="section-title">{c.detail.title}</h3>
-      <Tiles report={report} />
+      <FigureTiles figures={report} thresholds={report.thresholds} />
 
-      <SizeDistributionChart report={report} />
+      <SizeDistributionChart figures={report} />
 
       <div className="findings-grid">
         <TestingPanel report={report} />
@@ -418,7 +302,7 @@ function CodeHealthReportView({ report }: { report: CodeHealthReport }) {
       <PartlyMeasuredNotice report={report} />
       <UnmeasuredNotice report={report} />
       {(report.unmeasuredFiles > 0 || report.lastError?.reason === "analyser-missing") && <InstallLizard />}
-      <StartCard report={report} />
+      <StartCard figures={report} saysElite={report.grade !== null} />
       <HotspotsCard report={report} />
 
       <aside className="notice notice-info">
@@ -446,10 +330,10 @@ function AnalysisFailed({ data }: { data: FailedAnalysis }) {
 }
 
 /** What the API said about the analysis once it answered: nothing yet, a failure, or a report. */
-function AnalysisOutcome({ data }: { data: CodeHealthResponse }) {
+function AnalysisOutcome({ data, repoId }: { data: CodeHealthResponse; repoId: number }) {
   const c = copy.codeHealth;
   if (data.status === "error") return <AnalysisFailed data={data} />;
-  if (data.status === "ok") return <CodeHealthReportView report={data} />;
+  if (data.status === "ok") return <CodeHealthReportView report={data} repoId={repoId} />;
   return (
     <EmptyState title={c.none.title}>
       <p>{c.none.body}</p>
@@ -469,7 +353,7 @@ export function CodeHealthSection({ repoId, range }: { repoId: number; range?: C
       <p className="section-lede">{c.lede}</p>
       {health.isPending && <SkeletonGrid count={4} height={120} label={c.loading} />}
       {health.isError && <ErrorState error={health.error} onRetry={() => void health.refetch()} />}
-      {health.data && <AnalysisOutcome data={health.data} />}
+      {health.data && <AnalysisOutcome data={health.data} repoId={repoId} />}
     </section>
   );
 }

@@ -73,6 +73,7 @@ export const copy = {
     repositories: "Repositories",
     reviewQueue: "Review queue",
     jira: "Jira",
+    codeAnalysis: "Code analysis",
     issues: "GitHub Issues",
   },
 
@@ -607,9 +608,10 @@ export const copy = {
 
   codeHealth: {
     title: "Code health",
-    lede: "A verdict on the default branch as it stands after the most recent crawl, with what is good, what to improve and the figures behind it. The grade does not follow the date range, which only decides which merged pull requests count towards the testing figure.",
+    lede: "A verdict on the deploy branch as it stands after the most recent crawl, with what is good, what to improve and the figures behind it. The grade does not follow the date range, which only decides which merged pull requests count towards the testing figure.",
     analysedAt: (sha: string, when: string) => `Analysed commit ${sha} on ${when}`,
     loading: "Loading code health",
+    detailedLink: "Detailed code analysis",
     staleTitle: "The latest analysis failed",
     stale: (commitDate: string, attemptDate: string, message: string) =>
       `These figures are from the commit dated ${commitDate}. The latest attempt on ${attemptDate} failed with the message "${message}".`,
@@ -809,7 +811,7 @@ export const copy = {
 
     none: {
       title: "Code health has not been measured yet",
-      body: "Crawl this repository to clone the default branch and analyse its functions.",
+      body: "Crawl this repository to clone the deploy branch and analyse its functions.",
     },
     error: {
       title: "Code health could not be measured",
@@ -832,6 +834,216 @@ export const copy = {
       ],
       after:
         "Open a new terminal and run lizard --version to check it is on the PATH. If the API was already running, restart it so it can find lizard, then crawl the repository again.",
+    },
+  },
+
+  codeAnalysis: {
+    listTitle: "Code analysis",
+    listLede:
+      "Choose a repository to see its deploy branch broken down by area, with the figures for one area at a time and, when your CI publishes it, the test coverage that was measured.",
+    listLoading: "Loading repositories",
+    listEmptyTitle: "No repository has been added yet",
+    listEmptyBody: "Add a repository and let its first crawl finish, and its detailed code analysis will be available from here.",
+    listToRepos: "Go to repositories",
+    listLastCrawled: "Last crawled",
+    listNeverCrawled: "Not crawled yet",
+    listCrawlStatus: "Crawl status",
+    listOpen: (name: string) => `Open the detailed code analysis for ${name}`,
+    repoLink: "Code analysis for this repository",
+    title: "Detailed code analysis",
+    lede: "The deploy branch broken down by area, with the figures for one area at a time and, when your CI publishes it, the test coverage that was measured. Apart from the overall grade, nothing on this page follows the date range, and coverage never changes a grade.",
+    backToRepo: "Back to the repository",
+    reportLabel: "code analysis",
+    analysedAt: (sha: string, when: string) => `Analysed commit ${sha} on ${when}`,
+    gradeLine: "Overall grade for the whole repository",
+    gradeNone: "No overall grade has been produced yet",
+    gradeUnavailable: "The overall grade for the whole repository could not be loaded.",
+    loading: "Loading the detailed code analysis",
+    notFound: "This address does not name a repository.",
+    staleTitle: "The latest analysis failed",
+    stale: (commitDate: string, attemptDate: string, message: string) =>
+      `These figures are from the commit dated ${commitDate}. The latest attempt on ${attemptDate} failed with the message "${message}".`,
+    none: {
+      title: "Code has not been analysed yet",
+      body: "Crawl this repository to clone the deploy branch and analyse its functions. The areas and any coverage appear after that.",
+    },
+    error: {
+      title: "The code could not be analysed",
+      when: (when: string) => `The last attempt was on ${when}.`,
+    },
+
+    unknownMode: {
+      title: "The areas are a first guess",
+      body: "The analysis has no list of this repository's files, because it was stored before they were recorded or the listing failed, so the areas below come from folder names alone. A full re-crawl of the repository finds its workspaces.",
+    },
+    missingArea: {
+      title: "That area was not found",
+      body: (area: string) => `This repository has no area called ${area}, so the figures below are for the whole repository.`,
+      clear: "Show the whole repository",
+    },
+
+    areas: {
+      packagesTitle: "Packages",
+      foldersTitle: "Folders",
+      none: "No area",
+      root: "Files at the repository root",
+      wholeRepository: "Whole repository",
+      subtitleWorkspace:
+        "Each workspace package or project with its own manifest, and also folder and root areas for code that sits outside every package, with the size and complexity of its source code. Choose one to see its figures below.",
+      subtitleFolder:
+        "The folders found by following the folder that holds most of the source, with the size and complexity of its source code. Choose one to see its figures below.",
+      bandNote:
+        "The band is for maintainability only. An area has no overall grade, because testing and tooling are measured across the whole repository.",
+      chart: {
+        title: "Complex code by area",
+        subtitle: (warn: number) =>
+          `Source lines inside functions with a complexity above ${warn}, for the areas with the most, so the best places to simplify stand out.`,
+        series: "Lines above the warning complexity",
+        x: "Source lines in complex functions",
+        capped: (shown: number, total: number) =>
+          `The chart shows the ${shown} areas with the most. The table lists all ${total}.`,
+      },
+      table: {
+        area: "Area",
+        files: "Source files",
+        functions: "Functions",
+        nloc: "Source lines",
+        above: (warn: number) => `Above ${warn}`,
+        mean: "Mean complexity",
+        band: "Maintainability",
+        coverage: "Coverage",
+        noBand: "No functions",
+        noCoverage: "Not reported",
+        selected: "Selected",
+      },
+      capped: (shown: number, total: number) => `Showing the ${shown} largest of ${total} areas.`,
+      empty: "No areas were found.",
+    },
+
+    scope: {
+      titleWhole: "Whole repository",
+      titleArea: (area: string) => `Area ${area}`,
+      subtitle: "The same figures as the code health section, for the part of the repository chosen above.",
+      empty: "This scope has no source functions.",
+      checks: {
+        title: "Maintainability checks",
+        subtitle: "The four checks that set the maintainability band for this scope, each with the share it measured.",
+        bandLabel: "Maintainability band for this scope",
+        bandNote: "This is the maintainability part only. It is not an overall grade.",
+        noBand: "No source function in this scope, so there is no band.",
+      },
+      partly: {
+        title: "Some functions in this scope may not have been measured",
+        body: (count: number) =>
+          `${count === 1 ? "This file" : `These ${count} files`} could not be read in full, so some functions may be missing and the figures can read better than the code is.`,
+      },
+      startFloor:
+        "This is the least that would be needed, because changes that add lines elsewhere, or a function that stays above a limit after simplifying, can call for more.",
+    },
+
+    functions: {
+      title: "Functions in this scope",
+      subtitle:
+        "Source functions with the most complex first, with the area each one sits in and, when coverage was read, how much of it ran.",
+      area: "Area",
+      coverage: "Measured coverage",
+      coverageUnknown: "Not known",
+      capped: (shown: number, total: number) => `Showing the ${shown} most complex of ${total} functions.`,
+      printNote: "The full table is on screen only. The functions most worth simplifying are listed under where to start.",
+    },
+
+    ranges: {
+      span: (first: number, last: number) => `${first} to ${last}`,
+      withMore: (label: string, more: number) => `${label} and ${more} more`,
+    },
+
+    coverage: {
+      title: "Measured test coverage",
+      lede: "Read from the coverage report your CI published. It shows what the tests ran and never changes a grade, band or check.",
+      empty: {
+        title: "No coverage has been read for this repository",
+        intro:
+          "Coverage is read from a GitHub Actions artefact. To have it appear here, upload one from the workflow that runs on the deploy branch.",
+        points: [
+          "The artefact name must contain the word coverage, for example coverage or coverage-api.",
+          "It must hold one of lcov.info or a .lcov file, coverage-final.json, coverage-summary.json, or a Cobertura XML file named coverage.xml or with cobertura in its name.",
+          "It must come from a run on the deploy branch of this repository. Coverage is read on the next crawl while code analysis is switched on.",
+        ],
+      },
+      error: {
+        title: "Coverage could not be read",
+        body: (message: string, when: string) => `The attempt on ${when} failed with the message "${message}".`,
+      },
+      lastError: {
+        title: "The latest coverage read failed",
+        body: (message: string, when: string) =>
+          `The figures below are from an earlier read. The attempt on ${when} failed with the message "${message}".`,
+      },
+      otherCommit: {
+        title: "This coverage is from a different commit",
+        body: (coverageSha: string, analysedSha: string) =>
+          `The coverage was measured on commit ${coverageSha}, but the code above was analysed at commit ${analysedSha}, so the two can differ a little.`,
+      },
+      lineNote:
+        "These line figures were measured on a different commit from the one analysed, so a function that has moved since may be listed against the wrong lines.",
+      source: (artefacts: string, runId: number, when: string, formats: string, created: string) =>
+        `Read from ${artefacts}, run ${runId}, on ${when}, in ${formats} format. The newest report was created on ${created}.`,
+      artefactsRead: (read: number, inRun: number) =>
+        `${read} of the ${inRun} coverage artefacts in that run were read, so the figures may leave out the rest.`,
+      unreadable: (count: number) =>
+        `${count} coverage ${count === 1 ? "file" : "files"} could not be read and ${count === 1 ? "was" : "were"} left out.`,
+      notCovered: {
+        titleArea: "The coverage report does not cover this area",
+        titleWhole: "The coverage report does not match any file in this repository",
+        body: "None of the files in the report match a source file here, so there are no figures to show. Your CI may upload coverage for other packages only.",
+      },
+      files: (matched: number, inReport: number, unmatched: number) =>
+        unmatched === 0
+          ? `All ${inReport} source files in the report were matched to files in this repository.`
+          : `${matched} of the ${inReport} source files in the report were matched to files in this repository. The other ${unmatched} could not be matched and are left out of the figures.`,
+      totalsOnly:
+        "This report holds totals for each file only, so the lines that were not run and the coverage of each function are not available.",
+      tiles: {
+        lines: "Line coverage",
+        branches: "Branch coverage",
+        functions: "Function coverage",
+        notReported: "Not reported",
+        linesHint: (covered: string, total: string) => `${covered} of ${total} lines that can run were run by the tests.`,
+        branchesHint: (covered: string, total: string) =>
+          `${covered} of ${total} branches, the two sides of each condition, were taken.`,
+        functionsHint: (covered: string, total: string) => `${covered} of ${total} functions were called at least once.`,
+        notReportedHint:
+          "This report does not carry that figure for the files here, or those files have nothing that can be measured for it.",
+      },
+      least: {
+        title: "Least covered files",
+        subtitle: "The files with the most lines that no test ran, with the line ranges that were not run.",
+        file: "File",
+        covered: "Lines run",
+        coveredValue: (covered: number, total: number) => `${covered} of ${total}`,
+        notRun: "Lines not run",
+        empty: "No file among the kinds of code this report covers has a line that was not run.",
+        capped: (shown: number, total: number) => `Showing the ${shown} files with the most lines not run, out of ${total}.`,
+      },
+      notInReport: {
+        title: "Files not in the coverage report",
+        subtitle: "Source files with functions that the report does not mention, which usually means no test loads them.",
+        file: "File",
+        functions: "Functions",
+        nloc: "Source lines",
+        empty: "No source file is missing from the report among the kinds of code it covers.",
+        otherKinds: (count: number) =>
+          `${count} source ${count === 1 ? "file" : "files"} in areas or languages the report does not cover ${count === 1 ? "is" : "are"} not listed.`,
+        capped: (shown: number, total: number) => `Showing the ${shown} largest of ${total} files.`,
+      },
+      untested: {
+        title: "Complex functions with no coverage",
+        subtitle: (warn: number) =>
+          `Functions with a complexity above ${warn} where none of the lines that can run were run, so the riskiest code has no test behind it.`,
+        empty: "No complex function in the code this report covers is entirely uncovered.",
+        totalsOnly: "Per-function coverage is not available, because the report holds totals for each file only.",
+        capped: (shown: number, total: number) => `Showing the ${shown} most complex of ${total} functions.`,
+      },
     },
   },
 

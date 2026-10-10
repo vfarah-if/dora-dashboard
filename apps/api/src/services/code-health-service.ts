@@ -1,12 +1,16 @@
 import {
   CODE_SNAPSHOT_VERSION,
+  WORKSPACE_FILES,
   codeHealth,
   detectTooling,
+  isCodeFile,
+  isManifest,
   toolingCandidates,
+  workspacePatterns,
   type CandidateFile,
-  type CodeHealthFailureReason,
   type CodeHealthRange,
   type CodeHealthResponse,
+  type CodeLayout,
   type CodeSnapshot,
   type Repo,
   type ToolingFacts,
@@ -18,20 +22,22 @@ import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SourceCheckout } from "../interfaces/source-checkout.js";
 import type { WorkspaceReader } from "../interfaces/workspace-reader.js";
+import { ANALYSER_MISSING, ANALYSIS_OFF, codeSnapshotState } from "./code-snapshot-state.js";
 import { validateDateRange } from "./date-range.js";
 
 const MAX_CONFIG_BYTES = 256 * 1024;
+/** The most code files kept on a snapshot, so a very large repository cannot make one row without bound. */
+const MAX_FILES = 200_000;
+const MAX_MANIFESTS = 20_000;
 
-export const ANALYSIS_OFF = "Code analysis is switched off. Remove CODE_ANALYSIS=off and crawl again to enable it.";
+/** What reading a clone's files yields. `files` and `layout` are absent when the listing could not be read. */
+interface CloneFacts {
+  tooling: ToolingFacts | null;
+  files?: string[];
+  layout?: CodeLayout;
+}
 
-export const ANALYSER_MISSING =
-  "Code analysis needs lizard, which the API cannot find on its PATH. Install it (see Code health in the README), restart the API if it was already running, and crawl again.";
-
-/** Snapshots store only the message, so the reason is recovered from the messages this service writes itself. */
-const reasonOf = (message: string): CodeHealthFailureReason =>
-  message === ANALYSER_MISSING ? "analyser-missing" : message === ANALYSIS_OFF ? "analysis-off" : "failed";
-
-const failure = (message: string, analysedAt: string) => ({ message, analysedAt, reason: reasonOf(message) });
+export { ANALYSER_MISSING, ANALYSIS_OFF };
 
 /** Clones a repository's deploy branch, measures its functions, keeps the result and discards the clone. */
 export class CodeHealthService {
@@ -63,12 +69,10 @@ export class CodeHealthService {
   report(repoId: number, range: CodeHealthRange = {}): CodeHealthResponse {
     validateDateRange(range);
     if (!this.store.getRepo(repoId)) throw new NotFoundError(`Unknown repository ${repoId}`);
-    const latest = this.store.latestCodeSnapshot(repoId);
-    if (!latest) return { status: "none" };
-    const good = this.store.latestSuccessfulCodeSnapshot(repoId);
-    if (!good) return { status: "error", ...failure(latest.error ?? "Unknown error", latest.analysedAt) };
-    const report = codeHealth(good, this.store.pullRequests(repoId), range);
-    return latest.error ? { ...report, lastError: failure(latest.error, latest.analysedAt) } : report;
+    const state = codeSnapshotState(this.store, repoId);
+    if (state.status !== "ok") return state.status === "none" ? { status: "none" } : { status: "error", ...state.failure };
+    const report = codeHealth(state.good, this.store.pullRequests(repoId), range);
+    return state.lastError ? { ...report, lastError: state.lastError } : report;
   }
 
   private failed(error: string): CodeSnapshot {
@@ -135,7 +139,7 @@ export class CodeHealthService {
           "some source files were left unmeasured because their analysis tool was not found",
         );
       }
-      const tooling = await this.readTooling(clone.dir, repo.id);
+      const { tooling, files, layout } = await this.readClone(clone.dir, repo.id);
       return {
         commitSha: clone.commitSha,
         analysedAt: this.now().toISOString(),
@@ -144,6 +148,7 @@ export class CodeHealthService {
         unmeasuredFiles,
         error: null,
         tooling,
+        ...(files && layout ? { files, layout } : {}),
         snapshotVersion: CODE_SNAPSHOT_VERSION,
       };
     } finally {
@@ -152,19 +157,67 @@ export class CodeHealthService {
     }
   }
 
-  /** Reads configuration files only; a failure here costs the grade, not the complexity figures. */
-  private async readTooling(dir: string, repoId: number): Promise<ToolingFacts | null> {
-    if (!this.reader) return null;
+  /**
+   * Lists the clone once and reads configuration files only: the tooling candidates and the root files that declare
+   * workspaces. A listing that fails costs the grade and the areas, not the complexity figures; a file that cannot be
+   * read costs only what it would have told us.
+   */
+  private async readClone(dir: string, repoId: number): Promise<CloneFacts> {
+    const { reader } = this;
+    if (!reader) return { tooling: null };
+    let paths: string[];
     try {
-      const files: CandidateFile[] = [];
-      for (const path of toolingCandidates(await this.reader.list(dir))) {
-        const content = await this.reader.read(dir, path, MAX_CONFIG_BYTES);
-        if (content !== null) files.push({ path, content });
-      }
-      return detectTooling(files);
+      paths = await reader.list(dir);
     } catch (err) {
       this.log.warn({ err, repoId }, "could not read the repository's tooling files");
-      return null;
+      return { tooling: null };
     }
+    const files = paths.filter(isCodeFile).sort().slice(0, MAX_FILES);
+    const manifests = paths.filter(isManifest).sort().slice(0, MAX_MANIFESTS);
+    const present = new Set(paths);
+    const candidates = toolingCandidates(paths);
+    const declarations = WORKSPACE_FILES.filter((f) => present.has(f));
+    // A file wanted by both, such as the root package.json, is read once.
+    const read = await this.readAll(reader, dir, [...new Set([...candidates, ...declarations])]);
+    const tooling = this.collect(read, candidates, repoId, "tooling", (found) => detectTooling(found));
+    const workspaces = this.collect(read, declarations, repoId, "workspace declaration", workspacePatterns);
+    return { tooling, files, layout: { manifests, workspaces } };
+  }
+
+  /** The result of `use` over the files asked for, or null, with a log, when any of them failed to read. */
+  private collect<T>(
+    read: Map<string, string | Error | null>,
+    wanted: readonly string[],
+    repoId: number,
+    what: string,
+    use: (files: CandidateFile[]) => T,
+  ): T | null {
+    const found: CandidateFile[] = [];
+    for (const path of wanted) {
+      const content = read.get(path) ?? null;
+      if (content instanceof Error) {
+        this.log.warn({ err: content, repoId }, `could not read the repository's ${what} files`);
+        return null;
+      }
+      if (content !== null) found.push({ path, content });
+    }
+    return use(found);
+  }
+
+  private async readAll(
+    reader: WorkspaceReader,
+    dir: string,
+    paths: readonly string[],
+  ): Promise<Map<string, string | Error | null>> {
+    const read = new Map<string, string | Error | null>();
+    for (const path of paths) {
+      read.set(
+        path,
+        await reader
+          .read(dir, path, MAX_CONFIG_BYTES)
+          .catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
+      );
+    }
+    return read;
   }
 }

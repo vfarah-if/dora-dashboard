@@ -12,15 +12,15 @@ Person(reader, "Team member or lead", "Reads reports, comparisons, code health a
 Person(operator, "Operator", "Runs the dashboard and starts crawls.")
 
 System_Boundary(dashboard, "DORA Dashboard") {
-  Container(web, "Web app", "React 19, Vite, Recharts, TanStack Query", "Single page app on :5181. Charts flow, DORA bands, comparisons and the review queue. The Vite server proxies /api to the API.")
-  Container(api, "API", "Node 22, Fastify, @babel/parser", "Listens on 127.0.0.1:8787. Routes call services, services call ports, adapters implement them (ADR 0003). Holds tokens and sessions in memory only (ADR 0004). Measures JavaScript and TypeScript in process from a syntax tree, and every other language with lizard (ADR 0025).")
+  Container(web, "Web app", "React 19, Vite, Recharts, TanStack Query", "Single page app on :5181. Charts flow, DORA bands, comparisons, the review queue and the detailed code analysis page. The Vite server proxies /api to the API.")
+  Container(api, "API", "Node 22, Fastify, @babel/parser", "Listens on 127.0.0.1:8787. Routes call services, services call ports, adapters implement them (ADR 0003). Holds tokens and sessions in memory only (ADR 0004). Measures JavaScript and TypeScript in process from a syntax tree, and every other language with lizard (ADR 0025). Reads coverage reports from CI artefacts with fflate and fast-xml-parser, for display only (ADR 0030).")
   Container(cli, "Crawl CLI", "Node 22, @babel/parser, apps/api/src/cli.ts", "Runs the same crawl and code health analysis as the API from the terminal, including the in-process syntax tree analysis, with the local GitHub CLI login and no server. Run by make crawl and make crawl-all.")
   Container(core, "Core", "TypeScript package", "Domain types and every metric as a pure function, with no I/O (ADR 0006). Linked into the API and CLI; the web app imports its types only.")
-  ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys and code health results (ADR 0005).")
+  ContainerDb(db, "Crawl cache", "SQLite through node:sqlite", "data/dora.sqlite. Repositories, pull requests, reviews, deploys, code health results and the `coverage_snapshots` table of measured coverage reads (ADR 0005, ADR 0030).")
   ContainerDb(clone, "Shallow clone", "Temporary directory", "The deploy branch at its tip. Source and tooling files are read, never run, then the clone is deleted (ADR 0011, ADR 0013).")
 }
 
-System_Ext(github, "GitHub", "GraphQL and REST APIs, OAuth and git over HTTPS.")
+System_Ext(github, "GitHub", "GraphQL and REST APIs, OAuth and git over HTTPS, and the storage host that serves Actions artefacts.")
 
 Boundary(host, "Operator's machine", "host tooling") {
   System_Ext(ghcli, "GitHub CLI", "The operator's local GitHub login.")
@@ -48,8 +48,8 @@ Rel(cli, db, "Writes", "SQL")
 Rel(api, clone, "Reads and parses source and tooling files, never runs them", "file system")
 Rel(cli, clone, "Reads and parses source and tooling files, never runs them", "file system")
 
-Rel(api, github, "Reads pull requests, workflow runs and the user, and exchanges OAuth codes", "HTTPS, GraphQL and REST")
-Rel(cli, github, "Reads pull requests and workflow runs", "HTTPS, GraphQL and REST")
+Rel(api, github, "Reads pull requests, workflow runs, issues, coverage artefacts and the user, and exchanges OAuth codes", "HTTPS, GraphQL and REST")
+Rel(cli, github, "Reads pull requests, workflow runs, issues and coverage artefacts", "HTTPS, GraphQL and REST")
 Rel(api, ghcli, "Reads a token when AUTH_MODE is gh-cli", "subprocess")
 Rel(cli, ghcli, "Reads a token", "subprocess")
 Rel(api, git, "Clones the deploy branch into the shallow clone", "subprocess")

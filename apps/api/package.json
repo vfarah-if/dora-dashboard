@@ -18,7 +18,9 @@
     "@dora-dashboard/core": "*",
     "@fastify/cookie": "^11.1.2",
     "@fastify/rate-limit": "^11.2.0",
-    "fastify": "^5.12.5"
+    "fast-xml-parser": "^5.11.2",
+    "fastify": "^5.12.5",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

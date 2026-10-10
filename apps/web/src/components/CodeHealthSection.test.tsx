@@ -1,111 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
-import type { CodeHealthReport } from "@dora-dashboard/core";
 import { CodeHealthSection } from "./CodeHealthSection";
 import { PRINT_CHART_WIDTH } from "./chartParts";
 import { mockFetch, renderRoute } from "../test/render";
-import { repo } from "../test/fixtures";
+import { codeHealthReport, repo } from "../test/fixtures";
 import { copy } from "../copy";
 
-const hotspot = {
-  file: "src/pipeline.ts",
-  language: "TypeScript",
-  name: "runPipeline",
-  startLine: 42,
-  ccn: 31,
-  nloc: 90,
-  params: 3,
-};
-
-// 120 source functions. Above 10 there are 12 + 6 = 18 (15%), above 20 there are 6 (5%). 12 functions (10%) are
-// over 60 lines. Nine of 36 qualifying pull requests changed tests (25%).
-const ok: CodeHealthReport = {
-  status: "ok",
-  commitSha: "abcdef0123456789",
-  analysedAt: "2026-03-01T10:00:00Z",
-  functions: 120,
-  nloc: 4500,
-  ccn: { mean: 4.2, median: 3, p75: 6, max: 31 },
-  shareAboveWarn: 0.15,
-  shareAboveHigh: 0.05,
-  countAboveWarn: 18,
-  countAboveHigh: 6,
-  mostComplex: hotspot,
-  distribution: [
-    { label: "1 to 5", min: 1, max: 5, count: 80 },
-    { label: "6 to 10", min: 6, max: 10, count: 22 },
-    { label: "11 to 20", min: 11, max: 20, count: 12 },
-    { label: "21 to 50", min: 21, max: 50, count: 6 },
-    { label: "Over 50", min: 51, max: null, count: 0 },
-  ],
-  languages: [{ language: "TypeScript", functions: 120, nloc: 4500, meanCcn: 4.2 }],
-  hotspots: [
-    { ...hotspot, shape: "dense", lineShare: 0.02, onPath: true },
-    {
-      ...hotspot,
-      name: "parse",
-      file: "src/util.ts",
-      startLine: 7,
-      ccn: 22,
-      nloc: 40,
-      shape: "branching",
-      lineShare: 0.01,
-      onPath: false,
-    },
-  ],
-  nextBand: {
-    from: "medium",
-    to: "high",
-    functions: [hotspot, { ...hotspot, name: "parse", file: "src/util.ts", startLine: 7, ccn: 22, nloc: 40 }],
-    lines: 130,
-  },
-  partlyMeasured: [],
-  unmeasuredFiles: 0,
-  tests: { functions: 35, nloc: 2000 },
-  maintainability: { linesAboveWarn: 0.08, linesAboveHigh: 0.04, longFunctions: 0.1, manyParams: 0.01 },
-  testing: { testRatio: 0.45, prsWithTests: { share: 0.25, withTests: 9, total: 36 }, ciRunsTests: true, coverageFloor: 40 },
-  hygiene: {
-    linterConfigured: true,
-    formatterConfigured: true,
-    ciRunsLinter: false,
-    ciChecksFormat: true,
-    onlyEditorconfig: false,
-    linters: ["eslint"],
-    formatters: ["prettier"],
-    ciLinters: [],
-    ciFormatChecks: ["prettier"],
-  },
-  tooling: {
-    linters: ["eslint"],
-    formatters: ["prettier"],
-    weakFormatters: ["editorconfig"],
-    ciLinters: [],
-    ciFormatChecks: ["prettier"],
-    ciRunsTests: true,
-    coverageFloor: 40,
-  },
-  longestFunction: { ...hotspot, name: "RepoCharts", file: "src/RepoCharts.tsx", startLine: 30, ccn: 12, nloc: 233 },
-  grade: {
-    overall: { part: "maintainability", band: "low", check: "longFunctions", reason: "unused" },
-    maintainability: { band: "low", check: "longFunctions", reason: "unused" },
-    testing: { band: "medium", check: "prsWithTests", reason: "unused" },
-    hygiene: { band: "high", check: "ciLinter", reason: "unused" },
-  },
-  checks: [
-    { part: "maintainability", check: "linesAboveWarn", value: 0.03, band: "elite", count: 3, limits: false },
-    { part: "maintainability", check: "linesAboveHigh", value: 0.04, band: "medium", count: 6, limits: false },
-    { part: "maintainability", check: "longFunctions", value: 0.1, band: "low", count: 12, limits: true },
-    { part: "maintainability", check: "manyParams", value: 0.005, band: "elite", count: 1, limits: false },
-    { part: "testing", check: "testRatio", value: 0.45, band: "high", met: false, limits: false },
-    { part: "testing", check: "prsWithTests", value: 0.25, band: "medium", met: false, count: 9, total: 36, limits: true },
-    { part: "testing", check: "ciRunsTests", value: true, band: "elite", met: true, limits: false },
-    { part: "testing", check: "coverageFloor", value: 40, band: "high", met: false, limits: false },
-    { part: "hygiene", check: "linter", value: true, met: true, detail: ["eslint"], limits: false },
-    { part: "hygiene", check: "formatter", value: true, met: true, detail: ["prettier"], limits: false },
-    { part: "hygiene", check: "ciLinter", value: false, met: false, detail: [], limits: true },
-    { part: "hygiene", check: "ciFormat", value: true, met: true, detail: ["prettier"], limits: false },
-  ],
-};
+const ok = codeHealthReport();
+const hotspot = ok.mostComplex!;
 
 function show(body: unknown, status = 200) {
   const fetchMock = mockFetch({ "GET /api/repos/1/code-health": { body, status }, "GET /api/repos": { body: [repo()] } });
@@ -123,6 +25,21 @@ describe("CodeHealthSection", () => {
     show(ok);
     expect(screen.getByText(copy.codeHealth.loading)).toBeInTheDocument();
     await screen.findByText(copy.codeHealth.verdict.title);
+  });
+
+  it("links to the detailed analysis, keeping the page's query string", async () => {
+    mockFetch({ "GET /api/repos/1/code-health": { body: ok }, "GET /api/repos": { body: [repo()] } });
+    renderRoute(<CodeHealthSection repoId={1} />, { route: "/?from=2026-01-01&bots=1" });
+    const link = await screen.findByRole("link", { name: copy.codeHealth.detailedLink });
+    expect(link).toHaveAttribute("href", "/repos/1/code?from=2026-01-01&bots=1");
+  });
+
+  it("takes its complexity limits from the report rather than holding its own", async () => {
+    show({ ...ok, thresholds: { warn: 8, high: 15 } });
+    await screen.findByText(copy.codeHealth.verdict.title);
+    expect(screen.getByRole("heading", { name: copy.codeHealth.detail.above(8) })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: copy.codeHealth.detail.above(15) })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: copy.codeHealth.detail.above(10) })).not.toBeInTheDocument();
   });
 
   it("sends the page range so the testing figure follows it", async () => {

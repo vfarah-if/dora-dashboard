@@ -8,11 +8,13 @@ import { createCodeAnalyser } from "./infrastructure/analysis/create-code-analys
 import { GhCliTokenSource } from "./infrastructure/auth/gh-cli-token-source.js";
 import { GitCheckout } from "./infrastructure/git/git-checkout.js";
 import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
+import { GitHubCoverageSource } from "./infrastructure/github/github-coverage-source.js";
 import { GitHubIssueProvider } from "./infrastructure/github/github-issue-provider.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "./interfaces/logger.js";
 import { CodeHealthService } from "./services/code-health-service.js";
+import { CoverageService } from "./services/coverage-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { IssueCrawlService } from "./services/issue-crawl-service.js";
 import { isSafeBranch, parseRepoRef } from "./services/repo-ref.js";
@@ -63,8 +65,10 @@ try {
   const codeHealth = config.codeAnalysis
     ? new CodeHealthService(store, new GitCheckout(), createCodeAnalyser(reader, log), undefined, log, reader)
     : undefined;
+  // Coverage is read alongside the analysis, so switching analysis off switches it off too.
+  const coverage = config.codeAnalysis ? new CoverageService(store, new GitHubCoverageSource(), undefined, log) : undefined;
   const issues = new IssueCrawlService(store, new GitHubIssueProvider(), log);
-  await new CrawlService(store, provider, codeHealth, log, issues).crawl(token, repo.id, values.full);
+  await new CrawlService(store, provider, codeHealth, log, issues, coverage).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));
 } finally {
   clearInterval(timer);

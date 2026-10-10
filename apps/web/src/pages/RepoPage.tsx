@@ -4,6 +4,7 @@ import type { RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
 import { hasIssueStatus } from "../lib/issues";
+import { searchForCodePage } from "../lib/codeDetail";
 import { copy } from "../copy";
 import { AiCohorts } from "../components/AiCohorts";
 import { AuthorFilter } from "../components/AuthorFilter";
@@ -203,6 +204,7 @@ export function RepoPage() {
 }
 
 function RepoView({ id }: { id: number }) {
+  const { search } = useLocation();
   const [range, setRange] = useRangeParams();
   const [excluded, setExcluded] = useListParam("exclude");
   const report = useReport(id, range, excluded);
@@ -219,13 +221,16 @@ function RepoView({ id }: { id: number }) {
           {copy.common.backToRepos}
         </Link>
         <RepoHeader report={report.data} leftOut={leftOut} />
-        {showIssuesLink && (
-          <p>
+        <p className="button-row">
+          <Link to={{ pathname: `/repos/${id}/code`, search: searchForCodePage(search) }} className="button button-secondary">
+            {copy.codeAnalysis.repoLink}
+          </Link>
+          {showIssuesLink && (
             <Link to={`/issues/${id}`} className="button button-secondary">
               {copy.repo.issuesLink}
             </Link>
-          </p>
-        )}
+          )}
+        </p>
 
         <div className="controls-bar">
           <DateRangeControls value={range} onChange={setRange} />

@@ -31,7 +31,8 @@ const CODE_EXTENSIONS = new Set(
   ),
 );
 
-const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+/** The last segment of a slash-separated path. */
+export const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
 /** True for a file in a language on a fixed list of extensions, whether or not an analyser is installed for it. */
 export function isCodeFile(path: string): boolean {

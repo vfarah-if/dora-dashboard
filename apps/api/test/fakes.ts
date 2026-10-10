@@ -1,5 +1,10 @@
+import { COVERAGE_SNAPSHOT_VERSION } from "@dora-dashboard/core";
 import type {
   BoardAccess,
+  CoverageArtefact,
+  CoverageReport,
+  CoverageRead,
+  CoverageReadFailure,
   BoardColumn,
   DeployRun,
   FunctionMetrics,
@@ -13,6 +18,7 @@ import type {
 } from "@dora-dashboard/core";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
+import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../src/interfaces/coverage-source.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../src/interfaces/issue-provider.js";
 import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import {
@@ -467,6 +473,91 @@ export class FakeDeviceAuthorisation implements DeviceAuthorisation {
 
 export function fn(overrides: Partial<FunctionMetrics> = {}): FunctionMetrics {
   return { file: "src/index.ts", language: "TypeScript", name: "main", startLine: 1, ccn: 3, nloc: 12, params: 1, ...overrides };
+}
+
+export function coverageArtefact(overrides: Partial<CoverageArtefact> & { id: number }): CoverageArtefact {
+  return {
+    name: "coverage",
+    sizeBytes: 2048,
+    createdAt: "2026-09-29T09:00:00Z",
+    runId: 100,
+    commitSha: "abc1234",
+    ...overrides,
+  };
+}
+
+/** One lcov-style report covering `src/index.ts`: lines 1 to 8 ran and lines 9 to 10 did not. */
+export function coverageReport(overrides: Partial<CoverageReport> = {}): CoverageReport {
+  return {
+    format: "lcov",
+    artefact: "coverage",
+    dir: "",
+    files: [{ path: "src/index.ts", lines: { covered: 8, total: 10 }, ranges: { covered: [[1, 8]], uncovered: [[9, 10]] } }],
+    ...overrides,
+  };
+}
+
+export function coverageSnapshot(overrides: Partial<CoverageRead> = {}): CoverageRead {
+  return {
+    fetchedAt: "2026-09-29T10:00:00.000Z",
+    version: COVERAGE_SNAPSHOT_VERSION,
+    artefacts: [coverageArtefact({ id: 1 })],
+    artefactsInRun: 1,
+    runId: 100,
+    commitSha: "abc1234",
+    reports: [coverageReport()],
+    unreadableFiles: 0,
+    error: null,
+    ...overrides,
+  };
+}
+
+export function coverageFailure(overrides: Partial<CoverageReadFailure> = {}): CoverageReadFailure {
+  return {
+    fetchedAt: "2026-09-29T10:00:00.000Z",
+    version: COVERAGE_SNAPSHOT_VERSION,
+    artefacts: [],
+    runId: null,
+    commitSha: null,
+    reports: [],
+    error: "boom",
+    ...overrides,
+  };
+}
+
+/** Serves artefacts and what is inside them from memory, and records what was asked for. A read may be made to fail. */
+export class FakeCoverageSource implements CoverageSource {
+  readonly kind = "fake";
+  artefacts: CoverageArtefact[] = [];
+  contents = new Map<number, ArtefactContents>();
+  /** What the search says about having reached the end; set false to mimic a search cut off at its page limit. */
+  complete = true;
+  findFailWith: Error | null = null;
+  readFailWith: Error | null = null;
+  readonly finds: { token: string; owner: string; name: string; branch: string }[] = [];
+  readonly reads: number[] = [];
+
+  /** Adds an artefact and what is inside it; by default one report and nothing unreadable or empty. */
+  publish(
+    artefact: CoverageArtefact,
+    reports: CoverageReport[] = [coverageReport({ artefact: artefact.name })],
+    rest: { unreadable?: string[]; empty?: number } = {},
+  ): void {
+    this.artefacts.push(artefact);
+    this.contents.set(artefact.id, { reports, unreadable: rest.unreadable ?? [], empty: rest.empty ?? 0 });
+  }
+
+  async findArtefacts(token: string, owner: string, name: string, branch: string): Promise<ArtefactSearch> {
+    this.finds.push({ token, owner, name, branch });
+    if (this.findFailWith) throw this.findFailWith;
+    return { artefacts: this.artefacts, complete: this.complete };
+  }
+
+  async readArtefact(_token: string, _owner: string, _name: string, artefact: CoverageArtefact): Promise<ArtefactContents> {
+    this.reads.push(artefact.id);
+    if (this.readFailWith) throw this.readFailWith;
+    return this.contents.get(artefact.id) ?? { reports: [], unreadable: [], empty: 0 };
+  }
 }
 
 /** Hands out fake checkouts and records what was asked for and which were disposed. */
