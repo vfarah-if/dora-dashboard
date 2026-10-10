@@ -159,8 +159,9 @@ export class CodeHealthService {
 
   /**
    * Lists the clone once and reads configuration files only: the tooling candidates and the root files that declare
-   * workspaces. A listing that fails costs the grade and the areas, not the complexity figures; a file that cannot be
-   * read costs only what it would have told us.
+   * workspaces. A listing that fails costs the grade and the areas, not the complexity figures. A file that is missing
+   * or over 256 KiB costs only what it would have told us, while a read that fails costs the whole group it belongs to,
+   * the tooling facts or the workspace patterns, and never the complexity figures.
    */
   private async readClone(dir: string, repoId: number): Promise<CloneFacts> {
     const { reader } = this;

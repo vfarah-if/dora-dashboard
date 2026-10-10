@@ -126,9 +126,11 @@ describe("matchesGlob", () => {
   });
 
   it("does not take long to refuse a hostile pattern", () => {
+    // A backtracking matcher would not finish this in any useful time, so the bound is loose on purpose: it catches that
+    // failure without timing out on a slow, shared CI runner.
     const started = Date.now();
     expect(matchesGlob("a".repeat(60) + "/b", "*a*a*a*a*a*a*a*a*a*a*a*a*c/**/**/**/x")).toBe(false);
-    expect(Date.now() - started).toBeLessThan(500);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
 
