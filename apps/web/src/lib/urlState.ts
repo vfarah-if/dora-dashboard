@@ -91,3 +91,24 @@ export function parseIds(raw: string | null): number[] {
     .filter((id) => Number.isInteger(id) && id > 0);
   return [...new Set(ids)];
 }
+
+/** A piece of text held in the address as `name=value`. Empty text removes it, and the value is null when absent. */
+export function useTextParam(name: string): [string | null, (next: string | null) => void] {
+  const [params, setParams] = useSearchParams();
+  const value = params.get(name) || null;
+  const setValue = useCallback(
+    (next: string | null) => {
+      setParams(
+        (current) => {
+          const updated = new URLSearchParams(current);
+          if (next) updated.set(name, next);
+          else updated.delete(name);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+    [name, setParams],
+  );
+  return [value, setValue];
+}

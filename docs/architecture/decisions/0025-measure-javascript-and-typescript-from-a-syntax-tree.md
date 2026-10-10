@@ -42,3 +42,7 @@ Alternatives were weighed briefly. Keeping lizard with the heuristic costs nothi
 - `.vue` files still go through lizard and can still be misread, and a file mixing parameter decorators with standard decorator syntax is still read only in part.
 - Parsing runs on the API's own thread, so one large file blocks it briefly and the deadline is checked only between files. A worker thread is the remedy if that matters.
 - Figures from before and after this change are not comparable, and a grade can fall with no change to the code because lizard was missing code (ADR 0026). The Babel 7 dependency waits on the Node floor.
+
+## Revision History
+
+- 2026-10-10: the analyser now sets each function's `endLine` from the end of its node, and the lizard adapter keeps the end line that lizard reports. The field is stored from snapshot version 6 (ADR 0029) and is what lets a function's own lines be matched to a coverage report (ADR 0030). No count, name or boundary changes, so the figures are the same as at version 5.

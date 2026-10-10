@@ -273,6 +273,7 @@ function measuredFunction(path: string, language: FunctionMetrics["language"], v
       language,
       name: nameOf(visit, fn),
       startLine: startLineOf(fn),
+      endLine: fn.loc!.end.line,
       ccn: 1,
       nloc: 0,
       params: paramCount(fn),

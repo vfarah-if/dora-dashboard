@@ -2,6 +2,7 @@ import type {
   BoardAccess,
   BoardColumn,
   CodeSnapshot,
+  CoverageSnapshot,
   CrawlStatus,
   DeployRun,
   IssueLabelRules,
@@ -12,6 +13,12 @@ import type {
   TrackerStatus,
   WorkItem,
 } from "@dora-dashboard/core";
+
+/** The timestamps that identify the newest snapshot and the newest successful one, so a cache can tell when either changed. */
+export interface SnapshotKeys {
+  latest: string | null;
+  good: string | null;
+}
 
 export interface RepoCounts {
   pullRequests: number;
@@ -63,6 +70,20 @@ export interface RepoStore {
   latestCodeSnapshot(repoId: number): CodeSnapshot | null;
   /** The newest snapshot that carries no error. */
   latestSuccessfulCodeSnapshot(repoId: number): CodeSnapshot | null;
+  /** `analysedAt` of the newest snapshot and of the newest successful one, read without loading either. Null when none. */
+  codeSnapshotKeys(repoId: number): SnapshotKeys;
+
+  /**
+   * The last 5 coverage reads are kept (plus the newest successful one), so a failed read never erases the last good
+   * figures. A read that failed is saved too, with `error` set and no reports.
+   */
+  saveCoverageSnapshot(repoId: number, snapshot: CoverageSnapshot): void;
+  /** The newest coverage read of any kind, including a failed attempt. */
+  latestCoverageSnapshot(repoId: number): CoverageSnapshot | null;
+  /** The newest coverage read that carries no error. */
+  latestSuccessfulCoverageSnapshot(repoId: number): CoverageSnapshot | null;
+  /** `fetchedAt` of the newest coverage read and of the newest successful one, read without loading either. Null when none. */
+  coverageSnapshotKeys(repoId: number): SnapshotKeys;
 
   /**
    * Makes `spaces` the repository's linked spaces on `site`: each is created (or has its name and the site's URL

@@ -1,4 +1,4 @@
-import type { CodeHealthReport } from "@dora-dashboard/core";
+import type { CodeFigures } from "@dora-dashboard/core";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { copy } from "../copy";
 import { distributionIsEmpty, distributionRows, type DistributionRow } from "../lib/codeHealth";
@@ -21,9 +21,9 @@ function RangeKey() {
   );
 }
 
-/** How the files of the analysed commit spread across the line count bands, with the band key and a table. */
-export function SizeDistributionChart({ report }: { report: CodeHealthReport }) {
-  const rows = distributionRows(report);
+/** How the source functions spread across the complexity ranges, with the range key and a table. */
+export function SizeDistributionChart({ figures }: { figures: Pick<CodeFigures, "distribution"> }) {
+  const rows = distributionRows(figures);
   const c = copy.codeHealth.chart;
   return (
     <ChartCard

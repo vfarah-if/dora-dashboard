@@ -62,6 +62,21 @@ The first analysis after upgrading to syntax tree measurement can lower a JavaSc
 
 The testing grade can rise after ADR 0027. A change to a tool's configuration alone, such as `.ncurc.mjs` or `vite.config.ts`, no longer reads as source changed without tests, which needs no new crawl. The crawl now reads up to about 3000 changed files of each pull request rather than the first 100, so run a full crawl (`make crawl-full repo=owner/name`) once to complete the lists of large pull requests crawled before.
 
+### Coverage (optional)
+
+The detailed code analysis page (`/repos/:id/code`, linked from the code health section of each repository page) breaks the code down by package or folder (ADR 0029). Upgrading to it analyses every repository once more on its next crawl, because the stored snapshot gains function end lines and a file list. When your CI publishes a coverage report, the page also shows measured coverage, the least covered files and the complex functions that no test runs. Coverage is for display only and never changes a grade (ADR 0030).
+
+The dashboard reads a GitHub Actions artefact whose name contains `coverage`, from a run on the deploy branch of the repository itself (a fork's run is ignored), and it looks again on every crawl. The artefact can hold lcov (`lcov.info`), Istanbul (`coverage-final.json` or `coverage-summary.json`) or Cobertura XML. JaCoCo, Clover and Go profiles are not read. Add a step like this to the workflow that runs on the deploy branch, with the path of your own report.
+
+```yaml
+- uses: actions/upload-artifact@v4
+  with:
+    name: coverage
+    path: coverage/lcov.info
+```
+
+A repository with several packages can upload one artefact each, such as `coverage-api` and `coverage-web`, and up to five artefacts from the newest run are read together. The token the API holds must be able to read Actions, which the `repo` scope of a classic token and of the local `gh` login already allows, and a fine-grained token needs read access to Actions. The API also downloads the artefact from the storage address GitHub redirects to, so it needs network access to it. Artefacts expire after the retention period set on GitHub, and the page says when the coverage it shows was measured on a different commit.
+
 ## Signing in
 
 GitHub no longer accepts passwords over its API, so there is no username and password box. Choose one of two modes in `.env`:
@@ -79,7 +94,7 @@ Jira Cloud can be connected through OAuth 2.0 (3LO) so that issues can be read b
 
 ## What it measures
 
-See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each DORA tile can be opened to explain its band, the gap to the next, its drivers and the practices that address it (ADR 0022). Each linked Jira space gets a delivery page under `/spaces` with issue cycle and lead time, throughput, work in progress, time per column, flow efficiency, idea to production and board hygiene (ADR 0021). A repository that tracks its work in GitHub Issues gets the same kind of view at `/issues`, with time to close, weekly flow, open work by kind and priority, ageing, issue to first pull request and to production, and issue hygiene, read with the token the crawl already holds (ADR 0028). Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions with advice on where to start simplifying (ADR 0015), and an overall grade for maintainability, testing and hygiene worked out from the repository's files and pull requests without running any of its code (ADR 0013). Run a full crawl once after upgrading so that pull request file lists and branch names are fetched.
+See [docs/metrics.md](docs/metrics.md) for every definition. In short: coding time, time to first review, open to merge (reviewed and unreviewed apart), cycle time by stage, throughput per author-week, and DORA deployment frequency, lead time, change failure rate and time to restore, each with its band. Each DORA tile can be opened to explain its band, the gap to the next, its drivers and the practices that address it (ADR 0022). Each linked Jira space gets a delivery page under `/spaces` with issue cycle and lead time, throughput, work in progress, time per column, flow efficiency, idea to production and board hygiene (ADR 0021). A repository that tracks its work in GitHub Issues gets the same kind of view at `/issues`, with time to close, weekly flow, open work by kind and priority, ageing, issue to first pull request and to production, and issue hygiene, read with the token the crawl already holds (ADR 0028). Each repository page also shows code health, with cyclomatic complexity per function, its distribution and the most complex functions with advice on where to start simplifying (ADR 0015), and an overall grade for maintainability, testing and hygiene worked out from the repository's files and pull requests without running any of its code (ADR 0013). A detailed code analysis page at `/repos/:id/code` breaks that down by package or folder, with a function table and, when CI publishes it, measured test coverage (ADR 0029, ADR 0030). Run a full crawl once after upgrading so that pull request file lists and branch names are fetched.
 
 The **Review queue** page (`/review-queue`) shows open pull requests across your repositories as they are now, read live from GitHub and cached for about a minute, with a refresh button to read again. It sorts each one into a lane by who has to act next, bands the review wait in weekday hours (UTC), lists what needs attention first and groups pull requests that belong to one piece of work. Names are hidden until you turn them on, and pull request descriptions never leave the server (ADR 0017).
 

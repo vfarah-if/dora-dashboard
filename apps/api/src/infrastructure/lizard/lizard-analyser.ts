@@ -60,7 +60,7 @@ export function parseLizardCsv(csv: string, rootDir: string): FunctionMetrics[] 
   for (const line of csv.split(/\r?\n/)) {
     const m = ROW.exec(line);
     if (!m) continue;
-    const [, nloc, ccn, , params, , , file, name, , start] = m;
+    const [, nloc, ccn, , params, , , file, name, , start, end] = m;
     if (!file || !name) continue;
     const path = relativeTo(file, rootDir);
     functions.push({
@@ -68,6 +68,7 @@ export function parseLizardCsv(csv: string, rootDir: string): FunctionMetrics[] 
       language: languageOf(path),
       name,
       startLine: Number(start),
+      endLine: Number(end),
       ccn: Number(ccn),
       nloc: Number(nloc),
       params: Number(params),

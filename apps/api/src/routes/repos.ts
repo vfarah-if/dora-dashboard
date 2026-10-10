@@ -1,10 +1,12 @@
 import type { FastifyInstance, preHandlerAsyncHookHandler } from "fastify";
+import type { CodeDetailService } from "../services/code-detail-service.js";
 import type { CodeHealthService } from "../services/code-health-service.js";
 import type { CrawlService } from "../services/crawl-service.js";
 import type { AddRepoInput, RepoService } from "../services/repo-service.js";
 import type { ReportService } from "../services/report-service.js";
 import {
   addRepoBody,
+  codeDetailQuery,
   codeHealthQuery,
   compareQuery,
   configureRepoBody,
@@ -19,6 +21,7 @@ export interface RepoRouteDeps {
   crawler: CrawlService;
   reports: ReportService;
   codeHealth: CodeHealthService;
+  codeDetail: CodeDetailService;
 }
 
 interface RangeQuery {
@@ -38,7 +41,7 @@ const toOptions = (q: RangeQuery) => ({ from: q.from, to: q.to, includeBots: q.i
 const authorList = (raw: string | undefined) => [...new Set((raw ?? "").split(",").map((login) => login.trim()))].filter(Boolean);
 
 export function registerRepoRoutes(app: FastifyInstance, deps: RepoRouteDeps): void {
-  const { guard, repos, crawler, reports, codeHealth } = deps;
+  const { guard, repos, crawler, reports, codeHealth, codeDetail } = deps;
 
   /** Crawls run after the response; their outcome is read back through the repository's crawl state. */
   const startCrawl = (token: string, repoId: number, full: boolean) => {
@@ -102,6 +105,12 @@ export function registerRepoRoutes(app: FastifyInstance, deps: RepoRouteDeps): v
     "/api/repos/:id/code-health",
     { preHandler: guard, schema: { params: idParams, querystring: codeHealthQuery } },
     async (request) => codeHealth.report(request.params.id, request.query),
+  );
+
+  app.get<{ Params: { id: number }; Querystring: { area?: string } }>(
+    "/api/repos/:id/code-detail",
+    { preHandler: guard, schema: { params: idParams, querystring: codeDetailQuery } },
+    async (request) => codeDetail.detail(request.params.id, request.query.area ?? null),
   );
 
   app.get<{ Querystring: RangeQuery & { ids: string } }>(

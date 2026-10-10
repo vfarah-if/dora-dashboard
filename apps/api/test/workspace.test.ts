@@ -272,6 +272,85 @@ describe("tooling in the code health service", () => {
     expect(logged).toEqual(["could not read the repository's tooling files"]);
   });
 
+  it("lists the clone once and stores its code files and manifests, sorted, tests included", async () => {
+    reader.files.set("packages/core/package.json", "{}");
+    reader.files.set("packages/core/src/a.ts", "export {};");
+    reader.files.set("packages/core/test/a.test.ts", "export {};");
+    reader.files.set("README.md", "# Widgets");
+    let lists = 0;
+    const list = reader.list.bind(reader);
+    reader.list = async () => (lists++, list());
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(lists).toBe(1);
+    expect(snapshot.files).toEqual(["packages/core/src/a.ts", "packages/core/test/a.test.ts", "src/index.ts"]);
+    expect(snapshot.layout).toEqual({ manifests: ["packages/core/package.json"], workspaces: null });
+    expect(store.latestCodeSnapshot(repoId)).toMatchObject({ files: snapshot.files, layout: snapshot.layout });
+  });
+
+  it("reads the root files that declare workspaces, and only those that exist", async () => {
+    reader.files.set("package.json", JSON.stringify({ workspaces: ["apps/*"] }));
+    reader.files.set("pnpm-workspace.yaml", "packages:\n  - 'libs/*'\n");
+    reader.files.set("apps/web/package.json", JSON.stringify({ workspaces: ["ignored/*"] }));
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(snapshot.layout?.workspaces).toEqual(["apps/*", "libs/*"]);
+    expect(snapshot.layout?.manifests).toEqual(["apps/web/package.json", "package.json"]);
+    expect(reader.reads).not.toContain("lerna.json");
+    expect(reader.reads.filter((p) => p === "package.json")).toHaveLength(1);
+  });
+
+  it("stores no files or layout when the listing fails, and keeps the complexity figures", async () => {
+    reader.listFailWith = new Error("EIO");
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(snapshot).not.toHaveProperty("files");
+    expect(snapshot).not.toHaveProperty("layout");
+    expect(snapshot.tooling).toBeNull();
+    expect(snapshot.functions).toHaveLength(1);
+  });
+
+  it("keeps the files and the tooling when a workspace file cannot be read", async () => {
+    reader.files.set("package.json", "{}");
+    const read = reader.read.bind(reader);
+    reader.read = async (dir, path, max) => {
+      if (path === "package.json") throw new Error("EIO");
+      return read(dir, path, max);
+    };
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(snapshot.files).toContain("src/index.ts");
+    expect(snapshot.layout).toEqual({ manifests: ["package.json"], workspaces: null });
+    expect(logged).toContain("could not read the repository's workspace declaration files");
+  });
+
+  it("keeps the files and the layout when a tooling file cannot be read", async () => {
+    const read = reader.read.bind(reader);
+    reader.read = async (dir, path, max) => {
+      if (path === ".prettierrc.json") throw new Error("EIO");
+      return read(dir, path, max);
+    };
+
+    const snapshot = await service.analyse("t", repoId);
+
+    expect(snapshot.tooling).toBeNull();
+    expect(snapshot.files).toEqual(["src/index.ts"]);
+    expect(snapshot.layout).toEqual({ manifests: [], workspaces: null });
+  });
+
+  it("stores no files or layout when there is no reader", async () => {
+    const bare = new CodeHealthService(store, checkout, new FakeCodeAnalyser(), () => new Date(), undefined, null);
+
+    const snapshot = await bare.analyse("t", repoId);
+
+    expect(snapshot).not.toHaveProperty("files");
+    expect(snapshot).not.toHaveProperty("layout");
+  });
+
   it("records no tooling when there is no reader", async () => {
     const bare = new CodeHealthService(store, checkout, new FakeCodeAnalyser(), () => new Date(), undefined, null);
 

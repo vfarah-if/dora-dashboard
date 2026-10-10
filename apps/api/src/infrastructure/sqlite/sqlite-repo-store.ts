@@ -5,6 +5,7 @@ import type {
   BoardAccess,
   BoardColumn,
   CodeSnapshot,
+  CoverageSnapshot,
   CrawlStatus,
   DeployRun,
   IssueLabelRules,
@@ -18,9 +19,10 @@ import type {
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
-import type { IssueState, RepoCounts, RepoStore } from "../../interfaces/repo-store.js";
+import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
 
 const SNAPSHOTS_KEPT = 10;
+const COVERAGE_SNAPSHOTS_KEPT = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS repos (
@@ -68,6 +70,12 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
   analysed_at TEXT NOT NULL,
   data TEXT NOT NULL,
   PRIMARY KEY (repo_id, analysed_at)
+);
+CREATE TABLE IF NOT EXISTS coverage_snapshots (
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  fetched_at TEXT NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (repo_id, fetched_at)
 );
 CREATE TABLE IF NOT EXISTS tracker_spaces (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -537,11 +545,59 @@ export class SqliteRepoStore implements RepoStore {
     return this.snapshotWhere(repoId, "AND json_extract(data, '$.error') IS NULL");
   }
 
+  codeSnapshotKeys(repoId: number): SnapshotKeys {
+    return this.snapshotKeys("code_snapshots", "analysed_at", repoId);
+  }
+
+  coverageSnapshotKeys(repoId: number): SnapshotKeys {
+    return this.snapshotKeys("coverage_snapshots", "fetched_at", repoId);
+  }
+
+  /** The newest timestamp, and the newest among rows with no error, without returning any row's `data`. */
+  private snapshotKeys(table: string, column: string, repoId: number): SnapshotKeys {
+    const pick = (condition: string) => {
+      const row = this.db
+        .prepare(`SELECT ${column} AS key FROM ${table} WHERE repo_id = ? ${condition} ORDER BY ${column} DESC LIMIT 1`)
+        .get(repoId) as unknown as { key: string } | undefined;
+      return row?.key ?? null;
+    };
+    return { latest: pick(""), good: pick("AND json_extract(data, '$.error') IS NULL") };
+  }
+
   private snapshotWhere(repoId: number, condition: string): CodeSnapshot | null {
     const row = this.db
       .prepare(`SELECT data FROM code_snapshots WHERE repo_id = ? ${condition} ORDER BY analysed_at DESC LIMIT 1`)
       .get(repoId) as unknown as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as CodeSnapshot) : null;
+  }
+
+  saveCoverageSnapshot(repoId: number, snapshot: CoverageSnapshot): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO coverage_snapshots (repo_id, fetched_at, data) VALUES (?, ?, ?)")
+      .run(repoId, snapshot.fetchedAt, JSON.stringify(snapshot));
+    // As for code snapshots: the newest few, and always the newest good one.
+    this.db
+      .prepare(
+        `DELETE FROM coverage_snapshots WHERE repo_id = ?
+           AND fetched_at NOT IN (SELECT fetched_at FROM coverage_snapshots WHERE repo_id = ? ORDER BY fetched_at DESC LIMIT ${COVERAGE_SNAPSHOTS_KEPT})
+           AND fetched_at NOT IN (SELECT fetched_at FROM coverage_snapshots WHERE repo_id = ? AND json_extract(data, '$.error') IS NULL ORDER BY fetched_at DESC LIMIT 1)`,
+      )
+      .run(repoId, repoId, repoId);
+  }
+
+  latestCoverageSnapshot(repoId: number): CoverageSnapshot | null {
+    return this.coverageWhere(repoId, "");
+  }
+
+  latestSuccessfulCoverageSnapshot(repoId: number): CoverageSnapshot | null {
+    return this.coverageWhere(repoId, "AND json_extract(data, '$.error') IS NULL");
+  }
+
+  private coverageWhere(repoId: number, condition: string): CoverageSnapshot | null {
+    const row = this.db
+      .prepare(`SELECT data FROM coverage_snapshots WHERE repo_id = ? ${condition} ORDER BY fetched_at DESC LIMIT 1`)
+      .get(repoId) as unknown as { data: string } | undefined;
+    return row ? (JSON.parse(row.data) as CoverageSnapshot) : null;
   }
 
   /** Spaces no repository links to any more are dropped, with their work items, so no unreachable data lingers. */

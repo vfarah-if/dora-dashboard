@@ -1,4 +1,6 @@
 import type {
+  CodeDetailReport,
+  CodeHealthReport,
   IssueLabelDefaults,
   IssueAgeingItem,
   IssueRef,
@@ -597,4 +599,241 @@ export function issueLabelDefaults(): IssueLabelDefaults {
     },
     limits: { names: 30, length: 100 },
   };
+}
+
+const codeHotspot = {
+  file: "src/pipeline.ts",
+  language: "TypeScript",
+  name: "runPipeline",
+  startLine: 42,
+  ccn: 31,
+  nloc: 90,
+  params: 3,
+};
+
+// 120 source functions. Above 10 there are 12 + 6 = 18 (15%), above 20 there are 6 (5%). 12 functions (10%) are
+// over 60 lines. Nine of 36 qualifying pull requests changed tests (25%).
+export function codeHealthReport(overrides: Partial<CodeHealthReport> = {}): CodeHealthReport {
+  return { ...codeHealthBase, ...overrides };
+}
+
+const codeHealthBase: CodeHealthReport = {
+  status: "ok",
+  commitSha: "abcdef0123456789",
+  analysedAt: "2026-03-01T10:00:00Z",
+  thresholds: { warn: 10, high: 20 },
+  functions: 120,
+  nloc: 4500,
+  ccn: { mean: 4.2, median: 3, p75: 6, max: 31 },
+  shareAboveWarn: 0.15,
+  shareAboveHigh: 0.05,
+  countAboveWarn: 18,
+  countAboveHigh: 6,
+  mostComplex: codeHotspot,
+  distribution: [
+    { label: "1 to 5", min: 1, max: 5, count: 80 },
+    { label: "6 to 10", min: 6, max: 10, count: 22 },
+    { label: "11 to 20", min: 11, max: 20, count: 12 },
+    { label: "21 to 50", min: 21, max: 50, count: 6 },
+    { label: "Over 50", min: 51, max: null, count: 0 },
+  ],
+  languages: [{ language: "TypeScript", functions: 120, nloc: 4500, meanCcn: 4.2 }],
+  hotspots: [
+    { ...codeHotspot, shape: "dense", lineShare: 0.02, onPath: true },
+    {
+      ...codeHotspot,
+      name: "parse",
+      file: "src/util.ts",
+      startLine: 7,
+      ccn: 22,
+      nloc: 40,
+      shape: "branching",
+      lineShare: 0.01,
+      onPath: false,
+    },
+  ],
+  nextBand: {
+    from: "medium",
+    to: "high",
+    functions: [codeHotspot, { ...codeHotspot, name: "parse", file: "src/util.ts", startLine: 7, ccn: 22, nloc: 40 }],
+    lines: 130,
+  },
+  partlyMeasured: [],
+  unmeasuredFiles: 0,
+  tests: { functions: 35, nloc: 2000 },
+  maintainability: { linesAboveWarn: 0.08, linesAboveHigh: 0.04, longFunctions: 0.1, manyParams: 0.01 },
+  testing: { testRatio: 0.45, prsWithTests: { share: 0.25, withTests: 9, total: 36 }, ciRunsTests: true, coverageFloor: 40 },
+  hygiene: {
+    linterConfigured: true,
+    formatterConfigured: true,
+    ciRunsLinter: false,
+    ciChecksFormat: true,
+    onlyEditorconfig: false,
+    linters: ["eslint"],
+    formatters: ["prettier"],
+    ciLinters: [],
+    ciFormatChecks: ["prettier"],
+  },
+  tooling: {
+    linters: ["eslint"],
+    formatters: ["prettier"],
+    weakFormatters: ["editorconfig"],
+    ciLinters: [],
+    ciFormatChecks: ["prettier"],
+    ciRunsTests: true,
+    coverageFloor: 40,
+  },
+  longestFunction: { ...codeHotspot, name: "RepoCharts", file: "src/RepoCharts.tsx", startLine: 30, ccn: 12, nloc: 233 },
+  grade: {
+    overall: { part: "maintainability", band: "low", check: "longFunctions", reason: "unused" },
+    maintainability: { band: "low", check: "longFunctions", reason: "unused" },
+    testing: { band: "medium", check: "prsWithTests", reason: "unused" },
+    hygiene: { band: "high", check: "ciLinter", reason: "unused" },
+  },
+  checks: [
+    { part: "maintainability", check: "linesAboveWarn", value: 0.03, band: "elite", count: 3, limits: false },
+    { part: "maintainability", check: "linesAboveHigh", value: 0.04, band: "medium", count: 6, limits: false },
+    { part: "maintainability", check: "longFunctions", value: 0.1, band: "low", count: 12, limits: true },
+    { part: "maintainability", check: "manyParams", value: 0.005, band: "elite", count: 1, limits: false },
+    { part: "testing", check: "testRatio", value: 0.45, band: "high", met: false, limits: false },
+    { part: "testing", check: "prsWithTests", value: 0.25, band: "medium", met: false, count: 9, total: 36, limits: true },
+    { part: "testing", check: "ciRunsTests", value: true, band: "elite", met: true, limits: false },
+    { part: "testing", check: "coverageFloor", value: 40, band: "high", met: false, limits: false },
+    { part: "hygiene", check: "linter", value: true, met: true, detail: ["eslint"], limits: false },
+    { part: "hygiene", check: "formatter", value: true, met: true, detail: ["prettier"], limits: false },
+    { part: "hygiene", check: "ciLinter", value: false, met: false, detail: [], limits: true },
+    { part: "hygiene", check: "ciFormat", value: true, met: true, detail: ["prettier"], limits: false },
+  ],
+};
+
+const detailFunction = {
+  file: "apps/api/src/pipeline.ts",
+  language: "TypeScript",
+  name: "runPipeline",
+  startLine: 42,
+  endLine: 130,
+  ccn: 31,
+  nloc: 90,
+  params: 3,
+};
+
+/**
+ * A detailed code analysis of acme/widgets in workspace mode, with two packages, no coverage and no failures.
+ * Package apps/api holds 90 of the 130 source lines, so it comes first.
+ */
+export function codeDetailReport(overrides: Partial<CodeDetailReport> = {}): CodeDetailReport {
+  const figures = codeHealthReport();
+  return {
+    status: "ok",
+    commitSha: "abcdef0123456789",
+    analysedAt: "2026-03-01T10:00:00Z",
+    thresholds: { warn: 10, high: 20 },
+    mode: "workspace",
+    areas: {
+      total: 2,
+      items: [
+        {
+          path: "apps/api",
+          kind: "workspace",
+          files: 12,
+          functions: 40,
+          nloc: 90,
+          meanCcn: 5.5,
+          countAboveWarn: 4,
+          countAboveHigh: 1,
+          nlocAboveWarn: 41,
+          testFunctions: 10,
+          testNloc: 300,
+          coverage: null,
+          maintainabilityBand: "low",
+        },
+        {
+          path: "packages/core",
+          kind: "workspace",
+          files: 5,
+          functions: 20,
+          nloc: 40,
+          meanCcn: 2.5,
+          countAboveWarn: 0,
+          countAboveHigh: 0,
+          nlocAboveWarn: 0,
+          testFunctions: 8,
+          testNloc: 200,
+          coverage: null,
+          maintainabilityBand: "elite",
+        },
+      ],
+    },
+    area: null,
+    scope: {
+      functions: figures.functions,
+      nloc: figures.nloc,
+      ccn: figures.ccn,
+      shareAboveWarn: figures.shareAboveWarn,
+      shareAboveHigh: figures.shareAboveHigh,
+      countAboveWarn: figures.countAboveWarn,
+      countAboveHigh: figures.countAboveHigh,
+      mostComplex: detailFunction,
+      distribution: figures.distribution,
+      languages: figures.languages,
+      hotspots: figures.hotspots,
+      nextBand: figures.nextBand,
+      tests: figures.tests,
+      maintainability: figures.maintainability,
+      maintainabilityChecks: figures.checks.filter((c) => c.part === "maintainability"),
+      maintainabilityBand: "low",
+      longestFunction: figures.longestFunction,
+      partlyMeasured: [],
+    },
+    functions: {
+      total: 1,
+      items: [{ ...detailFunction, area: "apps/api", coverage: null }],
+    },
+    coverage: { status: "none" },
+    ...overrides,
+  };
+}
+
+/** The `ok` coverage view for acme/widgets, measured on the analysed commit. Override any part of it. */
+export function coverageOk(overrides: Record<string, unknown> = {}): CodeDetailReport["coverage"] {
+  return {
+    status: "ok",
+    source: {
+      artefacts: ["coverage-api"],
+      runId: 77,
+      commitSha: "abcdef0123456789",
+      fetchedAt: "2026-03-01T12:00:00Z",
+      createdAt: "2026-02-28T16:30:00Z",
+      formats: ["lcov"],
+    },
+    otherCommit: false,
+    lineDetail: true,
+    lines: { covered: 80, total: 100, share: 0.8 },
+    branches: { covered: 15, total: 30, share: 0.5 },
+    functions: { covered: 9, total: 10, share: 0.9 },
+    files: { inReport: 10, matched: 9, unmatched: 1 },
+    leastCovered: {
+      total: 1,
+      items: [
+        {
+          path: "apps/api/src/pipeline.ts",
+          area: "apps/api",
+          lines: { covered: 10, total: 40 },
+          uncovered: {
+            total: 3,
+            items: [
+              [12, 30],
+              [44, 44],
+            ],
+          },
+        },
+      ],
+    },
+    notInReport: { total: 1, items: [{ path: "apps/api/src/orphan.ts", area: "apps/api", functions: 3, nloc: 25 }] },
+    untestedComplex: {
+      total: 1,
+      items: [{ ...detailFunction, area: "apps/api", coverage: 0 }],
+    },
+    ...overrides,
+  } as CodeDetailReport["coverage"];
 }

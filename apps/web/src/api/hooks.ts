@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  CodeDetailResponse,
   CodeHealthResponse,
   IssueLabelDefaults,
   IssueLabelRules,
@@ -80,6 +81,7 @@ export const queryKeys = {
   report: (id: number, range: ReportRange, excludeAuthors: readonly string[]) => ["report", id, range, excludeAuthors] as const,
   codeHealth: (id: number, range?: CodeHealthRange) =>
     range ? (["code-health", id, range] as const) : (["code-health", id] as const),
+  codeDetail: (id: number, area: string | null) => ["code-detail", id, area] as const,
   compare: (ids: readonly number[], range: ReportRange) => ["compare", ids, range] as const,
   reviewQueue: (ids: readonly number[], names = false) => ["review-queue", ids, names] as const,
   health: ["health"] as const,
@@ -205,19 +207,24 @@ export function useCompare(ids: readonly number[], range: ReportRange) {
   });
 }
 
-/**
- * The latest code health for a repository. `range` only decides which merged pull requests count towards the
- * testing figure. It refetches when a crawl of that repository finishes.
- */
-export function useCodeHealth(id: number, range: CodeHealthRange = { from: null, to: null }) {
+/** Invalidates a repository's queries of one kind when a crawl of it finishes, so the figures come from the new snapshot. */
+export function useRefetchAfterCrawl(id: number, kind: "code-health" | "code-detail") {
   const client = useQueryClient();
   const repos = useRepos();
   const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
   const wasCrawling = useRef(false);
   useEffect(() => {
-    if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: queryKeys.codeHealth(id) });
+    if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: [kind, id] });
     wasCrawling.current = crawling;
-  }, [client, crawling, id]);
+  }, [client, crawling, id, kind]);
+}
+
+/**
+ * The latest code health for a repository. `range` only decides which merged pull requests count towards the
+ * testing figure. It refetches when a crawl of that repository finishes.
+ */
+export function useCodeHealth(id: number, range: CodeHealthRange = { from: null, to: null }) {
+  useRefetchAfterCrawl(id, "code-health");
   const params = new URLSearchParams();
   if (range.from) params.set("from", range.from);
   if (range.to) params.set("to", range.to);
@@ -225,6 +232,24 @@ export function useCodeHealth(id: number, range: CodeHealthRange = { from: null,
   return useQuery({
     queryKey: queryKeys.codeHealth(id, { from: range.from, to: range.to }),
     queryFn: ({ signal }) => apiRequest<CodeHealthResponse>(withQuery(`/api/repos/${id}/code-health`, query), { signal }),
+    enabled: isRecordId(id),
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * The detailed code analysis of a repository: areas, the figures for one area and measured coverage. `area` is the
+ * path of an area, or null for the whole repository. Nothing in it depends on the date range. It refetches when a
+ * crawl of that repository finishes.
+ */
+export function useCodeDetail(id: number, area: string | null) {
+  useRefetchAfterCrawl(id, "code-detail");
+  const params = new URLSearchParams();
+  if (area) params.set("area", area);
+  return useQuery({
+    queryKey: queryKeys.codeDetail(id, area),
+    queryFn: ({ signal }) =>
+      apiRequest<CodeDetailResponse>(withQuery(`/api/repos/${id}/code-detail`, params.toString()), { signal }),
     enabled: isRecordId(id),
     placeholderData: keepPreviousData,
   });

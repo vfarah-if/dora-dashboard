@@ -61,6 +61,35 @@ describe("measureSource: decision points", () => {
     expect(only("src/panel.ts", source)).toMatchObject({ name: "onClick", startLine: 3, ccn: 2, nloc: 3 });
   });
 
+  it("records the line a function ends on, however it is written", () => {
+    const source = lines(
+      "export function a() {",
+      "  return 1;",
+      "}",
+      "",
+      "const b = (x: number) =>",
+      "  x + 1;",
+      "",
+      "class K {",
+      "  m() {",
+      "    return 2;",
+      "  }",
+      "}",
+      "const c = () => 3;",
+    );
+    expect(measureSource("src/a.ts", source).functions.map((f) => [f.name, f.startLine, f.endLine])).toEqual([
+      ["a", 1, 3],
+      ["b", 5, 6],
+      ["m", 9, 11],
+      ["c", 13, 13],
+    ]);
+  });
+
+  it("starts a decorated method after its decorator but ends it at its closing brace", () => {
+    const source = lines("class Panel {", "  @Input()", "  set value(v: number) {", "    this.v = v;", "  }", "}");
+    expect(only("src/panel.ts", source)).toMatchObject({ startLine: 3, endLine: 5 });
+  });
+
   it("ignores branches outside any function", () => {
     expect(measureSource("src/a.ts", "if (a) b();\nconst c = a ? 1 : 2;").functions).toEqual([]);
   });
@@ -339,10 +368,19 @@ describe("measureSource: files lizard misreads", () => {
     expect(complete).toBe(true);
     expect(functions).toEqual([
       // 1 + || + the ternary = 3, over lines 1 to 4.
-      { file: "src/Grid.tsx", language: "TypeScript", name: "Tile", startLine: 1, ccn: 3, nloc: 4, params: 1 },
+      { file: "src/Grid.tsx", language: "TypeScript", name: "Tile", startLine: 1, endLine: 4, ccn: 3, nloc: 4, params: 1 },
       // 1 + if = 2, over lines 6 to 9.
-      { file: "src/Grid.tsx", language: "TypeScript", name: "Grid", startLine: 6, ccn: 2, nloc: 4, params: 1 },
-      { file: "src/Grid.tsx", language: "TypeScript", name: "map callback", startLine: 8, ccn: 1, nloc: 1, params: 1 },
+      { file: "src/Grid.tsx", language: "TypeScript", name: "Grid", startLine: 6, endLine: 9, ccn: 2, nloc: 4, params: 1 },
+      {
+        file: "src/Grid.tsx",
+        language: "TypeScript",
+        name: "map callback",
+        startLine: 8,
+        endLine: 8,
+        ccn: 1,
+        nloc: 1,
+        params: 1,
+      },
     ]);
   });
 

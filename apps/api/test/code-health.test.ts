@@ -318,6 +318,7 @@ describe("parseLizardCsv", () => {
       language: "TypeScript",
       name: "add",
       startLine: 10,
+      endLine: 15,
       ccn: 2,
       nloc: 5,
       params: 1,
@@ -327,6 +328,7 @@ describe("parseLizardCsv", () => {
       language: "Python",
       name: "say",
       startLine: 3,
+      endLine: 16,
       ccn: 9,
       nloc: 12,
       params: 3,
@@ -336,8 +338,8 @@ describe("parseLizardCsv", () => {
   it("tolerates commas and the unescaped quotes lizard emits inside quoted fields", () => {
     const parsed = parseLizardCsv(csv, "/work/clone");
 
-    expect(parsed[2]).toMatchObject({ name: "weird, name", language: "Go" });
-    expect(parsed[3]).toMatchObject({ name: 'say "hi"', language: "Ruby" });
+    expect(parsed[2]).toMatchObject({ name: "weird, name", language: "Go", startLine: 1, endLine: 4 });
+    expect(parsed[3]).toMatchObject({ name: 'say "hi"', language: "Ruby", startLine: 1, endLine: 3 });
   });
 
   it("skips blank and malformed rows", () => {
@@ -365,7 +367,7 @@ describe("LizardAnalyser", () => {
     });
 
     expect((await analyser.analyse("/work/clone")).functions).toEqual([
-      { file: "a.ts", language: "TypeScript", name: "add", startLine: 1, ccn: 2, nloc: 5, params: 1 },
+      { file: "a.ts", language: "TypeScript", name: "add", startLine: 1, endLine: 6, ccn: 2, nloc: 5, params: 1 },
     ]);
     expect(calls[0]).toEqual({
       file: "lizard",
