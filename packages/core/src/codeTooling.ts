@@ -164,6 +164,18 @@ function commandsOf(line: string): string[] {
   return splitCommands(text).filter((command) => command && !/^(?:echo|printf)\b/.test(command) && !INSTALL.test(command));
 }
 
+/** The quote still open after `ch`: the same quote closes it, and either quote opens one when none is open. */
+function quoteAfter(quote: string, ch: string): string {
+  if (quote) return ch === quote ? "" : quote;
+  return ch === '"' || ch === "'" ? ch : "";
+}
+
+/** True when the character at `i` ends a command: `;`, `|`, or the first `&` of `&&`. */
+function endsCommand(text: string, i: number): boolean {
+  const ch = text[i];
+  return ch === ";" || ch === "|" || (ch === "&" && text[i + 1] === "&");
+}
+
 /** Splits on `&&`, `||`, `;` and `|`, but not inside quotes, so `echo "a && b"` stays one command. */
 function splitCommands(text: string): string[] {
   const commands: string[] = [];
@@ -171,10 +183,8 @@ function splitCommands(text: string): string[] {
   let quote = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]!;
-    if (quote) quote = ch === quote ? "" : quote;
-    else if (ch === '"' || ch === "'") quote = ch;
-    const separator = !quote && (ch === ";" || ch === "|" || (ch === "&" && text[i + 1] === "&"));
-    if (!separator) {
+    quote = quoteAfter(quote, ch);
+    if (quote || !endsCommand(text, i)) {
       current += ch;
       continue;
     }

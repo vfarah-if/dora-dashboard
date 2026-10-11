@@ -224,14 +224,7 @@ export class GitHubProvider implements SourceProvider {
   ) {}
 
   async fetchPullRequestPage(token: string, owner: string, name: string, cursor: string | null): Promise<PullRequestPage> {
-    let page: GqlPage;
-    try {
-      page = await this.pullRequestPage(token, owner, name, cursor, PAGE_SIZE);
-    } catch (error) {
-      // A page of 50 pull requests, each with reviews and files, can time out at the gateway. A smaller page usually fits.
-      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
-      page = await this.pullRequestPage(token, owner, name, cursor, RETRY_PAGE_SIZE);
-    }
+    const page = await this.pullRequestPage(token, owner, name, cursor);
     const connection = page.data?.repository?.pullRequests;
     // Errors come first: a rate limit also leaves the repository null, and must not be reported as not found. Only
     // GitHub's own NOT_FOUND on the `repository` path says the repository is missing or invisible.
@@ -251,11 +244,20 @@ export class GitHubProvider implements SourceProvider {
     };
   }
 
-  private pullRequestPage(token: string, owner: string, name: string, cursor: string | null, first: number) {
-    return request<GqlPage>(this.http, token, `${API}/graphql`, {
-      method: "POST",
-      body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
-    });
+  /** A page of pull requests, asked for again at a smaller size when the gateway gives up on the first. */
+  private async pullRequestPage(token: string, owner: string, name: string, cursor: string | null): Promise<GqlPage> {
+    const ask = (first: number) =>
+      request<GqlPage>(this.http, token, `${API}/graphql`, {
+        method: "POST",
+        body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
+      });
+    try {
+      return await ask(PAGE_SIZE);
+    } catch (error) {
+      // A page of pull requests, each with reviews and files, can time out at the gateway. A smaller page usually fits.
+      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
+      return ask(RETRY_PAGE_SIZE);
+    }
   }
 
   /**

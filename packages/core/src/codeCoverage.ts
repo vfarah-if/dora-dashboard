@@ -239,8 +239,13 @@ function trusted(file: CoverageFileReport): CoverageFileReport | null {
   if (branches) out.branches = branches;
   if (functions) out.functions = functions;
   const ranges = file.ranges;
-  if (
-    ranges &&
+  if (ranges && rangesAgree(ranges, lines)) out.ranges = { covered: ranges.covered, uncovered: ranges.uncovered };
+  return out;
+}
+
+/** True when both lists hold whole, ascending line numbers whose lines agree with the line count. */
+function rangesAgree(ranges: LineRanges, lines: CoverageCount): boolean {
+  return (
     Array.isArray(ranges.covered) &&
     Array.isArray(ranges.uncovered) &&
     ranges.covered.every(isLineRange) &&
@@ -248,10 +253,7 @@ function trusted(file: CoverageFileReport): CoverageFileReport | null {
     lineCount(ranges.covered) === lines.covered &&
     lineCount(ranges.uncovered) === lines.total - lines.covered &&
     lineCount([...ranges.covered, ...ranges.uncovered]) === lines.total
-  ) {
-    out.ranges = { covered: ranges.covered, uncovered: ranges.uncovered };
-  }
-  return out;
+  );
 }
 
 // ---- alignment ----------------------------------------------------------------------------------------------
@@ -373,7 +375,13 @@ function nearestKnown(variant: readonly string[], index: KnownIndex): string[][]
   return best;
 }
 
-type Votes = Map<string, { transform: Transform; count: number }>;
+/** A transform and how many paths voted for it. */
+interface Ballot {
+  transform: Transform;
+  count: number;
+}
+
+type Votes = Map<string, Ballot>;
 
 function vote(votes: Votes, keys: Set<string>, transform: Transform): void {
   const key = keyOf(transform);
@@ -382,6 +390,80 @@ function vote(votes: Votes, keys: Set<string>, transform: Transform): void {
   const existing = votes.get(key);
   if (existing) existing.count++;
   else votes.set(key, { transform, count: 1 });
+}
+
+/** A path held back because its best matches are too many files to enumerate, with the votes of the entry it belongs to. */
+interface HeldPath {
+  variant: string[];
+  keys: Set<string>;
+  candidates: string[][];
+}
+
+/** One vote for the transform onto each candidate that shares a trailing segment with `variant`. */
+function voteForCandidates(votes: Votes, keys: Set<string>, variant: readonly string[], candidates: readonly string[][]): void {
+  for (const known of candidates) {
+    const transform = transformBetween(variant, known);
+    if (transform) vote(votes, keys, transform);
+  }
+}
+
+/** The paths that name few files vote; those that name more than `MAX_NAME_CANDIDATES` are held back and returned. */
+function voteByName(entries: readonly Entry[], index: KnownIndex, votes: Votes): HeldPath[] {
+  const held: HeldPath[] = [];
+  for (const entry of entries) {
+    const keys = new Set<string>();
+    for (const variant of entry.variants) {
+      const candidates = nearestKnown(variant, index);
+      if (candidates.length > MAX_NAME_CANDIDATES) held.push({ variant, keys, candidates });
+      else voteForCandidates(votes, keys, variant, candidates);
+    }
+  }
+  return held;
+}
+
+/** When nothing else voted, the held-back paths vote for their first candidates and at most one transform stands. */
+function voteHeldAlone(votes: Votes, held: readonly HeldPath[], dir: string): void {
+  for (const { variant, keys, candidates } of held) {
+    voteForCandidates(votes, keys, variant, candidates.slice(0, MAX_NAME_CANDIDATES));
+  }
+  // One path alone, or several whose votes tie across packages, would pick an arbitrary package among the files that
+  // share a name, so only a single leader backed by at least two paths stands, with the directory hint as tie-break.
+  const top = [...votes.values()].reduce((most, v) => Math.max(most, v.count), 0);
+  let leaders = top >= 2 ? [...votes.entries()].filter(([, v]) => v.count === top) : [];
+  if (leaders.length > 1) leaders = leaders.filter(([, v]) => hintScore(dir, v.transform.add) > 0);
+  const keep = leaders.length === 1 ? leaders[0]![0] : null;
+  for (const key of [...votes.keys()]) if (key !== keep) votes.delete(key);
+}
+
+/** The held-back paths vote only for the leading transforms, by a single lookup each. */
+function voteHeldForLeaders(votes: Votes, held: readonly HeldPath[], index: KnownIndex): void {
+  const leaders = [...votes.values()]
+    .sort((a, b) => b.count - a.count || (keyOf(a.transform) < keyOf(b.transform) ? -1 : 1))
+    .slice(0, MAX_NAME_CANDIDATES);
+  for (const { variant, keys } of held) {
+    for (const leader of leaders) {
+      const target = apply(variant, leader.transform);
+      if (target !== "" && index.paths.has(target)) vote(votes, keys, leader.transform);
+    }
+  }
+}
+
+const segmentsAdded = (t: Transform) => (t.add === "" ? 0 : t.add.split("/").length);
+
+/** True when `challenger` beats `best`: more votes, then the directory hint, then fewer segments added, then the lower key. */
+function beats(challenger: Ballot, best: Ballot, dir: string): boolean {
+  if (challenger.count !== best.count) return challenger.count > best.count;
+  const byHint = hintScore(dir, challenger.transform.add) - hintScore(dir, best.transform.add);
+  const byAdded = segmentsAdded(best.transform) - segmentsAdded(challenger.transform);
+  const byKey = keyOf(challenger.transform) < keyOf(best.transform) ? 1 : -1;
+  return (byHint || byAdded || byKey) > 0;
+}
+
+/** The ballot that beats every other, or null when there are none. */
+function winningBallot(votes: Votes, dir: string): Ballot | null {
+  let best: Ballot | null = null;
+  for (const ballot of votes.values()) if (!best || beats(ballot, best, dir)) best = ballot;
+  return best;
 }
 
 /**
@@ -396,59 +478,32 @@ function vote(votes: Votes, keys: Set<string>, transform: Transform): void {
  */
 function bestTransform(entries: readonly Entry[], index: KnownIndex, dir: string): Transform | null {
   const votes: Votes = new Map();
-  const held: { variant: string[]; keys: Set<string>; candidates: string[][] }[] = [];
-  for (const entry of entries) {
-    const keys = new Set<string>();
-    for (const variant of entry.variants) {
-      const candidates = nearestKnown(variant, index);
-      if (candidates.length > MAX_NAME_CANDIDATES) {
-        held.push({ variant, keys, candidates });
-        continue;
-      }
-      for (const known of candidates) {
-        const transform = transformBetween(variant, known);
-        if (transform) vote(votes, keys, transform);
-      }
-    }
-  }
-  if (votes.size === 0) {
-    for (const { variant, keys, candidates } of held) {
-      for (const known of candidates.slice(0, MAX_NAME_CANDIDATES)) {
-        const transform = transformBetween(variant, known);
-        if (transform) vote(votes, keys, transform);
-      }
-    }
-    // One path alone, or several whose votes tie across packages, would pick an arbitrary package among the files that
-    // share a name, so only a single leader backed by at least two paths stands, with the directory hint as tie-break.
-    const top = [...votes.values()].reduce((most, v) => Math.max(most, v.count), 0);
-    let leaders = top >= 2 ? [...votes.entries()].filter(([, v]) => v.count === top) : [];
-    if (leaders.length > 1) leaders = leaders.filter(([, v]) => hintScore(dir, v.transform.add) > 0);
-    const keep = leaders.length === 1 ? leaders[0]![0] : null;
-    for (const key of [...votes.keys()]) if (key !== keep) votes.delete(key);
-  } else if (held.length > 0) {
-    const leaders = [...votes.values()]
-      .sort((a, b) => b.count - a.count || (keyOf(a.transform) < keyOf(b.transform) ? -1 : 1))
-      .slice(0, MAX_NAME_CANDIDATES);
-    for (const { variant, keys } of held) {
-      for (const leader of leaders) {
-        const target = apply(variant, leader.transform);
-        if (target !== "" && index.paths.has(target)) vote(votes, keys, leader.transform);
-      }
-    }
-  }
-  let best: { transform: Transform; count: number } | null = null;
-  const segmentsAdded = (t: Transform) => (t.add === "" ? 0 : t.add.split("/").length);
-  for (const vote of votes.values()) {
-    if (!best) best = vote;
-    else if (vote.count !== best.count) best = vote.count > best.count ? vote : best;
-    else {
-      const byHint = hintScore(dir, vote.transform.add) - hintScore(dir, best.transform.add);
-      const byAdded = segmentsAdded(best.transform) - segmentsAdded(vote.transform);
-      const byKey = keyOf(vote.transform) < keyOf(best.transform) ? 1 : -1;
-      if ((byHint || byAdded || byKey) > 0) best = vote;
-    }
-  }
+  const held = voteByName(entries, index, votes);
+  if (votes.size === 0) voteHeldAlone(votes, held, dir);
+  else if (held.length > 0) voteHeldForLeaders(votes, held, index);
+  const best = winningBallot(votes, dir);
   return best ? best.transform : null;
+}
+
+/** True when the report's layout places the path under the root it strips, so the path is not a file here. */
+const placedByLayout = (variant: readonly string[], winner: Transform | null) =>
+  winner !== null && winner.strip !== "" && apply(variant, winner) !== "";
+
+/**
+ * Adds to `found` the known files that end with `variant`, then the tails of `variant` that are known files, and stops
+ * as soon as `found` holds a second file.
+ */
+function addSuffixMatches(found: Set<string>, variant: readonly string[], index: KnownIndex, winner: Transform | null): void {
+  for (const known of index.suffixes.get(variant.join("/")) ?? []) {
+    found.add(known.join("/"));
+    if (found.size > 1) return;
+  }
+  if (placedByLayout(variant, winner)) return;
+  for (let k = 2; k < variant.length; k++) {
+    const tail = variant.slice(variant.length - k).join("/");
+    if (index.paths.has(tail)) found.add(tail);
+    if (found.size > 1) return;
+  }
 }
 
 /**
@@ -464,16 +519,8 @@ function uniqueSuffixMatch(variants: readonly string[][], index: KnownIndex, win
   const found = new Set<string>();
   for (const variant of variants) {
     if (variant.length === 0) continue;
-    for (const known of index.suffixes.get(variant.join("/")) ?? []) {
-      found.add(known.join("/"));
-      if (found.size > 1) return null;
-    }
-    if (winner && winner.strip !== "" && apply(variant, winner) !== "") continue;
-    for (let k = 2; k < variant.length; k++) {
-      const tail = variant.slice(variant.length - k).join("/");
-      if (index.paths.has(tail)) found.add(tail);
-      if (found.size > 1) return null;
-    }
+    addSuffixMatches(found, variant, index, winner);
+    if (found.size > 1) return null;
   }
   return found.size === 1 ? [...found][0]! : null;
 }
@@ -489,6 +536,43 @@ function bestFormatPerDirectory(reports: readonly CoverageReport[]): CoverageRep
   return reports.filter((r) => rank(r) === best.get(`${r.artefact}\u0000${r.dir}`));
 }
 
+/** The report's trusted files that are not tests, each with the variants of its path to try. */
+function entriesOf(report: CoverageReport): Entry[] {
+  return report.files
+    .map((raw) => trusted(raw))
+    .filter((file): file is CoverageFileReport => file !== null)
+    .map((file) => ({ raw: file.path, variants: variantsOf(file.path, report.sourceRoots), file }))
+    .filter((entry) => !isTestPath(entry.variants[entry.variants.length - 1]!.join("/")));
+}
+
+/** The repository path for an entry: where the report's winning layout puts it, otherwise its unique suffix match. */
+function targetOf(entry: Entry, winner: Transform | null, index: KnownIndex): string | null {
+  const viaVote = winner ? entry.variants.map((v) => apply(v, winner)).find((p) => index.paths.has(p)) : undefined;
+  return viaVote ?? uniqueSuffixMatch(entry.variants, index, winner);
+}
+
+/** The files placed so far, by repository path, and the paths that matched none, by report and path. */
+interface Placed {
+  files: Map<string, AlignedFile>;
+  unmatched: Map<string, string[][]>;
+}
+
+/**
+ * Puts an entry's figures on its repository file, merged with what an earlier report said about that file, or records
+ * the entry as unmatched when it has no target. A target that is a test file is dropped.
+ */
+function place(placed: Placed, report: CoverageReport, entry: Entry, target: string | null): void {
+  if (!target) {
+    const path = entry.variants[entry.variants.length - 1]!.join("/");
+    placed.unmatched.set(`${report.artefact}\u0000${report.dir}\u0000${path}`, entry.variants);
+    return;
+  }
+  if (isTestPath(target)) return;
+  const candidate: AlignedFile = { ...entry.file, path: target, format: report.format, artefact: report.artefact };
+  const existing = placed.files.get(target);
+  placed.files.set(target, existing ? mergeFile(existing, candidate) : candidate);
+}
+
 /**
  * Maps the paths in coverage reports onto this repository's files.
  *
@@ -501,37 +585,18 @@ function bestFormatPerDirectory(reports: readonly CoverageReport[]): CoverageRep
  * are dropped.
  */
 export function alignCoverage(reports: readonly CoverageReport[], knownFiles: readonly string[]): AlignedCoverage {
-  const known = new Set(knownFiles);
-  const index = indexKnown(known);
-
-  const files = new Map<string, AlignedFile>();
+  const index = indexKnown(new Set(knownFiles));
   // Unmatched entries are told apart by where the report sits as well as by path: the same relative path in two report
   // directories can be two different files.
-  const unmatched = new Map<string, string[][]>();
+  const placed: Placed = { files: new Map(), unmatched: new Map() };
   const winners: Transform[] = [];
   for (const report of bestFormatPerDirectory(reports)) {
-    const entries: Entry[] = report.files
-      .map((raw) => trusted(raw))
-      .filter((file): file is CoverageFileReport => file !== null)
-      .map((file) => ({ raw: file.path, variants: variantsOf(file.path, report.sourceRoots), file }))
-      .filter((entry) => !isTestPath(entry.variants[entry.variants.length - 1]!.join("/")));
+    const entries = entriesOf(report);
     const winner = bestTransform(entries, index, report.dir);
     if (winner) winners.push(winner);
-    for (const entry of entries) {
-      const viaVote = winner ? entry.variants.map((v) => apply(v, winner)).find((p) => known.has(p)) : undefined;
-      const target = viaVote ?? uniqueSuffixMatch(entry.variants, index, winner);
-      if (!target || isTestPath(target)) {
-        if (!target) {
-          const path = entry.variants[entry.variants.length - 1]!.join("/");
-          unmatched.set(`${report.artefact}\u0000${report.dir}\u0000${path}`, entry.variants);
-        }
-        continue;
-      }
-      const candidate: AlignedFile = { ...entry.file, path: target, format: report.format, artefact: report.artefact };
-      const existing = files.get(target);
-      files.set(target, existing ? mergeFile(existing, candidate) : candidate);
-    }
+    for (const entry of entries) place(placed, report, entry, targetOf(entry, winner, index));
   }
+  const { files, unmatched } = placed;
   // A path that one report could not place is not a stray file when another report's layout puts it on a file that
   // is already matched.
   let strays = 0;

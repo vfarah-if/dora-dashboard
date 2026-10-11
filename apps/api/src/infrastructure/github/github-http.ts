@@ -74,10 +74,33 @@ const deliveryTimeout = (cause: unknown) =>
 
 const tooLarge = () => new UpstreamError("The artefact is larger than the limit for reading coverage", 502);
 
+/** Whether a response declares, in a `content-length` that is a finite number, a body larger than `maxBytes`. */
+function declaresMoreThan(response: Response, maxBytes: number): boolean {
+  const declared = Number(response.headers.get("content-length"));
+  return Boolean(response.headers.get("content-length")) && Number.isFinite(declared) && declared > maxBytes;
+}
+
+/** The error a failed read of a body becomes: an application error such as the cap stands, anything else is mapped. */
+function readFailure(error: unknown): Error {
+  if (error instanceof AppError) return error;
+  if (error instanceof Error && error.name === "TimeoutError") return deliveryTimeout(error);
+  return new UpstreamError("The download of the artefact was interrupted", 502, { cause: error });
+}
+
+/** The chunks of a body joined into one array of `size` bytes. */
+function joined(chunks: Uint8Array[], size: number): Uint8Array {
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
 /** Reads a body into memory, refusing at once when it declares more than `maxBytes` and stopping when it streams more. */
 async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
-  const declared = Number(response.headers.get("content-length"));
-  if (response.headers.get("content-length") && Number.isFinite(declared) && declared > maxBytes) {
+  if (declaresMoreThan(response, maxBytes)) {
     await response.body?.cancel();
     throw tooLarge();
   }
@@ -95,17 +118,9 @@ async function readCapped(response: Response, maxBytes: number): Promise<Uint8Ar
     }
   } catch (error) {
     await reader.cancel().catch(() => undefined);
-    if (error instanceof AppError) throw error;
-    if (error instanceof Error && error.name === "TimeoutError") throw deliveryTimeout(error);
-    throw new UpstreamError("The download of the artefact was interrupted", 502, { cause: error });
+    throw readFailure(error);
   }
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
+  return joined(chunks, size);
 }
 
 /** The four bytes of an IPv4 address as a number list, or null when `host` is not one. */
@@ -114,14 +129,25 @@ const ipv4Parts = (host: string): number[] | null => {
   return host.split(".").map(Number);
 };
 
-const isPrivateIpv4 = ([a, b]: number[]): boolean =>
-  a === 0 ||
-  a === 127 ||
-  a === 10 ||
-  (a === 100 && b! >= 64 && b! <= 127) ||
-  (a === 172 && b! >= 16 && b! <= 31) ||
-  (a === 192 && b === 168) ||
-  (a === 169 && b === 254);
+/** First octets whose whole /8 is internal: this network (0.0.0.0/8), private (10.0.0.0/8) and loopback (127.0.0.0/8). */
+const INTERNAL_IPV4_BLOCKS = new Set([0, 10, 127]);
+
+/**
+ * The second octets, inclusive, that are internal under a first octet: shared address space (100.64.0.0/10),
+ * link-local (169.254.0.0/16) and private (172.16.0.0/12, 192.168.0.0/16).
+ */
+const INTERNAL_IPV4_RANGES = new Map<number, readonly [number, number]>([
+  [100, [64, 127]],
+  [169, [254, 254]],
+  [172, [16, 31]],
+  [192, [168, 168]],
+]);
+
+const isPrivateIpv4 = ([a, b]: number[]): boolean => {
+  if (INTERNAL_IPV4_BLOCKS.has(a!)) return true;
+  const range = INTERNAL_IPV4_RANGES.get(a!);
+  return range !== undefined && b! >= range[0] && b! <= range[1];
+};
 
 /** The eight 16-bit groups of an IPv6 address, or null when `host` is not one. */
 function ipv6Groups(host: string): number[] | null {
@@ -141,6 +167,41 @@ function ipv6Groups(host: string): number[] | null {
   return [...before, ...new Array<number>(gap).fill(0), ...after];
 }
 
+/** Whether the IPv4 address held in two IPv6 groups, `hi` then `lo`, is internal. */
+const carriesPrivateIpv4 = (hi: number, lo: number): boolean => isPrivateIpv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
+
+/**
+ * IPv6 ranges that carry an IPv4 address and are judged by it: the groups an address in the range starts with, and the
+ * index of the first of the two groups that hold the IPv4 address.
+ */
+const IPV4_CARRIERS: readonly { prefix: readonly number[]; at: number }[] = [
+  // IPv4-compatible and IPv4-mapped forms.
+  { prefix: [0, 0, 0, 0, 0, 0], at: 6 },
+  { prefix: [0, 0, 0, 0, 0, 0xffff], at: 6 },
+  // NAT64 (64:ff9b::/96) and SIIT (::ffff:0:0:0/96) carry the IPv4 address in the last 32 bits, 6to4 (2002::/16) in
+  // bits 16 to 48.
+  { prefix: [0x64, 0xff9b, 0, 0, 0, 0], at: 6 },
+  { prefix: [0, 0, 0, 0, 0xffff, 0], at: 6 },
+  { prefix: [0x2002], at: 1 },
+];
+
+const startsWith = (groups: number[], prefix: readonly number[]): boolean => prefix.every((group, i) => groups[i] === group);
+
+/** The unspecified address (::) and loopback (::1). */
+const isUnspecifiedOrLoopback = (groups: number[]): boolean => startsWith(groups, [0, 0, 0, 0, 0, 0, 0]) && groups[7]! <= 1;
+
+/** Unique local (fc00::/7), link-local (fe80::/10) and the deprecated site-local range (fec0::/10), by the first group. */
+const isInternalIpv6Range = (first: number): boolean =>
+  (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0;
+
+/** Whether an IPv6 address, as its groups, is unspecified, loopback or internal, or carries an internal IPv4 address. */
+function isForbiddenIpv6(groups: number[]): boolean {
+  if (isUnspecifiedOrLoopback(groups)) return true;
+  const carrier = IPV4_CARRIERS.find(({ prefix }) => startsWith(groups, prefix));
+  if (carrier) return carriesPrivateIpv4(groups[carrier.at]!, groups[carrier.at + 1]!);
+  return isInternalIpv6Range(groups[0]!);
+}
+
 /**
  * Whether a redirect may not be followed to `hostname`: `localhost`, and any IP literal that is loopback, private,
  * link-local or unspecified, including an IPv4 address written as IPv6. A name that merely resolves to such an address
@@ -154,21 +215,8 @@ export function isForbiddenHost(hostname: string): boolean {
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   const v4 = ipv4Parts(host);
   if (v4) return isPrivateIpv4(v4);
-  const g = ipv6Groups(host);
-  if (!g) return false;
-  const embedded = (hi: number, lo: number) => isPrivateIpv4([hi >> 8, hi & 255, lo >> 8, lo & 255]);
-  const [g0, g1, g2, g3, g4, g5, g6, g7] = g as [number, number, number, number, number, number, number, number];
-  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && (g5 === 0xffff || g5 === 0)) {
-    // Unspecified, loopback and IPv4-mapped or compatible forms, which are judged by the IPv4 address they carry.
-    if (g5 === 0 && g6 === 0 && g7 <= 1) return true;
-    return embedded(g6, g7);
-  }
-  // NAT64 (64:ff9b::/96) and SIIT (::ffff:0:0/96) carry the IPv4 address in the last 32 bits, 6to4 (2002::/16) in bits 16 to 48.
-  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return embedded(g6, g7);
-  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0xffff && g5 === 0) return embedded(g6, g7);
-  if (g0 === 0x2002) return embedded(g1, g2);
-  // Unique local (fc00::/7), link-local (fe80::/10) and the deprecated site-local range (fec0::/10).
-  return (g0 & 0xfe00) === 0xfc00 || (g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0;
+  const groups = ipv6Groups(host);
+  return groups !== null && isForbiddenIpv6(groups);
 }
 
 /** Sends a download request, mapping a failure to reach the host to a message that carries no address. */
@@ -179,6 +227,23 @@ async function fetchOnce(http: Fetch, url: string, headers: Record<string, strin
     if (error instanceof Error && error.name === "TimeoutError") throw deliveryTimeout(error);
     throw new UpstreamError("GitHub could not be reached to download the artefact", 502, { cause: error });
   }
+}
+
+/** Where a redirect from `url` to `location` leads, refused unless it is https and names no address that is not allowed. */
+function redirectTarget(location: string | null, url: string): URL {
+  let target: URL | null;
+  try {
+    target = location ? new URL(location, url) : null;
+  } catch {
+    target = null;
+  }
+  if (!target || target.protocol !== "https:") {
+    throw new UpstreamError("GitHub redirected the artefact download somewhere that is not https", 502);
+  }
+  if (isForbiddenHost(target.hostname)) {
+    throw new UpstreamError("GitHub redirected the artefact download to an address that is not allowed", 502);
+  }
+  return target;
 }
 
 /**
@@ -202,18 +267,7 @@ export async function download(http: Fetch, token: string, url: string, maxBytes
 
   const location = first.headers.get("location");
   await first.body?.cancel();
-  let target: URL | null;
-  try {
-    target = location ? new URL(location, url) : null;
-  } catch {
-    target = null;
-  }
-  if (!target || target.protocol !== "https:") {
-    throw new UpstreamError("GitHub redirected the artefact download somewhere that is not https", 502);
-  }
-  if (isForbiddenHost(target.hostname)) {
-    throw new UpstreamError("GitHub redirected the artefact download to an address that is not allowed", 502);
-  }
+  const target = redirectTarget(location, url);
 
   const second = await fetchOnce(http, target.toString(), { "User-Agent": "dora-dashboard" });
   if (second.status === 404 || second.status === 410) throw new NotFoundError("The artefact has expired or been deleted");

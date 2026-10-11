@@ -83,6 +83,39 @@ type CallbackFailure =
   | "misconfigured";
 
 /**
+ * What the callback's checks decided: why it is turned away, with the `jira` outcome the page shows (default `error`)
+ * and detail for the log, or the code to connect with.
+ */
+type CallbackCheck =
+  { refused: CallbackFailure; outcome?: string; detail?: Record<string, unknown> } | { refused: null; code: string };
+
+/** Runs the callback's checks in this order and stops at the first that fails. A state that passes is used up. */
+function checkCallback(
+  { code, state, error }: { code?: string; state?: string; error?: string },
+  issued: { state: string; issuedAt: number } | null,
+  now: () => number,
+  useState: (state: string) => boolean,
+): CallbackCheck {
+  if (error) {
+    return {
+      refused: "provider_error",
+      outcome: error === "access_denied" ? "denied" : "error",
+      detail: { providerError: error },
+    };
+  }
+  if (!code) return { refused: "missing_code" };
+  // No cookie means it never arrived or has gone: consent took over 10 minutes, the API restarted, or the browser
+  // used a different host from WEB_ORIGIN.
+  if (!state || !issued) return { refused: "state_missing", outcome: "expired" };
+  if (now() - issued.issuedAt > STATE_MAX_AGE_SECONDS * 1000) return { refused: "state_lapsed", outcome: "expired" };
+  // Two tabs each starting consent leave the later cookie standing, so the earlier tab's return is stale, not wrong.
+  if (!sameSecret(issued.state, state)) return { refused: "state_mismatch", outcome: "expired" };
+  // A captured cookie and state could otherwise be replayed until the cookie's issue time lapses.
+  if (!useState(state)) return { refused: "state_reused" };
+  return { refused: null, code };
+}
+
+/**
  * The state cookie holds the state and when it was issued, signed together. The browser drops the cookie after
  * 10 minutes, but a captured copy would not lapse on its own, so the callback checks the signed issue time too.
  */
@@ -141,19 +174,24 @@ function navigationErrorHandler(config: Config) {
   };
 }
 
-export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): void {
-  const { guard, config, authorisation, auth, tracker, spaceReports } = deps;
-  const now = deps.now ?? Date.now;
-  const navigationErrors = navigationErrorHandler(config);
+/** Remembers each state used, so a replay of one is refused. */
+function stateUser(now: () => number): (state: string) => boolean {
   // States already used, with when each stops being worth remembering; the cookie that carried one lives 10 minutes.
   const usedStates = new Map<string, number>();
-  const useState = (state: string): boolean => {
+  return (state) => {
     const at = now();
     for (const [seen, expires] of usedStates) if (expires <= at) usedStates.delete(seen);
     if (usedStates.has(state)) return false;
     usedStates.set(state, at + STATE_MAX_AGE_SECONDS * 1000);
     return true;
   };
+}
+
+export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): void {
+  const { guard, config, authorisation, auth, tracker, spaceReports } = deps;
+  const now = deps.now ?? Date.now;
+  const navigationErrors = navigationErrorHandler(config);
+  const useState = stateUser(now);
   const sameOrigin = requireSameOrigin(config);
   const cookie = {
     path: "/",
@@ -195,7 +233,6 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
       const returnTo = safeReturnTo(signedCookie(request, RETURN_COOKIE)) ?? DEFAULT_RETURN;
       reply.clearCookie(STATE_COOKIE, { path: "/" });
       reply.clearCookie(RETURN_COOKIE, { path: "/" });
-      const { code, state, error } = request.query;
       const failed = (reason: CallbackFailure, outcome = "error", detail?: Record<string, unknown>) => {
         // Never the code, the state or a token; only why it failed. A refused app credential is the operator's to fix.
         // A failure that is no AppError is a bug in this dashboard, not something Atlassian or the person did.
@@ -204,18 +241,10 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
         log.call(request.log, { reason, ...detail }, "jira connection failed");
         return reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", outcome)}`);
       };
-      if (error) return failed("provider_error", error === "access_denied" ? "denied" : "error", { providerError: error });
-      if (!code) return failed("missing_code");
-      // No cookie means it never arrived or has gone: consent took over 10 minutes, the API restarted, or the browser
-      // used a different host from WEB_ORIGIN.
-      if (!state || !issued) return failed("state_missing", "expired");
-      if (now() - issued.issuedAt > STATE_MAX_AGE_SECONDS * 1000) return failed("state_lapsed", "expired");
-      // Two tabs each starting consent leave the later cookie standing, so the earlier tab's return is stale, not wrong.
-      if (!sameSecret(issued.state, state)) return failed("state_mismatch", "expired");
-      // A captured cookie and state could otherwise be replayed until the cookie's issue time lapses.
-      if (!useState(state)) return failed("state_reused");
+      const check = checkCallback(request.query, issued, now, useState);
+      if (check.refused !== null) return failed(check.refused, check.outcome, check.detail);
       try {
-        await auth.connect(request.session!.login, code);
+        await auth.connect(request.session!.login, check.code);
       } catch (err) {
         if (err instanceof TrackerConfigurationError) return failed("misconfigured", "misconfigured", { err });
         return failed("exchange_failed", "error", { err });

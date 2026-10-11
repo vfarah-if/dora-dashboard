@@ -299,6 +299,15 @@ export class SqliteRepoStore implements RepoStore {
    * as it was, so a column added later has to be added here. Each step checks first, so running it twice is safe.
    */
   private migrate(): void {
+    this.addIssueColumns();
+    this.addSnapshotFailedColumns();
+    const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string; notnull: number }[];
+    // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
+    if (!columns.some((c) => c.name === "people")) this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN people TEXT");
+    this.migrateBoardColumn(columns);
+  }
+
+  private addIssueColumns(): void {
     const repoColumns = this.db.prepare("PRAGMA table_info(repos)").all() as unknown as { name: string }[];
     // Issues read from the code host (ADR 0028): whether they are switched on, where the next read resumes, the
     // label override and why the last read failed. Null means no issue read has recorded them yet.
@@ -310,6 +319,9 @@ export class SqliteRepoStore implements RepoStore {
     ] as const) {
       if (!repoColumns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE repos ADD COLUMN ${column} ${type}`);
     }
+  }
+
+  private addSnapshotFailedColumns(): void {
     // Whether a snapshot is a failed attempt, kept beside its JSON so that picking the newest good one never parses
     // the data. Null only on rows written before the column existed, which the backfill sets once.
     for (const table of ["code_snapshots", "coverage_snapshots"] as const) {
@@ -317,9 +329,9 @@ export class SqliteRepoStore implements RepoStore {
       if (!snapshotColumns.some((c) => c.name === "failed")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN failed INTEGER`);
       this.db.exec(`UPDATE ${table} SET failed = (json_extract(data, '$.error') IS NOT NULL) WHERE failed IS NULL`);
     }
-    const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string; notnull: number }[];
-    // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
-    if (!columns.some((c) => c.name === "people")) this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN people TEXT");
+  }
+
+  private migrateBoardColumn(columns: { name: string; notnull: number }[]): void {
     // How the board was read; null means not read yet. An earlier build of this column was NOT NULL and defaulted to
     // 'none', which said "no board" of spaces never read. That column is set aside, its `read` and `forbidden` kept
     // (a `none` may only be the default), and dropped once copied. Existing rows become `read` when they hold columns,

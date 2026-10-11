@@ -34,6 +34,10 @@ function unreadableMessage(messages: readonly string[]): string {
   return `${first.replace(/\.$/, "")}; ${others} other coverage file${others === 1 ? "" : "s"} could not be read`;
 }
 
+/** Why a read that found no report says so: an unreadable file, else files that list nothing, else no known format. */
+const noReportMessage = (unreadable: readonly string[], empty: number): string =>
+  unreadable.length > 0 ? unreadableMessage(unreadable) : empty > 0 ? EMPTY_REPORTS : NO_REPORTS;
+
 /**
  * Reads a repository's measured test coverage from the artefacts its CI published, into the store, for display only
  * (ADR 0030). It runs on every crawl while code analysis is on, whether or not the clone is skipped, so coverage that
@@ -65,15 +69,7 @@ export class CoverageService {
       }
       if (!force && this.alreadyRead(repo.id, run)) return;
 
-      const reports: CoverageReport[] = [];
-      const unreadable: string[] = [];
-      let empty = 0;
-      for (const artefact of run.artefacts) {
-        const contents = await this.source.readArtefact(token, repo.owner, repo.name, artefact);
-        reports.push(...contents.reports);
-        unreadable.push(...contents.unreadable);
-        empty += contents.empty;
-      }
+      const { reports, unreadable, empty } = await this.readArtefacts(token, repo, run);
       if (reports.length > 0) {
         this.store.saveCoverageSnapshot(repo.id, {
           ...this.stamp(),
@@ -84,16 +80,35 @@ export class CoverageService {
         });
         return;
       }
-      const error = unreadable.length > 0 ? unreadableMessage(unreadable) : empty > 0 ? EMPTY_REPORTS : NO_REPORTS;
+      const error = noReportMessage(unreadable, empty);
       this.log.warn({ repoId: repo.id, runId: run.runId, artefactIds: ids(run) }, "coverage artefacts held no usable report");
       this.fail(repo.id, run, error);
     } catch (err) {
-      if (err instanceof UnauthorisedError) throw err;
-      const context = { err, repoId: repo.id, runId: run?.runId ?? null, artefactIds: ids(run) };
-      if (err instanceof AppError) this.log.warn(context, "coverage step failed");
-      else this.log.error(context, "coverage step failed unexpectedly");
-      this.fail(repo.id, run, err instanceof AppError ? err.message : UNEXPECTED_FAILURE);
+      this.handleReadFailure(err, repo, run);
     }
+  }
+
+  /** Reads each artefact of the run in turn, gathering what they hold. */
+  private async readArtefacts(token: string, repo: Repo, run: CoverageRun) {
+    const reports: CoverageReport[] = [];
+    const unreadable: string[] = [];
+    let empty = 0;
+    for (const artefact of run.artefacts) {
+      const contents = await this.source.readArtefact(token, repo.owner, repo.name, artefact);
+      reports.push(...contents.reports);
+      unreadable.push(...contents.unreadable);
+      empty += contents.empty;
+    }
+    return { reports, unreadable, empty };
+  }
+
+  /** Logs a failed read and stores it. Only a rejected credential is rethrown. */
+  private handleReadFailure(err: unknown, repo: Repo, run: CoverageRun | null): void {
+    if (err instanceof UnauthorisedError) throw err;
+    const context = { err, repoId: repo.id, runId: run?.runId ?? null, artefactIds: ids(run) };
+    if (err instanceof AppError) this.log.warn(context, "coverage step failed");
+    else this.log.error(context, "coverage step failed unexpectedly");
+    this.fail(repo.id, run, err instanceof AppError ? err.message : UNEXPECTED_FAILURE);
   }
 
   /** Nothing was found. An incomplete search says so; a complete one drops an earlier failure that no longer holds. */

@@ -13,6 +13,12 @@ const MAX_LOGGED_FILES = 20;
 // Declaration files hold types only, and minified files are build output, as lizard's `*.min.js` exclusion assumes.
 const SKIPPED = /\.d\.[mc]?ts$|\.min\.[mc]?js$/i;
 
+/** Why a file was measured only in part, or null when it was measured in full. */
+function problemWith(measured: SourceMeasurement | null): string | null {
+  if (!measured) return "larger than 2 MiB or could not be read";
+  return measured.complete ? null : (measured.problem ?? "could not be read in full");
+}
+
 /**
  * Measures JavaScript and TypeScript in process with `@babel/parser`, which reads JSX, decorators and every TypeScript
  * construct that made lizard lose function boundaries (ADR 0025). The source is parsed, never run.
@@ -56,8 +62,8 @@ export class BabelAnalyser implements CodeAnalyser {
       const measured = source === null ? null : this.measure(path, source);
       // A loop rather than push(...all): a generated file can hold more functions than a call can take as arguments.
       for (const fn of measured?.functions ?? []) functions.push(fn);
-      if (!measured) partlyMeasured.push({ path, problem: "larger than 2 MiB or could not be read" });
-      else if (!measured.complete) partlyMeasured.push({ path, problem: measured.problem ?? "could not be read in full" });
+      const problem = problemWith(measured);
+      if (problem !== null) partlyMeasured.push({ path, problem });
     }
     if (partlyMeasured.length > 0) {
       this.log.info(

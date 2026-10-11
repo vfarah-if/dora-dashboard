@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
 import { ValidationError } from "../../core/errors.js";
@@ -18,6 +18,18 @@ export interface ReaderLimits {
 }
 
 const DEFAULT_LIMITS: ReaderLimits = { maxEntries: 200_000, maxDepth: 30 };
+
+/** The entries of a directory under `root`, or null when it cannot be read: that costs its own files, not the whole listing. */
+async function entriesOf(root: string, relative: string): Promise<Dirent[] | null> {
+  try {
+    return await readdir(relative ? resolve(root, relative) : root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+}
+
+/** The listing path of an entry, relative to the listed directory and always with `/`. */
+const childPath = (relative: string, name: string): string => (relative ? `${relative}/${name}` : name);
 
 /** Reads files with `node:fs` only. Nothing is executed, symbolic links are never followed. */
 export class FsWorkspaceReader implements WorkspaceReader {
@@ -39,18 +51,14 @@ export class FsWorkspaceReader implements WorkspaceReader {
         cutBy ??= `depth of ${this.limits.maxDepth} directories`;
         return;
       }
-      let entries;
-      try {
-        entries = await readdir(relative ? resolve(root, relative) : root, { withFileTypes: true });
-      } catch {
-        return; // An unreadable directory costs its own files, not the whole listing.
-      }
+      const entries = await entriesOf(root, relative);
+      if (entries === null) return;
       for (const entry of entries) {
         if (++visited > this.limits.maxEntries) {
           cutBy ??= `${this.limits.maxEntries} entries`;
           return;
         }
-        const path = relative ? `${relative}/${entry.name}` : entry.name;
+        const path = childPath(relative, entry.name);
         // Dirent reports the link itself, not its target, so a symlink is neither a file nor a directory here.
         if (entry.isFile()) found.push(path);
         else if (entry.isDirectory() && !SKIPPED_DIRECTORIES.has(entry.name)) await walk(path, depth + 1);

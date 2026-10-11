@@ -243,6 +243,30 @@ function quoteJql(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** The search for a space's issues, most recently updated first, from a day before `updatedSince` when there is one. */
+function searchJql(spaceKey: string, updatedSince: string | null): string {
+  let jql = `project = ${quoteJql(spaceKey)}`;
+  if (updatedSince !== null) {
+    const since = Date.parse(updatedSince);
+    if (Number.isNaN(since)) throw new ValidationError("updatedSince is not a date");
+    jql += ` AND updated >= "${jqlDate(since - DAY_MS)}"`;
+  }
+  return jql + " ORDER BY updated DESC";
+}
+
+/**
+ * Display names by account id for the people assigned to `issues`. Names are returned beside the items, never on them,
+ * so a work item cannot leak one by accident. Email is not requested.
+ */
+function assigneeNames(issues: RawIssue[]): Record<string, string> {
+  const people: Record<string, string> = {};
+  for (const i of issues) {
+    const a = i.fields.assignee;
+    if (a?.accountId && a.displayName) people[a.accountId] = a.displayName;
+  }
+  return people;
+}
+
 /** Jira Cloud through the Atlassian API gateway (ADR 0020). Token handling stays with the caller. */
 export class JiraCloudProvider implements WorkItemProvider {
   readonly kind = "jira-cloud";
@@ -375,13 +399,7 @@ export class JiraCloudProvider implements WorkItemProvider {
     spaceKey: string,
     { updatedSince, cursor }: WorkItemPageRequest,
   ): Promise<WorkItemPage> {
-    let jql = `project = ${quoteJql(spaceKey)}`;
-    if (updatedSince !== null) {
-      const since = Date.parse(updatedSince);
-      if (Number.isNaN(since)) throw new ValidationError("updatedSince is not a date");
-      jql += ` AND updated >= "${jqlDate(since - DAY_MS)}"`;
-    }
-    jql += " ORDER BY updated DESC";
+    const jql = searchJql(spaceKey, updatedSince);
 
     const found = await this.api<{ issues?: RawIssue[]; nextPageToken?: string | null; isLast?: boolean }>(
       token,
@@ -400,12 +418,7 @@ export class JiraCloudProvider implements WorkItemProvider {
       this.categoriesFor(token, siteId, spaceKey),
       this.statusChanges(token, siteId, issues),
     ]);
-    // Names are returned beside the items, never on them, so a work item cannot leak one by accident. Email is not requested.
-    const people: Record<string, string> = {};
-    for (const i of issues) {
-      const a = i.fields.assignee;
-      if (a?.accountId && a.displayName) people[a.accountId] = a.displayName;
-    }
+    const people = assigneeNames(issues);
     return {
       items: issues.map((i) => this.toWorkItem(i, spaceKey, byId, changes.get(i.id) ?? [])),
       nextCursor,

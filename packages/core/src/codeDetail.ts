@@ -253,6 +253,44 @@ export interface PreparedCodeDetail {
 const current = <T extends CoverageSnapshot>(snapshot: T | null): T | null =>
   snapshot && snapshot.version === COVERAGE_SNAPSHOT_VERSION ? snapshot : null;
 
+type AreaOf = (file: string) => string | null;
+
+/** The functions grouped by area, and the language of each file that has one. */
+function groupFunctions(functions: readonly FunctionMetrics[], areaOf: AreaOf) {
+  const functionsByArea = new Map<string | null, FunctionMetrics[]>();
+  const languageOf = new Map<string, string>();
+  for (const f of functions) {
+    bucket(functionsByArea, areaOf(f.file)).push(f);
+    languageOf.set(f.file, f.language);
+  }
+  return { functionsByArea, languageOf };
+}
+
+/** How many source files, code files that are not tests, each area holds. */
+function sourceFilesByArea(files: readonly string[], areaOf: AreaOf): Map<string | null, number> {
+  const counts = new Map<string | null, number>();
+  for (const file of files) {
+    if (!isCodeFile(file) || isTestPath(file)) continue;
+    const key = areaOf(file);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** The matched files grouped by area, and each area and language that a matched file shows a report covers. */
+function groupAligned(aligned: AlignedCoverage | null, areaOf: AreaOf, languageOf: ReadonlyMap<string, string>) {
+  const alignedByArea = new Map<string | null, AlignedFile[]>();
+  // A file is blamed only where a report plainly covers its kind of code: the same area and language as a matched file.
+  const coveredKinds = new Set<string>();
+  for (const f of aligned?.files.values() ?? []) {
+    const key = areaOf(f.path);
+    bucket(alignedByArea, key).push(f);
+    const language = languageOf.get(f.path);
+    if (language) coveredKinds.add(`${key}\u0000${language}`);
+  }
+  return { alignedByArea, coveredKinds };
+}
+
 /** Decides the areas, summarises each and aligns the coverage. Pure: the snapshots carry their own timestamps. */
 export function prepareCodeDetail(
   snapshot: CodeSnapshot,
@@ -266,29 +304,11 @@ export function prepareCodeDetail(
   const { mode, areas } = codeAreas(files, snapshot.files ? snapshot.layout : null);
   const areaOf = areaLocator(areas);
 
-  const functionsByArea = new Map<string | null, FunctionMetrics[]>();
-  const languageOf = new Map<string, string>();
-  for (const f of snapshot.functions) {
-    bucket(functionsByArea, areaOf(f.file)).push(f);
-    languageOf.set(f.file, f.language);
-  }
-  const sourceFilesIn = new Map<string | null, number>();
-  for (const file of files) {
-    if (!isCodeFile(file) || isTestPath(file)) continue;
-    const key = areaOf(file);
-    sourceFilesIn.set(key, (sourceFilesIn.get(key) ?? 0) + 1);
-  }
+  const { functionsByArea, languageOf } = groupFunctions(snapshot.functions, areaOf);
+  const sourceFilesIn = sourceFilesByArea(files, areaOf);
 
   const aligned = coverage.good ? alignCoverage(coverage.good.reports, files) : null;
-  const alignedByArea = new Map<string | null, AlignedFile[]>();
-  // A file is blamed only where a report plainly covers its kind of code: the same area and language as a matched file.
-  const coveredKinds = new Set<string>();
-  for (const f of aligned?.files.values() ?? []) {
-    const key = areaOf(f.path);
-    bucket(alignedByArea, key).push(f);
-    const language = languageOf.get(f.path);
-    if (language) coveredKinds.add(`${key}\u0000${language}`);
-  }
+  const { alignedByArea, coveredKinds } = groupAligned(aligned, areaOf, languageOf);
 
   const summaries: AreaSummary[] = areas.map(({ path, kind }) => {
     const fns = codeFigures(functionsByArea.get(path) ?? [], thresholds);
@@ -399,6 +419,13 @@ function coverageView(prepared: PreparedCodeDetail, sourceFns: readonly Function
   return latest?.error ? { ...view, lastError: { message: latest.error, fetchedAt: latest.fetchedAt } } : view;
 }
 
+/** The requested area when it is one of the areas, otherwise the whole repository. */
+function scopeOf(prepared: PreparedCodeDetail, requested: string | null): Scope {
+  const { areaOf } = prepared;
+  const selected = requested !== null && prepared.areaPaths.has(requested) ? requested : null;
+  return { selected, inScope: (file: string) => selected === null || areaOf(file) === selected };
+}
+
 /**
  * Builds the detailed code analysis report for the whole repository or one area of a prepared snapshot. Pure and
  * cheap enough to run on every request. Coverage never changes a figure that `codeHealth` returns, and a path in a
@@ -407,8 +434,7 @@ function coverageView(prepared: PreparedCodeDetail, sourceFns: readonly Function
 export function codeDetail(prepared: PreparedCodeDetail, options: CodeDetailOptions = {}): CodeDetailReport {
   const { snapshot, thresholds, areaOf } = prepared;
   const requested = options.area ? options.area : null;
-  const selected = requested !== null && prepared.areaPaths.has(requested) ? requested : null;
-  const inScope = (file: string) => selected === null || areaOf(file) === selected;
+  const { selected, inScope } = scopeOf(prepared, requested);
 
   const scopeFunctions = selected === null ? snapshot.functions : (prepared.functionsByArea.get(selected) ?? []);
   const sourceInScope = scopeFunctions.filter((f) => !isTestPath(f.file));

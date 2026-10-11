@@ -54,6 +54,25 @@ function LabelField({ id, label, value, placeholder, limits, onChange }: LabelFi
   );
 }
 
+/** What the last save did: the error if it failed, or which of save and reset went through. */
+function SaveNotices({ update, done }: { update: ReturnType<typeof useUpdateIssueLabels>; done: "saved" | "reset" | null }) {
+  const text = copy.issueLabels;
+  return (
+    <>
+      {update.isError && (
+        <p className="notice notice-error" role="alert">
+          {errorText(update.error)}
+        </p>
+      )}
+      {update.isSuccess && done && (
+        <p className="notice notice-info" role="status">
+          {done === "saved" ? text.saved : text.resetDone}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Empty placeholders, used until the defaults have loaded. */
 const NO_PLACEHOLDERS = inputsFromRules(null);
 
@@ -142,16 +161,7 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
         ))}
       </fieldset>
       <p className="field-hint">{text.applyNote}</p>
-      {update.isError && (
-        <p className="notice notice-error" role="alert">
-          {errorText(update.error)}
-        </p>
-      )}
-      {update.isSuccess && done && (
-        <p className="notice notice-info" role="status">
-          {done === "saved" ? text.saved : text.resetDone}
-        </p>
-      )}
+      <SaveNotices update={update} done={done} />
       <div className="form-actions">
         <button type="submit" className="button button-primary" disabled={update.isPending || hasProblem}>
           {update.isPending ? copy.common.saving : text.save}

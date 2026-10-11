@@ -79,36 +79,44 @@ const flowItems = (inner: string): string[] =>
     .map(unquote)
     .filter((v) => v.length > 0);
 
+/** Line `i`, cut to `MAX_LINE` characters and without its comment. */
+const lineAt = (lines: readonly string[], i: number): string => withoutComment(lines[i]!.slice(0, MAX_LINE));
+
+/** A flow sequence that opens with `rest` on line `i` and may run on over the lines after it until a `]`. */
+function flowSequence(rest: string, lines: readonly string[], i: number): string[] {
+  let flow = rest;
+  for (let j = i + 1; !flow.includes("]") && j < lines.length; j++) flow += ` ${lineAt(lines, j)}`;
+  const close = flow.indexOf("]");
+  return flowItems(flow.slice(1, close === -1 ? undefined : close)).slice(0, MAX_PATTERNS);
+}
+
+/** The items of a block sequence on the lines after line `i`, up to the first line that is neither blank nor a `- ` item. */
+function blockSequence(lines: readonly string[], i: number): string[] {
+  const found: string[] = [];
+  for (let j = i + 1; j < lines.length; j++) {
+    const item = lineAt(lines, j);
+    if (item.trim() === "") continue;
+    if (!/^\s+-/.test(item) && !/^-/.test(item)) break;
+    const value = unquote(item.replace(/^\s*-\s*/, ""));
+    if (value) found.push(value);
+    if (found.length >= MAX_PATTERNS) break;
+  }
+  return found.slice(0, MAX_PATTERNS);
+}
+
 /**
  * The `packages:` list of a pnpm workspace file, in block style (`- a`) or flow style (`[a, b]`, on one line or
  * several). It reads lines and nothing else, so no YAML parser is needed and no input can make it loop.
  */
 function fromPnpm(content: string): string[] {
   const lines = content.split(/\r?\n/, MAX_LINES);
-  const found: string[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const line = withoutComment(lines[i]!.slice(0, MAX_LINE));
-    const head = /^packages\s*:(.*)$/.exec(line);
+    const head = /^packages\s*:(.*)$/.exec(lineAt(lines, i));
     if (!head) continue;
     const rest = (head[1] ?? "").trim();
-    if (rest.startsWith("[")) {
-      let flow = rest;
-      for (let j = i + 1; !flow.includes("]") && j < lines.length; j++)
-        flow += ` ${withoutComment(lines[j]!.slice(0, MAX_LINE))}`;
-      const close = flow.indexOf("]");
-      return flowItems(flow.slice(1, close === -1 ? undefined : close)).slice(0, MAX_PATTERNS);
-    }
-    for (let j = i + 1; j < lines.length; j++) {
-      const item = withoutComment(lines[j]!.slice(0, MAX_LINE));
-      if (item.trim() === "") continue;
-      if (!/^\s+-/.test(item) && !/^-/.test(item)) break;
-      const value = unquote(item.replace(/^\s*-\s*/, ""));
-      if (value) found.push(value);
-      if (found.length >= MAX_PATTERNS) break;
-    }
-    return found.slice(0, MAX_PATTERNS);
+    return rest.startsWith("[") ? flowSequence(rest, lines, i) : blockSequence(lines, i);
   }
-  return found;
+  return [];
 }
 
 /**

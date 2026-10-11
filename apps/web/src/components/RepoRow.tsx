@@ -170,6 +170,16 @@ function RepoActions({
   );
 }
 
+function ConfigurePanels({ repo, onDone }: { repo: RepoListing; onDone: () => void }) {
+  return (
+    <>
+      <ConfigureDeploy repo={repo} onDone={onDone} />
+      <JiraSpacesPanel repoId={repo.id} />
+      {repo.issues > 0 && <IssueLabelsPanel repo={repo} />}
+    </>
+  );
+}
+
 export function RepoRow({ repo, selected, selectable, onSelect }: RepoRowProps) {
   const name = `${repo.owner}/${repo.name}`;
   const crawl = useCrawl();
@@ -222,9 +232,7 @@ export function RepoRow({ repo, selected, selectable, onSelect }: RepoRowProps) 
         onToggleConfigure={() => setConfiguring((open) => !open)}
         onRemove={confirmRemove}
       />
-      {configuring && <ConfigureDeploy repo={repo} onDone={() => setConfiguring(false)} />}
-      {configuring && <JiraSpacesPanel repoId={repo.id} />}
-      {configuring && repo.issues > 0 && <IssueLabelsPanel repo={repo} />}
+      {configuring && <ConfigurePanels repo={repo} onDone={() => setConfiguring(false)} />}
     </li>
   );
 }

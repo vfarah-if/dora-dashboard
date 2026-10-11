@@ -37,11 +37,10 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
-/** Fetches JSON from the API. Resolves undefined for a 204 and throws `ApiError` for any non-2xx status. */
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  let response: Response;
+/** Sends the request. An abort passes through untouched; any other failure to reach the API is a network `ApiError`. */
+async function send(path: string, options: RequestOptions): Promise<Response> {
   try {
-    response = await fetch(path, {
+    return await fetch(path, {
       method: options.method ?? "GET",
       credentials: "same-origin",
       headers:
@@ -55,19 +54,26 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError(0, copy.common.networkFailed);
   }
+}
+
+/** Parses a response body. An empty or (on a failed response) unreadable body is null; an unreadable 2xx throws. */
+function parseBody(text: string, response: Response): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (response.ok) throw new ApiError(response.status, copy.common.unreadableResponse);
+    return null;
+  }
+}
+
+/** Fetches JSON from the API. Resolves undefined for a 204 and throws `ApiError` for any non-2xx status. */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await send(path, options);
 
   if (response.status === 204) return undefined as T;
 
-  const text = await response.text();
-  let body: unknown = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      if (response.ok) throw new ApiError(response.status, copy.common.unreadableResponse);
-      body = null;
-    }
-  }
+  const body = parseBody(await response.text(), response);
   if (!response.ok) throw errorFrom(body, response.status);
   return body as T;
 }

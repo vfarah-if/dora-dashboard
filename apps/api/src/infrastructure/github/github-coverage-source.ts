@@ -45,6 +45,27 @@ function explainForbidden(error: unknown): unknown {
     : error;
 }
 
+type RestRun = NonNullable<RestArtefact["workflow_run"]>;
+
+/** An artefact that has not expired, has every field that is read, and is named as coverage. */
+const isLiveCoverageArtefact = (
+  artefact: RestArtefact,
+): artefact is RestArtefact & { id: number; name: string; created_at: string } =>
+  !artefact.expired &&
+  typeof artefact.id === "number" &&
+  typeof artefact.name === "string" &&
+  isCoverageArtefactName(artefact.name) &&
+  typeof artefact.created_at === "string";
+
+/** A run on the branch, with the fields that are read, whose head repository is the repository itself and not a fork. */
+const isOwnRunOn = (run: RestRun | null | undefined, branch: string): run is RestRun & { id: number; head_sha: string } =>
+  !!run &&
+  run.head_branch === branch &&
+  typeof run.id === "number" &&
+  typeof run.head_sha === "string" &&
+  run.repository_id !== undefined &&
+  run.head_repository_id === run.repository_id;
+
 /**
  * Reads coverage from the artefacts of GitHub Actions runs (`CoverageSource`). An artefact counts when its name says
  * coverage, it has not expired, its run was on the deploy branch and its run came from this repository and not a fork,
@@ -99,21 +120,7 @@ export class GitHubCoverageSource implements CoverageSource {
   /** The artefact in core's shape, or null when it is not one to read. Fields GitHub left out make it unusable. */
   private map(artefact: RestArtefact, branch: string): CoverageArtefact | null {
     const run = artefact.workflow_run;
-    if (
-      artefact.expired ||
-      typeof artefact.id !== "number" ||
-      typeof artefact.name !== "string" ||
-      !isCoverageArtefactName(artefact.name) ||
-      typeof artefact.created_at !== "string" ||
-      !run ||
-      run.head_branch !== branch ||
-      typeof run.id !== "number" ||
-      typeof run.head_sha !== "string" ||
-      run.repository_id === undefined ||
-      run.head_repository_id !== run.repository_id
-    ) {
-      return null;
-    }
+    if (!isLiveCoverageArtefact(artefact) || !isOwnRunOn(run, branch)) return null;
     return {
       id: artefact.id,
       name: artefact.name,

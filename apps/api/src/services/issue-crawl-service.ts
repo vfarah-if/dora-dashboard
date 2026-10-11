@@ -1,10 +1,32 @@
-import type { Repo } from "@dora-dashboard/core";
+import type { Repo, RepoIssue } from "@dora-dashboard/core";
 import { UpstreamError } from "../core/errors.js";
 import type { IssueProvider } from "../interfaces/issue-provider.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import { cursorBefore } from "./crawl-cursor.js";
+
+/** Refuses the page before anything from it is stored: an update time that is not a date cannot be ordered. */
+function refuseUndatedIssues(items: RepoIssue[]): void {
+  const bad = items.find((issue) => Number.isNaN(Date.parse(issue.updatedAt)));
+  if (bad) {
+    throw new UpstreamError(
+      `The code host sent issue #${bad.number} with an update time that is not a date (${JSON.stringify(bad.updatedAt.slice(0, 40))})`,
+      502,
+    );
+  }
+}
+
+/** Instants, not strings: GitHub writes `...:00Z` where the cursor is `...:00.000Z`, and the two sort differently. */
+function issuesAfter(items: RepoIssue[], stopAt: string | null): RepoIssue[] {
+  const stopMs = stopAt === null ? null : Date.parse(stopAt);
+  return stopMs === null ? items : items.filter((issue) => Date.parse(issue.updatedAt) > stopMs);
+}
+
+/** The cursor to store once a read completes: five minutes behind the newest update seen, or null when none was. */
+function cursorAfterRead(newest: string | null): string | null {
+  return newest === null ? null : cursorBefore(newest, "an issue");
+}
 
 /**
  * Reads a repository's issues from its code host into the store, as `CrawlService` does for pull requests.
@@ -42,17 +64,8 @@ export class IssueCrawlService {
         this.store.disableIssues(repo.id);
         return;
       }
-      // Refuse the page before anything from it is stored: an update time that is not a date cannot be ordered.
-      const bad = page.items.find((issue) => Number.isNaN(Date.parse(issue.updatedAt)));
-      if (bad) {
-        throw new UpstreamError(
-          `The code host sent issue #${bad.number} with an update time that is not a date (${JSON.stringify(bad.updatedAt.slice(0, 40))})`,
-          502,
-        );
-      }
-      // Instants, not strings: GitHub writes `...:00Z` where the cursor is `...:00.000Z`, and the two sort differently.
-      const stopMs = stopAt === null ? null : Date.parse(stopAt);
-      const fresh = stopMs === null ? page.items : page.items.filter((issue) => Date.parse(issue.updatedAt) > stopMs);
+      refuseUndatedIssues(page.items);
+      const fresh = issuesAfter(page.items, stopAt);
       newest ??= page.items[0]?.updatedAt ?? null;
       for (const issue of page.items) numbers.add(issue.number);
       this.store.upsertIssues(repo.id, fresh);
@@ -62,7 +75,7 @@ export class IssueCrawlService {
     } while (cursor);
 
     // Worked out first, so a bad cursor cannot leave a half-finished prune.
-    const next = newest === null ? null : cursorBefore(newest, "an issue");
+    const next = cursorAfterRead(newest);
     // Only a read that began at the start saw every issue, so only it can say which are gone.
     if (stopAt === null) this.store.removeIssuesExcept(repo.id, numbers);
     this.store.finishIssueCrawl(repo.id, next);

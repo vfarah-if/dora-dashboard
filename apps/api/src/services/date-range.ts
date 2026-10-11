@@ -20,12 +20,16 @@ export const dayOf = (at: Date): string => at.toISOString().slice(0, 10);
  * such a request would be inverted.
  */
 export function validateDateRange(range: { from?: string; to?: string }, today?: string): void {
-  for (const key of ["from", "to"] as const) {
-    const value = range[key];
-    if (value !== undefined && !DATE.test(value)) throw new ValidationError(`${key} must be a date as YYYY-MM-DD`);
-    if (value !== undefined && !isCalendarDay(value)) throw new ValidationError(`${key} must be a real calendar date`);
-    if (value !== undefined && value < EARLIEST_DATE) throw new ValidationError(`${key} must not be before ${EARLIEST_DATE}`);
-  }
+  checkDate("from", range.from);
+  checkDate("to", range.to);
   if (range.from && range.to && range.from > range.to) throw new ValidationError("from must not be after to");
   if (range.from && today !== undefined && range.from > today) throw new ValidationError("from must not be after today");
+}
+
+/** Refuses one bound that is present but malformed, impossible or before `EARLIEST_DATE`; an absent bound passes. */
+function checkDate(key: "from" | "to", value: string | undefined): void {
+  if (value === undefined) return;
+  if (!DATE.test(value)) throw new ValidationError(`${key} must be a date as YYYY-MM-DD`);
+  if (!isCalendarDay(value)) throw new ValidationError(`${key} must be a real calendar date`);
+  if (value < EARLIEST_DATE) throw new ValidationError(`${key} must not be before ${EARLIEST_DATE}`);
 }

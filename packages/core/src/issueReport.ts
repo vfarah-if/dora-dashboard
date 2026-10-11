@@ -12,7 +12,16 @@ import { classifyIssue } from "./issueLabels.js";
 import { linkIssues } from "./issueLinks.js";
 import { isBot } from "./pullRequests.js";
 import { summarise, weekRange, weekStart, type Summary } from "./stats.js";
-import type { ClosedRepoIssue, DeployRun, IssueLabelRules, PullRequest, PullRequestRef, Repo, RepoIssue } from "./types.js";
+import type {
+  ClosedRepoIssue,
+  DeployRun,
+  IssueEvent,
+  IssueLabelRules,
+  PullRequest,
+  PullRequestRef,
+  Repo,
+  RepoIssue,
+} from "./types.js";
 
 /**
  * Delivery measured from a repository's GitHub Issues (ADR 0028). Every figure counts issues other than epics; an
@@ -160,6 +169,17 @@ const zeroes = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys
 /** A time the issue was open from, to a time it stopped being open; null while it still is. */
 type Span = [start: number, end: number | null];
 
+/** The spans of an issue created at `created`, replayed from its closes and reopens in time order. */
+function replayed(created: number, events: readonly IssueEvent[]): Span[] {
+  const spans: Span[] = [[created, null]];
+  for (const event of [...events].sort((a, b) => instant(a.at) - instant(b.at))) {
+    const current = spans[spans.length - 1]!;
+    if (event.type === "closed" && current[1] === null) current[1] = instant(event.at);
+    else if (event.type === "reopened" && current[1] !== null) spans.push([instant(event.at), null]);
+  }
+  return spans;
+}
+
 /**
  * When the issue was open, replayed from its closes and reopens. Without a usable history, which is when the host held
  * older events than were read or when a closed issue has none, it was open from creation, until its final close if it
@@ -169,12 +189,7 @@ function spansOf(issue: RepoIssue): Span[] {
   const created = instant(issue.createdAt);
   const finalClose = issue.state === "closed" ? instant(issue.closedAt) : null;
   if (issue.eventsTruncated || (finalClose !== null && issue.events.length === 0)) return [[created, finalClose]];
-  const spans: Span[] = [[created, null]];
-  for (const event of [...issue.events].sort((a, b) => instant(a.at) - instant(b.at))) {
-    const current = spans[spans.length - 1]!;
-    if (event.type === "closed" && current[1] === null) current[1] = instant(event.at);
-    else if (event.type === "reopened" && current[1] !== null) spans.push([instant(event.at), null]);
-  }
+  const spans = replayed(created, issue.events);
   // A closed issue whose events hold no close after the last reopen, such as a transferred one with only a reopened
   // event, would stay open for ever; the host's own final close ends the last span.
   const last = spans[spans.length - 1]!;
