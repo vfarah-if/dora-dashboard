@@ -13,6 +13,12 @@ const MAX_LOGGED_FILES = 20;
 // Declaration files hold types only, and minified files are build output, as lizard's `*.min.js` exclusion assumes.
 const SKIPPED = /\.d\.[mc]?ts$|\.min\.[mc]?js$/i;
 
+/** Why a file was not measured in full, including one that could not be read at all, or null when it was. */
+function problemWith(measured: SourceMeasurement | null): string | null {
+  if (!measured) return "larger than 2 MiB or could not be read";
+  return measured.complete ? null : (measured.problem ?? "could not be read in full");
+}
+
 /**
  * Measures JavaScript and TypeScript in process with `@babel/parser`, which reads JSX, decorators and every TypeScript
  * construct that made lizard lose function boundaries (ADR 0025). The source is parsed, never run.
@@ -52,12 +58,12 @@ export class BabelAnalyser implements CodeAnalyser {
       if (this.now() > deadline) {
         throw new Error("Measuring JavaScript and TypeScript took longer than 10 minutes and was stopped.");
       }
-      const source = await this.reader.read(dir, path, MAX_SOURCE_BYTES);
+      const source = await this.readSource(dir, path);
       const measured = source === null ? null : this.measure(path, source);
       // A loop rather than push(...all): a generated file can hold more functions than a call can take as arguments.
       for (const fn of measured?.functions ?? []) functions.push(fn);
-      if (!measured) partlyMeasured.push({ path, problem: "larger than 2 MiB or could not be read" });
-      else if (!measured.complete) partlyMeasured.push({ path, problem: measured.problem ?? "could not be read in full" });
+      const problem = problemWith(measured);
+      if (problem !== null) partlyMeasured.push({ path, problem });
     }
     if (partlyMeasured.length > 0) {
       this.log.info(
@@ -70,5 +76,16 @@ export class BabelAnalyser implements CodeAnalyser {
       partlyMeasured: partlyMeasured.map((f) => f.path).sort(),
       unmeasuredFiles: 0,
     };
+  }
+
+  /**
+   * The text of a source file, or null when the reader has none or fails to read it. A failure costs that file, which is
+   * then listed as partly measured, never the whole analysis; it is logged here, since its message names a server path.
+   */
+  private readSource(dir: string, path: string): Promise<string | null> {
+    return this.reader.read(dir, path, MAX_SOURCE_BYTES).catch((err: unknown) => {
+      this.log.warn({ err, path }, "could not read a source file, so it was left unmeasured");
+      return null;
+    });
   }
 }

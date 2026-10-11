@@ -27,6 +27,22 @@ export interface IssueLinks {
 
 const numbersIn = (pattern: RegExp, text: string) => [...text.matchAll(pattern)].map((m) => Number(m[1]));
 
+/** The numbers a pull request names in its title, then in its branch name. */
+const numbersNamedBy = (pr: PullRequest) => [
+  ...numbersIn(TITLE_REFERENCE, pr.title),
+  ...numbersIn(BRANCH_REFERENCE, pr.headRef ?? ""),
+];
+
+/**
+ * True when the named issue is stored, was created at or before the pull request, and has no final close before the
+ * pull request was created. Only the final close is consulted, so an issue closed then and reopened since still counts.
+ */
+function openWhenCreated(issue: RepoIssue | undefined, pr: PullRequest): boolean {
+  if (!issue || instant(issue.createdAt) > instant(pr.createdAt)) return false;
+  const closedBefore = issue.state === "closed" && instant(issue.closedAt) < instant(pr.createdAt);
+  return !closedBefore;
+}
+
 /**
  * Links each issue of the repository to its pull requests. A closing reference counts when it names this repository
  * and a stored pull request, whatever the dates. A number in a title or branch counts only when it is a stored issue of
@@ -54,12 +70,8 @@ export function linkIssues(
     }
   }
   for (const pr of prs.filter((p) => !isBot(p))) {
-    const named = [...numbersIn(TITLE_REFERENCE, pr.title), ...numbersIn(BRANCH_REFERENCE, pr.headRef ?? "")];
-    for (const number of named) {
-      const issue = issueByNumber.get(number);
-      if (!issue || instant(issue.createdAt) > instant(pr.createdAt)) continue;
-      const closedBefore = issue.state === "closed" && instant(issue.closedAt) < instant(pr.createdAt);
-      if (!closedBefore) link(number, pr);
+    for (const number of numbersNamedBy(pr)) {
+      if (openWhenCreated(issueByNumber.get(number), pr)) link(number, pr);
     }
   }
 

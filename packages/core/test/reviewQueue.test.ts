@@ -72,6 +72,10 @@ describe("reviewLane", () => {
     expect(reviewLane(open({ number: 3, labels: ["holdings"] }))).toBe("no_reviewer");
   });
 
+  it("trims the spaces around an on hold label", () => {
+    expect(reviewLane(open({ number: 1, labels: ["  on hold "] }))).toBe("held");
+  });
+
   it("leaves a pull request with failing checks with its author even when approved", () => {
     const pr = open({ number: 1, checks: "failing", reviews: [review("bob", "APPROVED", "2026-09-28T09:00:00Z")] });
     expect(reviewLane(pr)).toBe("with_author");

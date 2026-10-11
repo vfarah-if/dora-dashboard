@@ -180,6 +180,16 @@ describe("detectTooling", () => {
     expect(detectTooling([pkg, workflow("echo nothing")]).ciLinters).toEqual([]);
   });
 
+  it.each([
+    ["npm ci; npx eslint .", ["eslint"]],
+    ['echo "$FILES" | xargs eslint', ["eslint"]],
+    ['echo "start" && npx eslint .', ["eslint"]],
+    ['echo "it\'s" && npx eslint .', ["eslint"]],
+    ["echo 'step && npx eslint .' > log", []],
+  ])("reads the linter in the CI command %s as %j", (run, expected) => {
+    expect(detectTooling([workflow(run)]).ciLinters).toEqual(expected);
+  });
+
   it("does not count prettier --write as a check, and ignores commented lines", () => {
     const facts = detectTooling([
       file(

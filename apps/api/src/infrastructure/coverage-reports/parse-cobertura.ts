@@ -82,6 +82,90 @@ export interface CoberturaReport {
   sourceRoots: string[];
 }
 
+const notXml = (cause?: unknown) => new UpstreamError("A coverage file in the artefact is not valid XML", 502, { cause });
+
+/** The `<coverage>` element of the text, refusing unsafe declarations, malformed XML and anything that is not Cobertura. */
+function readRoot(text: string): Node {
+  if (hasUnsafeDeclaration(text)) {
+    throw new UpstreamError(
+      "A coverage file in the artefact has an entity or internal document type declaration, which is not read",
+      502,
+    );
+  }
+  // fast-xml-parser does not validate, so a truncated report would otherwise parse as a shorter one.
+  const validity = XMLValidator.validate(text);
+  if (validity !== true) throw notXml(validity);
+  let root: unknown;
+  try {
+    // One synchronous call that cannot yield, so the yields in `parseCobertura` only help between classes. How long it
+    // can block is bounded by the size caps in `read-coverage-archive.ts` (32 MiB of XML for one file), not by this function.
+    root = (parser.parse(text) as Node).coverage;
+  } catch (error) {
+    throw notXml(error);
+  }
+  if (!isNode(root)) throw new UpstreamError("A coverage file in the artefact is not a Cobertura report", 502);
+  return root;
+}
+
+const sourceRootsOf = (root: Node): string[] =>
+  isNode(root.sources)
+    ? listOf(root.sources.source)
+        .filter((s): s is string => typeof s === "string" && s.trim() !== "")
+        .map((s) => s.trim())
+    : [];
+
+/** Adds the hit count and branch figures of each numbered line of a class; a line without both numbers is skipped. */
+function addClassLines(file: Merged, cls: Node): void {
+  for (const line of linesOf(cls.lines)) {
+    const number = whole(attr(line, "number"));
+    const hits = whole(attr(line, "hits"));
+    if (number === null || hits === null) continue;
+    addHit(file.hits, number, hits);
+    const branch = conditions(line);
+    const before = file.branches.get(number);
+    if (branch && (!before || branch.covered > before.covered)) file.branches.set(number, branch);
+  }
+}
+
+/** Adds each method of a class once, running if any copy of it, or any of its lines, ran. */
+function addClassMethods(file: Merged, cls: Node): void {
+  const methods = isNode(cls.methods) ? listOf(cls.methods.method).filter(isNode) : [];
+  for (const method of methods) {
+    const methodLines = linesOf(method.lines);
+    const key = [attr(method, "name") ?? "", attr(method, "signature") ?? "", attr(methodLines[0] ?? {}, "number") ?? ""].join(
+      "\u0000",
+    );
+    const ran = methodLines.some((line) => (whole(attr(line, "hits")) ?? 0) > 0);
+    file.methods.set(key, (file.methods.get(key) ?? false) || ran);
+  }
+}
+
+/** The merged figures for a path, started empty the first time a class names it. */
+function fileFor(merged: Map<string, Merged>, path: string): Merged {
+  let file = merged.get(path);
+  if (!file) merged.set(path, (file = { hits: new Map(), branches: new Map(), methods: new Map() }));
+  return file;
+}
+
+/**
+ * A merged file as a report, with its line count, its line ranges when they fit under `MAX_RANGES_PER_FILE`, and its
+ * function and branch counts when it has any.
+ */
+function toReport(path: string, file: Merged): CoverageFileReport {
+  const ranges = lineRanges(file.hits);
+  const report: CoverageFileReport = { path, lines: ranges.lines };
+  if (ranges.ranges) report.ranges = ranges.ranges;
+  if (file.methods.size > 0) {
+    report.functions = { covered: [...file.methods.values()].filter(Boolean).length, total: file.methods.size };
+  }
+  const branches = [...file.branches.values()].reduce(
+    (sum, b) => ({ covered: sum.covered + b.covered, total: sum.total + b.total }),
+    { covered: 0, total: 0 },
+  );
+  if (branches.total > 0) report.branches = branches;
+  return report;
+}
+
 /**
  * Reads a Cobertura XML report. Classes that share a file name (inner classes, one class per file split in two) are
  * merged into one file, taking the highest hit count per line. Branches come from `condition-coverage` on each line
@@ -89,31 +173,8 @@ export interface CoberturaReport {
  * its name, signature and first line, so a class listed under two packages counts its methods once.
  */
 export async function parseCobertura(text: string): Promise<CoberturaReport> {
-  if (hasUnsafeDeclaration(text)) {
-    throw new UpstreamError(
-      "A coverage file in the artefact has an entity or internal document type declaration, which is not read",
-      502,
-    );
-  }
-  const notXml = (cause?: unknown) => new UpstreamError("A coverage file in the artefact is not valid XML", 502, { cause });
-  // fast-xml-parser does not validate, so a truncated report would otherwise parse as a shorter one.
-  const validity = XMLValidator.validate(text);
-  if (validity !== true) throw notXml(validity);
-  let root: unknown;
-  try {
-    // One synchronous call that cannot yield, so the yields below only help between classes. How long it can block is
-    // bounded by the size caps in `read-coverage-archive.ts` (32 MiB of XML for one file), not by this function.
-    root = (parser.parse(text) as Node).coverage;
-  } catch (error) {
-    throw notXml(error);
-  }
-  if (!isNode(root)) throw new UpstreamError("A coverage file in the artefact is not a Cobertura report", 502);
-
-  const sourceRoots = isNode(root.sources)
-    ? listOf(root.sources.source)
-        .filter((s): s is string => typeof s === "string" && s.trim() !== "")
-        .map((s) => s.trim())
-    : [];
+  const root = readRoot(text);
+  const sourceRoots = sourceRootsOf(root);
 
   const merged = new Map<string, Merged>();
   let seen = 0;
@@ -123,48 +184,13 @@ export async function parseCobertura(text: string): Promise<CoberturaReport> {
     for (const cls of classes) {
       const filename = attr(cls, "filename");
       if (!filename) continue;
-      const path = filename.trim().replace(/\\/g, "/");
-      let file = merged.get(path);
-      if (!file) merged.set(path, (file = { hits: new Map(), branches: new Map(), methods: new Map() }));
-
-      for (const line of linesOf(cls.lines)) {
-        const number = whole(attr(line, "number"));
-        const hits = whole(attr(line, "hits"));
-        if (number === null || hits === null) continue;
-        addHit(file.hits, number, hits);
-        const branch = conditions(line);
-        const before = file.branches.get(number);
-        if (branch && (!before || branch.covered > before.covered)) file.branches.set(number, branch);
-      }
-      const methods = isNode(cls.methods) ? listOf(cls.methods.method).filter(isNode) : [];
-      for (const method of methods) {
-        const methodLines = linesOf(method.lines);
-        const key = [
-          attr(method, "name") ?? "",
-          attr(method, "signature") ?? "",
-          attr(methodLines[0] ?? {}, "number") ?? "",
-        ].join("\u0000");
-        const ran = methodLines.some((line) => (whole(attr(line, "hits")) ?? 0) > 0);
-        file.methods.set(key, (file.methods.get(key) ?? false) || ran);
-      }
+      const file = fileFor(merged, filename.trim().replace(/\\/g, "/"));
+      addClassLines(file, cls);
+      addClassMethods(file, cls);
       if (++seen % YIELD_EVERY === 0) await yieldToEventLoop();
     }
   }
 
-  const files: CoverageFileReport[] = [];
-  for (const [path, file] of merged) {
-    const ranges = lineRanges(file.hits);
-    const report: CoverageFileReport = { path, lines: ranges.lines };
-    if (ranges.ranges) report.ranges = ranges.ranges;
-    if (file.methods.size > 0) {
-      report.functions = { covered: [...file.methods.values()].filter(Boolean).length, total: file.methods.size };
-    }
-    const branches = [...file.branches.values()].reduce(
-      (sum, b) => ({ covered: sum.covered + b.covered, total: sum.total + b.total }),
-      { covered: 0, total: 0 },
-    );
-    if (branches.total > 0) report.branches = branches;
-    files.push(report);
-  }
+  const files = [...merged].map(([path, file]) => toReport(path, file));
   return { files, sourceRoots };
 }

@@ -48,13 +48,16 @@ function standing(pr: OpenPullRequest): { approvals: number; changesRequested: n
   };
 }
 
+/** A draft, or labelled on hold. */
+const isHeld = (pr: OpenPullRequest) => pr.isDraft || (pr.labels ?? []).some((label) => ON_HOLD.test(label.trim()));
+
 /**
  * Who has to act next, first match wins: held (a draft, or labelled on hold), with the author (failing checks, changes
  * requested, or comments and nobody asked to look again), approved, awaiting review (someone is asked), otherwise
  * no reviewer.
  */
 export function reviewLane(pr: OpenPullRequest): ReviewLane {
-  if (pr.isDraft || (pr.labels ?? []).some((label) => ON_HOLD.test(label.trim()))) return "held";
+  if (isHeld(pr)) return "held";
   const { approvals, changesRequested } = standing(pr);
   const commented = humanReviews(pr).some((r) => r.state === "COMMENTED");
   const noOneAsked = pr.requestedReviewers.length === 0;

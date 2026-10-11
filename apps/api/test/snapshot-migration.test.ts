@@ -60,6 +60,21 @@ describe("the failed column of the snapshot tables", () => {
     return found;
   };
 
+  /** What the `failed` column holds for each stored snapshot, oldest first, read straight from the table. */
+  const storedFailed = (): Record<string, (number | null)[]> => {
+    const db = new DatabaseSync(path);
+    const read = (table: string, key: string) =>
+      (db.prepare(`SELECT failed FROM ${table} ORDER BY ${key}`).all() as unknown as { failed: number | null }[]).map(
+        (r) => r.failed,
+      );
+    const found = {
+      code_snapshots: read("code_snapshots", "analysed_at"),
+      coverage_snapshots: read("coverage_snapshots", "fetched_at"),
+    };
+    db.close();
+    return found;
+  };
+
   it("adds the column to an old database and backfills it from the stored data", () => {
     oldDatabase();
     expect(failedColumns()).toEqual({ code_snapshots: [], coverage_snapshots: [] });
@@ -72,6 +87,8 @@ describe("the failed column of the snapshot tables", () => {
     expect(store.latestSuccessfulCodeSnapshot(1)).toMatchObject({ commitSha: "abc1234", error: null });
     expect(store.latestSuccessfulCoverageSnapshot(1)).toMatchObject({ fetchedAt: "2026-09-01T10:00:00.000Z", error: null });
     expect(store.latestCodeSnapshot(1)).toMatchObject({ error: "clone failed" });
+    // The first snapshot of each table succeeded and the second recorded an error, so the stored flags are 0 then 1.
+    expect(storedFailed()).toEqual({ code_snapshots: [0, 1], coverage_snapshots: [0, 1] });
   });
 
   it("can be opened again, and keeps writing the column on every save", () => {

@@ -76,6 +76,27 @@ describe("BabelAnalyser", () => {
     expect(result.functions.map((f) => f.name)).toEqual(["first", "ok"]);
   });
 
+  it("lists a file the reader fails on as partly measured and logs why, measuring the rest", async () => {
+    const reader = readerWith({ "src/ok.ts": "function ok() {}", "src/locked.ts": "function locked() {}" });
+    const read = reader.read.bind(reader);
+    const denied = Object.assign(new Error("EACCES: permission denied, open '/tmp/clone/src/locked.ts'"), { code: "EACCES" });
+    reader.read = async (dir, path, max) => {
+      if (path === "src/locked.ts") throw denied;
+      return read(dir, path, max);
+    };
+    const { lines, log } = recordingLog();
+
+    const result = await new BabelAnalyser(reader, { log }).analyse("/clone");
+
+    expect(result.functions.map((f) => f.name)).toEqual(["ok"]);
+    expect(result.partlyMeasured).toEqual(["src/locked.ts"]);
+    expect(lines).toContainEqual({
+      level: "warn",
+      context: { err: denied, path: "src/locked.ts" },
+      message: "could not read a source file, so it was left unmeasured",
+    });
+  });
+
   it("collects more functions from one file than a call can take as arguments", async () => {
     // Past the point where spreading them into push overflows the stack. Parsing that many takes seconds on a busy CI
     // runner, so the file's measurement is handed in rather than parsed.

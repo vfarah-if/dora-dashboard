@@ -13,19 +13,26 @@ import {
   ValidationError,
 } from "../core/errors.js";
 
+/** Checked in order, so the first class an error is an instance of decides its status. */
+const STATUS_BY_ERROR: ReadonlyArray<readonly [abstract new (...args: never[]) => AppError, number]> = [
+  [ValidationError, 400],
+  [UnauthorisedError, 401],
+  [ForbiddenError, 403],
+  [AccessRefusedError, 403],
+  [NotFoundError, 404],
+  [ConflictError, 409],
+  [RateLimitedError, 429],
+  [UpstreamError, 502],
+  [TrackerConfigurationError, 502],
+];
+
 /**
  * The one place a service error becomes an HTTP status. Every error body is an `ApiErrorBody`: `error` is a message
  * fit to show, and `code` is added for an error the web acts on, such as a lost tracker connection.
  */
 export function statusFor(error: unknown): number {
-  if (error instanceof ValidationError) return 400;
-  if (error instanceof UnauthorisedError) return 401;
-  if (error instanceof ForbiddenError || error instanceof AccessRefusedError) return 403;
-  if (error instanceof NotFoundError) return 404;
-  if (error instanceof ConflictError) return 409;
-  if (error instanceof RateLimitedError) return 429;
-  if (error instanceof UpstreamError || error instanceof TrackerConfigurationError) return 502;
-  return clientStatusOf(error) ?? 500;
+  const known = STATUS_BY_ERROR.find(([type]) => error instanceof type);
+  return known ? known[1] : (clientStatusOf(error) ?? 500);
 }
 
 /** The status Fastify itself chose for a request it refused, such as a body that is not valid JSON; only a client error counts. */

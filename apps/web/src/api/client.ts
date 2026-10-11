@@ -37,11 +37,14 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
-/** Fetches JSON from the API. Resolves undefined for a 204 and throws `ApiError` for any non-2xx status. */
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  let response: Response;
+/** What a failure to reach the API, or to finish reading its answer, throws: an abort untouched, else a network `ApiError`. */
+const networkFailure = (error: unknown): Error =>
+  error instanceof DOMException && error.name === "AbortError" ? error : new ApiError(0, copy.common.networkFailed);
+
+/** Sends the request. An abort passes through untouched; any other failure to reach the API is a network `ApiError`. */
+async function send(path: string, options: RequestOptions): Promise<Response> {
   try {
-    response = await fetch(path, {
+    return await fetch(path, {
       method: options.method ?? "GET",
       credentials: "same-origin",
       headers:
@@ -52,22 +55,37 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       signal: options.signal,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError(0, copy.common.networkFailed);
+    throw networkFailure(error);
   }
+}
+
+/** Reads the body as text. A connection that drops part way through fails as one that never connected does. */
+async function readText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch (error) {
+    throw networkFailure(error);
+  }
+}
+
+/** Parses a response body. An empty or (on a failed response) unreadable body is null; an unreadable 2xx throws. */
+function parseBody(text: string, response: Response): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (response.ok) throw new ApiError(response.status, copy.common.unreadableResponse);
+    return null;
+  }
+}
+
+/** Fetches JSON from the API. Resolves undefined for a 204 and throws `ApiError` for any non-2xx status. */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await send(path, options);
 
   if (response.status === 204) return undefined as T;
 
-  const text = await response.text();
-  let body: unknown = null;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      if (response.ok) throw new ApiError(response.status, copy.common.unreadableResponse);
-      body = null;
-    }
-  }
+  const body = parseBody(await readText(response), response);
   if (!response.ok) throw errorFrom(body, response.status);
   return body as T;
 }

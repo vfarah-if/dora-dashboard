@@ -162,7 +162,8 @@ describe("codeAreas in folder mode", () => {
   it("does not let fixtures or tests decide where to descend", () => {
     const files = ["src/a/a.ts", "src/b/b.ts", "src/fixtures/x/1.ts", "src/fixtures/x/2.ts", "src/fixtures/x/3.ts"];
     const result = codeAreas(files, none).areas.map((a) => a.path);
-    expect(result).toEqual(expect.arrayContaining(["src/a", "src/b"]));
+    // The fixture files still belong to an area, so they fall to src, but src/fixtures is never one of its own.
+    expect(result).toEqual(["src", "src/a", "src/b"]);
   });
 
   it("stops descending after ten levels", () => {

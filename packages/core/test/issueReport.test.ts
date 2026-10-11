@@ -255,6 +255,19 @@ describe("an issue reopened and closed again", () => {
     // Closed on the 15th, so closed by the end of the 15th and not reopened by the 16th.
     expect(build([noisy], { ...range, to: "2026-09-16" }).totals.open).toBe(0);
   });
+
+  it("does not let a second close move the end of the span the first close ended", () => {
+    const noisy = issue({
+      number: 3,
+      createdAt: "2026-09-14T00:00:00Z",
+      events: [
+        { at: "2026-09-15T00:00:00Z", type: "closed" },
+        { at: "2026-09-16T00:00:00Z", type: "closed" },
+      ],
+    });
+    // The span ended on the 15th, so an issue seen at the end of the 15th is already closed.
+    expect(build([noisy], { ...range, to: "2026-09-15" }).totals.open).toBe(0);
+  });
 });
 
 describe("a closed issue whose events hold no close after the last reopen", () => {

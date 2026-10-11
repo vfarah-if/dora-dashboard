@@ -45,32 +45,44 @@ const orTrue = (map: Map<string, boolean>, key: string, ran: boolean): void => {
   map.set(key, (map.get(key) ?? false) || ran);
 };
 
-function tallyFinal(into: FileTally, entry: Node, statements: Node, hitsById: Node): void {
-  // A line is as covered as its most-run statement that starts on it.
+/** A line is as covered as its most-run statement that starts on it. */
+function tallyStatements(into: FileTally, statements: Node, hitsById: Node): void {
   for (const [id, location] of Object.entries(statements)) {
     const line = isObject(location) && isObject(location.start) ? location.start.line : undefined;
     if (typeof line === "number") addHit(into.hits, line, count(hitsById[id]));
   }
+}
+
+/** Each function once, by where it is declared and its name, running if any entry for it ran. */
+function tallyFunctions(into: FileTally, entry: Node): void {
+  if (!isObject(entry.f)) return;
   const functionMap = isObject(entry.fnMap) ? entry.fnMap : {};
-  if (isObject(entry.f)) {
-    for (const [id, hits] of Object.entries(entry.f)) {
-      const described = functionMap[id];
-      const where = isObject(described) ? span(described.decl ?? described.loc) : "?";
-      const name = isObject(described) && typeof described.name === "string" ? described.name : "";
-      // Without a map the id is all there is to tell two functions apart.
-      orTrue(into.functions, isObject(described) ? `${where}\u0000${name}` : `id\u0000${id}`, count(hits) > 0);
-    }
+  for (const [id, hits] of Object.entries(entry.f)) {
+    const described = functionMap[id];
+    const where = isObject(described) ? span(described.decl ?? described.loc) : "?";
+    const name = isObject(described) && typeof described.name === "string" ? described.name : "";
+    // Without a map the id is all there is to tell two functions apart.
+    orTrue(into.functions, isObject(described) ? `${where}\u0000${name}` : `id\u0000${id}`, count(hits) > 0);
   }
+}
+
+/** Each arm of each branch once, taken if any entry for it was taken. */
+function tallyBranches(into: FileTally, entry: Node): void {
+  if (!isObject(entry.b)) return;
   const branchMap = isObject(entry.branchMap) ? entry.branchMap : {};
-  if (isObject(entry.b)) {
-    for (const [id, arms] of Object.entries(entry.b)) {
-      if (!Array.isArray(arms)) continue;
-      const described = branchMap[id];
-      // Two kinds of branch can start at the same place (`a && b ? c : d`), so the type is part of the key.
-      const where = isObject(described) ? `${String(described.type)}@${span(described.loc)}` : `id ${id}`;
-      arms.forEach((hits, arm) => orTrue(into.branches, `${where}\u0000${arm}`, count(hits) > 0));
-    }
+  for (const [id, arms] of Object.entries(entry.b)) {
+    if (!Array.isArray(arms)) continue;
+    const described = branchMap[id];
+    // Two kinds of branch can start at the same place (`a && b ? c : d`), so the type is part of the key.
+    const where = isObject(described) ? `${String(described.type)}@${span(described.loc)}` : `id ${id}`;
+    arms.forEach((hits, arm) => orTrue(into.branches, `${where}\u0000${arm}`, count(hits) > 0));
   }
+}
+
+function tallyFinal(into: FileTally, entry: Node, statements: Node, hitsById: Node): void {
+  tallyStatements(into, statements, hitsById);
+  tallyFunctions(into, entry);
+  tallyBranches(into, entry);
 }
 
 const tallied = (map: Map<string, boolean>): CoverageCount | undefined =>
@@ -108,8 +120,41 @@ export async function parseIstanbulFinal(text: string): Promise<CoverageFileRepo
 const countOf = (value: unknown): CoverageCount | null => (isObject(value) ? coverageCount(value.covered, value.total) : null);
 
 /** The count with more covered, then the larger total; either when the other is missing. */
-const better = (a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined =>
-  !a || !b ? (a ?? b) : b.covered > a.covered || (b.covered === a.covered && b.total > a.total) ? b : a;
+function better(a: CoverageCount | undefined, b: CoverageCount): CoverageCount;
+function better(a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined;
+function better(a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined {
+  if (!a || !b) return a ?? b;
+  return b.covered > a.covered || (b.covered === a.covered && b.total > a.total) ? b : a;
+}
+
+/** The counts a summary entry gives for one file. */
+type SummaryCounts = Pick<CoverageFileReport, "lines" | "functions" | "branches">;
+
+/**
+ * The counts one summary entry gives, or null when its line count is impossible. An impossible or empty function or
+ * branch count is left out.
+ */
+function summaryOf(entry: Node): SummaryCounts | null {
+  const lines = countOf(entry.lines);
+  if (!lines) return null;
+  const functions = countOf(entry.functions);
+  const branches = countOf(entry.branches);
+  return {
+    lines,
+    functions: functions && functions.total > 0 ? functions : undefined,
+    branches: branches && branches.total > 0 ? branches : undefined,
+  };
+}
+
+/** The file with each of its counts the better of the earlier entry's and the incoming one's. */
+function mergeSummary(path: string, before: CoverageFileReport | undefined, incoming: SummaryCounts): CoverageFileReport {
+  const file: CoverageFileReport = { path, lines: better(before?.lines, incoming.lines) };
+  const mergedFunctions = better(before?.functions, incoming.functions);
+  const mergedBranches = better(before?.branches, incoming.branches);
+  if (mergedFunctions) file.functions = mergedFunctions;
+  if (mergedBranches) file.branches = mergedBranches;
+  return file;
+}
 
 /**
  * Reads Istanbul's `coverage-summary.json`, which has totals per file and no line detail. The `total` entry is skipped.
@@ -120,25 +165,10 @@ export async function parseIstanbulSummary(text: string): Promise<CoverageFileRe
   const files = new Map<string, CoverageFileReport>();
   let seen = 0;
   for (const [key, entry] of Object.entries(parseJson(text))) {
-    if (key !== "total" && isObject(entry)) {
-      const lines = countOf(entry.lines);
-      if (lines) {
-        const path = normalise(key);
-        const functions = countOf(entry.functions);
-        const branches = countOf(entry.branches);
-        const incoming = {
-          lines,
-          functions: functions && functions.total > 0 ? functions : undefined,
-          branches: branches && branches.total > 0 ? branches : undefined,
-        };
-        const before = files.get(path);
-        const file: CoverageFileReport = { path, lines: better(before?.lines, incoming.lines)! };
-        const mergedFunctions = better(before?.functions, incoming.functions);
-        const mergedBranches = better(before?.branches, incoming.branches);
-        if (mergedFunctions) file.functions = mergedFunctions;
-        if (mergedBranches) file.branches = mergedBranches;
-        files.set(path, file);
-      }
+    const incoming = key !== "total" && isObject(entry) ? summaryOf(entry) : null;
+    if (incoming) {
+      const path = normalise(key);
+      files.set(path, mergeSummary(path, files.get(path), incoming));
     }
     if (++seen % YIELD_EVERY === 0) await yieldToEventLoop();
   }

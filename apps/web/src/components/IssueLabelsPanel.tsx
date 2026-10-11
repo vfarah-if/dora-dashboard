@@ -54,6 +54,28 @@ function LabelField({ id, label, value, placeholder, limits, onChange }: LabelFi
   );
 }
 
+/** Which request last went through, so the notice can say saved or reset. Both may send no rules at all. */
+type SaveOutcome = "saved" | "reset";
+
+/** What the last save did: the error if it failed, or which of save and reset went through. */
+function SaveNotices({ update, done }: { update: ReturnType<typeof useUpdateIssueLabels>; done: SaveOutcome | null }) {
+  const text = copy.issueLabels;
+  return (
+    <>
+      {update.isError && (
+        <p className="notice notice-error" role="alert">
+          {errorText(update.error)}
+        </p>
+      )}
+      {update.isSuccess && done && (
+        <p className="notice notice-info" role="status">
+          {done === "saved" ? text.saved : text.resetDone}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Empty placeholders, used until the defaults have loaded. */
 const NO_PLACEHOLDERS = inputsFromRules(null);
 
@@ -70,7 +92,7 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
   const limits = defaults?.limits;
   const placeholders = defaults ? defaultInputs(defaults) : NO_PLACEHOLDERS;
   const [inputs, setInputs] = useState<LabelInputs>(() => inputsFromRules(repo.issueLabels));
-  const [done, setDone] = useState<"saved" | "reset" | null>(null);
+  const [done, setDone] = useState<SaveOutcome | null>(null);
   const titleId = useId();
   const idBase = useId();
 
@@ -142,16 +164,7 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
         ))}
       </fieldset>
       <p className="field-hint">{text.applyNote}</p>
-      {update.isError && (
-        <p className="notice notice-error" role="alert">
-          {errorText(update.error)}
-        </p>
-      )}
-      {update.isSuccess && done && (
-        <p className="notice notice-info" role="status">
-          {done === "saved" ? text.saved : text.resetDone}
-        </p>
-      )}
+      <SaveNotices update={update} done={done} />
       <div className="form-actions">
         <button type="submit" className="button button-primary" disabled={update.isPending || hasProblem}>
           {update.isPending ? copy.common.saving : text.save}

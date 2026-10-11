@@ -227,13 +227,20 @@ describe("alignCoverage", () => {
     expect(JSON.stringify([...result.files.values()])).not.toContain("secret-client");
   });
 
-  it("drops a path that lands on a test file", () => {
+  it("drops a path that is itself a test file", () => {
     const known = ["src/__helpers__/x.ts", "tests/util.ts"];
     expect(alignCoverage([report([file("tests/util.ts", 1, 1)])], known)).toMatchObject({
       inReport: 0,
       matched: 0,
       unmatched: 0,
     });
+  });
+
+  it("drops an entry whose own path is not a test file but whose target is", () => {
+    // `unit/a.ts` looks like source, but the only files it can mean sit under `tests/`.
+    const known = ["tests/unit/a.ts", "tests/unit/b.ts"];
+    const found = alignCoverage([report([file("unit/a.ts", 1, 1), file("unit/b.ts", 1, 1)])], known);
+    expect(found).toMatchObject({ inReport: 0, matched: 0, unmatched: 0 });
   });
 
   it("keeps only the best format in one directory", () => {
@@ -387,6 +394,11 @@ describe("alignCoverage", () => {
       ["a line number below one", { covered: [[0, 2]], uncovered: [] }],
       ["ranges that disagree with the count", { covered: [[1, 1]], uncovered: [] }],
       ["a line in both lists", { covered: [[1, 2]], uncovered: [[2, 2]] }],
+      // In each of these the counts agree with the totals of 2 covered of 3, so only the line numbers give the fault away.
+      ["a covered line below one, though every count agrees", { covered: [[0, 1]], uncovered: [[2, 2]] }],
+      ["an uncovered line below one, though every count agrees", { covered: [[1, 2]], uncovered: [[0, 0]] }],
+      ["more covered lines than the count, hidden by an overlap", { covered: [[1, 3]], uncovered: [[3, 3]] }],
+      ["more uncovered lines than the count, hidden by an overlap", { covered: [[1, 2]], uncovered: [[2, 3]] }],
     ])("drops the ranges and keeps the totals for %s", (_, ranges) => {
       const found = alignCoverage([report([file("src/a.ts", 2, 3, { ranges: ranges as never })])], known);
       expect(found.files.get("src/a.ts")).toMatchObject({ lines: { covered: 2, total: 3 } });
@@ -458,6 +470,79 @@ describe("alignCoverage", () => {
   });
 
   describe("matching by a unique suffix", () => {
+    it("does not let a vendored copy of a file land on a repository file by a two segment tail", () => {
+      const root = "/home/runner/work/widgets/widgets";
+      const found = alignCoverage(
+        [
+          report([
+            file(`${root}/src/q.ts`, 2, 10),
+            file(`${root}/src/r.ts`, 1, 1),
+            file(`${root}/node_modules/foo/src/q.ts`, 10, 10),
+          ]),
+        ],
+        ["src/q.ts", "src/r.ts"],
+      );
+      // The vendored copy ends in src/q.ts too, but it is outside the repository, so it must not add to or replace the real one.
+      expect(found.files.get("src/q.ts")?.lines).toEqual({ covered: 2, total: 10 });
+      expect(found).toMatchObject({ matched: 2, unmatched: 1 });
+    });
+
+    it("does not let one held path stand alone, even when the directory names its package", () => {
+      const known = Array.from({ length: 60 }, (_, i) => `pkg${i}/src/index.ts`);
+      const found = alignCoverage([report([file("x/index.ts", 1, 1)], { dir: "pkg7/src/coverage" })], known);
+      expect(found).toMatchObject({ matched: 0, unmatched: 1 });
+    });
+
+    it("leaves unmatched two tied leaders that the directory names both of", () => {
+      const known = Array.from({ length: 60 }, (_, i) => [`p${i}/index.ts`, `p${i}/main.ts`]).flat();
+      const entries = [file("x/index.ts", 1, 1), file("x/main.ts", 1, 1)];
+      // p3 and p4 each hold both files, so the directory "p3/p4/coverage" cannot pick between them.
+      expect(alignCoverage([report(entries, { dir: "p3/p4/coverage" })], known).matched).toBe(0);
+    });
+
+    it("counts a known path once for an entry that two source roots reach", () => {
+      // Roots "/w" and "/w/src" both turn a.ts into a path under lib/, which would give lib/a.ts and lib/src/a.ts two
+      // votes for one entry. With a vote per transform, aaa/a.ts is the only place the entry can be.
+      const known = ["lib/a.ts", "lib/src/a.ts", "aaa/a.ts"];
+      const cobertura = report([file("a.ts", 1, 1)], { format: "cobertura", sourceRoots: ["/w", "/w/src"] });
+      expect(pathsOf([cobertura], known)).toEqual(["aaa/a.ts"]);
+    });
+
+    it("lets held paths vote for the leader they land on", () => {
+      // Sixty packages hold index.ts and sixty hold main.ts, so both are held back from matching on their own. Only p2
+      // holds both, and its votes lift it above p1 for the util.ts that the two packages share. b.ts exists only in p1.
+      const known = [
+        "packages/p1/src/util.ts",
+        "packages/p2/src/util.ts",
+        "packages/p1/src/b.ts",
+        "packages/p2/src/index.ts",
+        "packages/p2/src/main.ts",
+        ...Array.from({ length: 59 }, (_, i) => `packages/q${i}/src/index.ts`),
+        ...Array.from({ length: 59 }, (_, i) => `packages/r${i}/src/main.ts`),
+      ];
+      const entries = ["src/util.ts", "src/b.ts", "src/index.ts", "src/main.ts"].map((path) => file(path, 1, 1));
+      const found = alignCoverage([report(entries)], known);
+      expect([...found.files.keys()].sort()).toEqual([
+        "packages/p1/src/b.ts",
+        "packages/p2/src/index.ts",
+        "packages/p2/src/main.ts",
+        "packages/p2/src/util.ts",
+      ]);
+      expect(found).toMatchObject({ matched: 4, unmatched: 0 });
+    });
+
+    it("stops looking for a suffix match early enough to stay fast on a very large repository", () => {
+      // Quadratic work here would not finish in any useful time, so the bound is loose on purpose. It still catches that
+      // failure, and a slow, shared CI runner does not trip it by accident.
+      const known = Array.from({ length: 50_000 }, (_, i) => `p${i}/src/index.ts`);
+      const reports = Array.from({ length: 1_000 }, (_, i) =>
+        report([file("src/index.ts", 1, 1)], { artefact: `a${i}`, dir: `d${i}` }),
+      );
+      const started = Date.now();
+      expect(alignCoverage(reports, known).matched).toBe(0);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
     it("places a path that only ends a known path, and one that is ended by a known path", () => {
       const known = ["deep/nested/pkg/a.ts", "b.ts"];
       const found = alignCoverage([report([file("nested/pkg/a.ts", 1, 1), file("/ci/work/b.ts", 1, 1)], { dir: "x" })], known);

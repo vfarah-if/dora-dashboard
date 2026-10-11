@@ -298,6 +298,13 @@ describe("parseLcov", () => {
     expect(file!.functions).toEqual({ covered: 1, total: 1 });
   });
 
+  it("adds no branch for a BRDA record that lacks its taken field", async () => {
+    const [file] = await parseLcov("SF:src/a.ts\nDA:1,1\nBRDA:1,0,0\nend_of_record\n");
+
+    expect(file).toMatchObject({ path: "src/a.ts", lines: { covered: 1, total: 1 } });
+    expect("branches" in file!).toBe(false);
+  });
+
   it("keeps a record that has no end_of_record, and one cut off by the next file", async () => {
     const files = await parseLcov("SF:src/a.ts\nDA:1,1\nSF:src/b.ts\nDA:1,0\n");
 
@@ -657,19 +664,25 @@ describe("parseCobertura", () => {
     await expect(parseCobertura(text)).rejects.toThrow("not valid XML");
   });
 
-  it("counts a method once when its class is listed under two packages, and as run if any copy ran", async () => {
-    const klass = (hits: number) => `<class filename="src/a.ts"><methods>
+  it.each([
+    ["the copy that did not run comes first", [0, 4]],
+    ["the copy that ran comes first", [4, 0]],
+  ])(
+    "counts a method once when its class is listed under two packages, and as run if any copy ran, when %s",
+    async (_, [first, second]) => {
+      const klass = (hits: number) => `<class filename="src/a.ts"><methods>
         <method name="render" signature="()V"><lines><line number="3" hits="${hits}"/></lines></method>
       </methods><lines><line number="3" hits="${hits}"/></lines></class>`;
-    const text = `<coverage line-rate="1"><packages>
-      <package name="one"><classes>${klass(0)}</classes></package>
-      <package name="two"><classes>${klass(4)}</classes></package>
+      const text = `<coverage line-rate="1"><packages>
+      <package name="one"><classes>${klass(first!)}</classes></package>
+      <package name="two"><classes>${klass(second!)}</classes></package>
     </packages></coverage>`;
 
-    const { files } = await parseCobertura(text);
+      const { files } = await parseCobertura(text);
 
-    expect(files[0]!.functions).toEqual({ covered: 1, total: 1 });
-  });
+      expect(files[0]!.functions).toEqual({ covered: 1, total: 1 });
+    },
+  );
 
   it("tells methods apart by name, signature and first line", async () => {
     const text = `<coverage line-rate="1"><packages><package><classes><class filename="a.ts"><methods>

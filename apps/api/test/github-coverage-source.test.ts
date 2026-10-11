@@ -437,6 +437,7 @@ describe("download", () => {
     const error = await failure(get(http, 1000));
 
     expect(error).toBeInstanceOf(UpstreamError);
+    expect(error.message).toBe("The artefact is larger than the limit for reading coverage");
     // 400 bytes a chunk: the third chunk passes 1,000, and the stream is cancelled rather than drained.
     expect(pulled).toBeLessThan(10);
   });
@@ -614,13 +615,27 @@ describe("isForbiddenHost", () => {
     "fec0::1",
     "64:ff9b::7f00:1",
     "2002:7f00:1::",
+    "2002:c0a8:101::", // 6to4 carrying 192.168.1.1
+    "feff::1", // the top of the deprecated site-local range, fec0::/10
+    "fef0::1",
     "::ffff:0:7f00:1",
     "100.64.0.1",
     "10.0.0.1..",
     "a.localhost..",
   ])("refuses %s", (host) => expect(isForbiddenHost(host)).toBe(true));
 
-  it.each(["::ffff:1.1.1.1", "2606:4700::1111", "github.com", "1.1.1.1"])("allows %s", (host) =>
-    expect(isForbiddenHost(host)).toBe(false),
-  );
+  it.each([
+    "::ffff:1.1.1.1",
+    "2606:4700::1111",
+    "github.com",
+    "1.1.1.1",
+    // Each sits just outside an internal range: the second octet of 169.254/16 and 192.168/16, and the first of 10/8.
+    "169.253.255.255",
+    "169.255.0.1",
+    "192.167.255.255",
+    "192.169.0.1",
+    "11.0.0.1",
+    "::8.8.8.8", // IPv4-compatible form carrying a public address
+    "::ffff:0:808:808", // SIIT form carrying 8.8.8.8
+  ])("allows %s", (host) => expect(isForbiddenHost(host)).toBe(false));
 });

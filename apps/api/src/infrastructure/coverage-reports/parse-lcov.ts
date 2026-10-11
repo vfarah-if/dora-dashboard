@@ -2,10 +2,14 @@ import { coverageCount, type CoverageCount, type CoverageFileReport } from "@dor
 import { addHit, lineRanges } from "./line-ranges.js";
 import { YIELD_EVERY, yieldToEventLoop } from "./yield-loop.js";
 
+/** The tags that give a record's totals: lines found and hit, functions found and hit, branches found and hit. */
+const TOTAL_TAGS = ["LF", "LH", "FNF", "FNH", "BRF", "BRH"] as const;
+type TotalTag = (typeof TOTAL_TAGS)[number];
+
 interface Tally {
   hits: Map<number, number>;
   /** The `LF` and `LH` totals, `FNF` and `FNH`, `BRF` and `BRH` as written, until the record ends and they are checked. */
-  raw: { [tag: string]: number };
+  raw: Partial<Record<TotalTag, number>>;
   /** The checked totals, null when a report did not give a pair or gave an impossible one. */
   lines: CoverageCount | null;
   functions: CoverageCount | null;
@@ -50,7 +54,7 @@ function functionName(value: string): string {
 
 /** Checks the totals a record gave, once the record is complete. A pair that is impossible is dropped. */
 function seal(record: Tally): void {
-  const pair = (covered: string, total: string) => {
+  const pair = (covered: TotalTag, total: TotalTag) => {
     const [c, t] = [record.raw[covered], record.raw[total]];
     return c === undefined || t === undefined ? null : coverageCount(c, t);
   };
@@ -97,6 +101,50 @@ function toReport(path: string, record: Tally): CoverageFileReport {
   return file;
 }
 
+type Reader = (record: Tally, value: string) => void;
+
+const readLineHit: Reader = (record, value) => {
+  const [number, count] = value.split(",");
+  const at = whole(number);
+  const hits = whole(count);
+  if (at !== null && hits !== null) addHit(record.hits, at, hits);
+};
+
+/** Keeps the total that `tag` gives, as written, for `seal` to check once the record ends. */
+const readTotal =
+  (tag: TotalTag): Reader =>
+  (record, value) => {
+    record.raw[tag] = exact(value);
+  };
+
+const readFunction: Reader = (record, value) => {
+  record.functionNames.add(functionName(value));
+};
+
+const readFunctionRuns: Reader = (record, value) => {
+  const comma = value.indexOf(",");
+  const name = value.slice(comma + 1);
+  record.functionNames.add(name);
+  if ((whole(value.slice(0, comma)) ?? 0) > 0) record.functionsRun.add(name);
+};
+
+const readBranchArm: Reader = (record, value) => {
+  const [at, block, branch, taken] = value.split(",");
+  if (taken === undefined) return;
+  const key = `${at},${block},${branch}`;
+  const hit = taken !== "-" && (whole(taken) ?? 0) > 0;
+  record.branchArms.set(key, (record.branchArms.get(key) ?? false) || hit);
+};
+
+/** What each tag inside a record does to it. `SF` and `end_of_record` change which record is open, so they are not here. */
+const READERS: ReadonlyMap<string, Reader> = new Map<string, Reader>([
+  ["DA", readLineHit],
+  ...TOTAL_TAGS.map((tag): [string, Reader] => [tag, readTotal(tag)]),
+  ["FN", readFunction],
+  ["FNDA", readFunctionRuns],
+  ["BRDA", readBranchArm],
+]);
+
 /**
  * Reads an lcov tracefile. Line hits come from `DA` records and, when a file has none, only the `LF` and `LH` totals
  * are kept, so such a file has counts and no ranges. A path that appears in several records (a merged report) is
@@ -131,47 +179,14 @@ export async function parseLcov(text: string): Promise<CoverageFileReport[]> {
     if (colon < 0) continue;
     const tag = line.slice(0, colon);
     const value = line.slice(colon + 1);
-    switch (tag) {
-      case "SF":
-        // A record cut off by the next file is kept, and anything before the first file belongs to no file.
-        if (path !== null) await flush();
-        else current = newRecord();
-        path = normalise(value);
-        break;
-      case "DA": {
-        const [number, count] = value.split(",");
-        const at = whole(number);
-        const hits = whole(count);
-        if (at !== null && hits !== null) addHit(current.hits, at, hits);
-        break;
-      }
-      case "LF":
-      case "LH":
-      case "FNF":
-      case "FNH":
-      case "BRF":
-      case "BRH":
-        current.raw[tag] = exact(value);
-        break;
-      case "FN":
-        current.functionNames.add(functionName(value));
-        break;
-      case "FNDA": {
-        const comma = value.indexOf(",");
-        const name = value.slice(comma + 1);
-        current.functionNames.add(name);
-        if ((whole(value.slice(0, comma)) ?? 0) > 0) current.functionsRun.add(name);
-        break;
-      }
-      case "BRDA": {
-        const [at, block, branch, taken] = value.split(",");
-        if (taken === undefined) break;
-        const key = `${at},${block},${branch}`;
-        const hit = taken !== "-" && (whole(taken) ?? 0) > 0;
-        current.branchArms.set(key, (current.branchArms.get(key) ?? false) || hit);
-        break;
-      }
+    if (tag === "SF") {
+      // A record cut off by the next file is kept, and anything before the first file belongs to no file.
+      if (path !== null) await flush();
+      else current = newRecord();
+      path = normalise(value);
+      continue;
     }
+    READERS.get(tag)?.(current, value);
   }
   await flush();
   return [...records].map(([name, record]) => toReport(name, record));

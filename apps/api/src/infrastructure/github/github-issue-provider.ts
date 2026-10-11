@@ -1,7 +1,7 @@
 import type { IssueCloseReason, IssueEvent, RepoIssue } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../../interfaces/issue-provider.js";
-import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
+import { API, askForPage, type Fetch, request } from "./github-http.js";
 
 /**
  * Every field here exists in GitHub's GraphQL schema. `stateReason(enableDuplicate: true)` is needed on an issue, as
@@ -131,6 +131,27 @@ const isNestedFieldError = (path: (string | number)[] | undefined): boolean =>
   typeof path[3] === "number";
 
 /**
+ * Raises for the errors on a page: `NotFoundError` for a repository GitHub says is missing, `UpstreamError` for a rate
+ * limit, and `UpstreamError` for any error that is not on a field inside an issue node of a list that arrived whole.
+ */
+function throwForErrors(page: GqlPage, owner: string, name: string): void {
+  const errors = page.errors ?? [];
+  const repository = page.data?.repository;
+  if (!repository && errors.some((e) => e.type === "NOT_FOUND" && e.path?.[0] === "repository")) throw NOT_FOUND(owner, name);
+  if (errors.some((e) => e.type === "RATE_LIMITED")) {
+    throw new UpstreamError(
+      "GitHub's rate limit for this token was reached, so issues could not be read. Crawl again once it resets",
+      429,
+    );
+  }
+  // A field error can null its whole issue through fields GitHub declares non-null. Dropping that issue would let a
+  // full read remove it from the store, so an error is tolerated only while every issue node arrived.
+  const whole = repository?.issues?.nodes.every((n) => n !== null) ?? false;
+  const fatal = whole ? errors.filter((e) => !isNestedFieldError(e.path)) : errors;
+  if (fatal.length > 0) throw new UpstreamError(fatal.map((e) => e.message).join("; "), 200);
+}
+
+/**
  * GitHub Issues over its GraphQL API, read with the token the crawl already holds. What follows is GitHub's side of
  * the `IssueProvider` contract.
  *
@@ -152,28 +173,9 @@ export class GitHubIssueProvider implements IssueProvider {
   constructor(private readonly http: Fetch = fetch) {}
 
   async fetchIssuePage(token: string, owner: string, name: string, req: IssuePageRequest): Promise<IssuePage> {
-    let page: GqlPage;
-    try {
-      page = await this.ask(token, owner, name, req, PAGE_SIZE);
-    } catch (error) {
-      // A page of issues, each with its timeline and links, can time out at the gateway. A smaller page usually fits.
-      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
-      page = await this.ask(token, owner, name, req, RETRY_PAGE_SIZE);
-    }
-    const errors = page.errors ?? [];
+    const page = await this.issuePage(token, owner, name, req);
+    throwForErrors(page, owner, name);
     const repository = page.data?.repository;
-    if (!repository && errors.some((e) => e.type === "NOT_FOUND" && e.path?.[0] === "repository")) throw NOT_FOUND(owner, name);
-    if (errors.some((e) => e.type === "RATE_LIMITED")) {
-      throw new UpstreamError(
-        "GitHub's rate limit for this token was reached, so issues could not be read. Crawl again once it resets",
-        429,
-      );
-    }
-    // A field error can null its whole issue through fields GitHub declares non-null. Dropping that issue would let a
-    // full read remove it from the store, so an error is tolerated only while every issue node arrived.
-    const whole = repository?.issues?.nodes.every((n) => n !== null) ?? false;
-    const fatal = whole ? errors.filter((e) => !isNestedFieldError(e.path)) : errors;
-    if (fatal.length > 0) throw new UpstreamError(fatal.map((e) => e.message).join("; "), 200);
     if (!repository) throw NOT_FOUND(owner, name);
     if (!repository.hasIssuesEnabled) return { enabled: false };
     const issues = repository.issues;
@@ -186,11 +188,14 @@ export class GitHubIssueProvider implements IssueProvider {
     };
   }
 
-  private ask(token: string, owner: string, name: string, req: IssuePageRequest, first: number): Promise<GqlPage> {
+  /** A page of issues, each with its timeline and links, asked for again smaller when the gateway gives up. */
+  private issuePage(token: string, owner: string, name: string, req: IssuePageRequest): Promise<GqlPage> {
     const filter = req.updatedSince === null ? {} : { since: req.updatedSince };
-    return request<GqlPage>(this.http, token, `${API}/graphql`, {
-      method: "POST",
-      body: JSON.stringify({ query: ISSUES_QUERY, variables: { owner, name, cursor: req.cursor, first, filter } }),
-    });
+    const ask = (first: number) =>
+      request<GqlPage>(this.http, token, `${API}/graphql`, {
+        method: "POST",
+        body: JSON.stringify({ query: ISSUES_QUERY, variables: { owner, name, cursor: req.cursor, first, filter } }),
+      });
+    return askForPage(ask, PAGE_SIZE, RETRY_PAGE_SIZE);
   }
 }

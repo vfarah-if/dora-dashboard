@@ -21,6 +21,7 @@ import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
+import { inTransaction } from "./transaction.js";
 
 /** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
 const failedFlag = (error: string | null | undefined): number => (error === null || error === undefined ? 0 : 1);
@@ -263,6 +264,12 @@ const toRepo = (row: RepoRow): Repo => ({
 
 const RESTARTED_DURING_CRAWL = "The API restarted during this crawl. Crawl again.";
 
+/** A row of `PRAGMA table_info`, as far as a migration reads it. */
+interface TableColumn {
+  name: string;
+  notnull: number;
+}
+
 /**
  * SQLite on Node's built-in `node:sqlite`, so there is no native module to compile. `now` stamps every time the store
  * records itself (`added_at`, `last_crawled_at`), so a test can pin them.
@@ -299,7 +306,13 @@ export class SqliteRepoStore implements RepoStore {
    * as it was, so a column added later has to be added here. Each step checks first, so running it twice is safe.
    */
   private migrate(): void {
-    const repoColumns = this.db.prepare("PRAGMA table_info(repos)").all() as unknown as { name: string }[];
+    this.addIssueColumns();
+    this.addSnapshotFailedColumns();
+    this.migrateTrackerSpaces();
+  }
+
+  private addIssueColumns(): void {
+    const repoColumns = this.db.prepare("PRAGMA table_info(repos)").all() as unknown as TableColumn[];
     // Issues read from the code host (ADR 0028): whether they are switched on, where the next read resumes, the
     // label override and why the last read failed. Null means no issue read has recorded them yet.
     for (const [column, type] of [
@@ -310,26 +323,37 @@ export class SqliteRepoStore implements RepoStore {
     ] as const) {
       if (!repoColumns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE repos ADD COLUMN ${column} ${type}`);
     }
+  }
+
+  private addSnapshotFailedColumns(): void {
     // Whether a snapshot is a failed attempt, kept beside its JSON so that picking the newest good one never parses
     // the data. Null only on rows written before the column existed, which the backfill sets once.
     for (const table of ["code_snapshots", "coverage_snapshots"] as const) {
-      const snapshotColumns = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+      const snapshotColumns = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as TableColumn[];
       if (!snapshotColumns.some((c) => c.name === "failed")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN failed INTEGER`);
       this.db.exec(`UPDATE ${table} SET failed = (json_extract(data, '$.error') IS NOT NULL) WHERE failed IS NULL`);
     }
-    const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as { name: string; notnull: number }[];
+  }
+
+  /** The assignee names column, then the board column, each judged by the columns the table had before either step. */
+  private migrateTrackerSpaces(): void {
+    const columns = this.db.prepare("PRAGMA table_info(tracker_spaces)").all() as unknown as TableColumn[];
     // Assignee display names, recorded on a crawl (ADR 0021). Null means no crawl has recorded them yet.
     if (!columns.some((c) => c.name === "people")) this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN people TEXT");
+    this.migrateBoardColumn(columns);
+  }
+
+  private migrateBoardColumn(columns: readonly TableColumn[]): void {
     // How the board was read; null means not read yet. An earlier build of this column was NOT NULL and defaulted to
-    // 'none', which said "no board" of spaces never read. That column is set aside, its `read` and `forbidden` kept
-    // (a `none` may only be the default), and dropped once copied. Existing rows become `read` when they hold columns,
-    // `none` when a crawl has finished with none, and otherwise stay null. All in one transaction, so a failure
-    // part-way leaves the table as it was; a second run finds a nullable column and does nothing.
+    // 'none', which said "no board" of spaces never read. That column is set aside, only its `forbidden` kept (a `none`
+    // may only be the default, and `read` is worked out again from the columns), and dropped once copied. Existing rows
+    // become `read` when they hold columns, `none` when a crawl has finished with none, and otherwise stay null. All in
+    // one transaction, so a failure part-way leaves the table as it was; a second run finds a nullable column and does
+    // nothing.
     const board = columns.find((c) => c.name === "board");
     if (board === undefined || board.notnull === 1) {
       const earlier = board === undefined ? "NULL" : "board_earlier";
-      this.db.exec("BEGIN");
-      try {
+      inTransaction(this.db, () => {
         if (board !== undefined) this.db.exec("ALTER TABLE tracker_spaces RENAME COLUMN board TO board_earlier");
         this.db.exec("ALTER TABLE tracker_spaces ADD COLUMN board TEXT");
         this.db.exec(
@@ -340,11 +364,7 @@ export class SqliteRepoStore implements RepoStore {
              ELSE NULL END`,
         );
         if (board !== undefined) this.db.exec("ALTER TABLE tracker_spaces DROP COLUMN board_earlier");
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     }
   }
 
@@ -411,28 +431,18 @@ export class SqliteRepoStore implements RepoStore {
     const stmt = this.db.prepare(
       "INSERT INTO pull_requests (repo_id, number, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (repo_id, number) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
     );
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const pr of prs) stmt.run(repoId, pr.number, JSON.stringify(pr), pr.updatedAt);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   private upsertDeployRuns(repoId: number, runs: DeployRun[]): void {
     const stmt = this.db.prepare(
       "INSERT INTO deploy_runs (repo_id, run_id, data) VALUES (?, ?, ?) ON CONFLICT (repo_id, run_id) DO UPDATE SET data = excluded.data",
     );
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const run of runs) stmt.run(repoId, run.runId, JSON.stringify(run));
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   replaceDeployRuns(repoId: number, runs: DeployRun[]): void {
@@ -461,28 +471,18 @@ export class SqliteRepoStore implements RepoStore {
     const stmt = this.db.prepare(
       "INSERT INTO issues (repo_id, number, updated_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (repo_id, number) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
     );
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const issue of issues) stmt.run(repoId, issue.number, issue.updatedAt, JSON.stringify(issue));
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   removeIssuesExcept(repoId: number, keep: ReadonlySet<number>): number {
     const held = this.db.prepare("SELECT number FROM issues WHERE repo_id = ?").all(repoId) as unknown as { number: number }[];
     const gone = held.filter((row) => !keep.has(row.number));
     const stmt = this.db.prepare("DELETE FROM issues WHERE repo_id = ? AND number = ?");
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const row of gone) stmt.run(repoId, row.number);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
     return gone.length;
   }
 
@@ -524,15 +524,10 @@ export class SqliteRepoStore implements RepoStore {
   }
 
   disableIssues(repoId: number): void {
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       this.db.prepare("DELETE FROM issues WHERE repo_id = ?").run(repoId);
       this.db.prepare("UPDATE repos SET issues_enabled = 0, issue_cursor = NULL, issue_error = NULL WHERE id = ?").run(repoId);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   failIssueCrawl(repoId: number, message: string): void {
@@ -638,8 +633,7 @@ export class SqliteRepoStore implements RepoStore {
     );
     const link = this.db.prepare("INSERT OR IGNORE INTO repo_spaces (repo_id, space_id) VALUES (?, ?)");
     const ids: number[] = [];
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       this.db
         .prepare("DELETE FROM repo_spaces WHERE repo_id = ? AND space_id IN (SELECT id FROM tracker_spaces WHERE site_id = ?)")
         .run(repoId, site.id);
@@ -649,11 +643,7 @@ export class SqliteRepoStore implements RepoStore {
         ids.push(row.id);
       }
       this.pruneSpaces();
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
     return [...new Set(ids)].map((id) => this.getSpace(id)!);
   }
 
@@ -725,28 +715,18 @@ export class SqliteRepoStore implements RepoStore {
     const stmt = this.db.prepare(
       "INSERT INTO work_items (space_id, key, updated_at, data) VALUES (?, ?, ?, ?) ON CONFLICT (space_id, key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
     );
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const item of items) stmt.run(spaceId, item.key, item.updatedAt, JSON.stringify(item));
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   removeWorkItemsExcept(spaceId: number, keep: ReadonlySet<string>): number {
     const held = this.db.prepare("SELECT key FROM work_items WHERE space_id = ?").all(spaceId) as unknown as { key: string }[];
     const gone = held.filter((row) => !keep.has(row.key));
     const stmt = this.db.prepare("DELETE FROM work_items WHERE space_id = ? AND key = ?");
-    this.db.exec("BEGIN");
-    try {
+    inTransaction(this.db, () => {
       for (const row of gone) stmt.run(spaceId, row.key);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
     return gone.length;
   }
 

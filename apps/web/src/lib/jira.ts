@@ -1,4 +1,4 @@
-import type { BoardColumn, StatusCategory, TrackerSpaceSummary, TrackerStatus } from "@dora-dashboard/core";
+import type { BoardColumn, JiraOutcome, StatusCategory, TrackerSpaceSummary, TrackerStatus } from "@dora-dashboard/core";
 import type { ApiError } from "../api/client";
 
 /** The most spaces the API accepts in one link request. */
@@ -66,9 +66,19 @@ export function isAcceptedReturnTo(value: string): boolean {
   return !/[\s\\]/.test(value) && ![...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
 }
 
+export type { JiraOutcome };
+
+/** Every outcome the consent callback can leave in the `jira` query parameter; a missing one fails to compile. */
+const KNOWN_OUTCOMES: Readonly<Record<JiraOutcome, true>> = {
+  denied: true,
+  error: true,
+  expired: true,
+  misconfigured: true,
+  rate_limited: true,
+};
+
 /** The outcomes the consent callback can leave in the `jira` query parameter. */
-export const JIRA_OUTCOMES = ["denied", "error", "expired", "misconfigured", "rate_limited"] as const;
-export type JiraOutcome = (typeof JIRA_OUTCOMES)[number];
+export const JIRA_OUTCOMES = Object.keys(KNOWN_OUTCOMES) as readonly JiraOutcome[];
 
 /** The query parameter the callback uses to report how consent went. */
 export const JIRA_OUTCOME_PARAM = "jira";

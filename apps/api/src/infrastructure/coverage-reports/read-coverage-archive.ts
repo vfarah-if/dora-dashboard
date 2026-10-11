@@ -1,7 +1,8 @@
-import { Unzip, UnzipInflate, UnzipPassThrough } from "fflate";
+import { Unzip, UnzipInflate, UnzipPassThrough, type UnzipFile } from "fflate";
 import type { CoverageFormat, CoverageReport } from "@dora-dashboard/core";
 import type { ArtefactContents } from "../../interfaces/coverage-source.js";
 import { UpstreamError } from "../../core/errors.js";
+import { joinBytes } from "../join-bytes.js";
 import { parseCobertura } from "./parse-cobertura.js";
 import { parseIstanbulFinal, parseIstanbulSummary } from "./parse-istanbul.js";
 import { parseLcov } from "./parse-lcov.js";
@@ -71,8 +72,11 @@ function looksLikeWholeZip(bytes: Uint8Array): boolean {
 const wrongSize = () => new UpstreamError("A file in the coverage artefact is not the size it declares", 502);
 const overCap = (what: string) => new UpstreamError(`The coverage artefact is over the limit on ${what}`, 502);
 
+/** How a wanted file is read. Cobertura is known only once the text is sniffed, so until then a candidate is `xml`. */
+type FileKind = Exclude<CoverageFormat, "cobertura"> | "xml";
+
 /** The format a file is read as, chosen by its base name alone, or null when it is not a coverage file we read. */
-function formatOf(name: string): CoverageFormat | "xml" | null {
+function formatOf(name: string): FileKind | null {
   const base = name.slice(name.lastIndexOf("/") + 1).toLowerCase();
   if (base === "lcov.info" || base.endsWith(".lcov")) return "lcov";
   if (base === "coverage-final.json") return "istanbul-final";
@@ -94,6 +98,128 @@ const looksLikeCobertura = (text: string): boolean => {
   const head = text.slice(0, SNIFF_CHARS);
   return head.includes("line-rate=") && !head.includes("clover=");
 };
+
+/** A wanted file that ended whole, with how it is to be read. */
+interface WantedFile {
+  kind: FileKind;
+  bytes: Uint8Array;
+}
+
+/** What one read has counted and kept so far. */
+interface Unpacked {
+  /** Each wanted file that ended whole, by its name in the archive. */
+  files: Map<string, WantedFile>;
+  /** Entries looked at. */
+  scanned: number;
+  /** The sizes the wanted entries declare. */
+  declared: number;
+  /** The bytes the wanted entries have actually produced. */
+  produced: number;
+  /** Wanted entries that have started and not yet ended. */
+  open: number;
+}
+
+/** A wanted entry's kind, the most it may unzip to, and the size it declares, which a streamed archive leaves out. */
+interface Wanted {
+  kind: FileKind;
+  limit: number;
+  size: number | undefined;
+}
+
+/** Counts the entry and checks its header against the caps, or returns null when it is not a file to read. */
+function admit(file: UnzipFile, state: Unpacked, limits: Readonly<ArchiveLimits>): Wanted | null {
+  if (++state.scanned > limits.entries) throw overCap("entries");
+  const kind = file.name.endsWith("/") ? null : formatOf(file.name);
+  if (!kind) return null;
+  const limit = kind === "xml" ? limits.xmlFileBytes : limits.fileBytes;
+  const size = file.originalSize;
+  if (size !== undefined) {
+    if (size > limit) throw overCap("the size of one file");
+    state.declared += size;
+    if (state.declared > limits.totalBytes) throw overCap("the total size");
+  }
+  return { kind, limit, size };
+}
+
+/**
+ * Refuses an entry that has produced more than its per-file cap or the size it declared, and a read whose wanted
+ * entries together have produced more than the total cap.
+ */
+function checkProduced(count: number, state: Unpacked, wanted: Wanted, limits: Readonly<ArchiveLimits>): void {
+  if (count > wanted.limit) throw overCap("the size of one file");
+  if (state.produced > limits.totalBytes) throw overCap("the total size");
+  if (wanted.size !== undefined && count > wanted.size) throw wrongSize();
+}
+
+/** Collects the bytes an entry produces, counting them against the caps, and keeps the whole file when it ends. */
+function collect(file: UnzipFile, wanted: Wanted, state: Unpacked, limits: Readonly<ArchiveLimits>): void {
+  const chunks: Uint8Array[] = [];
+  let count = 0;
+  state.open++;
+  file.ondata = (error, chunk, final) => {
+    if (error) throw error;
+    count += chunk.length;
+    state.produced += chunk.length;
+    checkProduced(count, state, wanted, limits);
+    chunks.push(chunk);
+    if (!final) return;
+    if (wanted.size !== undefined && wanted.size > 0 && count !== wanted.size) throw wrongSize();
+    const bytes = joinBytes(chunks, count);
+    chunks.length = 0;
+    state.files.set(file.name, { kind: wanted.kind, bytes });
+    state.open--;
+  };
+  file.start();
+}
+
+/** Feeds the archive to the unzipper in chunks, yielding to the event loop between groups of them. */
+async function feed(unzip: Unzip, bytes: Uint8Array): Promise<void> {
+  let chunksPushed = 0;
+  for (let at = 0; at < bytes.length || at === 0; at += FEED_CHUNK_BYTES) {
+    const end = Math.min(at + FEED_CHUNK_BYTES, bytes.length);
+    unzip.push(bytes.subarray(at, end), end >= bytes.length);
+    if (++chunksPushed % YIELD_EVERY_CHUNKS === 0) await yieldToEventLoop();
+    if (end >= bytes.length) break;
+  }
+}
+
+/** Unzips the archive into the wanted files, held to the caps. Anything but an `UpstreamError` is a corrupt archive. */
+async function unpack(bytes: Uint8Array, limits: Readonly<ArchiveLimits>): Promise<Map<string, WantedFile>> {
+  const state: Unpacked = { files: new Map(), scanned: 0, declared: 0, produced: 0, open: 0 };
+  const unzip = new Unzip((file) => {
+    const wanted = admit(file, state, limits);
+    if (wanted) collect(file, wanted, state, limits);
+  });
+  unzip.register(UnzipInflate);
+  unzip.register(UnzipPassThrough);
+
+  try {
+    if (!looksLikeWholeZip(bytes)) throw new Error("not a zip");
+    await feed(unzip, bytes);
+    // fflate 0.8 raises its own error for an entry the archive cuts short, so this guards a version that would not.
+    if (state.open > 0) throw new Error("incomplete");
+  } catch (error) {
+    if (error instanceof UpstreamError) throw error;
+    throw new UpstreamError("The coverage artefact is not a readable zip archive", 502, { cause: error });
+  }
+  return state.files;
+}
+
+/** The report a file gives, or null when it is XML that is not Cobertura. */
+async function readReport(kind: FileKind, text: string, artefact: string, dir: string): Promise<CoverageReport | null> {
+  if (kind === "lcov") return { format: kind, artefact, dir, files: await parseLcov(text) };
+  if (kind === "istanbul-final") return { format: kind, artefact, dir, files: await parseIstanbulFinal(text) };
+  if (kind === "istanbul-summary") return { format: kind, artefact, dir, files: await parseIstanbulSummary(text) };
+  if (!looksLikeCobertura(text)) return null;
+  const parsed = await parseCobertura(text);
+  return {
+    format: "cobertura",
+    artefact,
+    dir,
+    ...(parsed.sourceRoots.length > 0 ? { sourceRoots: parsed.sourceRoots } : {}),
+    files: parsed.files,
+  };
+}
 
 /**
  * Unzips a downloaded coverage artefact and parses every coverage file in it that this reader knows: lcov, Istanbul
@@ -121,92 +247,20 @@ export async function readCoverageArchive(
   artefact: string,
   limits: Readonly<ArchiveLimits> = ARCHIVE_LIMITS,
 ): Promise<ArtefactContents> {
-  const kinds = new Map<string, CoverageFormat | "xml">();
-  const files = new Map<string, Uint8Array>();
-  let scanned = 0;
-  let declared = 0;
-  let produced = 0;
-  let open = 0;
-
-  const unzip = new Unzip((file) => {
-    if (++scanned > limits.entries) throw overCap("entries");
-    const kind = file.name.endsWith("/") ? null : formatOf(file.name);
-    if (!kind) return;
-    const limit = kind === "xml" ? limits.xmlFileBytes : limits.fileBytes;
-    const size = file.originalSize;
-    if (size !== undefined) {
-      if (size > limit) throw overCap("the size of one file");
-      declared += size;
-      if (declared > limits.totalBytes) throw overCap("the total size");
-    }
-    const chunks: Uint8Array[] = [];
-    let count = 0;
-    open++;
-    file.ondata = (error, chunk, final) => {
-      if (error) throw error;
-      count += chunk.length;
-      produced += chunk.length;
-      if (count > limit) throw overCap("the size of one file");
-      if (produced > limits.totalBytes) throw overCap("the total size");
-      if (size !== undefined && count > size) throw wrongSize();
-      chunks.push(chunk);
-      if (!final) return;
-      if (size !== undefined && size > 0 && count !== size) throw wrongSize();
-      const whole = new Uint8Array(count);
-      let at = 0;
-      for (const part of chunks) {
-        whole.set(part, at);
-        at += part.length;
-      }
-      chunks.length = 0;
-      kinds.set(file.name, kind);
-      files.set(file.name, whole);
-      open--;
-    };
-    file.start();
-  });
-  unzip.register(UnzipInflate);
-  unzip.register(UnzipPassThrough);
-
-  try {
-    if (!looksLikeWholeZip(bytes)) throw new Error("not a zip");
-    let chunksPushed = 0;
-    for (let at = 0; at < bytes.length || at === 0; at += FEED_CHUNK_BYTES) {
-      const end = Math.min(at + FEED_CHUNK_BYTES, bytes.length);
-      unzip.push(bytes.subarray(at, end), end >= bytes.length);
-      if (++chunksPushed % YIELD_EVERY_CHUNKS === 0) await yieldToEventLoop();
-      if (end >= bytes.length) break;
-    }
-    if (open > 0) throw new Error("incomplete");
-  } catch (error) {
-    if (error instanceof UpstreamError) throw error;
-    throw new UpstreamError("The coverage artefact is not a readable zip archive", 502, { cause: error });
-  }
+  const files = await unpack(bytes, limits);
 
   const decoder = new TextDecoder();
   const reports: CoverageReport[] = [];
   const unreadable: string[] = [];
   let empty = 0;
   for (const name of [...files.keys()].sort()) {
-    const text = decoder.decode(files.get(name));
+    const { kind, bytes: content } = files.get(name)!;
+    // Dropped as soon as it is decoded, so the archive's files are not all held twice.
     files.delete(name);
+    const text = decoder.decode(content);
     const dir = directoryOf(name);
-    const kind = kinds.get(name)!;
     try {
-      let report: CoverageReport | null = null;
-      if (kind === "lcov") report = { format: kind, artefact, dir, files: await parseLcov(text) };
-      else if (kind === "istanbul-final") report = { format: kind, artefact, dir, files: await parseIstanbulFinal(text) };
-      else if (kind === "istanbul-summary") report = { format: kind, artefact, dir, files: await parseIstanbulSummary(text) };
-      else if (kind === "xml" && looksLikeCobertura(text)) {
-        const parsed = await parseCobertura(text);
-        report = {
-          format: "cobertura",
-          artefact,
-          dir,
-          ...(parsed.sourceRoots.length > 0 ? { sourceRoots: parsed.sourceRoots } : {}),
-          files: parsed.files,
-        };
-      }
+      const report = await readReport(kind, text, artefact, dir);
       if (report && report.files.length > 0) reports.push(report);
       else if (report) empty++;
     } catch (error) {
