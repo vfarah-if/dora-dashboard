@@ -183,6 +183,15 @@ describe("linkIssues", () => {
       expect(linkedTo(found, 22)).toEqual([30]);
     });
 
+    it("links an issue closed at the same instant the pull request was created", () => {
+      const found = linkIssues(
+        repo,
+        [closedBefore],
+        [pr({ number: 30, headRef: "deps/node-22", createdAt: "2026-09-02T09:00:00Z" })],
+      );
+      expect(linkedTo(found, 22)).toEqual([30]);
+    });
+
     it("links an issue that was reopened and closed again after the pull request was created", () => {
       const again = { ...closedBefore, closedAt: "2026-09-05T09:00:00Z" };
       const found = linkIssues(repo, [again], [pr({ number: 30, headRef: "deps/node-22", createdAt: opened })]);

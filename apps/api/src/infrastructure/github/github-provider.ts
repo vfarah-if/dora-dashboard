@@ -1,7 +1,7 @@
 import type { DeployRun, OpenPullRequest, PullRequest, RequestedReviewer, Review } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
-import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
+import { API, askForPage, type Fetch, request } from "./github-http.js";
 
 const PULL_REQUESTS_QUERY = `
 query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
@@ -244,20 +244,14 @@ export class GitHubProvider implements SourceProvider {
     };
   }
 
-  /** A page of pull requests, asked for again at a smaller size when the gateway gives up on the first. */
-  private async pullRequestPage(token: string, owner: string, name: string, cursor: string | null): Promise<GqlPage> {
+  /** A page of pull requests, each with its reviews and files, asked for again smaller when the gateway gives up. */
+  private pullRequestPage(token: string, owner: string, name: string, cursor: string | null): Promise<GqlPage> {
     const ask = (first: number) =>
       request<GqlPage>(this.http, token, `${API}/graphql`, {
         method: "POST",
         body: JSON.stringify({ query: PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
       });
-    try {
-      return await ask(PAGE_SIZE);
-    } catch (error) {
-      // A page of pull requests, each with reviews and files, can time out at the gateway. A smaller page usually fits.
-      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
-      return ask(RETRY_PAGE_SIZE);
-    }
+    return askForPage(ask, PAGE_SIZE, RETRY_PAGE_SIZE);
   }
 
   /**
@@ -321,23 +315,14 @@ export class GitHubProvider implements SourceProvider {
     return { pullRequests: found, truncated: true };
   }
 
-  private async openPage(
-    token: string,
-    owner: string,
-    name: string,
-    cursor: string | null,
-  ): Promise<GqlPage<GqlOpenPullRequest>> {
+  /** A page of open pull requests, asked for again smaller when the gateway gives up. */
+  private openPage(token: string, owner: string, name: string, cursor: string | null): Promise<GqlPage<GqlOpenPullRequest>> {
     const ask = (first: number) =>
       request<GqlPage<GqlOpenPullRequest>>(this.http, token, `${API}/graphql`, {
         method: "POST",
         body: JSON.stringify({ query: OPEN_PULL_REQUESTS_QUERY, variables: { owner, name, cursor, first } }),
       });
-    try {
-      return await ask(OPEN_PAGE_SIZE);
-    } catch (error) {
-      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
-      return ask(OPEN_RETRY_PAGE_SIZE);
-    }
+    return askForPage(ask, OPEN_PAGE_SIZE, OPEN_RETRY_PAGE_SIZE);
   }
 
   async fetchDeployRuns(token: string, owner: string, name: string, workflow: string): Promise<DeployRun[]> {

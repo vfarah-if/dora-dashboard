@@ -368,6 +368,12 @@ export interface WorkItem {
 /** A stable code the API adds to an error body when the web is expected to act on the error, not just show it. */
 export type ApiErrorCode = "jira_unauthorised";
 
+/**
+ * How a Jira consent ended, as the API's callback writes it into the `jira` query parameter of the page it sends the
+ * person back to. The web shows a notice only for an outcome it knows, so the two sides share this one list.
+ */
+export type JiraOutcome = "denied" | "error" | "expired" | "misconfigured" | "rate_limited";
+
 /** The body of an API error: a message fit to show the person, and a code when there is one to act on. */
 export interface ApiErrorBody {
   error: string;

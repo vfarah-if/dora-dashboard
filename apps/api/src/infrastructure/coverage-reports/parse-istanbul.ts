@@ -120,14 +120,21 @@ export async function parseIstanbulFinal(text: string): Promise<CoverageFileRepo
 const countOf = (value: unknown): CoverageCount | null => (isObject(value) ? coverageCount(value.covered, value.total) : null);
 
 /** The count with more covered, then the larger total; either when the other is missing. */
-const better = (a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined =>
-  !a || !b ? (a ?? b) : b.covered > a.covered || (b.covered === a.covered && b.total > a.total) ? b : a;
+function better(a: CoverageCount | undefined, b: CoverageCount): CoverageCount;
+function better(a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined;
+function better(a: CoverageCount | undefined, b: CoverageCount | undefined): CoverageCount | undefined {
+  if (!a || !b) return a ?? b;
+  return b.covered > a.covered || (b.covered === a.covered && b.total > a.total) ? b : a;
+}
+
+/** The counts a summary entry gives for one file. */
+type SummaryCounts = Pick<CoverageFileReport, "lines" | "functions" | "branches">;
 
 /**
- * The counts one summary entry gives, or null when its line count is impossible. An empty function or branch count is
- * left out.
+ * The counts one summary entry gives, or null when its line count is impossible. An impossible or empty function or
+ * branch count is left out.
  */
-function summaryOf(entry: Node): Pick<CoverageFileReport, "lines" | "functions" | "branches"> | null {
+function summaryOf(entry: Node): SummaryCounts | null {
   const lines = countOf(entry.lines);
   if (!lines) return null;
   const functions = countOf(entry.functions);
@@ -140,12 +147,8 @@ function summaryOf(entry: Node): Pick<CoverageFileReport, "lines" | "functions" 
 }
 
 /** The file with each of its counts the better of the earlier entry's and the incoming one's. */
-function mergeSummary(
-  path: string,
-  before: CoverageFileReport | undefined,
-  incoming: NonNullable<ReturnType<typeof summaryOf>>,
-): CoverageFileReport {
-  const file: CoverageFileReport = { path, lines: better(before?.lines, incoming.lines)! };
+function mergeSummary(path: string, before: CoverageFileReport | undefined, incoming: SummaryCounts): CoverageFileReport {
+  const file: CoverageFileReport = { path, lines: better(before?.lines, incoming.lines) };
   const mergedFunctions = better(before?.functions, incoming.functions);
   const mergedBranches = better(before?.branches, incoming.branches);
   if (mergedFunctions) file.functions = mergedFunctions;

@@ -228,7 +228,7 @@ function mergeFile(a: AlignedFile, b: AlignedFile): AlignedFile {
 
 /**
  * A file report with every impossible figure removed, or null when its line count is impossible. Ranges that are not
- * whole, ascending line numbers, or whose lines disagree with the line count, are dropped and the totals kept.
+ * whole line numbers from 1, or whose lines disagree with the line count, are dropped and the totals kept.
  */
 function trusted(file: CoverageFileReport): CoverageFileReport | null {
   const lines = coverageCount(file.lines?.covered, file.lines?.total);
@@ -243,7 +243,11 @@ function trusted(file: CoverageFileReport): CoverageFileReport | null {
   return out;
 }
 
-/** True when both lists hold whole, ascending line numbers whose lines agree with the line count. */
+/**
+ * True when every range in both lists runs from a whole line number of 1 or more to one no lower, and the covered,
+ * uncovered and combined lines, each counted once, match the line count. The lists need not be sorted, and the
+ * combined count rules out a line that is both covered and uncovered.
+ */
 function rangesAgree(ranges: LineRanges, lines: CoverageCount): boolean {
   return (
     Array.isArray(ranges.covered) &&
@@ -392,14 +396,20 @@ function vote(votes: Votes, keys: Set<string>, transform: Transform): void {
   else votes.set(key, { transform, count: 1 });
 }
 
-/** A path held back because its best matches are too many files to enumerate, with the votes of the entry it belongs to. */
+/**
+ * A path held back because its best matches are too many files to enumerate, with the transforms the entry it belongs
+ * to has already voted for, so that the entry never votes twice for one.
+ */
 interface HeldPath {
   variant: string[];
   keys: Set<string>;
   candidates: string[][];
 }
 
-/** One vote for the transform onto each candidate that shares a trailing segment with `variant`. */
+/**
+ * One vote for the transform onto each candidate that shares a trailing segment with `variant`, skipping a transform
+ * the entry, through `keys`, has voted for already.
+ */
 function voteForCandidates(votes: Votes, keys: Set<string>, variant: readonly string[], candidates: readonly string[][]): void {
   for (const known of candidates) {
     const transform = transformBetween(variant, known);
@@ -485,13 +495,16 @@ function bestTransform(entries: readonly Entry[], index: KnownIndex, dir: string
   return best ? best.transform : null;
 }
 
-/** True when the report's layout places the path under the root it strips, so the path is not a file here. */
+/**
+ * True when the winning layout strips a root and `variant` starts with it. It is asked only once that layout has placed
+ * no variant on a known file, so such a path sits in the checkout but is not a file of this repository.
+ */
 const placedByLayout = (variant: readonly string[], winner: Transform | null) =>
   winner !== null && winner.strip !== "" && apply(variant, winner) !== "";
 
 /**
- * Adds to `found` the known files that end with `variant`, then the tails of `variant` that are known files, and stops
- * as soon as `found` holds a second file.
+ * Adds to `found` the known files that end with `variant`, then, unless the winning layout already places `variant`,
+ * each shorter tail of at least two segments that is a known file, and stops as soon as `found` holds a second file.
  */
 function addSuffixMatches(found: Set<string>, variant: readonly string[], index: KnownIndex, winner: Transform | null): void {
   for (const known of index.suffixes.get(variant.join("/")) ?? []) {
@@ -564,6 +577,8 @@ interface Placed {
 function place(placed: Placed, report: CoverageReport, entry: Entry, target: string | null): void {
   if (!target) {
     const path = entry.variants[entry.variants.length - 1]!.join("/");
+    // Keyed by where the report sits as well as by path, because the same relative path in two report directories can
+    // be two different files.
     placed.unmatched.set(`${report.artefact}\u0000${report.dir}\u0000${path}`, entry.variants);
     return;
   }
@@ -586,8 +601,6 @@ function place(placed: Placed, report: CoverageReport, entry: Entry, target: str
  */
 export function alignCoverage(reports: readonly CoverageReport[], knownFiles: readonly string[]): AlignedCoverage {
   const index = indexKnown(new Set(knownFiles));
-  // Unmatched entries are told apart by where the report sits as well as by path: the same relative path in two report
-  // directories can be two different files.
   const placed: Placed = { files: new Map(), unmatched: new Map() };
   const winners: Transform[] = [];
   for (const report of bestFormatPerDirectory(reports)) {

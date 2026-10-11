@@ -14,7 +14,7 @@ import {
 } from "../core/errors.js";
 
 /** Checked in order, so the first class an error is an instance of decides its status. */
-const STATUS_BY_ERROR: ReadonlyArray<readonly [abstract new (...args: never[]) => Error, number]> = [
+const STATUS_BY_ERROR: ReadonlyArray<readonly [abstract new (...args: never[]) => AppError, number]> = [
   [ValidationError, 400],
   [UnauthorisedError, 401],
   [ForbiddenError, 403],

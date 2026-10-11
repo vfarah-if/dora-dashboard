@@ -1,4 +1,6 @@
+import { once } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { CodeSnapshot, PullRequest } from "@dora-dashboard/core";
@@ -12,6 +14,9 @@ import { FsWorkspaceReader } from "../src/infrastructure/fs/fs-workspace-reader.
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { CodeHealthService } from "../src/services/code-health-service.js";
 import { config, FakeCli, FakeCodeAnalyser, FakeProvider, FakeSourceCheckout, FakeWorkspaceReader, fn, pr } from "./fakes.js";
+
+/** Root reads and lists whatever the mode says, so a test that relies on a permission refusal proves nothing there. */
+const runningAsRoot = process.getuid?.() === 0;
 
 describe("FsWorkspaceReader", () => {
   let root: string;
@@ -68,6 +73,38 @@ describe("FsWorkspaceReader", () => {
 
   it("does not read through a symlinked directory", async () => {
     expect(await reader.read(root, "linked-dir/secret.txt", 1000)).toBeNull();
+  });
+
+  it("returns null for a missing directory on the way and for a path below a file", async () => {
+    expect(await reader.read(root, "gone/x.json", 1000)).toBeNull();
+    expect(await reader.read(root, "package.json/x", 1000)).toBeNull();
+  });
+
+  it("returns null for a socket without opening it", async () => {
+    const server = createServer().listen(join(root, "ipc.sock"));
+    await once(server, "listening");
+    try {
+      expect(await reader.read(root, "ipc.sock", 1000)).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it.skipIf(runningAsRoot)("rejects, rather than reporting no file, when a file is there but cannot be read", async () => {
+    chmodSync(join(root, "package.json"), 0o000);
+    try {
+      await expect(reader.read(root, "package.json", 1000)).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      chmodSync(join(root, "package.json"), 0o644);
+    }
+  });
+
+  it("rejects when the checkout itself cannot be listed, without naming its path", async () => {
+    const error: unknown = await reader.list(join(root, "gone")).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("The checkout could not be listed");
+    expect((error as Error).cause).toMatchObject({ code: "ENOENT" });
   });
 
   it.each(["../secret.txt", "src/../../secret.txt", "/etc/hosts", "a\0b"])("refuses the path %j", async (path) => {
@@ -187,7 +224,7 @@ describe("FsWorkspaceReader limits", () => {
     expect(await new FsWorkspaceReader().list(root)).toEqual(["pkg/src/z"]);
   });
 
-  it("carries on past a directory it cannot read", async () => {
+  it.skipIf(runningAsRoot)("carries on past a directory it cannot read", async () => {
     mkdirSync(join(root, "locked"));
     writeFileSync(join(root, "locked", "hidden"), "x");
     writeFileSync(join(root, "open"), "x");

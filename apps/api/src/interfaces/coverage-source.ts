@@ -11,7 +11,10 @@ export interface ArtefactSearch {
   complete: boolean;
 }
 
-/** What one artefact held. A file that cannot be read costs only itself, so the rest of the artefact still counts. */
+/**
+ * What one artefact held, or what several held together. A file that cannot be read costs only itself, so the rest of
+ * the artefact still counts.
+ */
 export interface ArtefactContents {
   /** One report for each coverage file that parsed to at least one file. */
   reports: CoverageReport[];

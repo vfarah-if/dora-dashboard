@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { AppError, NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
+import { joinBytes } from "../join-bytes.js";
 
 export const API = "https://api.github.com";
 
@@ -87,17 +88,6 @@ function readFailure(error: unknown): Error {
   return new UpstreamError("The download of the artefact was interrupted", 502, { cause: error });
 }
 
-/** The chunks of a body joined into one array of `size` bytes. */
-function joined(chunks: Uint8Array[], size: number): Uint8Array {
-  const bytes = new Uint8Array(size);
-  let at = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  return bytes;
-}
-
 /** Reads a body into memory, refusing at once when it declares more than `maxBytes` and stopping when it streams more. */
 async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array> {
   if (declaresMoreThan(response, maxBytes)) {
@@ -120,7 +110,7 @@ async function readCapped(response: Response, maxBytes: number): Promise<Uint8Ar
     await reader.cancel().catch(() => undefined);
     throw readFailure(error);
   }
-  return joined(chunks, size);
+  return joinBytes(chunks, size);
 }
 
 /** The four bytes of an IPv4 address as a number list, or null when `host` is not one. */
@@ -276,4 +266,17 @@ export async function download(http: Fetch, token: string, url: string, maxBytes
 }
 
 /** Gateway statuses worth one retry with a smaller page. */
-export const RETRYABLE = new Set([502, 504]);
+const RETRYABLE = new Set([502, 504]);
+
+/**
+ * Asks for a page of `size`, and once more at `retrySize` when the gateway gives up on the first. A page whose items
+ * each carry much detail can time out at the gateway, and a smaller page usually fits. Any other failure stands.
+ */
+export async function askForPage<T>(ask: (first: number) => Promise<T>, size: number, retrySize: number): Promise<T> {
+  try {
+    return await ask(size);
+  } catch (error) {
+    if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
+    return ask(retrySize);
+  }
+}

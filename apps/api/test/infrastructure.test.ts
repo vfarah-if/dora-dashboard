@@ -6,6 +6,7 @@ import { loadConfig } from "../src/core/config.js";
 import { NotFoundError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { GhCliTokenSource } from "../src/infrastructure/auth/gh-cli-token-source.js";
 import { MemorySessionStore } from "../src/infrastructure/auth/memory-session-store.js";
+import { askForPage } from "../src/infrastructure/github/github-http.js";
 import { GitHubProvider, parseCoAuthors } from "../src/infrastructure/github/github-provider.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import { FakeProvider, pr, run } from "./fakes.js";
@@ -50,6 +51,46 @@ describe("parseCoAuthors", () => {
     expect(parseCoAuthors("Co-Authored-By: Claude <a@example.com>\nCo-Authored-By: Claude <b@example.com>")).toEqual(["Claude"]);
     expect(parseCoAuthors("Fix widgets\n\nMentions co-authored-by: in prose")).toEqual([]);
     expect(parseCoAuthors("")).toEqual([]);
+  });
+});
+
+describe("askForPage", () => {
+  /** An `ask` that answers each call in turn from `answers`, recording the page size it was asked for. */
+  const asker = (...answers: (string | Error)[]) => {
+    const sizes: number[] = [];
+    const ask = async (first: number) => {
+      sizes.push(first);
+      const answer = answers[sizes.length - 1]!;
+      if (answer instanceof Error) throw answer;
+      return answer;
+    };
+    return { ask, sizes };
+  };
+
+  it.each([502, 504])("asks once more at the smaller size after a %i from the gateway", async (status) => {
+    const { ask, sizes } = asker(new UpstreamError("gateway gave up", status), "smaller page");
+
+    expect(await askForPage(ask, 50, 20)).toBe("smaller page");
+    expect(sizes).toEqual([50, 20]);
+  });
+
+  it.each([
+    ["a 500", new UpstreamError("GitHub answered 500", 500)],
+    ["a refused token", new UnauthorisedError("Bad credentials")],
+    ["a failure that is not GitHub's", new TypeError("fetch failed")],
+  ])("lets %s through without asking again", async (_, failure) => {
+    const { ask, sizes } = asker(failure);
+
+    await expect(askForPage(ask, 50, 20)).rejects.toBe(failure);
+    expect(sizes).toEqual([50]);
+  });
+
+  it("raises the retry's own failure when the smaller page fails too", async () => {
+    const second = new UpstreamError("gateway gave up again", 504);
+    const { ask, sizes } = asker(new UpstreamError("gateway gave up", 502), second);
+
+    await expect(askForPage(ask, 50, 20)).rejects.toBe(second);
+    expect(sizes).toEqual([50, 20]);
   });
 });
 
@@ -346,6 +387,15 @@ describe("GitHubProvider", () => {
       status: 403,
     });
     expect(rejected).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 401, since a smaller page cannot cure a refused credential", async () => {
+    const http = vi.fn(async () => new Response(null, { status: 401 }));
+
+    await expect(new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toBeInstanceOf(
+      UnauthorisedError,
+    );
+    expect(http).toHaveBeenCalledTimes(1);
   });
 
   it("asks GitHub for the first 100 changed files of each pull request, with a cursor for the rest", async () => {

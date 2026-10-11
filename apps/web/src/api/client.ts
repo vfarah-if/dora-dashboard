@@ -37,6 +37,10 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+/** What a failure to reach the API, or to finish reading its answer, throws: an abort untouched, else a network `ApiError`. */
+const networkFailure = (error: unknown): Error =>
+  error instanceof DOMException && error.name === "AbortError" ? error : new ApiError(0, copy.common.networkFailed);
+
 /** Sends the request. An abort passes through untouched; any other failure to reach the API is a network `ApiError`. */
 async function send(path: string, options: RequestOptions): Promise<Response> {
   try {
@@ -51,8 +55,16 @@ async function send(path: string, options: RequestOptions): Promise<Response> {
       signal: options.signal,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError(0, copy.common.networkFailed);
+    throw networkFailure(error);
+  }
+}
+
+/** Reads the body as text. A connection that drops part way through fails as one that never connected does. */
+async function readText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch (error) {
+    throw networkFailure(error);
   }
 }
 
@@ -73,7 +85,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (response.status === 204) return undefined as T;
 
-  const body = parseBody(await response.text(), response);
+  const body = parseBody(await readText(response), response);
   if (!response.ok) throw errorFrom(body, response.status);
   return body as T;
 }

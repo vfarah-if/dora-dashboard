@@ -147,7 +147,10 @@ function fileFor(merged: Map<string, Merged>, path: string): Merged {
   return file;
 }
 
-/** A merged file as a report: its line ranges, and its function and branch counts when it has any. */
+/**
+ * A merged file as a report, with its line count, its line ranges when they fit under `MAX_RANGES_PER_FILE`, and its
+ * function and branch counts when it has any.
+ */
 function toReport(path: string, file: Merged): CoverageFileReport {
   const ranges = lineRanges(file.hits);
   const report: CoverageFileReport = { path, lines: ranges.lines };

@@ -2,10 +2,14 @@ import { coverageCount, type CoverageCount, type CoverageFileReport } from "@dor
 import { addHit, lineRanges } from "./line-ranges.js";
 import { YIELD_EVERY, yieldToEventLoop } from "./yield-loop.js";
 
+/** The tags that give a record's totals: lines found and hit, functions found and hit, branches found and hit. */
+const TOTAL_TAGS = ["LF", "LH", "FNF", "FNH", "BRF", "BRH"] as const;
+type TotalTag = (typeof TOTAL_TAGS)[number];
+
 interface Tally {
   hits: Map<number, number>;
   /** The `LF` and `LH` totals, `FNF` and `FNH`, `BRF` and `BRH` as written, until the record ends and they are checked. */
-  raw: { [tag: string]: number };
+  raw: Partial<Record<TotalTag, number>>;
   /** The checked totals, null when a report did not give a pair or gave an impossible one. */
   lines: CoverageCount | null;
   functions: CoverageCount | null;
@@ -50,7 +54,7 @@ function functionName(value: string): string {
 
 /** Checks the totals a record gave, once the record is complete. A pair that is impossible is dropped. */
 function seal(record: Tally): void {
-  const pair = (covered: string, total: string) => {
+  const pair = (covered: TotalTag, total: TotalTag) => {
     const [c, t] = [record.raw[covered], record.raw[total]];
     return c === undefined || t === undefined ? null : coverageCount(c, t);
   };
@@ -97,7 +101,7 @@ function toReport(path: string, record: Tally): CoverageFileReport {
   return file;
 }
 
-type Reader = (record: Tally, value: string, tag: string) => void;
+type Reader = (record: Tally, value: string) => void;
 
 const readLineHit: Reader = (record, value) => {
   const [number, count] = value.split(",");
@@ -106,9 +110,12 @@ const readLineHit: Reader = (record, value) => {
   if (at !== null && hits !== null) addHit(record.hits, at, hits);
 };
 
-const readTotal: Reader = (record, value, tag) => {
-  record.raw[tag] = exact(value);
-};
+/** Keeps the total that `tag` gives, as written, for `seal` to check once the record ends. */
+const readTotal =
+  (tag: TotalTag): Reader =>
+  (record, value) => {
+    record.raw[tag] = exact(value);
+  };
 
 const readFunction: Reader = (record, value) => {
   record.functionNames.add(functionName(value));
@@ -130,9 +137,9 @@ const readBranchArm: Reader = (record, value) => {
 };
 
 /** What each tag inside a record does to it. `SF` and `end_of_record` change which record is open, so they are not here. */
-const READERS = new Map<string, Reader>([
+const READERS: ReadonlyMap<string, Reader> = new Map<string, Reader>([
   ["DA", readLineHit],
-  ...["LF", "LH", "FNF", "FNH", "BRF", "BRH"].map((tag): [string, Reader] => [tag, readTotal]),
+  ...TOTAL_TAGS.map((tag): [string, Reader] => [tag, readTotal(tag)]),
   ["FN", readFunction],
   ["FNDA", readFunctionRuns],
   ["BRDA", readBranchArm],
@@ -179,7 +186,7 @@ export async function parseLcov(text: string): Promise<CoverageFileReport[]> {
       path = normalise(value);
       continue;
     }
-    READERS.get(tag)?.(current, value, tag);
+    READERS.get(tag)?.(current, value);
   }
   await flush();
   return [...records].map(([name, record]) => toReport(name, record));

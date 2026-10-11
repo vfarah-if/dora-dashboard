@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type {
   JiraConnection,
+  JiraOutcome,
   LinkedSpace,
   SpaceDescription,
   SpaceListing,
@@ -69,6 +70,12 @@ function withParam(path: string, name: string, value: string | null): string {
   return `${pairs.length === 0 ? base : `${base}?${pairs.join("&")}`}${fragment}`;
 }
 
+/** The query parameter that tells the page the person returns to how the Jira consent went. */
+const OUTCOME_PARAM = "jira";
+
+/** `path` with its Jira outcome set, or removed when `outcome` is null. */
+const withOutcome = (path: string, outcome: JiraOutcome | null): string => withParam(path, OUTCOME_PARAM, outcome);
+
 /** At most 20 requests a minute from one client to a route that starts or finishes a consent. */
 const CONSENT_RATE_LIMIT = { max: 20, timeWindow: "1 minute" };
 
@@ -82,17 +89,30 @@ type CallbackFailure =
   | "exchange_failed"
   | "misconfigured";
 
+/** The query Atlassian sends the person back with: a code to exchange, the state, or an error instead of a code. */
+interface CallbackQuery {
+  code?: string;
+  state?: string;
+  error?: string;
+}
+
+/** The state the start route issued, and when, as read back from its signed cookie. */
+interface IssuedState {
+  state: string;
+  issuedAt: number;
+}
+
 /**
- * What the callback's checks decided: why it is turned away, with the `jira` outcome the page shows (default `error`)
- * and detail for the log, or the code to connect with.
+ * What the callback's checks decided: why it is turned away, with the outcome the page shows and detail for the log,
+ * or the code to connect with.
  */
 type CallbackCheck =
-  { refused: CallbackFailure; outcome?: string; detail?: Record<string, unknown> } | { refused: null; code: string };
+  { refused: CallbackFailure; outcome: JiraOutcome; detail?: Record<string, unknown> } | { refused: null; code: string };
 
 /** Runs the callback's checks in this order and stops at the first that fails. A state that passes is used up. */
 function checkCallback(
-  { code, state, error }: { code?: string; state?: string; error?: string },
-  issued: { state: string; issuedAt: number } | null,
+  { code, state, error }: CallbackQuery,
+  issued: IssuedState | null,
   now: () => number,
   useState: (state: string) => boolean,
 ): CallbackCheck {
@@ -103,7 +123,7 @@ function checkCallback(
       detail: { providerError: error },
     };
   }
-  if (!code) return { refused: "missing_code" };
+  if (!code) return { refused: "missing_code", outcome: "error" };
   // No cookie means it never arrived or has gone: consent took over 10 minutes, the API restarted, or the browser
   // used a different host from WEB_ORIGIN.
   if (!state || !issued) return { refused: "state_missing", outcome: "expired" };
@@ -111,7 +131,7 @@ function checkCallback(
   // Two tabs each starting consent leave the later cookie standing, so the earlier tab's return is stale, not wrong.
   if (!sameSecret(issued.state, state)) return { refused: "state_mismatch", outcome: "expired" };
   // A captured cookie and state could otherwise be replayed until the cookie's issue time lapses.
-  if (!useState(state)) return { refused: "state_reused" };
+  if (!useState(state)) return { refused: "state_reused", outcome: "error" };
   return { refused: null, code };
 }
 
@@ -123,7 +143,7 @@ function stateCookieValue(state: string, issuedAt: number): string {
   return `${state}.${issuedAt}`;
 }
 
-function readStateCookie(value: string | null): { state: string; issuedAt: number } | null {
+function readStateCookie(value: string | null): IssuedState | null {
   if (!value) return null;
   const dot = value.lastIndexOf(".");
   const issuedAt = Number(value.slice(dot + 1));
@@ -154,7 +174,7 @@ function safeReturnTo(value: string | null | undefined): string | null {
  */
 function navigationErrorHandler(config: Config) {
   return (error: FastifyError | Error, request: FastifyRequest, reply: FastifyReply): FastifyReply => {
-    const back = (outcome: string) => reply.redirect(`${config.webOrigin}${withParam(DEFAULT_RETURN, "jira", outcome)}`);
+    const back = (outcome: JiraOutcome) => reply.redirect(`${config.webOrigin}${withOutcome(DEFAULT_RETURN, outcome)}`);
     // Only why, never the query: the callback's carries a one-time code.
     // Not signed in: the dashboard's own sign-in takes over from its front page.
     if (error instanceof UnauthorisedError) {
@@ -174,8 +194,8 @@ function navigationErrorHandler(config: Config) {
   };
 }
 
-/** Remembers each state used, so a replay of one is refused. */
-function stateUser(now: () => number): (state: string) => boolean {
+/** Uses up a state, answering false for one already used, so a replay of it is refused. */
+function oneTimeStates(now: () => number): (state: string) => boolean {
   // States already used, with when each stops being worth remembering; the cookie that carried one lives 10 minutes.
   const usedStates = new Map<string, number>();
   return (state) => {
@@ -191,7 +211,7 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
   const { guard, config, authorisation, auth, tracker, spaceReports } = deps;
   const now = deps.now ?? Date.now;
   const navigationErrors = navigationErrorHandler(config);
-  const useState = stateUser(now);
+  const useState = oneTimeStates(now);
   const sameOrigin = requireSameOrigin(config);
   const cookie = {
     path: "/",
@@ -220,7 +240,7 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
     },
   );
 
-  app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
+  app.get<{ Querystring: CallbackQuery }>(
     "/api/auth/jira/callback",
     {
       preHandler: guard,
@@ -233,13 +253,13 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
       const returnTo = safeReturnTo(signedCookie(request, RETURN_COOKIE)) ?? DEFAULT_RETURN;
       reply.clearCookie(STATE_COOKIE, { path: "/" });
       reply.clearCookie(RETURN_COOKIE, { path: "/" });
-      const failed = (reason: CallbackFailure, outcome = "error", detail?: Record<string, unknown>) => {
+      const failed = (reason: CallbackFailure, outcome: JiraOutcome, detail?: Record<string, unknown>) => {
         // Never the code, the state or a token; only why it failed. A refused app credential is the operator's to fix.
         // A failure that is no AppError is a bug in this dashboard, not something Atlassian or the person did.
         const bug = reason === "exchange_failed" && !(detail?.["err"] instanceof AppError);
         const log = reason === "misconfigured" || bug ? request.log.error : request.log.warn;
         log.call(request.log, { reason, ...detail }, "jira connection failed");
-        return reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", outcome)}`);
+        return reply.redirect(`${config.webOrigin}${withOutcome(returnTo, outcome)}`);
       };
       const check = checkCallback(request.query, issued, now, useState);
       if (check.refused !== null) return failed(check.refused, check.outcome, check.detail);
@@ -250,7 +270,7 @@ export function registerJiraRoutes(app: FastifyInstance, deps: JiraRouteDeps): v
         return failed("exchange_failed", "error", { err });
       }
       // A path that still carries an earlier jira=error would keep showing the failure banner after a success.
-      return reply.redirect(`${config.webOrigin}${withParam(returnTo, "jira", null)}`);
+      return reply.redirect(`${config.webOrigin}${withOutcome(returnTo, null)}`);
     },
   );
 

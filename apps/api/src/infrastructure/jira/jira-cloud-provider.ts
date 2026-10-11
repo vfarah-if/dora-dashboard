@@ -255,8 +255,8 @@ function searchJql(spaceKey: string, updatedSince: string | null): string {
 }
 
 /**
- * Display names by account id for the people assigned to `issues`. Names are returned beside the items, never on them,
- * so a work item cannot leak one by accident. Email is not requested.
+ * Display names by account id for the people assigned to `issues`, and nothing else about them, so no email address is
+ * kept. The page returns these names beside its items, never on them, so a work item cannot leak one by accident.
  */
 function assigneeNames(issues: RawIssue[]): Record<string, string> {
   const people: Record<string, string> = {};

@@ -7,7 +7,7 @@ import {
   type Repo,
 } from "@dora-dashboard/core";
 import { AppError, UnauthorisedError } from "../core/errors.js";
-import type { CoverageSource } from "../interfaces/coverage-source.js";
+import type { ArtefactContents, CoverageSource } from "../interfaces/coverage-source.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
@@ -89,7 +89,7 @@ export class CoverageService {
   }
 
   /** Reads each artefact of the run in turn, gathering what they hold. */
-  private async readArtefacts(token: string, repo: Repo, run: CoverageRun) {
+  private async readArtefacts(token: string, repo: Repo, run: CoverageRun): Promise<ArtefactContents> {
     const reports: CoverageReport[] = [];
     const unreadable: string[] = [];
     let empty = 0;

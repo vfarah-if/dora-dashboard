@@ -222,8 +222,11 @@ function total(counts: readonly CoverageCount[]): CoverageShare | null {
   return all === 0 ? null : { covered, total: all, share: covered / all };
 }
 
+/** The area a file belongs to, or null when it is in none. */
+type AreaOf = ReturnType<typeof areaLocator>;
+
 /** A function with its area and the share of its own lines that ran, which needs `endLine` and a report with line detail. */
-function functionRow(f: FunctionMetrics, aligned: AlignedCoverage | null, areaOf: (file: string) => string | null): FunctionRow {
+function functionRow(f: FunctionMetrics, aligned: AlignedCoverage | null, areaOf: AreaOf): FunctionRow {
   const lines = f.endLine === undefined || !aligned ? null : linesWithin(aligned.files.get(f.file), f.startLine, f.endLine);
   return { ...f, area: areaOf(f.file), coverage: lines && lines.total > 0 ? lines.covered / lines.total : null };
 }
@@ -241,7 +244,7 @@ export interface PreparedCodeDetail {
   readonly mode: AreaMode;
   readonly areas: Capped<AreaSummary>;
   readonly areaPaths: ReadonlySet<string>;
-  readonly areaOf: (file: string) => string | null;
+  readonly areaOf: AreaOf;
   readonly functionsByArea: ReadonlyMap<string | null, readonly FunctionMetrics[]>;
   readonly aligned: AlignedCoverage | null;
   readonly alignedByArea: ReadonlyMap<string | null, readonly AlignedFile[]>;
@@ -253,9 +256,7 @@ export interface PreparedCodeDetail {
 const current = <T extends CoverageSnapshot>(snapshot: T | null): T | null =>
   snapshot && snapshot.version === COVERAGE_SNAPSHOT_VERSION ? snapshot : null;
 
-type AreaOf = (file: string) => string | null;
-
-/** The functions grouped by area, and the language of each file that has one. */
+/** The functions grouped by area, and the language of each file that holds a measured function. */
 function groupFunctions(functions: readonly FunctionMetrics[], areaOf: AreaOf) {
   const functionsByArea = new Map<string | null, FunctionMetrics[]>();
   const languageOf = new Map<string, string>();
@@ -434,11 +435,12 @@ function scopeOf(prepared: PreparedCodeDetail, requested: string | null): Scope 
 export function codeDetail(prepared: PreparedCodeDetail, options: CodeDetailOptions = {}): CodeDetailReport {
   const { snapshot, thresholds, areaOf } = prepared;
   const requested = options.area ? options.area : null;
-  const { selected, inScope } = scopeOf(prepared, requested);
+  const scope = scopeOf(prepared, requested);
+  const { selected, inScope } = scope;
 
   const scopeFunctions = selected === null ? snapshot.functions : (prepared.functionsByArea.get(selected) ?? []);
   const sourceInScope = scopeFunctions.filter((f) => !isTestPath(f.file));
-  const view = coverageView(prepared, sourceInScope, { selected, inScope });
+  const view = coverageView(prepared, sourceInScope, scope);
   const lineView = view.status === "ok" ? prepared.aligned : null;
 
   // Sort and cap before the per-function coverage work, which is the expensive part.

@@ -47,7 +47,7 @@ function explainForbidden(error: unknown): unknown {
 
 type RestRun = NonNullable<RestArtefact["workflow_run"]>;
 
-/** An artefact that has not expired, has every field that is read, and is named as coverage. */
+/** An artefact that has not expired, has every field it cannot be read without, and is named as coverage. */
 const isLiveCoverageArtefact = (
   artefact: RestArtefact,
 ): artefact is RestArtefact & { id: number; name: string; created_at: string } =>

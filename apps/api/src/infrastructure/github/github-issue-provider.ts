@@ -1,7 +1,7 @@
 import type { IssueCloseReason, IssueEvent, RepoIssue } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../../interfaces/issue-provider.js";
-import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
+import { API, askForPage, type Fetch, request } from "./github-http.js";
 
 /**
  * Every field here exists in GitHub's GraphQL schema. `stateReason(enableDuplicate: true)` is needed on an issue, as
@@ -173,7 +173,7 @@ export class GitHubIssueProvider implements IssueProvider {
   constructor(private readonly http: Fetch = fetch) {}
 
   async fetchIssuePage(token: string, owner: string, name: string, req: IssuePageRequest): Promise<IssuePage> {
-    const page = await this.ask(token, owner, name, req);
+    const page = await this.issuePage(token, owner, name, req);
     throwForErrors(page, owner, name);
     const repository = page.data?.repository;
     if (!repository) throw NOT_FOUND(owner, name);
@@ -188,20 +188,14 @@ export class GitHubIssueProvider implements IssueProvider {
     };
   }
 
-  /** A page of issues, asked for again at a smaller size when the gateway gives up on the first. */
-  private async ask(token: string, owner: string, name: string, req: IssuePageRequest): Promise<GqlPage> {
+  /** A page of issues, each with its timeline and links, asked for again smaller when the gateway gives up. */
+  private issuePage(token: string, owner: string, name: string, req: IssuePageRequest): Promise<GqlPage> {
     const filter = req.updatedSince === null ? {} : { since: req.updatedSince };
-    const page = (first: number) =>
+    const ask = (first: number) =>
       request<GqlPage>(this.http, token, `${API}/graphql`, {
         method: "POST",
         body: JSON.stringify({ query: ISSUES_QUERY, variables: { owner, name, cursor: req.cursor, first, filter } }),
       });
-    try {
-      return await page(PAGE_SIZE);
-    } catch (error) {
-      // A page of issues, each with its timeline and links, can time out at the gateway. A smaller page usually fits.
-      if (!(error instanceof UpstreamError) || !RETRYABLE.has(error.status)) throw error;
-      return page(RETRY_PAGE_SIZE);
-    }
+    return askForPage(ask, PAGE_SIZE, RETRY_PAGE_SIZE);
   }
 }

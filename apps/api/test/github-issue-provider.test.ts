@@ -334,6 +334,13 @@ describe("GitHubIssueProvider", () => {
     expect((failure as Error).message).not.toContain("secret-token-value");
   });
 
+  it("does not retry a 401, since a smaller page cannot cure a refused credential", async () => {
+    const http = vi.fn(async () => json({ message: "Bad credentials" }, 401));
+
+    await expect(readAny(http)).rejects.toBeInstanceOf(UnauthorisedError);
+    expect(http).toHaveBeenCalledTimes(1);
+  });
+
   it.each([502, 504])("retries once with a smaller page after a %i", async (status) => {
     const http = vi
       .fn()

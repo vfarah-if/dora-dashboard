@@ -69,6 +69,10 @@ describe("workspacePatterns", () => {
     expect(workspacePatterns([file("pnpm-workspace.yaml", "packages: [\n  a/*,\n  b/*\n]\nother: 1\n")])).toEqual(["a/*", "b/*"]);
   });
 
+  it("reads an unterminated pnpm flow list to the end of the file", () => {
+    expect(workspacePatterns([file("pnpm-workspace.yaml", "packages: [a/*, b/*")])).toEqual(["a/*", "b/*"]);
+  });
+
   it("reads a pnpm list written with CRLF line endings and no indentation", () => {
     expect(workspacePatterns([file("pnpm-workspace.yaml", "packages:\r\n- a/*\r\n- b/*\r\n")])).toEqual(["a/*", "b/*"]);
   });
@@ -126,8 +130,8 @@ describe("matchesGlob", () => {
   });
 
   it("does not take long to refuse a hostile pattern", () => {
-    // A backtracking matcher would not finish this in any useful time, so the bound is loose on purpose: it catches that
-    // failure without timing out on a slow, shared CI runner.
+    // A backtracking matcher would not finish this in any useful time, so the bound is loose on purpose. It still catches that
+    // failure, and a slow, shared CI runner does not trip it by accident.
     const started = Date.now();
     expect(matchesGlob("a".repeat(60) + "/b", "*a*a*a*a*a*a*a*a*a*a*a*a*c/**/**/**/x")).toBe(false);
     expect(Date.now() - started).toBeLessThan(2_000);

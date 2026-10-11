@@ -146,6 +146,18 @@ describe("codeDetail areas", () => {
     expect(api.maintainabilityBand).toBe("low");
   });
 
+  it("counts only code files that are not tests as an area's source files", () => {
+    // Of the four files under apps/api, only src/a.ts is code and not a test.
+    const mixed: CodeSnapshot = {
+      ...snapshot,
+      functions: [fn("apps/api/src/a.ts", "a", 1, 2, 1, 2)],
+      partlyMeasured: undefined,
+      files: ["apps/api/src/a.ts", "apps/api/README.md", "apps/api/package.json", "apps/api/test/a.test.ts"],
+    };
+    const api = codeDetail(mixed, none).areas.items.find((a) => a.path === "apps/api");
+    expect(api?.files).toBe(1);
+  });
+
   it("gives a clean area an elite band and an area with no functions none", () => {
     expect(report.areas.items.find((a) => a.path === "packages/core")?.maintainabilityBand).toBe("elite");
     expect(report.areas.items.find((a) => a.path === "scripts")).toMatchObject({

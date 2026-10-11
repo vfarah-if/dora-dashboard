@@ -22,14 +22,16 @@ const COBERTURA = `<coverage line-rate="0.5"><sources><source>${RUNNER}/packages
 const zip = (entries: { [name: string]: string }) =>
   zipSync(Object.fromEntries(Object.entries(entries).map(([name, text]) => [name, strToU8(text)])));
 
-/** Rewrites the uncompressed size that every entry declares, in the local headers and the central directory. */
-function declareSize(bytes: Uint8Array, size: number): Uint8Array {
+/** Rewrites the uncompressed size that every entry, or only the one named, declares, in the local headers and the central directory. */
+function declareSize(bytes: Uint8Array, size: number, only?: string): Uint8Array {
   const copy = bytes.slice();
   const view = new DataView(copy.buffer);
-  for (let i = 0; i + 30 <= copy.length; i++) {
+  const decoder = new TextDecoder();
+  const named = (at: number, length: number) => only === undefined || decoder.decode(copy.subarray(at, at + length)) === only;
+  for (let i = 0; i + 46 <= copy.length; i++) {
     const signature = view.getUint32(i, true);
-    if (signature === 0x04034b50) view.setUint32(i + 22, size, true);
-    else if (signature === 0x02014b50) view.setUint32(i + 24, size, true);
+    if (signature === 0x04034b50 && named(i + 30, view.getUint16(i + 26, true))) view.setUint32(i + 22, size, true);
+    else if (signature === 0x02014b50 && named(i + 46, view.getUint16(i + 28, true))) view.setUint32(i + 24, size, true);
   }
   return copy;
 }
@@ -302,7 +304,7 @@ describe("readCoverageArchive", () => {
     });
 
     it("refuses files that honestly declare more than the total limit together", async () => {
-      // Four stored files of 8 KiB declare 32 KiB, over the 24 KiB total, before any is inflated.
+      // Four stored files of 8 KiB declare 32 KiB, over the 24 KiB total.
       const real = new Uint8Array(SMALL.fileBytes);
       const bytes = zipSync({
         "a/lcov.info": [real, { level: 0 }],
@@ -310,6 +312,26 @@ describe("readCoverageArchive", () => {
         "c/lcov.info": [real, { level: 0 }],
         "d/lcov.info": [real, { level: 0 }],
       });
+
+      const error = await refusal(bytes, SMALL);
+
+      expect((error as UpstreamError).message).toMatch(/total size/);
+    });
+
+    it("refuses on the total the headers declare, before reading the entry that crosses it", async () => {
+      // Three stored entries of 8 KiB declare 24 KiB, which is the whole total. The fourth is stored empty, but its header
+      // declares a single byte, so the declared total is 24 KiB + 1, over the limit on the headers alone.
+      const real = new Uint8Array(SMALL.fileBytes);
+      const bytes = declareSize(
+        zipSync({
+          "a/lcov.info": [real, { level: 0 }],
+          "b/lcov.info": [real, { level: 0 }],
+          "c/lcov.info": [real, { level: 0 }],
+          "d/lcov.info": [new Uint8Array(0), { level: 0 }],
+        }),
+        1,
+        "d/lcov.info",
+      );
 
       const error = await refusal(bytes, SMALL);
 

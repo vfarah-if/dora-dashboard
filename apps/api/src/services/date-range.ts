@@ -11,6 +11,14 @@ const isCalendarDay = (value: string): boolean => {
   return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === value;
 };
 
+/** Refuses one bound that is present but malformed, impossible or before `EARLIEST_DATE`; an absent bound passes. */
+function checkDate(key: "from" | "to", value: string | undefined): void {
+  if (value === undefined) return;
+  if (!DATE.test(value)) throw new ValidationError(`${key} must be a date as YYYY-MM-DD`);
+  if (!isCalendarDay(value)) throw new ValidationError(`${key} must be a real calendar date`);
+  if (value < EARLIEST_DATE) throw new ValidationError(`${key} must not be before ${EARLIEST_DATE}`);
+}
+
 /** The calendar day (UTC) an instant falls on, as YYYY-MM-DD. */
 export const dayOf = (at: Date): string => at.toISOString().slice(0, 10);
 
@@ -24,12 +32,4 @@ export function validateDateRange(range: { from?: string; to?: string }, today?:
   checkDate("to", range.to);
   if (range.from && range.to && range.from > range.to) throw new ValidationError("from must not be after to");
   if (range.from && today !== undefined && range.from > today) throw new ValidationError("from must not be after today");
-}
-
-/** Refuses one bound that is present but malformed, impossible or before `EARLIEST_DATE`; an absent bound passes. */
-function checkDate(key: "from" | "to", value: string | undefined): void {
-  if (value === undefined) return;
-  if (!DATE.test(value)) throw new ValidationError(`${key} must be a date as YYYY-MM-DD`);
-  if (!isCalendarDay(value)) throw new ValidationError(`${key} must be a real calendar date`);
-  if (value < EARLIEST_DATE) throw new ValidationError(`${key} must not be before ${EARLIEST_DATE}`);
 }

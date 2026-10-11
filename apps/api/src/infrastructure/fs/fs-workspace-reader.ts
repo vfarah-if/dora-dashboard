@@ -1,4 +1,4 @@
-import { constants, type Dirent } from "node:fs";
+import { constants, type Dirent, type Stats } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
 import { ValidationError } from "../../core/errors.js";
@@ -19,16 +19,20 @@ export interface ReaderLimits {
 
 const DEFAULT_LIMITS: ReaderLimits = { maxEntries: 200_000, maxDepth: 30 };
 
-/** The entries of a directory under `root`, or null when it cannot be read: that costs its own files, not the whole listing. */
+/**
+ * The entries of a directory under `root`, or null when one below the root cannot be read, which costs its own files
+ * and not the whole listing. A root that cannot be read raises, as an empty listing would pass for an empty checkout.
+ */
 async function entriesOf(root: string, relative: string): Promise<Dirent[] | null> {
   try {
     return await readdir(relative ? resolve(root, relative) : root, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (!relative) throw new Error("The checkout could not be listed", { cause: error });
     return null;
   }
 }
 
-/** The listing path of an entry, relative to the listed directory and always with `/`. */
+/** The path of an entry relative to the root of the listing, always with `/`. */
 const childPath = (relative: string, name: string): string => (relative ? `${relative}/${name}` : name);
 
 /** Reads files with `node:fs` only. Nothing is executed, symbolic links are never followed. */
@@ -80,11 +84,14 @@ export class FsWorkspaceReader implements WorkspaceReader {
     const root = resolve(dir);
     const full = insideRoot(root, path);
     try {
-      if (await hasLinkOnTheWay(root, path)) return null;
+      if (!(await isPlainFile(root, path))) return null;
       if (!(await resolvesInside(root, full))) return null;
       return await readCapped(full, maxBytes);
-    } catch {
-      return null;
+    } catch (error) {
+      // A file that is not there is null. Any other failure, such as a file this process may not read, rejects as the
+      // port says, so a caller never mistakes it for a file that is not there.
+      if (isAbsent(error)) return null;
+      throw error;
     }
   }
 }
@@ -122,12 +129,26 @@ async function readCapped(full: string, maxBytes: number): Promise<string | null
   }
 }
 
-/** True when the file or any directory above it (inside the clone) is a symbolic link, even one that stays inside. */
-async function hasLinkOnTheWay(root: string, path: string): Promise<boolean> {
+/**
+ * True when the path names a regular file and neither it nor any directory above it (inside the clone) is a symbolic
+ * link, even one that stays inside. Judging the kind here, before the open, means a socket or a pipe is never opened.
+ * A path with no segments names no file, so it is false too.
+ */
+async function isPlainFile(root: string, path: string): Promise<boolean> {
   let current = root;
+  let kind: Stats | null = null;
   for (const part of segmentsOf(path).filter(Boolean)) {
     current = resolve(current, part);
-    if ((await lstat(current)).isSymbolicLink()) return true;
+    kind = await lstat(current);
+    if (kind.isSymbolicLink()) return false;
   }
-  return false;
+  return kind !== null && kind.isFile();
 }
+
+/**
+ * Failures that mean there is no file to read: it, or a directory above it, is missing (`ENOENT`, `ENOTDIR`), or it
+ * became a symbolic link after it was checked, which `O_NOFOLLOW` refuses (`ELOOP`).
+ */
+const ABSENT = new Set(["ENOENT", "ENOTDIR", "ELOOP"]);
+
+const isAbsent = (error: unknown): boolean => error instanceof Error && ABSENT.has((error as NodeJS.ErrnoException).code ?? "");

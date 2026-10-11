@@ -33,7 +33,10 @@ const numbersNamedBy = (pr: PullRequest) => [
   ...numbersIn(BRANCH_REFERENCE, pr.headRef ?? ""),
 ];
 
-/** True when the issue a pull request names existed when the pull request was created and was not already closed. */
+/**
+ * True when the named issue is stored, was created at or before the pull request, and has no final close before the
+ * pull request was created. Only the final close is consulted, so an issue closed then and reopened since still counts.
+ */
 function openWhenCreated(issue: RepoIssue | undefined, pr: PullRequest): boolean {
   if (!issue || instant(issue.createdAt) > instant(pr.createdAt)) return false;
   const closedBefore = issue.state === "closed" && instant(issue.closedAt) < instant(pr.createdAt);

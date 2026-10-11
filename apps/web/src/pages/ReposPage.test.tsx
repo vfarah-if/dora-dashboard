@@ -182,4 +182,17 @@ describe("ReposPage issue labels", () => {
     await configure(repo({ issues: 0 }));
     expect(screen.queryByRole("heading", { name: copy.issueLabels.title })).not.toBeInTheDocument();
   });
+
+  it("shows the Jira spaces panel in Configure when Jira is enabled", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "GET /api/repos": { body: [repo({ issues: 0 })] },
+      "GET /api/repos/1/workflows": { body: ["deploy.yml"] },
+      "GET /api/health": { body: { jira: true } },
+      "GET /api/jira": { body: { enabled: true, connected: false, sites: [] } },
+    });
+    renderRoute(<ReposPage />);
+    await user.click(await screen.findByRole("button", { name: copy.repos.configure }));
+    expect(await screen.findByText(copy.jira.notConnectedTitle)).toBeInTheDocument();
+  });
 });

@@ -17,7 +17,10 @@ function refuseUndatedIssues(items: RepoIssue[]): void {
   }
 }
 
-/** Instants, not strings: GitHub writes `...:00Z` where the cursor is `...:00.000Z`, and the two sort differently. */
+/**
+ * The issues updated after `stopAt`, or all of them when there is no `stopAt`. Instants are compared, not strings,
+ * because GitHub writes `...:00Z` where the cursor is `...:00.000Z` and the two sort differently.
+ */
 function issuesAfter(items: RepoIssue[], stopAt: string | null): RepoIssue[] {
   const stopMs = stopAt === null ? null : Date.parse(stopAt);
   return stopMs === null ? items : items.filter((issue) => Date.parse(issue.updatedAt) > stopMs);

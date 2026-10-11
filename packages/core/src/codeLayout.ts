@@ -90,7 +90,10 @@ function flowSequence(rest: string, lines: readonly string[], i: number): string
   return flowItems(flow.slice(1, close === -1 ? undefined : close)).slice(0, MAX_PATTERNS);
 }
 
-/** The items of a block sequence on the lines after line `i`, up to the first line that is neither blank nor a `- ` item. */
+/**
+ * The items of a block sequence on the lines after line `i`, up to the first line that is not blank and does not start
+ * with `-` after its indentation.
+ */
 function blockSequence(lines: readonly string[], i: number): string[] {
   const found: string[] = [];
   for (let j = i + 1; j < lines.length; j++) {

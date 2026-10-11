@@ -68,3 +68,39 @@ describe("apiRequest successful replies", () => {
     expect((error as ApiError).message).toBe(copy.common.requestFailed(502));
   });
 });
+
+describe("apiRequest when the request does not complete", () => {
+  it("passes an abort through unchanged, so a caller can tell a cancelled request from a failed one", async () => {
+    const abort = new DOMException("The operation was aborted.", "AbortError");
+    globalThis.fetch = (async () => {
+      throw abort;
+    }) as unknown as typeof fetch;
+
+    const error = await apiRequest("/api/thing").catch((e: unknown) => e);
+
+    expect(error).toBe(abort);
+  });
+
+  /** A reply whose headers arrived but whose body then fails to read with `cause`. */
+  const replyCutShort = (cause: Error) => {
+    globalThis.fetch = (async () => ({ status: 200, ok: true, text: () => Promise.reject(cause) })) as unknown as typeof fetch;
+  };
+
+  it("treats a reply cut off part way through its body as a network failure", async () => {
+    replyCutShort(new TypeError("terminated"));
+
+    const error = await apiRequest("/api/thing").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect([(error as ApiError).status, (error as ApiError).message]).toEqual([0, copy.common.networkFailed]);
+  });
+
+  it("passes an abort during the body through unchanged", async () => {
+    const abort = new DOMException("The operation was aborted.", "AbortError");
+    replyCutShort(abort);
+
+    const error = await apiRequest("/api/thing").catch((e: unknown) => e);
+
+    expect(error).toBe(abort);
+  });
+});
