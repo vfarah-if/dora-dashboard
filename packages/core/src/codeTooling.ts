@@ -259,8 +259,10 @@ function makeExpander(variables: Map<string, string>): (line: string) => string 
 function makeVariables(lines: string[]): Map<string, string> {
   const variables = new Map<string, string>();
   for (const line of lines) {
-    const m = /^([A-Za-z_]\w*)\s*[:?]?=\s*(.*)$/.exec(line);
-    if (m) variables.set(m[1]!, m[2]!.trim().slice(0, MAX_MAKE_VARIABLE));
+    // The value starts at `\S`, so a space after `=` can only be read one way; read either way, a long run of spaces
+    // took time in the square of its length.
+    const m = /^([A-Za-z_]\w*)\s*[:?]?=\s*(\S.*)?$/.exec(line);
+    if (m) variables.set(m[1]!, (m[2] ?? "").trim().slice(0, MAX_MAKE_VARIABLE));
   }
   return variables;
 }
@@ -273,7 +275,8 @@ function recipeLines(lines: string[], expand: (line: string) => string | null): 
     const head = /^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*:(?![:=])(.*)$/.exec(line);
     if (head && !line.startsWith("\t")) {
       current = head[1]!.split(/\s+/).filter((t) => !t.startsWith("."));
-      const prerequisites = head[2]!.replace(/#.*$/, "").trim();
+      // Everything before the first `#`. `/#.*$/` tried again from every `#` in a long run of them.
+      const prerequisites = head[2]!.split("#", 1)[0]!.trim();
       if (prerequisites) found.push([current, `make ${prerequisites}`]);
     } else if (line.startsWith("\t")) {
       const expanded = expand(line.trim());

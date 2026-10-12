@@ -5,6 +5,7 @@ import { parseRepoRef } from "../src/services/repo-ref.js";
 import { RepoService } from "../src/services/repo-service.js";
 import { ReportService } from "../src/services/report-service.js";
 import { FakeProvider, pr } from "./fakes.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 
 describe("parseRepoRef", () => {
   it.each([
@@ -19,6 +20,17 @@ describe("parseRepoRef", () => {
 
   it.each(["widgets", "", "acme/", "a b/c d"])("rejects %j", (input) => {
     expect(parseRepoRef(input)).toBeNull();
+  });
+
+  it("drops any number of trailing slashes, after the .git suffix is taken off", () => {
+    expect(parseRepoRef("https://github.com/acme/widgets///")).toEqual({ owner: "acme", name: "widgets" });
+    expect(parseRepoRef("https://github.com/acme/widgets.git/")).toEqual({ owner: "acme", name: "widgets.git" });
+  });
+
+  it("rejects a long run of slashes in time proportional to its length", () => {
+    const slashes = (count: number) => `a${"/".repeat(count)}b`;
+    expect(parseRepoRef(slashes(40_000))).toBeNull();
+    expect(growth(parseRepoRef, slashes(10_000), slashes(40_000))).toBeLessThan(PROPORTIONAL);
   });
 });
 

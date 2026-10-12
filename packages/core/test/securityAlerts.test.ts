@@ -7,11 +7,13 @@ import {
   isLikelyExploited,
   isUsable,
   lastGoodRead,
+  normaliseCwe,
   severityOf,
   usedSources,
   worseSeverity,
 } from "../src/securityAlerts.js";
 import { CLOSE_REASONS, type SourceState } from "../src/securityTypes.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 import { codeAlert, depAlert, failed, noAccess, notRead, notUsed, off, ok, osvAlert, secretAlert } from "./security.js";
 
 describe("severityOf", () => {
@@ -200,6 +202,30 @@ describe("cwesOf", () => {
 
   it("gives a secret alert none", () => {
     expect(cwesOf(secretAlert())).toEqual([]);
+  });
+});
+
+describe("normaliseCwe", () => {
+  it("drops leading zeros but keeps a lone zero, and returns text that is not an id as it came", () => {
+    expect(["CWE-0079", " cwe-79 ", "CWE-100", "cwe-000", "CWE-0"].map(normaliseCwe)).toEqual([
+      "CWE-79",
+      "CWE-79",
+      "CWE-100",
+      "CWE-0",
+      "CWE-0",
+    ]);
+    expect(["cwe-", "CWE-12a", "CWE-1.5", "NVD-CWE-Other"].map(normaliseCwe)).toEqual([
+      "cwe-",
+      "CWE-12a",
+      "CWE-1.5",
+      "NVD-CWE-Other",
+    ]);
+  });
+
+  it("reads a long run of zeros in time proportional to its length", () => {
+    const zeros = (count: number) => `cwe-${"0".repeat(count)}x`;
+    expect(normaliseCwe(zeros(40_000))).toBe(zeros(40_000));
+    expect(growth(normaliseCwe, zeros(10_000), zeros(40_000))).toBeLessThan(PROPORTIONAL);
   });
 });
 

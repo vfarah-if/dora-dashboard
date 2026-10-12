@@ -104,7 +104,9 @@ export function isLikelyExploited(alert: SecurityAlert): boolean {
 
 /** `CWE-79` for `cwe-079`, `CWE-079` or `CWE-79`. Text that is not a weakness id is returned unchanged. */
 export function normaliseCwe(id: string): string {
-  const match = /^cwe-0*(\d+)$/i.exec(id.trim());
+  // The number starts at a digit other than 0, or is a lone 0, so a leading zero can only be read one way. Read by
+  // either `0*` or `\d+`, a long run of zeros took time in the square of its length.
+  const match = /^cwe-0*([1-9]\d*|0)$/i.exec(id.trim());
   return match ? `CWE-${match[1]}` : id;
 }
 

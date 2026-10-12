@@ -410,6 +410,24 @@ describe("hostile input", () => {
       expect(detectTooling([makefile, run]).ciFormatChecks).toEqual([]);
       expect(detectTooling([early, run]).ciFormatChecks).toEqual(["prettier"]);
     });
+
+    it("reads variables after a long run of spaces in time proportional to the run", () => {
+      // A line break other than \n ends the value early, so the line is not a variable and every way of reading the
+      // spaces used to be tried before giving up.
+      const makefile = (spaces: number) =>
+        file("Makefile", Array.from({ length: 50 }, () => `A=${" ".repeat(spaces)}x\r`).join("\n"));
+      const run = workflowOf("steps:\n  - run: make lint\n");
+
+      expect(growth((m) => detectTooling([m, run]), makefile(1_000), makefile(4_000))).toBeLessThan(PROPORTIONAL);
+    });
+
+    it("stops a target's prerequisites at a comment", () => {
+      const makefile = file("Makefile", "quality: lint ## fmt\nlint:\n\teslint .\nfmt:\n\tprettier --check .\n");
+      const facts = detectTooling([makefile, workflowOf("steps:\n  - run: make quality\n")]);
+
+      expect(facts.ciLinters).toEqual(["eslint"]);
+      expect(facts.ciFormatChecks).toEqual([]);
+    });
   });
 });
 

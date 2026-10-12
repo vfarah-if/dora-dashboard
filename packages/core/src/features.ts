@@ -36,14 +36,37 @@ export function ticketKeysOf(pr: Pick<OpenPullRequest, "title" | "headRef" | "li
   return [...new Set([...keysIn([pr.title, pr.headRef]), ...linked])];
 }
 
-/** Pull requests named on a `Related:` line of the body: `owner/name#12`, a pull request link, or `#12` in the same repository. */
+/**
+ * The text after `Related:` on one line of a body. The `\S` keeps the spaces after the colon from being read both as
+ * spaces and as text, which made a long run of them take time in the square of its length.
+ */
+const RELATED_LINE = /^\s*related\s*:\s*(\S.*)?$/i;
+/** `owner/name#12`, `owner/name/pull/12` or `#12`, at the start of the text. */
+const RELATED_REF = /^(?:([\w.-]+\/[\w.-]+)(?:#|\/pull\/)(\d+)|#(\d+))/;
+const NAME_CHAR = /[\w.-]/;
+
+/**
+ * Pull requests named on a `Related:` line of the body: `owner/name#12`, a pull request link, or `#12` in the same
+ * repository. The references are found left to right, as a global search for them would find them, but that search
+ * tried every character of a long name and read the rest of the name each time. A reference that does not start where
+ * a name starts cannot start later in the same name, since it would need the same `/` after it, so the scan steps over
+ * the rest of the name instead.
+ */
 function relatedRefs(body: string | undefined): { repo: string | null; number: number }[] {
   const refs: { repo: string | null; number: number }[] = [];
   for (const line of (body ?? "").split(/\r?\n/)) {
-    const match = /^\s*related\s*:\s*(.*)$/i.exec(line);
-    if (!match) continue;
-    for (const ref of match[1]!.matchAll(/([\w.-]+\/[\w.-]+)(?:#|\/pull\/)(\d+)|#(\d+)/g)) {
-      refs.push({ repo: ref[1] ?? null, number: Number(ref[2] ?? ref[3]) });
+    const text = RELATED_LINE.exec(line)?.[1] ?? "";
+    let at = 0;
+    while (at < text.length) {
+      const ref = RELATED_REF.exec(text.slice(at));
+      if (ref) {
+        refs.push({ repo: ref[1] ?? null, number: Number(ref[2] ?? ref[3]) });
+        at += ref[0].length;
+      } else if (NAME_CHAR.test(text[at]!)) {
+        while (NAME_CHAR.test(text[at] ?? "")) at++;
+      } else {
+        at++;
+      }
     }
   }
   return refs;

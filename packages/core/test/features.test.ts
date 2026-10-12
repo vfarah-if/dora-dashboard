@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { groupFeatures, issueKeysOf, ticketKeysOf, type FeatureCandidate } from "../src/features.js";
 import type { OpenPullRequest, ReviewLane } from "../src/types.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 import { open } from "./openPr.js";
 
 const widgets = { id: 1, owner: "acme", name: "widgets" };
@@ -150,6 +151,27 @@ describe("groupFeatures", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]!.evidence).toEqual(["related"]);
     expect(groups[0]!.members).toHaveLength(4);
+  });
+
+  it("reads references with no space between them, after however many spaces follow the colon", () => {
+    const groups = groupFeatures([
+      candidate({ number: 1, body: `Related:${" ".repeat(50)}#2acme/gadgets#1` }),
+      candidate({ number: 2 }),
+      candidate({ number: 1, headRef: "g1" }, gadgets),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.members.map((m) => m.key)).toEqual(expect.arrayContaining(["1#1", "1#2", "2#1"]));
+  });
+
+  it("reads a Related line in time proportional to its length, however long its runs of spaces or name characters", () => {
+    // Neither line holds a reference. In the first, a lone \r survives the split into lines and ends the text early, so
+    // every way of reading the spaces used to be tried; in the second, the search used to read the rest of the run of
+    // name characters from each one.
+    const body = (length: number) => `Related:${" ".repeat(length)}x\ry\nRelated: ${"-".repeat(length)}`;
+    const work = (text: string) => groupFeatures([candidate({ number: 1, body: text }), candidate({ number: 2 })]);
+
+    expect(work(body(40_000))).toEqual([]);
+    expect(growth(work, body(10_000), body(40_000))).toBeLessThan(PROPORTIONAL);
   });
 
   it("ignores a Related line naming a pull request that is not open, and text that is not on a Related line", () => {

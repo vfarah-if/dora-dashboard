@@ -5,15 +5,22 @@ export interface RepoRef {
 
 /** Accepts `owner/name`, a web URL, or an SSH or HTTPS clone URL. */
 export function parseRepoRef(input: string): RepoRef | null {
-  const trimmed = input
-    .trim()
-    .replace(/\.git$/, "")
-    .replace(/\/+$/, "");
+  const trimmed = withoutTrailingSlashes(input.trim().replace(/\.git$/, ""));
   const match = /(?:^|[/:])([\w.-]+)\/([\w.-]+)$/.exec(trimmed);
   if (!match) return null;
   const [, owner, name] = match;
   if (!owner || !name || [".", ".."].includes(owner) || [".", ".."].includes(name)) return null;
   return { owner, name };
+}
+
+/**
+ * `text` without the slashes at its end. A loop rather than `/\/+$/`, which tried again from every slash in a long run
+ * of them and so took time in the square of its length.
+ */
+function withoutTrailingSlashes(text: string): string {
+  let end = text.length;
+  while (text[end - 1] === "/") end--;
+  return text.slice(0, end);
 }
 
 /**

@@ -185,7 +185,11 @@ export interface CheckLine {
   band: Band;
   /** True for the check that set its part's band. */
   limits: boolean;
-  /** "grade" for the one check that sets the overall grade, "part" for another part's limiting check, else null. */
+  /**
+   * "grade" for a part's limiting check at the overall band, which holds the grade there: the lowest part's, and any
+   * other part's tied with it, since the grade only rises once both are cleared. "part" for a limiting check above the
+   * overall band, which holds back its own part only. Otherwise null.
+   */
   sets: "grade" | "part" | null;
   text: string;
 }
@@ -199,7 +203,7 @@ export function checkLines(report: SecurityReport): CheckLine[] {
     .filter((c): c is SecurityCheck & { band: Band } => c.band !== undefined)
     .map((c) => {
       const good = c.band === "elite" || c.met === true;
-      const setsGrade = c.limits && overall !== undefined && overall.part === c.part && overall.check === c.check;
+      const setsGrade = c.limits && !good && overall !== undefined && c.band === overall.band;
       return {
         check: c.check,
         part: c.part,
@@ -469,7 +473,8 @@ export const CWE_NAMES: Record<string, { name: string; meaning: string }> = copy
 
 /** A weakness id as one spelling, so "CWE-020", "cwe-20" and "CWE-20" are the same one. Anything else is left as it came. */
 export function normaliseCwe(cwe: string): string {
-  const match = /^cwe-0*(\d+)$/i.exec(cwe.trim());
+  // As in core: the number starts at a digit other than 0, or is a lone 0, so a long run of zeros is read only once.
+  const match = /^cwe-0*([1-9]\d*|0)$/i.exec(cwe.trim());
   return match ? `CWE-${match[1]}` : cwe;
 }
 

@@ -268,6 +268,43 @@ describe("check lines and the grade", () => {
     expect(improve.map((l) => l.check)).toEqual(["criticalOpen", "highPastFix", "unpinnedActions", "highOpen"]);
   });
 
+  it("says a limiting check sets the grade at the overall band, and limits its part only above it", () => {
+    expect(checkLines(report).map((l) => [l.check, l.sets])).toEqual([
+      ["criticalPastFix", null],
+      ["criticalOpen", "grade"],
+      ["highPastFix", null],
+      ["highOpen", null],
+      ["prHeadCheckout", null],
+      ["unpinnedActions", "part"],
+    ]);
+  });
+
+  it("says both tied parts set the grade, because clearing either alone leaves it where it is", () => {
+    const tied = securityReport({
+      grade: {
+        overall: { band: "high", check: "highOpen", reason: "highOpen", part: "vulnerabilities" },
+        parts: {
+          vulnerabilities: { band: "high", check: "highOpen", reason: "highOpen" },
+          supplyChain: { band: "elite", check: "all", reason: "all" },
+          changeControl: { band: "high", check: "branchUnprotected", reason: "branchUnprotected" },
+        },
+        unmeasured: [],
+      },
+      checks: [
+        { part: "vulnerabilities", check: "highOpen", value: 6, band: "high", met: false, count: 6, limits: true },
+        { part: "supplyChain", check: "unpinnedActions", value: 0, band: "elite", met: true, count: 0, limits: false },
+        { part: "changeControl", check: "branchUnprotected", value: true, band: "high", met: false, count: 1, limits: true },
+        { part: "changeControl", check: "forcePushAllowed", value: false, band: "elite", met: true, count: 0, limits: false },
+      ],
+    });
+    expect(checkLines(tied).map((l) => [l.check, l.sets])).toEqual([
+      ["highOpen", "grade"],
+      ["unpinnedActions", null],
+      ["branchUnprotected", "grade"],
+      ["forcePushAllowed", null],
+    ]);
+  });
+
   it("names the check that set a part, and nothing for a part that was not measured or held back by nothing", () => {
     expect(limitingSentence(report, "vulnerabilities")).toBe("1 critical alert is open, still inside the 7 day fix-by date.");
     expect(limitingSentence(report, "changeControl")).toBeNull();
@@ -507,6 +544,8 @@ describe("weaknesses and time to fix", () => {
   it("resolves padded and lower case ids, and leaves anything else as it came", () => {
     expect(normaliseCwe("CWE-020")).toBe("CWE-20");
     expect(normaliseCwe("cwe-0079")).toBe("CWE-79");
+    expect(normaliseCwe("cwe-000")).toBe("CWE-0");
+    expect(normaliseCwe(`CWE-${"0".repeat(20_000)}x`)).toBe(`CWE-${"0".repeat(20_000)}x`);
     expect(normaliseCwe("CWE-1284")).toBe("CWE-1284");
     expect(normaliseCwe("NVD-CWE-Other")).toBe("NVD-CWE-Other");
     expect(weaknessName("CWE-020")).toBe(CWE_NAMES["CWE-20"]!.name);
