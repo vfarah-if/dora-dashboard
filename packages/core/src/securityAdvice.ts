@@ -66,10 +66,15 @@ export function compareAlerts(a: UsedAlert, b: UsedAlert): number {
 
 const byVersion = (a: string, b: string) => compareVersions(a, b) ?? compareText(a, b);
 
+/** The version that fixes a dependency alert, or null when there is none yet. */
+const fixOf = ({ alert }: UsedAlert): string | null =>
+  alert.source === "dependabot" || alert.source === "osv" ? alert.dependency.patchedVersion : null;
+
 /**
- * Open dependency alerts grouped by package and manifest, worst first. One package locked at two versions in two
- * manifests is two groups, because a fix that suits `1.x` is not the fix for `2.x`. An alert whose host named no
- * ecosystem, package or manifest is a group of its own, so unrelated unnamed packages never share one upgrade.
+ * Open dependency alerts grouped by package and manifest, worst first. One package in two manifests is two groups,
+ * because each manifest is upgraded on its own. Versions locked within one manifest share a group and are listed in
+ * `lockedVersions`. An alert whose host named no ecosystem, package or manifest is a group of its own, so unrelated
+ * unnamed packages never share one upgrade.
  */
 export function groupDependencies(usedList: readonly UsedAlert[]): DependencyGroupDetail[] {
   const groups = new Map<string, { used: UsedAlert; dependency: DependencyFacts }[]>();
@@ -200,7 +205,8 @@ export function securityActions(input: AdviceInput): SecurityAction[] {
 
 /**
  * The actions, and the open alerts that doing the ones on the path would clear: every member of each on-path action,
- * which can be more than the alerts that feed the limiting checks, since upgrading a package fixes all its alerts.
+ * which can be more than the alerts that feed the limiting checks, since upgrading a package fixes all of its alerts
+ * that have a fix.
  */
 export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   actions: SecurityAction[];
@@ -237,19 +243,30 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   }
   for (const group of groupDependencies(open)) {
     const { ecosystem, name, manifestPath, relationship, upgradeTo } = group;
-    add(
-      group.patchedVersions.length > 0 ? "upgrade_dependency" : "replace_dependency",
-      {
-        band: lowest(group.members.map(bandOfAlert)),
-        severity: group.worstSeverity,
-        count: group.alerts,
-        target: ecosystem === null || name === null ? null : `${ecosystem}:${name}`,
-        package: { ecosystem, name, manifestPath, relationship, upgradeTo },
-        likelyExploited: group.likelyExploited,
-        refs: alertRefs(group.members),
-      },
-      group.members,
-    );
+    // An upgrade clears only the alerts that have a fix, so an advisory with none yet stays as an action of its own and
+    // is never counted as cleared by the upgrade.
+    const patched = group.members.filter((m) => fixOf(m) !== null);
+    const unpatched = group.members.filter((m) => fixOf(m) === null);
+    const parts: [DependencyActionKind, UsedAlert[], string | null][] = [
+      ["upgrade_dependency", patched, upgradeTo],
+      ["replace_dependency", unpatched, null],
+    ];
+    for (const [kind, members, to] of parts) {
+      if (members.length === 0) continue;
+      add(
+        kind,
+        {
+          band: lowest(members.map(bandOfAlert)),
+          severity: members.map((m) => m.severity).reduce(worseSeverity),
+          count: members.length,
+          target: ecosystem === null || name === null ? null : `${ecosystem}:${name}`,
+          package: { ecosystem, name, manifestPath, relationship, upgradeTo: to },
+          likelyExploited: members.some((m) => isLikelyExploited(m.alert)),
+          refs: alertRefs(members),
+        },
+        members,
+      );
+    }
   }
   // One action per rule; an alert whose host named no rule is an action of its own.
   const rules = new Map<string, { ruleId: string | null; members: UsedAlert[] }>();
@@ -309,7 +326,7 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
     };
     perWorkflow("fix_pr_head_checkout", "low", found.prHeadCheckout);
     perWorkflow("fix_script_injection", "low", found.scriptInjection);
-    perWorkflow("stop_self_hosted_public", "low", found.selfHostedPublic);
+    perWorkflow("stop_self_hosted_public", "low", found.selfHostedPublic ?? []);
     for (const [file, uses] of byFile(found.thirdPartyUnpinned)) {
       add("pin_actions", { band: "high", count: uses.length, target: file, refs: uses.slice(0, MAX_REFS).map(useRef) });
     }

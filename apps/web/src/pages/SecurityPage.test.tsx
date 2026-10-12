@@ -54,7 +54,7 @@ describe("SecurityPage", () => {
       "Open alerts by week",
       "What kind of problems",
       "Time to fix",
-      "Every open alert",
+      "The worst open alerts",
       "Dependency upgrades",
       "Keeping dependencies up to date",
       "Workflows and supply chain",
@@ -103,14 +103,21 @@ describe("SecurityPage", () => {
     const actions = Array.from({ length: 12 }, (_, i) => securityAction({ target: `npm:pkg-${i + 1}` }));
     const { container } = show(securityReport({ actions }));
     await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
+    const section = screen.getByRole("region", { name: copy.security.actions.title });
     act(() => void window.dispatchEvent(new Event("beforeprint")));
     const bars = [...container.querySelectorAll(".recharts-rectangle")];
     expect(bars.length).toBeGreaterThan(0);
     expect(bars.every((bar) => Number(bar.getAttribute("height")) > 0 && Number(bar.getAttribute("width")) > 0)).toBe(true);
     expect(container.querySelectorAll("details[open]")).toHaveLength(0);
-    expect(container.querySelectorAll(".action-item")).toHaveLength(10);
+    // The numbered actions, which are the items of the first list and not the steps inside one.
+    const [list] = within(section).getAllByRole("list");
+    expect(
+      within(list!)
+        .getAllByRole("listitem")
+        .filter((item) => item.closest("ol, ul") === list),
+    ).toHaveLength(10);
     expect(screen.getByText(copy.security.printMore(2))).toHaveClass("print-only");
-    expect(container.querySelector("#start-here a")).toHaveClass("screen-only");
+    expect(screen.getByRole("link", { name: copy.security.start.seeAll })).toHaveClass("screen-only");
     act(() => void window.dispatchEvent(new Event("afterprint")));
   });
 
@@ -146,9 +153,15 @@ describe("SecurityPage", () => {
   });
 
   it("shows the grade, the actions and the alerts with no login anywhere", async () => {
-    show();
+    // A login placed where the page could pick one up, in the repository listing and beside an alert.
+    const login = "octocat-9f3a";
+    const base = securityReport();
+    show({ ...base, openAlerts: base.openAlerts.map((alert) => ({ ...alert, dismissedBy: login })) }, "/repos/1/security", {
+      "GET /api/repos": { body: [{ ...repo(), login, owner: { login } }] },
+    });
     await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
-    expect(JSON.stringify(securityReport())).not.toMatch(/login|"secret"|dismissed_by|resolved_by/);
+    await screen.findByText("src/db/query.ts line 42");
+    expect(document.body.textContent).not.toContain(login);
     expect(screen.getByText(/^The lowest part is Known vulnerabilities and secrets/)).toBeInTheDocument();
     expect(
       screen.getAllByText("left-pad has 2 open critical alerts, and version 1.3.1 fixes them.", { selector: "p" }).length,
@@ -165,13 +178,7 @@ describe("SecurityPage", () => {
 
   it("warns when part of the page could not be read, linking to how each source is read", async () => {
     const base = securityReport();
-    show({
-      ...base,
-      sources: {
-        ...base.sources,
-        secret_scanning: noAccessSource("admin_only_or_off"),
-      },
-    });
+    show(securityReport({ sources: { ...base.sources, secret_scanning: noAccessSource("admin_only_or_off") } }));
     const notice = (await screen.findByText(copy.security.page.partlyRead.title)).closest("aside")!;
     expect(notice).toHaveClass("notice-warning");
     expect(notice).not.toHaveAttribute("role", "alert");
@@ -212,7 +219,7 @@ describe("SecurityPage", () => {
       show(stale());
       expect(
         await screen.findByText(
-          "Showing 1 Jan 2026 to 1 Mar 2026 · Some alerts are older than this, and the oldest was read on 10 Feb 2026, 08:00",
+          "Showing 1 Jan 2026 to 1 Mar 2026 · Some alerts are from an earlier read because a later one failed, and the oldest was read on 10 Feb 2026, 08:00",
         ),
       ).toBeInTheDocument();
       expect(screen.queryByText(/Alerts read on/)).not.toBeInTheDocument();
@@ -306,7 +313,34 @@ describe("SecurityPage", () => {
     expect(await screen.findByText(copy.security.page.crawlInProgress)).toBeInTheDocument();
   });
 
+  it("scrolls to the sources panel when the address names it, as the link from the repository page does", async () => {
+    const realScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    try {
+      show(securityReport(), "/repos/1/security#security-sources");
+      await screen.findByRole("heading", { level: 2, name: copy.security.sources.title });
+      // The panel only exists once the report has loaded, so the scroll waits for it.
+      await waitFor(() => expect(scroll).toHaveBeenCalled());
+      expect(scroll.mock.contexts[0]).toBe(document.getElementById("security-sources"));
+    } finally {
+      if (realScroll) Object.defineProperty(Element.prototype, "scrollIntoView", realScroll);
+      else delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
   describe("before the first crawl with security", () => {
+    it("warns that the branch rules and settings failed to read, above the crawl prompt, and links to the sources", async () => {
+      show(noSecurity({ postureFailure: { message: "GitHub answered 502", attemptedAt: "2026-03-02T10:00:00Z" } }));
+      const notice = (await screen.findByText(copy.security.failedSources.title)).closest("aside")!;
+      expect(notice).toHaveTextContent(copy.security.failedSources.never("Branch rules and settings"));
+      expect(within(notice).getByRole("link", { name: copy.security.failedSources.link })).toHaveAttribute(
+        "href",
+        "#security-sources",
+      );
+      expect(screen.getByText(copy.security.notRead.title)).toBeInTheDocument();
+    });
+
     it("leads with a notice and leaves out tables and charts of zeros", async () => {
       show(noSecurity());
       expect(await screen.findByText(copy.security.notRead.title)).toBeInTheDocument();
@@ -498,7 +532,9 @@ describe("SecurityPage", () => {
   it("never shows another repository's report under the next repository's address while that one loads", async () => {
     const user = userEvent.setup();
     let release: (response: MockResponse) => void = () => undefined;
-    const gadgets = securityReport({ repo: { id: 2, owner: "acme", name: "gadgets", lastCrawledAt: "2026-03-01T10:00:00Z" } });
+    const gadgets = securityReport({
+      repo: { id: 2, owner: "acme", name: "gadgets", deployBranch: "main", lastCrawledAt: "2026-03-01T10:00:00Z" },
+    });
     mockFetch({
       "GET /api/repos": { body: [repo({ id: 1 }), repo({ id: 2, name: "gadgets" })] },
       "GET /api/repos/1/security": { body: securityReport() },

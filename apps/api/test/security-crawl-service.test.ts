@@ -1,11 +1,12 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { AlertSource, LockfileSummary, Repo } from "@dora-dashboard/core";
+import type { AlertSource, LockedPackage, LockfileSummary, Repo } from "@dora-dashboard/core";
 import { isUsable } from "@dora-dashboard/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RateLimitedError, UnauthorisedError, UpstreamError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
 import { MAX_OSV_PACKAGES, SecurityCrawlService, scrub } from "../src/services/security-crawl-service.js";
+import { SecurityReportService } from "../src/services/security-report-service.js";
 import {
   FakeScorecardSource,
   FakeSecurityAlertSource,
@@ -386,7 +387,7 @@ describe("the security crawl step", () => {
       expect(states().dependabot).toMatchObject({ status: "error", lastGood: null });
     });
 
-    it("carries the last good read through a failure after an error that had one, and not after not_used", async () => {
+    it("carries the last good read through a failure after an error that had one", async () => {
       source.seed("dependabot", [dependabotAlert({ key: "1" })]);
       await build().read("tok", repo, false);
       source.fail("dependabot", new UpstreamError("one", 502));
@@ -408,6 +409,15 @@ describe("the security crawl step", () => {
       store.saveSupplyChain(repo.id, supplyChainRecord({ facts: supplyChainFacts({ lockfiles }) }), packages);
     };
     const dependabotOff = () => source.set("dependabot", { status: "off", reason: "disabled" });
+    /** Core's report after the crawl, which counts OSV only while it is usable and otherwise says nothing watches. */
+    const reportNow = () => {
+      rawDb(store).prepare("UPDATE repos SET last_crawled_at = ? WHERE id = ?").run(T0.toISOString(), repo.id);
+      return new SecurityReportService(store, store, {
+        codeAnalysis: true,
+        scorecardLookup: false,
+        settingsUrl: () => "",
+      }).report(repo.id);
+    };
 
     it("is never called, and says so, when the lookup is off", async () => {
       dependabotOff();
@@ -445,17 +455,14 @@ describe("the security crawl step", () => {
     });
 
     describe("a lockfile missing from the listing", () => {
-      const facts = (listingComplete: boolean | undefined) => {
-        const record = supplyChainRecord({
+      const facts = (listingComplete: boolean) =>
+        supplyChainRecord({
           facts: supplyChainFacts({
             lockfiles: [{ path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false }],
+            listingComplete,
           }),
         });
-        if (listingComplete === undefined) delete (record.facts as Partial<typeof record.facts>).listingComplete;
-        else record.facts.listingComplete = listingComplete;
-        return record;
-      };
-      const withDeleted = (listingComplete: boolean | undefined) => {
+      const withDeleted = (listingComplete: boolean) => {
         dependabotOff();
         store.saveSupplyChain(repo.id, facts(listingComplete), [lockedPackage()]);
         store.saveSecurityAlerts(
@@ -475,12 +482,6 @@ describe("the security crawl step", () => {
 
       it("keeps them when the listing was cut, since the lockfile may simply not have been reached", async () => {
         withDeleted(false);
-        await build({ osv: true }).read("tok", repo, false);
-        expect(stateOfOld()).toBe("open");
-      });
-
-      it("keeps them for facts stored before the listing was reported, which lack the field", async () => {
-        withDeleted(undefined);
         await build({ osv: true }).read("tok", repo, false);
         expect(stateOfOld()).toBe("open");
       });
@@ -551,49 +552,421 @@ describe("the security crawl step", () => {
       expect(states().osv).toMatchObject({ status: "not_used", reason: "no_inventory" });
     });
 
-    it.each(["unreadable", "malformed"] as const)(
-      "leaves the alerts and the state as they were when the only lockfile is %s, since it may hold packages",
-      async (read) => {
+    describe("when no lockfile that could hold public packages was read", () => {
+      const only = (read: LockfileSummary["read"]) => [
+        { path: "package-lock.json", read, packages: 0, publicPackages: 0, capped: false },
+      ];
+
+      it.each(["unreadable", "malformed"] as const)(
+        "records a failed read, and not an ok one, when the only lockfile is %s, and keeps its alert open",
+        async (read) => {
+          dependabotOff();
+          seedInventory([], only(read));
+          store.saveSecurityAlerts(repo.id, "osv", [osvAlert()], "replace");
+
+          await build({ osv: true }).read("tok", repo, false);
+
+          // Nothing was asked and nothing was found, which is not an all clear.
+          expect(osv.asked).toEqual([]);
+          expect(store.securityAlerts(repo.id)[0]).toMatchObject({ state: "open", closedAt: null });
+          expect(states().osv).toEqual({
+            status: "error",
+            error: "No lockfile could be read, so nothing was looked up",
+            attemptedAt: T0.toISOString(),
+            lastGood: null,
+          });
+          expect(isUsable(states().osv)).toBe(false);
+        },
+      );
+
+      it("does not count as a source in use, so a repository with Dependabot switched off is still told nothing watches it", async () => {
         dependabotOff();
-        seedInventory([], [{ path: "package-lock.json", read, packages: 0, publicPackages: 0, capped: false }]);
+        store.saveSupplyChain(
+          repo.id,
+          supplyChainRecord({ facts: supplyChainFacts({ lockfiles: only("unreadable"), manifestsByEcosystem: { npm: 1 } }) }),
+          [],
+        );
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        const sources = states();
+        expect(sources.dependabot).toMatchObject({ status: "off", reason: "disabled" });
+        expect(isUsable(sources.osv)).toBe(false);
+        const report = reportNow();
+        expect(report.used.osv).toBe(false);
+        expect(report.checks.find((c) => c.check === "dependenciesUnwatched")?.value).toBe(true);
+      });
+
+      it("keeps the last good read, so alerts already in use stay in use, when a later crawl cannot read the lockfile", async () => {
+        dependabotOff();
+        seedInventory();
+        osv.know(lockedPackage(), [vulnerability()]);
+        await build({ osv: true }).read("tok", repo, false);
+        seedInventory([], only("unreadable"));
+        clock = new Date(T0.getTime() + HOUR);
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(keys("osv")).toHaveLength(1);
+        expect(states().osv).toMatchObject({ status: "error", lastGood: { readAt: T0.toISOString() } });
+        expect(isUsable(states().osv)).toBe(true);
+      });
+
+      it.each(["unreadable", "malformed"] as const)(
+        "says only part was read when one lockfile is read and another is %s",
+        async (read) => {
+          dependabotOff();
+          seedInventory(
+            [lockedPackage()],
+            [
+              { path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false },
+              { path: "web/package-lock.json", read, packages: 0, publicPackages: 0, capped: false },
+            ],
+          );
+
+          await build({ osv: true }).read("tok", repo, false);
+
+          expect(osv.asked).toHaveLength(1);
+          expect(states().osv).toMatchObject({ status: "ok", truncated: true });
+        },
+      );
+
+      it("says the lookup was complete when every lockfile that could hold packages was read in full", async () => {
+        dependabotOff();
+        seedInventory();
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(states().osv).toMatchObject({ status: "ok", truncated: false });
+      });
+    });
+
+    describe("a listing of the clone that stopped short", () => {
+      it("does not erase the stored alerts, or say there is no inventory, when the record lists no lockfile", async () => {
+        dependabotOff();
+        // The walk reached its limit before the lockfile, so the record names none although the repository has one.
+        store.saveSupplyChain(
+          repo.id,
+          supplyChainRecord({ facts: supplyChainFacts({ lockfiles: [], listingComplete: false }) }),
+          [],
+        );
         store.saveSecurityAlerts(repo.id, "osv", [osvAlert()], "replace");
 
         await build({ osv: true }).read("tok", repo, false);
 
-        // An empty lookup, so nothing was asked, and the lockfile that was not read keeps its alert open.
+        expect(store.securityAlerts(repo.id)[0]).toMatchObject({
+          state: "open",
+          closedAt: null,
+          createdAt: osvAlert().createdAt,
+        });
+        // No lockfile was seen at all, so the failure says the listing stopped short rather than that one was unreadable.
+        expect(states().osv).toEqual({
+          status: "error",
+          error: "The listing of the clone stopped short before it found any lockfile, so nothing was looked up",
+          attemptedAt: T0.toISOString(),
+          lastGood: null,
+        });
+        expect(states().osv).not.toMatchObject({ reason: "no_inventory" });
+      });
+
+      it("keeps the last good read when it was an ok one", async () => {
+        dependabotOff();
+        seedInventory();
+        await build({ osv: true }).read("tok", repo, false);
+        store.saveSupplyChain(
+          repo.id,
+          supplyChainRecord({ facts: supplyChainFacts({ lockfiles: [], listingComplete: false }) }),
+          [],
+        );
+        clock = new Date(T0.getTime() + HOUR);
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(states().osv).toMatchObject({ status: "error", lastGood: { readAt: T0.toISOString() } });
+      });
+
+      it("says only part was read when other lockfiles were read but the listing was cut", async () => {
+        dependabotOff();
+        store.saveSupplyChain(
+          repo.id,
+          supplyChainRecord({
+            facts: supplyChainFacts({
+              lockfiles: [{ path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false }],
+              listingComplete: false,
+            }),
+          }),
+          [lockedPackage()],
+        );
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(states().osv).toMatchObject({ status: "ok", truncated: true });
+      });
+
+      it("still says there is no inventory when the listing was complete and holds no lockfile", async () => {
+        dependabotOff();
+        seedInventory([], []);
+        store.saveSecurityAlerts(repo.id, "osv", [osvAlert()], "replace");
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(keys("osv")).toEqual([]);
+        expect(states().osv).toMatchObject({ status: "not_used", reason: "no_inventory" });
+      });
+    });
+
+    describe("which state of Dependabot lets OSV stand in", () => {
+      const ask = () => {
+        seedInventory();
+        osv.know(lockedPackage(), [vulnerability()]);
+      };
+
+      it("looks the packages up when Dependabot answers no access, which is the commonest reason for the fallback", async () => {
+        source.set("dependabot", { status: "no_access", reason: "forbidden" });
+        ask();
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(osv.asked).toHaveLength(1);
+        expect(keys("osv")).toHaveLength(1);
+        expect(states().osv).toMatchObject({ status: "ok" });
+      });
+
+      it("looks the packages up when Dependabot fails and no earlier read of it is in use", async () => {
+        source.fail("dependabot", new UpstreamError("down", 502));
+        ask();
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(osv.asked).toHaveLength(1);
+        expect(states().osv).toMatchObject({ status: "ok" });
+      });
+
+      it("sends nothing, and says Dependabot's alerts are in use, when it fails after a good read", async () => {
+        source.seed("dependabot", [dependabotAlert({ key: "1" })]);
+        ask();
+        await build({ osv: true }).read("tok", repo, false);
         expect(osv.asked).toEqual([]);
+        source.fail("dependabot", new UpstreamError("down", 502));
+        clock = new Date(T0.getTime() + HOUR);
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        // The earlier read is still in use, so no package name leaves for a source that is not needed.
+        expect(osv.asked).toEqual([]);
+        expect(states().dependabot).toMatchObject({ status: "error", lastGood: { readAt: T0.toISOString() } });
+        expect(states().osv).toMatchObject({ status: "not_used", reason: "dependabot_ok" });
+      });
+    });
+
+    describe("an answer that does not line up with the packages asked about", () => {
+      const withAlert = () => {
+        dependabotOff();
+        seedInventory();
+        store.saveSecurityAlerts(repo.id, "osv", [osvAlert()], "replace");
+      };
+
+      it.each([
+        ["a short list", () => []],
+        ["a long list", () => [[], []]],
+      ])("fails the stage, and closes nothing, for %s", async (_case, reply) => {
+        withAlert();
+        osv.replyWith = reply;
+
+        await build({ osv: true }).read("tok", repo, false);
+
         expect(store.securityAlerts(repo.id)[0]).toMatchObject({ state: "open", closedAt: null });
-        expect(states().osv).toMatchObject({ status: "ok", readAt: T0.toISOString() });
-      },
-    );
+        expect(states().osv).toMatchObject({ status: "error", error: expect.stringContaining("different number") });
+      });
 
-    it("closes the alerts of a lockfile that was read and now names no public package, beside one that was not read", async () => {
-      dependabotOff();
-      seedInventory(
-        [],
-        [
-          { path: "package-lock.json", read: "parsed", packages: 4, publicPackages: 0, capped: false },
-          { path: "web/package-lock.json", read: "unreadable", packages: 0, publicPackages: 0, capped: false },
-        ],
-      );
-      store.saveSecurityAlerts(
-        repo.id,
-        "osv",
-        [
-          osvAlert(),
-          osvAlert({ key: "GHSA-x|npm|lodash|web/package-lock.json", dependency: { manifestPath: "web/package-lock.json" } }),
-        ],
-        "replace",
+      it("treats an entry that is not a list as unanswered, so its alert stays open", async () => {
+        withAlert();
+        osv.replyWith = () => [undefined];
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(store.securityAlerts(repo.id)[0]).toMatchObject({ state: "open", closedAt: null });
+        expect(states().osv).toMatchObject({ status: "ok", truncated: true });
+      });
+    });
+
+    describe("when the lookup could hold packages but sends none", () => {
+      const NO_PUBLIC: LockfileSummary = {
+        path: "package-lock.json",
+        read: "parsed",
+        packages: 4,
+        publicPackages: 0,
+        capped: false,
+      };
+      /** A record with npm manifests, so core raises the unwatched dependencies check when no source watches them. */
+      const seed = (packages: LockedPackage[], lockfiles: LockfileSummary[], listingComplete = true) =>
+        store.saveSupplyChain(
+          repo.id,
+          supplyChainRecord({ facts: supplyChainFacts({ lockfiles, listingComplete, manifestsByEcosystem: { npm: 2 } }) }),
+          packages,
+        );
+      const twoAlerts = () =>
+        store.saveSecurityAlerts(
+          repo.id,
+          "osv",
+          [
+            osvAlert(),
+            osvAlert({ key: "GHSA-x|npm|lodash|web/package-lock.json", dependency: { manifestPath: "web/package-lock.json" } }),
+          ],
+          "replace",
+        );
+      const failedWith = (error: string) => ({ status: "error", error, attemptedAt: T0.toISOString(), lastGood: null });
+      const expectUnwatched = () => {
+        expect(isUsable(states().osv)).toBe(false);
+        const report = reportNow();
+        expect(report.used.osv).toBe(false);
+        expect(report.checks.find((c) => c.check === "dependenciesUnwatched")?.value).toBe(true);
+      };
+
+      const UNREAD =
+        "A lockfile could not be read, and those that were read hold no public package that can be sent, so nothing was looked up";
+      const CUT =
+        "The listing of the clone stopped short, and the lockfiles it found hold no public package that can be sent, so nothing was looked up";
+      const NOT_KEPT = "Not every public package of the lockfiles that were read was kept, so nothing was looked up";
+
+      it.each(["unreadable", "malformed"] as const)(
+        "records a failed read, keeps every stored alert and leaves OSV unused when a lockfile with no public package sits beside one that is %s",
+        async (read) => {
+          dependabotOff();
+          seed([], [NO_PUBLIC, { path: "web/package-lock.json", read, packages: 0, publicPackages: 0, capped: false }]);
+          twoAlerts();
+
+          await build({ osv: true }).read("tok", repo, false);
+
+          // The lockfile that was read names no public package, but nothing was asked, so even its own alert stays open.
+          expect(osv.asked).toEqual([]);
+          expect(store.securityAlerts(repo.id).map((a) => [a.key, a.state, a.closedAt])).toEqual([
+            ["GHSA-aaaa-bbbb-cccc|npm|lodash|package-lock.json", "open", null],
+            ["GHSA-x|npm|lodash|web/package-lock.json", "open", null],
+          ]);
+          expect(states().osv).toEqual(failedWith(UNREAD));
+          expectUnwatched();
+        },
       );
 
-      await build({ osv: true }).read("tok", repo, false);
+      it("records a failed read when the listing stopped short and the lockfiles it reached name no public package", async () => {
+        dependabotOff();
+        seed(
+          [],
+          [NO_PUBLIC, { path: "pnpm-lock.yaml", read: "not_supported", packages: 0, publicPackages: 0, capped: false }],
+          false,
+        );
+        twoAlerts();
 
-      const byPath = Object.fromEntries(
-        store
-          .securityAlerts(repo.id)
-          .map((a) => [(a as { dependency: { manifestPath: string } }).dependency.manifestPath, a.state]),
-      );
-      expect(byPath).toEqual({ "package-lock.json": "fixed", "web/package-lock.json": "open" });
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(osv.asked).toEqual([]);
+        expect(store.securityAlerts(repo.id).map((a) => a.state)).toEqual(["open", "open"]);
+        expect(states().osv).toEqual(failedWith(CUT));
+        expectUnwatched();
+      });
+
+      it("records a failed read when the record's lockfiles name public packages that are not stored with it", async () => {
+        dependabotOff();
+        seed([], [{ path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false }]);
+        twoAlerts();
+
+        await build({ osv: true }).read("tok", repo, false);
+
+        expect(osv.asked).toEqual([]);
+        expect(store.securityAlerts(repo.id).map((a) => a.state)).toEqual(["open", "open"]);
+        expect(states().osv).toEqual(failedWith(NOT_KEPT));
+        expectUnwatched();
+      });
+
+      describe("because every public package is withheld by a private scope", () => {
+        const PRIVATE_ONLY: LockfileSummary = {
+          path: "package-lock.json",
+          read: "parsed",
+          packages: 2,
+          publicPackages: 2,
+          capped: false,
+        };
+        const privatePackages = () => [
+          lockedPackage({ name: "@acme/ui" }),
+          lockedPackage({ name: "@corp/internal", version: "2.0.0" }),
+        ];
+
+        it("makes no request, says OSV is not used, and no longer keeps open the finding of a package that left the lockfile", async () => {
+          dependabotOff();
+          // A lockfile of a kind that is not read cannot hold a package to send, as for `no_inventory`, so it does not count
+          // as something left unread.
+          seed(privatePackages(), [
+            PRIVATE_ONLY,
+            { path: "pnpm-lock.yaml", read: "not_supported", packages: 0, publicPackages: 0, capped: false },
+          ]);
+          store.saveSecurityAlerts(
+            repo.id,
+            "osv",
+            [
+              osvAlert({ dependency: { name: "lodash" } }),
+              osvAlert({ dependency: { name: "@acme/ui" }, key: "GHSA-x|npm|@acme/ui|package-lock.json" }),
+            ],
+            "replace",
+          );
+
+          await build({ osv: true, scopes: ["@corp"] }).read("tok", repo, false);
+
+          // The lockfile was read in full from a complete listing and holds nothing that may be sent, which is a reason not
+          // to use OSV rather than a failure. As with every such reason the stored alerts are cleared, so the finding of
+          // lodash, which has left the lockfile, no longer stays open, and nor does the withheld package's.
+          expect(osv.asked).toEqual([]);
+          expect(keys("osv")).toEqual([]);
+          expect(states().osv).toEqual({ status: "not_used", reason: "all_withheld", attemptedAt: T0.toISOString() });
+          expectUnwatched();
+        });
+
+        it("drops an earlier good read, so it no longer stands in for Dependabot, once every package left is private", async () => {
+          dependabotOff();
+          seed([lockedPackage()], [{ ...PRIVATE_ONLY, packages: 1, publicPackages: 1 }]);
+          osv.know(lockedPackage(), [vulnerability()]);
+          await build({ osv: true }).read("tok", repo, false);
+          expect(keys("osv")).toHaveLength(1);
+          expect(isUsable(states().osv)).toBe(true);
+          seed(privatePackages(), [PRIVATE_ONLY]);
+          clock = new Date(T0.getTime() + HOUR);
+
+          await build({ osv: true, scopes: ["@corp"] }).read("tok", repo, false);
+
+          expect(osv.asked).toHaveLength(1);
+          expect(keys("osv")).toEqual([]);
+          expect(states().osv).toMatchObject({ status: "not_used", reason: "all_withheld" });
+          expectUnwatched();
+        });
+
+        it.each<[string, LockfileSummary[], boolean, string]>([
+          [
+            "another lockfile could not be read",
+            [PRIVATE_ONLY, { path: "web/package-lock.json", read: "unreadable", packages: 0, publicPackages: 0, capped: false }],
+            true,
+            UNREAD,
+          ],
+          ["the listing of the clone stopped short", [PRIVATE_ONLY], false, CUT],
+          ["the lockfile held more public packages than were kept", [{ ...PRIVATE_ONLY, capped: true }], true, NOT_KEPT],
+          ["the record counts more public packages than are stored", [{ ...PRIVATE_ONLY, publicPackages: 3 }], true, NOT_KEPT],
+        ])(
+          "records a failed read instead, keeps every stored alert and leaves OSV unused, when %s",
+          async (_case, lockfiles, listingComplete, error) => {
+            dependabotOff();
+            seed(privatePackages(), lockfiles, listingComplete);
+            twoAlerts();
+
+            await build({ osv: true, scopes: ["@corp"] }).read("tok", repo, false);
+
+            // Something that could hold a public package was not read, so the private scopes alone cannot explain why
+            // nothing was sent.
+            expect(osv.asked).toEqual([]);
+            expect(store.securityAlerts(repo.id).map((a) => a.state)).toEqual(["open", "open"]);
+            expect(states().osv).toEqual(failedWith(error));
+            expectUnwatched();
+          },
+        );
+      });
     });
 
     it("leaves what was stored alone when nothing is known about the lockfiles, rather than saying there are none", async () => {
@@ -650,29 +1023,6 @@ describe("the security crawl step", () => {
         "npm:@types/node",
         "PyPI:@acme/not-npm",
       ]);
-    });
-
-    it("makes no request when every package is private, and closes the finding of a public one in the same lockfile", async () => {
-      dependabotOff();
-      seedInventory([lockedPackage({ name: "@acme/ui" })]);
-      store.saveSecurityAlerts(
-        repo.id,
-        "osv",
-        [
-          osvAlert({ dependency: { name: "lodash" } }),
-          osvAlert({ dependency: { name: "@acme/ui" }, key: "GHSA-x|npm|@acme/ui|package-lock.json" }),
-        ],
-        "replace",
-      );
-
-      await build({ osv: true }).read("tok", repo, false);
-
-      expect(osv.asked).toEqual([]);
-      const state = Object.fromEntries(
-        store.securityAlerts(repo.id).map((a) => [(a as { dependency: { name: string } }).dependency.name, a.state]),
-      );
-      // lodash is public and its lockfile was read without it. @acme/ui is withheld, so it is not looked up and not closed.
-      expect(state).toEqual({ lodash: "fixed", "@acme/ui": "open" });
     });
 
     it("leaves the alerts of a package the operator has since withheld as they were, and still reads the others", async () => {
@@ -792,6 +1142,22 @@ describe("the security crawl step", () => {
         "GHSA-1|npm|lodash|a/package-lock.json": "fixed",
         "GHSA-2|npm|left-pad|b/package-lock.json": "open",
       });
+    });
+
+    it("carries no last good read into an error after the lookup was recorded as not used", async () => {
+      dependabotOff();
+      seedInventory();
+      store.saveSecurityAlerts(repo.id, "osv", [osvAlert()], "replace");
+      await build({ osv: false }).read("tok", repo, false);
+      expect(states().osv).toMatchObject({ status: "not_used", reason: "lookup_off" });
+      // Switching the lookup on clears nothing here, but a failure of the first lookup has no earlier read to fall back on.
+      seedInventory();
+      osv.failWith = new UpstreamError("OSV answered 503", 503);
+
+      await build({ osv: true }).read("tok", repo, false);
+
+      expect(states().osv).toMatchObject({ status: "error", lastGood: null });
+      expect(isUsable(states().osv)).toBe(false);
     });
 
     it("keeps the earlier alerts and read time when the database fails", async () => {

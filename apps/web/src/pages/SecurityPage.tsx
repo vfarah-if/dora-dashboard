@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import type { SecurityReport } from "@dora-dashboard/core";
 import { ApiError } from "../api/client";
@@ -81,7 +82,13 @@ function Header({ report, listingName }: { report: SecurityReport | undefined; l
 }
 
 function Body({ report }: { report: SecurityReport }) {
-  if (notReadYet(report.sources)) {
+  const { hash } = useLocation();
+  // The report arrives after the page loads and the router does not scroll on its own, so a link to a section such as the
+  // sources panel has nothing to land on until now.
+  useEffect(() => {
+    if (hash) document.getElementById(hash.slice(1))?.scrollIntoView?.();
+  }, [hash]);
+  if (notReadYet(report)) {
     // No alert has been measured, so tables and charts of zeros are left out, because zeros would read as all clear.
     // What was read by other means, the workflow files and the branch rules, is facts and not zeros, so it stays.
     return (

@@ -265,6 +265,23 @@ describe("what each action describes", () => {
     expect(of(list, "upgrade_dependency")).toEqual([]);
   });
 
+  it("splits a package's alerts into an upgrade for those with a fix and a replacement for those without", () => {
+    const alerts = [
+      depAlert({ key: "a", severity: "critical", dependency: { patchedVersion: "4.17.21" } }),
+      depAlert({ key: "b", severity: "high", dependency: { patchedVersion: null, epss: { percentage: 0.5, percentile: 0.9 } } }),
+      depAlert({ key: "c", severity: "medium", dependency: { patchedVersion: "4.17.12" } }),
+    ];
+    const list = actions({ alerts });
+    // The upgrade takes `a` and `c`, the highest fix of the two, and the worst of their severities; the replacement takes
+    // `b` alone, with its own severity and exploit prediction, and names no version.
+    expect(of(list, "upgrade_dependency")).toMatchObject([
+      { count: 2, severity: "critical", likelyExploited: false, package: { name: "lodash", upgradeTo: "4.17.21" } },
+    ]);
+    expect(of(list, "replace_dependency")).toMatchObject([
+      { count: 1, severity: "high", likelyExploited: true, band: "high", package: { name: "lodash", upgradeTo: null } },
+    ]);
+  });
+
   it("flags a package whose alert is likely to be exploited", () => {
     const alerts = [depAlert({ severity: "high", dependency: { epss: { percentage: 0.1, percentile: 0.9 } } })];
     expect(of(actions({ alerts }), "upgrade_dependency")[0]!.likelyExploited).toBe(true);

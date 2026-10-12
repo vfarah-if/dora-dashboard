@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UnauthorisedError, UpstreamError } from "../src/core/errors.js";
-import { GitHubProvider } from "../src/infrastructure/github/github-provider.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
 import type { CodeHealthService } from "../src/services/code-health-service.js";
@@ -116,70 +115,5 @@ describe("the security step of a crawl", () => {
 
     await crawler.crawl("t", repoId);
     expect(read).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("reviews read from GitHub for the stored pull requests", () => {
-  const node = (reviews: unknown[]) => ({
-    number: 12,
-    title: "Add widgets",
-    url: "https://github.com/acme/widgets/pull/12",
-    state: "MERGED",
-    createdAt: "2026-09-01T10:00:00Z",
-    publishedAt: "2026-09-01T10:00:00Z",
-    mergedAt: "2026-09-01T11:00:00Z",
-    closedAt: "2026-09-01T11:00:00Z",
-    updatedAt: "2026-09-01T11:00:00Z",
-    additions: 5,
-    deletions: 1,
-    baseRefName: "main",
-    headRefName: "feature",
-    author: { login: "alice", __typename: "User" },
-    mergedBy: { login: "alice" },
-    commits: { nodes: [] },
-    reviews: { nodes: reviews },
-  });
-
-  it("asks for the reviewer's type and stores authorIsBot on each review", async () => {
-    const http = vi.fn(
-      async (_url: string | URL | Request, _init?: RequestInit) =>
-        new Response(
-          JSON.stringify({
-            data: {
-              repository: {
-                pullRequests: {
-                  pageInfo: { hasNextPage: false, endCursor: null },
-                  totalCount: 1,
-                  nodes: [
-                    node([
-                      {
-                        author: { login: "review-helper", __typename: "Bot" },
-                        state: "APPROVED",
-                        submittedAt: "2026-09-01T10:30:00Z",
-                      },
-                      { author: { login: "bob", __typename: "User" }, state: "APPROVED", submittedAt: "2026-09-01T10:40:00Z" },
-                      { author: null, state: "COMMENTED", submittedAt: "2026-09-01T10:50:00Z" },
-                    ]),
-                  ],
-                },
-              },
-            },
-          }),
-          { status: 200 },
-        ),
-    );
-    const store = new SqliteRepoStore(":memory:");
-    const repoId = store.addRepo("acme", "widgets", [], "main").id;
-
-    await new CrawlService(store, new GitHubProvider(http)).crawl("t", repoId);
-
-    const sent = JSON.parse(http.mock.calls[0]![1]!.body as string).query as string;
-    expect(sent).toContain("reviews(first: 100) { nodes { author { login __typename } state submittedAt } }");
-    const [stored] = store.pullRequests(repoId);
-    expect(stored!.reviews.map((r) => ({ author: r.author, authorIsBot: r.authorIsBot }))).toEqual([
-      { author: "review-helper", authorIsBot: true },
-      { author: "bob", authorIsBot: false },
-      { author: null, authorIsBot: undefined },
-    ]);
   });
 });

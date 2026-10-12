@@ -26,7 +26,10 @@ export interface Config {
    * cannot be on while code analysis is off.
    */
   osvLookup: boolean;
-  /** npm scopes, such as `@acme`, never sent to OSV even though their lockfile entries look public. `OSV_PRIVATE_NPM_SCOPES`, comma separated. */
+  /**
+   * npm scopes, such as `@acme`, never sent to OSV even though their lockfile entries look public.
+   * `OSV_PRIVATE_NPM_SCOPES`, comma separated.
+   */
   osvPrivateNpmScopes: string[];
   /** Show the OpenSSF Scorecard of repositories GitHub says are public (`SCORECARD_LOOKUP=on`, off by default; ADR 0035). */
   scorecardLookup: boolean;
@@ -81,7 +84,7 @@ const isOn = (value: string | undefined): boolean => (value ?? "").trim().toLowe
 /** The optional lookups to outside services. Each is off unless it is set to `on`, so nothing leaves by accident. */
 function readLookupSettings(env: NodeJS.ProcessEnv, codeAnalysis: boolean): LookupSettings {
   const osvLookup = isOn(env.OSV_LOOKUP);
-  // The lookup works from the lockfiles the code analysis clone provides; saying yes to one and no to the other is a mistake.
+  // The lookup works from the lockfiles the code analysis clone provides, so asking for it with code analysis off is a mistake.
   if (osvLookup && !codeAnalysis)
     throw new Error("OSV_LOOKUP=on needs code analysis; set CODE_ANALYSIS=on, or turn OSV_LOOKUP off");
   return {

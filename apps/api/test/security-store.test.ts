@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SourceOk, SourceState } from "@dora-dashboard/core";
+import { NOT_USED_REASONS } from "@dora-dashboard/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import {
@@ -223,6 +224,12 @@ describe("source states in the store", () => {
     expect(store.sourceStates(repoId)).toEqual(Object.fromEntries(states));
   });
 
+  it.each(NOT_USED_REASONS)("reads back an OSV source that was not used because of %s", (reason) => {
+    const state: SourceState = { status: "not_used", reason, attemptedAt: "2026-09-29T10:00:00.000Z" };
+    store.setSourceState(repoId, "osv", state);
+    expect(store.sourceStates(repoId).osv).toEqual(state);
+  });
+
   it("removes the row when a source is set back to not read", () => {
     store.setSourceState(repoId, "dependabot", okState());
     store.setSourceState(repoId, "dependabot", { status: "not_read" });
@@ -411,7 +418,8 @@ describe("supply chain facts, posture and scorecard in the store", () => {
       rawDb(logged).prepare("UPDATE security_scorecard SET data = 'x' WHERE repo_id = ?").run(id);
 
       expect(logged.posture(id)).toBeNull();
-      expect(logged.scorecard(id)).toEqual({ readAt: "t", result: null, failure: null });
+      // No read time either, so the report makes no claim about the scan and the crawl reads the project again.
+      expect(logged.scorecard(id)).toEqual({ readAt: null, result: null, failure: null });
       expect(logged.posture(other)).toEqual({ value: repoPosture(), readAt: "t" });
       expect(logged.scorecard(other)!.result).toEqual(scorecardResult());
       expect(warnings.map((w) => String((w.context.err as Error).message))).toEqual([
@@ -437,6 +445,11 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     ])("answers no scorecard result for %s", (_label, data) => {
       logged.saveScorecard(id, "t", scorecardResult());
       rawDb(logged).prepare("UPDATE security_scorecard SET data = ?").run(data);
+      expect(logged.scorecard(id)).toEqual({ readAt: null, result: null, failure: null });
+    });
+
+    it("keeps the read time of a scorecard that was read and found the project absent, which has no data to be unreadable", () => {
+      logged.saveScorecard(id, "t", null);
       expect(logged.scorecard(id)).toEqual({ readAt: "t", result: null, failure: null });
     });
 
@@ -465,6 +478,9 @@ describe("supply chain facts, posture and scorecard in the store", () => {
         "a close reason that is free text",
         (a: Record<string, unknown>) => ({ ...a, closeReason: "we will not fix this, ask Alice" }),
       ],
+      ["a fixed state with no close time", (a: Record<string, unknown>) => ({ ...a, state: "fixed", closeReason: "fixed" })],
+      ["an open state with a close time", (a: Record<string, unknown>) => ({ ...a, closedAt: "2026-09-05T00:00:00Z" })],
+      ["an open state with a close reason", (a: Record<string, unknown>) => ({ ...a, closeReason: "fixed" })],
     ])("leaves out a Dependabot alert stored with %s", (_label, damage) => {
       logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" })], "replace");
       rawDb(logged)
@@ -472,6 +488,34 @@ describe("supply chain facts, posture and scorecard in the store", () => {
         .run(JSON.stringify(damage(JSON.parse(JSON.stringify(dependabotAlert({ key: "1" }))))));
       expect(logged.securityAlerts(id)).toEqual([]);
     });
+
+    it("counts the alerts it leaves out for each source, and none for a source that has none", () => {
+      logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], "replace");
+      logged.saveSecurityAlerts(id, "code_scanning", [codeScanningAlert({ key: "3" })], "replace");
+      rawDb(logged).exec("UPDATE security_alerts SET data = '{broken' WHERE key = '1'");
+      rawDb(logged).exec("UPDATE security_alerts SET data = '{}' WHERE key = '3'");
+
+      const scan = logged.securityAlertScan(id);
+
+      expect(scan.alerts.map((a) => a.key)).toEqual(["2"]);
+      expect(scan.unreadable).toEqual({ dependabot: 1, code_scanning: 1, secret_scanning: 0, osv: 0 });
+      const other = logged.addRepo("acme", "gadgets", [], "main").id;
+      expect(logged.securityAlertScan(other).unreadable).toEqual({ dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 });
+    });
+
+    it.each(["toString", "constructor", "gitlab"])(
+      "leaves out a row stored under %s, which is no alert source, without counting it against any source",
+      (source) => {
+        rawDb(logged)
+          .prepare("INSERT INTO security_alerts (repo_id, source, key, state, data) VALUES (?, ?, 'x', 'open', '{broken')")
+          .run(id, source);
+
+        const scan = logged.securityAlertScan(id);
+
+        expect(scan.alerts).toEqual([]);
+        expect(scan.unreadable).toEqual({ dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 });
+      },
+    );
 
     it("leaves out a code scanning alert with no code part and a secret alert with no exposure part", () => {
       logged.saveSecurityAlerts(id, "code_scanning", [codeScanningAlert({ key: "3" })], "replace");
@@ -572,16 +616,18 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     });
   });
 
-  it("reads facts stored without a listing flag, and refuses one that is not a boolean", () => {
+  // Every row of this version has these fields, so one without them is damaged, and a missing listing flag must never
+  // be read as a complete listing that could close OSV alerts for lockfiles it never saw.
+  it.each([
+    ["no listing flag", { listingComplete: undefined }],
+    ["a listing flag that is not a boolean", { listingComplete: "yes" }],
+    ["no count of dropped findings", { findingsDropped: undefined }],
+    ["a count of dropped actions that is not a number", { actionsDropped: "3" }],
+  ])("answers no record for facts with %s", (_, change) => {
     store.saveSupplyChain(repoId, supplyChainRecord(), []);
-    const facts = { ...supplyChainFacts() } as Partial<ReturnType<typeof supplyChainFacts>>;
-    delete facts.listingComplete;
-    rawDb(store).prepare("UPDATE supply_chain SET facts = ?").run(JSON.stringify(facts));
-    expect(store.supplyChain(repoId)!.facts.listingComplete).toBeUndefined();
-
     rawDb(store)
       .prepare("UPDATE supply_chain SET facts = ?")
-      .run(JSON.stringify({ ...facts, listingComplete: "yes" }));
+      .run(JSON.stringify({ ...supplyChainFacts(), ...change }));
     expect(store.supplyChain(repoId)).toBeNull();
   });
 

@@ -25,6 +25,12 @@ function renderHeader(route: string) {
 const show = (route: string) => void renderHeader(route);
 
 const tab = (name: string) => screen.getByRole("link", { name });
+/** What a screen reader is told, which has to agree with what is lit. */
+const announced = (root: HTMLElement = document.body) =>
+  within(root)
+    .getAllByRole("link")
+    .filter((link) => link.getAttribute("aria-current") === "page" && link.closest("nav"))
+    .map((link) => link.textContent);
 
 describe("Header code analysis tab", () => {
   it("offers the tab between Repositories and Review queue, pointing at the list", () => {
@@ -44,6 +50,7 @@ describe("Header code analysis tab", () => {
     show("/repos/1/code");
     expect(tab(copy.nav.codeAnalysis)).toHaveClass("active");
     expect(tab(copy.nav.repositories)).not.toHaveClass("active");
+    expect(announced()).toEqual([copy.nav.codeAnalysis]);
   });
 
   it("leaves Repositories lit on the repository page itself", () => {
@@ -71,6 +78,19 @@ describe("Header security tab", () => {
   it("is lit on a repository's security page, where Repositories steps aside", () => {
     show("/repos/1/security");
     expect(lit().map((l) => l.textContent)).toEqual([copy.nav.security]);
+    expect(announced()).toEqual([copy.nav.security]);
+    expect(tab(copy.nav.repositories)).not.toHaveAttribute("aria-current");
+  });
+
+  it("announces the list pages and the repository page as current, one tab at a time", () => {
+    const { unmount } = renderHeader("/security");
+    expect(announced()).toEqual([copy.nav.security]);
+    unmount();
+    const second = renderHeader("/repos/1");
+    expect(announced()).toEqual([copy.nav.repositories]);
+    second.unmount();
+    renderHeader("/code");
+    expect(announced()).toEqual([copy.nav.codeAnalysis]);
   });
 
   it("lights only Code analysis on the code page and only Repositories on the repository page", () => {
@@ -118,6 +138,7 @@ describe("Header menu at narrow widths", () => {
       .filter((link) => link.classList.contains("active"))
       .map((link) => link.textContent);
     expect(lit).toEqual([copy.nav.security]);
+    expect(announced(menu()!)).toEqual([copy.nav.security]);
   });
 
   it("closes when the button is pressed again", async () => {

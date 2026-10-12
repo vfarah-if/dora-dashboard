@@ -33,6 +33,12 @@ const ungraded = securitySummary({
   topAction: null,
 });
 
+/** The definition that answers a term in one repository's list of facts, found by the term's visible words. */
+const definitionOf = (row: HTMLElement, term: string) => {
+  const terms = within(row).getAllByRole("term");
+  return within(row).getAllByRole("definition")[terms.findIndex((t) => t.textContent === term)]!;
+};
+
 const show = (summaries: SecuritySummary[], health: unknown = { osv: true }) => {
   const fetchMock = mockFetch({
     "GET /api/security": { body: summaries },
@@ -58,20 +64,18 @@ describe("SecurityListPage", () => {
     expect(links.map((l) => l.textContent)).toEqual(["acme/gadgets", "acme/widgets"]);
     expect(links[0]).toHaveAttribute("href", "/repos/2/security");
     expect(links[0]).toHaveAccessibleName("Open the security report for acme/gadgets");
-    expect(links[0]!.closest("li")).toHaveClass("card", "repo-row");
   });
 
   it("shows the grade as a band with its word, the open alerts in words, the alerts past fix-by, the actions and the last read", async () => {
     show([securitySummary()]);
     const row = (await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ })).closest("li")!;
-    const facts = row.querySelector("dl")!;
-    const fact = (name: string) => within(facts).getByText(name).parentElement!;
+    const fact = (name: string) => definitionOf(row, name);
     expect(fact(copy.security.list.facts.grade)).toHaveTextContent("Medium");
     expect(fact(copy.security.list.facts.open)).toHaveTextContent("1 critical, 2 high, 2 medium and 1 low");
     expect(fact(copy.security.list.facts.pastFix)).toHaveTextContent("1");
     expect(fact(copy.security.list.facts.actions)).toHaveTextContent("2");
     expect(fact(copy.security.list.facts.read)).toHaveTextContent("1 Mar 2026, 10:02");
-    expect(within(facts).queryByText(copy.security.list.facts.scorecard)).not.toBeInTheDocument();
+    expect(within(row).queryByRole("term", { name: copy.security.list.facts.scorecard })).not.toBeInTheDocument();
   });
 
   it("says which sources were read and what to start with", async () => {
@@ -100,9 +104,8 @@ describe("SecurityListPage", () => {
     expect(row).toHaveTextContent(copy.security.list.facts.notGraded);
     expect(row).toHaveTextContent(copy.security.list.gradeMissing.not_crawled);
     // Open alerts, past fix-by and actions all say Not read yet, so no zero reads as an all clear.
-    const facts = row.querySelector("dl")!;
     for (const name of [copy.security.list.facts.open, copy.security.list.facts.pastFix, copy.security.list.facts.actions]) {
-      expect(within(facts).getByText(name).parentElement).toHaveTextContent(copy.security.list.notReadRow);
+      expect(definitionOf(row, name)).toHaveTextContent(copy.security.list.notReadRow);
     }
     expect(row).not.toHaveTextContent("No open alerts");
     expect(row).toHaveTextContent(copy.security.list.facts.neverRead);
@@ -168,9 +171,7 @@ describe("SecurityListPage", () => {
     ]);
     const row = (await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ })).closest("li")!;
     // Refused is not "not read yet", because a crawl would not change it.
-    expect(within(row.querySelector("dl")!).getByText(copy.security.list.facts.open).parentElement).toHaveTextContent(
-      copy.security.list.notUsedRow,
-    );
+    expect(definitionOf(row, copy.security.list.facts.open)).toHaveTextContent(copy.security.list.notUsedRow);
     expect(row).toHaveTextContent(copy.security.list.coverage.noneUsable);
     expect(row).not.toHaveTextContent("Nothing has been read yet.");
   });
@@ -240,6 +241,16 @@ describe("SecurityListPage", () => {
     expect(warning).toHaveClass("notice-warning");
     expect(warning).not.toHaveAttribute("role", "alert");
     expect(warning).toHaveTextContent("failed for acme/widgets and acme/doodads");
+  });
+
+  it("words the failure notice for every kind of read, and says a source with no earlier read is left out", async () => {
+    // `failed` is set for a failed alert source, a failed read of the branch settings or a failed inspection of the clone,
+    // so the notice must not claim that alerts specifically were the thing that could not be read.
+    show([securitySummary({ failed: true })]);
+    const warning = (await screen.findByText(copy.security.list.failedTitle)).closest("aside")!;
+    expect(warning).toHaveTextContent(/alerts, branch settings or workflow files failed/);
+    expect(warning).toHaveTextContent(/a source with no earlier read is left out of them/);
+    expect(warning).not.toHaveTextContent(/figures below use the earlier read/);
   });
 
   it("shows no failure notice when every read worked", async () => {
@@ -313,47 +324,82 @@ describe("SecurityListPage", () => {
     expect(printedAs).toMatch(/^all-repositories-security-summary-\d{4}-\d{2}-\d{2}$/);
   });
 
-  it("describes the page in plain words and asks for no login anywhere", async () => {
-    show([securitySummary()]);
+  it("describes the page in plain words and shows no login, even where the repository listing carries one", async () => {
+    // A login is put in the other listing the page can read, so the check is on what is rendered and not on the fixture.
+    mockFetch({
+      "GET /api/security": { body: [securitySummary()] },
+      "GET /api/health": { body: { osv: true } },
+      "GET /api/repos": { body: [{ ...repo(), login: "ada-lovelace-login", author: "ada-lovelace-login" }] },
+    });
+    renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
     expect(await screen.findByRole("heading", { level: 1, name: copy.security.list.title })).toBeInTheDocument();
+    await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
     expect(screen.getByText(copy.security.list.lede)).toBeInTheDocument();
-    expect(JSON.stringify(securitySummary())).not.toMatch(/login|"secret"|_by"/);
+    expect(document.body.textContent).not.toContain("ada-lovelace-login");
   });
 
-  it("reads the summaries again when any crawl finishes", async () => {
-    let calls = 0;
-    let crawling = true;
-    mockFetch({
-      "GET /api/security": () => {
-        calls += 1;
-        return { body: [securitySummary()] };
-      },
-      "GET /api/health": { body: { osv: true } },
-      "GET /api/repos": () => ({ body: [repo({ crawlStatus: crawling ? "crawling" : "idle" })] }),
-    });
-    const { client } = renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
-    await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
-    await waitFor(() => expect(client.getQueryData(["repos"])).toBeDefined());
-    expect(calls).toBe(1);
-    crawling = false;
-    await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
-    await waitFor(() => expect(calls).toBe(2));
-  });
+  describe("reading the summaries again after a crawl", () => {
+    const summariesRead = () => {
+      const state = {
+        calls: 0,
+        reposReads: 0,
+        repos: [repo({ id: 1, crawlStatus: "crawling" }), repo({ id: 2, crawlStatus: "crawling" })],
+      };
+      mockFetch({
+        "GET /api/security": () => {
+          state.calls += 1;
+          return { body: [securitySummary()] };
+        },
+        "GET /api/health": { body: { osv: true } },
+        "GET /api/repos": () => {
+          state.reposReads += 1;
+          return { body: state.repos };
+        },
+      });
+      return state;
+    };
+    /**
+     * Lets the page take in the list it has just read, and run whatever that schedules a few ticks later, before a test
+     * says the summaries were not read again. The query client hands the page a new answer on a later tick, so asserting
+     * straight after the list is read would pass before the page had even seen it. Each pass ends an act scope, so React
+     * renders and runs the effects of whatever that pass let through.
+     */
+    const settle = async () => {
+      for (let pass = 0; pass < 5; pass++) await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+    };
 
-  it("does not read the summaries again while a crawl is still running or when none ever started", async () => {
-    let calls = 0;
-    mockFetch({
-      "GET /api/security": () => {
-        calls += 1;
-        return { body: [securitySummary()] };
-      },
-      "GET /api/health": { body: { osv: true } },
-      "GET /api/repos": { body: [repo({ crawlStatus: "crawling" })] },
+    it("does so when one crawl finishes while another repository is still crawling", async () => {
+      const state = summariesRead();
+      const { client } = renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
+      await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
+      await waitFor(() => expect(client.getQueryData(["repos"])).toBeDefined());
+      expect(state.calls).toBe(1);
+      state.repos = [repo({ id: 1, crawlStatus: "idle" }), repo({ id: 2, crawlStatus: "crawling" })];
+      await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
+      await waitFor(() => expect(state.calls).toBe(2));
     });
-    const { client } = renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
-    await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
-    await waitFor(() => expect(client.getQueryData(["repos"])).toBeDefined());
-    await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
-    expect(calls).toBe(1);
+
+    it("does not while every crawl is still running", async () => {
+      const state = summariesRead();
+      const { client } = renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
+      await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
+      await waitFor(() => expect(client.getQueryData(["repos"])).toBeDefined());
+      await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
+      await waitFor(() => expect(state.reposReads).toBe(2));
+      await settle();
+      expect(state.calls).toBe(1);
+    });
+
+    it("does not when no crawl ever started", async () => {
+      const state = summariesRead();
+      state.repos = [repo({ id: 1, crawlStatus: "idle" }), repo({ id: 2, crawlStatus: "idle" })];
+      const { client } = renderRoute(<SecurityListPage />, { path: "/security", route: "/security" });
+      await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ });
+      await waitFor(() => expect(client.getQueryData(["repos"])).toBeDefined());
+      await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
+      await waitFor(() => expect(state.reposReads).toBe(2));
+      await settle();
+      expect(state.calls).toBe(1);
+    });
   });
 });

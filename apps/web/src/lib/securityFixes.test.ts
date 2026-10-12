@@ -695,6 +695,8 @@ describe("snippets for each kind of action", () => {
       const snippets = snippetsFor(securityAction({ kind }), { ...context, codeScanning: false });
       expect(snippets.map((s) => s.id)).toEqual(["semgrep", "shaLookup"]);
       expect(snippets[0]!.code).toContain("semgrep scan --config auto --error");
+      // A moving tag would run whatever image is newest, with the checked out code in reach.
+      expect(snippets[0]!.code).toContain("image: semgrep/semgrep@sha256:<digest>");
       expect(snippets[0]!.code).toContain("pull_request:");
       expect(snippets[0]!.code).not.toContain("security-events");
       expect(snippets[0]!.code).not.toContain("codeql");
@@ -702,6 +704,13 @@ describe("snippets for each kind of action", () => {
     }
     expect(copy.security.snippetNotes.semgrep).toContain("needs no GitHub Code Security");
     expect(copy.security.snippetNotes.codeql).toContain("needs GitHub Code Security");
+  });
+
+  it("tells the reader to replace the digest placeholder in the Semgrep image before using the workflow", () => {
+    const [semgrep] = snippetsFor(securityAction({ kind: "add_static_analysis" }), { ...context, codeScanning: false });
+    // The placeholder is not a digest, so the workflow cannot pull the image as written.
+    expect(semgrep!.code).toContain("@sha256:<digest>");
+    expect(semgrep!.note).toContain("Before you use it, replace <digest> in the image line");
   });
 
   it("offers dependency review with no checkout and the command that finds the commit for its placeholder", () => {
@@ -780,7 +789,7 @@ describe("learn more links", () => {
     }
   });
 
-  it("uses the final address of each page, with no redirect", () => {
+  it("uses none of the retired addresses that now redirect", () => {
     const urls = Object.values(LEARN_MORE).filter((url): url is string => url !== null);
     for (const old of [
       "security-for-github-actions",

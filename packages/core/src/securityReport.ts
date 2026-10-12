@@ -12,6 +12,7 @@ import {
   unmeasuredOf,
   usedAlerts,
   type SecurityFacts,
+  type SupplyChainOutcome,
 } from "./securityGrade.js";
 import {
   ALERT_SOURCES,
@@ -62,13 +63,10 @@ export const SECURITY_THRESHOLDS: SecurityThresholds = {
   lowAlertAdviceDays: FIX_WITHIN_DAYS.low,
 };
 
-export interface SecurityInput {
+interface SecurityInputFields {
   repo: Pick<Repo, "id" | "owner" | "name" | "deployBranch" | "lastCrawledAt">;
   alerts: readonly SecurityAlert[];
   sources: Record<AlertSource, SourceState>;
-  supplyChain: SupplyChainRecord | null;
-  /** Why there is no supply chain record: code analysis is off, or it has not been read yet. */
-  supplyChainMissing: "analysis_off" | "not_read" | null;
   /** Set when the latest inspection of the clone failed; `supplyChain`, if any, is from an earlier one. */
   supplyChainFailure: ReadFailure | null;
   pullRequests: readonly PullRequest[];
@@ -86,6 +84,9 @@ export interface SecurityInput {
   /** The repository's own label rules, which decide which issues are security issues. */
   issueLabels?: IssueLabelRules | null;
 }
+
+/** What the report is built from, the stored facts with the supply chain record or the reason there is none. */
+export type SecurityInput = SecurityInputFields & SupplyChainOutcome;
 
 const zeroes = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
 
@@ -136,7 +137,8 @@ function supplyChainLines(
   return [
     bad("prHeadCheckout", true, found.prHeadCheckout.map(finding)),
     bad("scriptInjection", true, found.scriptInjection.map(finding)),
-    bad("selfHostedPublic", true, found.selfHostedPublic.map(finding)),
+    // Left out when the repository's visibility is not known, as the check that grades it is unmeasured.
+    ...(found.selfHostedPublic === null ? [] : [bad("selfHostedPublic", true, found.selfHostedPublic.map(finding))]),
     bad("unpinnedActions", true, found.thirdPartyUnpinned.map(use)),
     bad("ownActionsUnpinned", false, found.ownUnpinned.map(use)),
     bad("workflowPermissions", true, found.permissions.map(finding)),
@@ -204,6 +206,25 @@ function supplyChainLines(
   ];
 }
 
+/** The report's supply chain part: what the clone's record shows, or why there is no record. */
+function supplyChainOf(outcome: SupplyChainOutcome, owner: string, posture: RepoPosture | null): SecurityReport["supplyChain"] {
+  if (outcome.supplyChain === null) return { status: "none", reason: outcome.supplyChainMissing };
+  const record = outcome.supplyChain;
+  const { facts } = record;
+  return {
+    status: "ok",
+    commitSha: record.commitSha,
+    readAt: record.readAt,
+    workflowsRead: facts.workflowsRead,
+    workflowsUnread: facts.workflowsUnread,
+    dockerfilesUnread: facts.dockerfilesUnread,
+    dockerfilesUnreadTotal: facts.dockerfilesUnreadTotal,
+    findingsDropped: facts.findingsDropped,
+    actionsDropped: facts.actionsDropped,
+    lines: supplyChainLines(record, supplyChainFound(record, owner, posture), posture),
+  };
+}
+
 function dependencyUpdates(
   prs: readonly PullRequest[],
   inRange: (iso: string | null) => boolean,
@@ -263,9 +284,10 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     crawled: repo.lastCrawledAt !== null,
     alerts: input.alerts,
     sources,
-    supplyChain: input.supplyChain,
-    supplyChainMissing: input.supplyChainMissing,
     posture,
+    ...(input.supplyChain === null
+      ? { supplyChain: null, supplyChainMissing: input.supplyChainMissing }
+      : { supplyChain: input.supplyChain, supplyChainMissing: null }),
   };
   const result = gradeSecurity(facts);
   const staleUpdates = input.pullRequests.filter(
@@ -308,7 +330,7 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
   const fixed = closedBy("fixed");
   const dismissed = closedBy("dismissed");
   const openAt = (alert: SecurityAlert, ms: number) =>
-    instant(alert.createdAt) <= ms && !(alert.state !== "open" && alert.closedAt !== null && instant(alert.closedAt) <= ms);
+    instant(alert.createdAt) <= ms && (alert.state === "open" || instant(alert.closedAt) > ms);
   const weeks = weekRange(weekStart(new Date(range.start).toISOString()), weekStart(new Date(range.end).toISOString()));
   const weekly = weeks.map((week) => {
     const weekMs = instant(`${week}T00:00:00Z`);
@@ -353,24 +375,23 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
   const onPath = actions.filter((a) => a.onPath).length;
   const record = input.supplyChain;
   return {
-    repo: { id: repo.id, owner: repo.owner, name: repo.name, lastCrawledAt: repo.lastCrawledAt },
+    repo: {
+      id: repo.id,
+      owner: repo.owner,
+      name: repo.name,
+      deployBranch: repo.deployBranch,
+      lastCrawledAt: repo.lastCrawledAt,
+    },
     range: { from: range.from, to: range.to },
     gradedAt: options.now,
     thresholds: SECURITY_THRESHOLDS,
     settingsUrl: input.settingsUrl,
     sources,
-    supplyChain: record
-      ? {
-          status: "ok",
-          commitSha: record.commitSha,
-          readAt: record.readAt,
-          workflowsRead: record.facts.workflowsRead,
-          workflowsUnread: record.facts.workflowsUnread,
-          dockerfilesUnread: record.facts.dockerfilesUnread,
-          dockerfilesUnreadTotal: record.facts.dockerfilesUnreadTotal,
-          lines: supplyChainLines(record, supplyChainFound(record, repo.owner, posture), posture),
-        }
-      : { status: "none", reason: input.supplyChainMissing ?? "not_read" },
+    used: usedSources(sources),
+    lastGoodAt: Object.fromEntries(
+      ALERT_SOURCES.map((source) => [source, lastGoodRead(sources[source])?.readAt ?? null]),
+    ) as SecurityReport["lastGoodAt"],
+    supplyChain: supplyChainOf(input, repo.owner, posture),
     supplyChainFailure: input.supplyChainFailure,
     ecosystems: record?.facts.ecosystems ?? [],
     posture: input.posture,
@@ -413,15 +434,16 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
 
 /** The list page's row, projected from the report so the two can never disagree. */
 export function securitySummary(report: SecurityReport, crawlStatus: CrawlStatus): SecuritySummary {
-  const used = usedSources(report.sources);
+  const { used, lastGoodAt } = report;
   // Only a source whose alerts are in use can say when the figures were read.
   const readAts = ALERT_SOURCES.flatMap((source) => {
-    const read = used[source] ? lastGoodRead(report.sources[source]) : null;
-    return read === null ? [] : [read.readAt];
+    const at = used[source] ? lastGoodAt[source] : null;
+    return at === null ? [] : [at];
   });
   const { scorecard } = report;
+  const { id, owner, name, lastCrawledAt } = report.repo;
   const fields: Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing"> = {
-    repo: { ...report.repo, crawlStatus },
+    repo: { id, owner, name, lastCrawledAt, crawlStatus },
     open: report.open.bySeverity,
     pastFix: Object.values(report.open.pastFix).reduce((total, n) => total + n, 0),
     likelyExploited: report.likelyExploitedOpen,

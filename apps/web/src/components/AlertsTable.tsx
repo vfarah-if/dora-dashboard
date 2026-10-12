@@ -74,6 +74,11 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
         </div>
         {source && <p className="print-only">{c.filterNote(sourceName(source))}</p>}
         {capped && <p className="chart-subtitle">{c.capped(report.openAlerts.length, report.openAlertTotal)}</p>}
+        {capped && source && alerts.length > 0 && alerts.length < report.open.bySource[source] && (
+          <p className="chart-subtitle">
+            {c.partlyInWorst(sourceName(source), alerts.length, report.open.bySource[source], report.openAlerts.length)}
+          </p>
+        )}
         {alerts.length === 0 ? (
           <p className="chart-empty">
             {capped && source && report.open.bySource[source] > 0

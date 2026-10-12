@@ -1004,15 +1004,17 @@ describe("lockfile summaries", () => {
 });
 
 describe("supplyChainFacts counts and bounds", () => {
-  it("is version 2 and empty for an empty repository", () => {
+  it("is version 3 and empty for an empty repository", () => {
     expect(chainFacts()).toEqual({
-      version: 2,
+      version: 3,
       workflowsRead: 0,
       workflowsUnread: [],
       dockerfilesUnread: [],
       dockerfilesUnreadTotal: 0,
       actions: [],
       findings: [],
+      findingsDropped: 0,
+      actionsDropped: 0,
       securityTools: [],
       updateConfig: null,
       securityPolicy: null,
@@ -1643,5 +1645,252 @@ describe("key files by strength and cap", () => {
       { path: ".env.test", strength: "weak" },
       { path: "debug.keystore", strength: "weak" },
     ]);
+  });
+});
+
+describe("rows after a block scalar", () => {
+  it("reads the steps after a run block as workflow again, so a later head checkout is still found", () => {
+    const yaml = [
+      "on: pull_request_target",
+      "permissions: {}",
+      "jobs:",
+      "  build:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: |",
+      "          echo one",
+      "          echo two",
+      `      - uses: actions/checkout@${SHA}`,
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: ${{ github.event.pull_request.head.sha }}",
+    ].join("\n");
+    // The block ends at the dash on line 10, so the ref on line 13 is a key of the checkout step, not script text.
+    expect(workflowFacts(yaml).findings).toEqual([
+      { file: WORKFLOW_PATH, line: 13, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.sha" },
+    ]);
+  });
+});
+
+describe("comment lines in a workflow", () => {
+  it("finds nothing in a workflow whose comments sit above its job, inside its triggers and between its steps", () => {
+    const yaml = [
+      "on:",
+      "  # only the main branch",
+      "  push:",
+      "    branches: [main]",
+      "jobs:",
+      "  # the build job",
+      "  build:",
+      "    runs-on: ubuntu-latest",
+      "    permissions:",
+      "      contents: read",
+      "    steps:",
+      `      - uses: actions/checkout@${SHA}`,
+      "      # then the tests",
+      "      - run: npm test",
+    ].join("\n");
+    // A comment read as a row of its own would be a job without permissions, and the workflow sets none at the top.
+    expect(workflowFacts(yaml).findings).toEqual([]);
+  });
+});
+
+describe("composite actions and reusable workflows run with their caller's event", () => {
+  const ACTION = ".github/actions/notify/action.yml";
+  const REUSABLE = ".github/workflows/reusable.yml";
+  const composite = 'runs:\n  using: composite\n  steps:\n    - run: echo "${{ github.event.issue.title }}"\n      shell: bash\n';
+  const callingAction = (on: string) => withPermissions(on, "      - uses: ./.github/actions/notify");
+  const callingWorkflow = (on: string, target = "./.github/workflows/reusable.yml") =>
+    `${on}\npermissions: {}\njobs:\n  call:\n    uses: ${target}\n`;
+  const reusable = withPermissions("on: workflow_call", '      - run: echo "${{ github.event.issue.title }}"');
+  const facts = (files: [string, string][]) =>
+    chainFacts({ paths: files.map(([path]) => path), workflows: files.map(([path, content]) => file(path, content)) });
+  const injections = (files: [string, string][]) =>
+    facts(files)
+      .findings.filter((f) => f.risk === "scriptInjection")
+      .map((f) => `${f.file}:${f.line}`);
+
+  it("checks a composite action that a privileged workflow calls by local path", () => {
+    expect(
+      injections([
+        [".github/workflows/triage.yml", callingAction("on: issue_comment")],
+        [ACTION, composite],
+      ]),
+    ).toEqual([`${ACTION}:4`]);
+  });
+
+  it("checks a composite action called by its directory with a trailing slash or as action.yaml", () => {
+    const yamlAction = ".github/actions/notify/action.yaml";
+    const caller = withPermissions("on: issue_comment", "      - uses: './.github/actions/notify/'");
+    expect(
+      injections([
+        [".github/workflows/triage.yml", caller],
+        [yamlAction, composite],
+      ]),
+    ).toEqual([`${yamlAction}:4`]);
+  });
+
+  it("checks a reusable workflow that a privileged workflow calls", () => {
+    expect(
+      injections([
+        [".github/workflows/caller.yml", callingWorkflow("on: pull_request_target")],
+        [REUSABLE, reusable],
+      ]),
+    ).toEqual([`${REUSABLE}:7`]);
+  });
+
+  it("checks a composite action reached through a reusable workflow", () => {
+    const reusableCallingAction = withPermissions("on: workflow_call", "      - uses: ./.github/actions/notify");
+    expect(
+      injections([
+        [".github/workflows/caller.yml", callingWorkflow("on: issue_comment")],
+        [REUSABLE, reusableCallingAction],
+        [ACTION, composite],
+      ]),
+    ).toEqual([`${ACTION}:4`]);
+  });
+
+  it("finds a head checkout in a reusable workflow called from pull_request_target", () => {
+    const checkout = withPermissions(
+      "on: workflow_call",
+      [
+        `      - uses: actions/checkout@${SHA}`,
+        "        with:",
+        "          persist-credentials: false",
+        "          ref: ${{ github.event.pull_request.head.sha }}",
+      ].join("\n"),
+    );
+    const found = facts([
+      [".github/workflows/caller.yml", callingWorkflow("on: pull_request_target")],
+      [REUSABLE, checkout],
+    ]).findings;
+    expect(found).toEqual([{ file: REUSABLE, line: 10, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.sha" }]);
+  });
+
+  it("notes the pull request trigger of the caller on a reusable workflow's self-hosted runner", () => {
+    const selfHosted = "on: workflow_call\npermissions: {}\njobs:\n  b:\n    runs-on: self-hosted\n    steps: []\n";
+    const found = facts([
+      [".github/workflows/caller.yml", callingWorkflow("on: pull_request")],
+      [REUSABLE, selfHosted],
+    ]).findings.filter((f) => f.risk === "selfHosted");
+    expect(found).toEqual([{ file: REUSABLE, line: 5, risk: "selfHosted", evidence: "self-hosted", onPullRequest: true }]);
+  });
+
+  it("does not check one that only unprivileged workflows call, or that nothing in the repository calls", () => {
+    expect(
+      injections([
+        [".github/workflows/ci.yml", callingAction("on: [push, pull_request]")],
+        [ACTION, composite],
+      ]),
+    ).toEqual([]);
+    expect(
+      injections([
+        [".github/workflows/ci.yml", callingWorkflow("on: push")],
+        [REUSABLE, reusable],
+      ]),
+    ).toEqual([]);
+    expect(
+      injections([
+        [ACTION, composite],
+        [REUSABLE, reusable],
+      ]),
+    ).toEqual([]);
+  });
+
+  it("ignores a local path that names no file that was read, and another repository's action", () => {
+    const caller = withPermissions(
+      "on: issue_comment",
+      "      - uses: ./.github/actions/missing\n      - uses: acme/notify/.github/actions/notify@v1",
+    );
+    expect(
+      injections([
+        [".github/workflows/triage.yml", caller],
+        [ACTION, composite],
+      ]),
+    ).toEqual([]);
+  });
+
+  it("follows calls that loop back without reading forever", () => {
+    const loop = withPermissions("on: workflow_call", "      - uses: ./.github/actions/notify");
+    const back = [
+      "runs:",
+      "  using: composite",
+      "  steps:",
+      "    - uses: ./.github/workflows/reusable.yml",
+      '    - run: echo "${{ github.event.issue.title }}"',
+      "      shell: bash",
+    ].join("\n");
+    expect(
+      injections([
+        [".github/workflows/caller.yml", callingWorkflow("on: issue_comment")],
+        [REUSABLE, loop],
+        [ACTION, back],
+      ]),
+    ).toEqual([`${ACTION}:5`]);
+  });
+});
+
+describe("caps that keep each risk and each kind of action apart", () => {
+  const jobs = (count: number) =>
+    Array.from({ length: count }, (_, i) => `  j${i}:\n    runs-on: self-hosted\n    steps: []`).join("\n");
+
+  it("keeps a graded finding that comes after the advice has filled the cap across the repository", () => {
+    // 300 workflows of seven self-hosted jobs in a private repository are 2,100 findings that are advice only.
+    const advice = Array.from({ length: 300 }, (_, i) =>
+      file(`.github/workflows/a-${String(i).padStart(3, "0")}.yml`, `on: push\npermissions: {}\njobs:\n${jobs(7)}\n`),
+    );
+    const triage = file(
+      ".github/workflows/triage.yml",
+      withPermissions("on: issue_comment", "      - run: echo ${{ github.event.issue.title }}"),
+    );
+    const found = chainFacts({ paths: [...advice, triage].map((f) => f.path), workflows: [...advice, triage] });
+    expect(found.findings.filter((f) => f.risk === "selfHosted")).toHaveLength(2000);
+    expect(found.findings.filter((f) => f.risk === "scriptInjection")).toEqual([
+      { file: triage.path, line: 7, risk: "scriptInjection", evidence: "github.event.issue.title" },
+    ]);
+    expect(found.findingsDropped).toBe(100);
+  });
+
+  it("keeps a graded finding that comes after the advice has filled the cap in one file", () => {
+    const yaml = [
+      "on: issue_comment",
+      "permissions: {}",
+      "jobs:",
+      jobs(2_001),
+      "  last:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: echo ${{ github.event.issue.title }}",
+    ].join("\n");
+    const found = workflowFacts(yaml);
+    expect(found.findings.filter((f) => f.risk === "selfHosted")).toHaveLength(2000);
+    expect(found.findings.filter((f) => f.risk === "scriptInjection")).toHaveLength(1);
+    expect(found.findingsDropped).toBe(1);
+  });
+
+  it("keeps an unpinned action that comes after 10,000 pinned ones in one file", () => {
+    const uses = [...Array.from({ length: 10_001 }, () => `      - uses: acme/tool@${SHA}`), "      - uses: other/tool@v1"];
+    const found = workflowFacts(
+      `on: push\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n${uses.join("\n")}\n`,
+    );
+    expect(found.actions.filter((a) => a.pinned)).toHaveLength(10_000);
+    expect(found.actions.filter((a) => !a.pinned)).toMatchObject([{ action: "other/tool", ref: "v1" }]);
+    expect(found.actionsDropped).toBe(1);
+  });
+
+  it("keeps a third party action that comes after 10,000 uses of GitHub's own across the repository", () => {
+    const workflow = (name: string, uses: string[]) =>
+      file(
+        `.github/workflows/${name}.yml`,
+        `on: push\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n${uses.join("\n")}\n`,
+      );
+    const checkouts = Array.from({ length: 6_000 }, () => "      - uses: actions/checkout@v4");
+    const files = [workflow("a", checkouts), workflow("b", checkouts), workflow("c", ["      - uses: acme/tool@v1"])];
+    const found = chainFacts({ paths: files.map((f) => f.path), workflows: files });
+    expect(found.actions.filter((a) => a.kind === "github")).toHaveLength(10_000);
+    expect(found.actions.filter((a) => a.kind === "other")).toMatchObject([
+      { file: ".github/workflows/c.yml", action: "acme/tool" },
+    ]);
+    expect(found.actionsDropped).toBe(2_000);
   });
 });

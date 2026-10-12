@@ -1,5 +1,5 @@
 import type { CandidateFile } from "../src/codeTooling.js";
-import type { SecurityFacts } from "../src/securityGrade.js";
+import type { SecurityFacts, SupplyChainOutcome } from "../src/securityGrade.js";
 import type { SecurityInput } from "../src/securityReport.js";
 import type {
   AlertSource,
@@ -85,6 +85,9 @@ export const allOk = (): Record<AlertSource, SourceState> => ({
 let counter = 0;
 const nextKey = () => String(++counter);
 
+// The alert builders below take overrides that may close an alert, which the type only accepts with its close time,
+// so each result is cast; a test that closes an alert gives its `closedAt` too.
+
 export function depAlert(
   overrides: Partial<Omit<DependabotAlert, "dependency">> & { dependency?: Partial<DependabotAlert["dependency"]> } = {},
 ): DependabotAlert {
@@ -117,7 +120,7 @@ export function depAlert(
       ...dependency,
     },
     ...rest,
-  };
+  } as DependabotAlert;
 }
 
 /** An OSV finding for lodash in the root lockfile, as `osvFindings` makes one. */
@@ -153,7 +156,7 @@ export function osvAlert(
       ...dependency,
     },
     ...rest,
-  };
+  } as OsvAlert;
 }
 
 export function codeAlert(overrides: Partial<Omit<CodeAlert, "code">> & { code?: Partial<CodeAlert["code"]> } = {}): CodeAlert {
@@ -180,7 +183,7 @@ export function codeAlert(overrides: Partial<Omit<CodeAlert, "code">> & { code?:
       ...code,
     },
     ...rest,
-  };
+  } as CodeAlert;
 }
 
 export function secretAlert(
@@ -205,7 +208,7 @@ export function secretAlert(
       ...exposure,
     },
     ...rest,
-  };
+  } as SecretAlert;
 }
 
 export function emptyFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyChainFacts {
@@ -217,6 +220,8 @@ export function emptyFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyCha
     dockerfilesUnreadTotal: 0,
     actions: [],
     findings: [],
+    findingsDropped: 0,
+    actionsDropped: 0,
     securityTools: [],
     updateConfig: ".github/dependabot.yml",
     securityPolicy: "SECURITY.md",
@@ -290,29 +295,48 @@ export function posture(
 /** A posture as the report's input holds it: the value with the time it was read. */
 export const held = (value: RepoPosture = posture(), readAt = "2026-10-07T08:00:00Z"): HeldPosture => ({ value, readAt });
 
+/** A supply chain record and the reason it is missing, given apart and settled together as `SupplyChainOutcome` holds them. */
+interface OutcomeOverrides {
+  supplyChain?: SupplyChainRecord | null;
+  supplyChainMissing?: SupplyChainOutcome["supplyChainMissing"];
+}
+
+/** The record, a clean one by default. A test that gives a record and a reason, or neither, is refused, as the type would. */
+function outcomeOf({ supplyChain = record(), supplyChainMissing = null }: OutcomeOverrides): SupplyChainOutcome {
+  if (supplyChain !== null) {
+    if (supplyChainMissing !== null) throw new Error("A supply chain record has no reason to be missing");
+    return { supplyChain, supplyChainMissing: null };
+  }
+  if (supplyChainMissing === null) throw new Error("A missing supply chain record needs its reason");
+  return { supplyChain: null, supplyChainMissing };
+}
+
+export type FactsOverrides = Partial<Omit<SecurityFacts, "supplyChain" | "supplyChainMissing">> & OutcomeOverrides;
+
 /** Facts for an elite repository: every source read, a clean clone and a protected branch. */
-export function facts(overrides: Partial<SecurityFacts> = {}): SecurityFacts {
+export function facts(overrides: FactsOverrides = {}): SecurityFacts {
+  const { supplyChain, supplyChainMissing, ...rest } = overrides;
   return {
     owner: "acme",
     now: NOW,
     crawled: true,
     alerts: [],
     sources: allOk(),
-    supplyChain: record(),
-    supplyChainMissing: null,
     posture: posture(),
-    ...overrides,
+    ...rest,
+    ...outcomeOf({ supplyChain, supplyChainMissing }),
   };
 }
 
+export type InputOverrides = Partial<Omit<SecurityInput, "supplyChain" | "supplyChainMissing">> & OutcomeOverrides;
+
 /** The same as `facts`, shaped as the report's input. */
-export function input(overrides: Partial<SecurityInput> = {}): SecurityInput {
+export function input(overrides: InputOverrides = {}): SecurityInput {
+  const { supplyChain, supplyChainMissing, ...rest } = overrides;
   return {
     repo: { id: 7, owner: "acme", name: "widgets", deployBranch: "main", lastCrawledAt: "2026-10-07T08:00:00Z" },
     alerts: [],
     sources: allOk(),
-    supplyChain: record(),
-    supplyChainMissing: null,
     pullRequests: [],
     supplyChainFailure: null,
     settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
@@ -320,7 +344,8 @@ export function input(overrides: Partial<SecurityInput> = {}): SecurityInput {
     postureFailure: null,
     scorecard: { status: "off" },
     issues: null,
-    ...overrides,
+    ...rest,
+    ...outcomeOf({ supplyChain, supplyChainMissing }),
   };
 }
 

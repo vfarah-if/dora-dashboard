@@ -1,5 +1,6 @@
 import type { CodeSnapshot } from "@dora-dashboard/core";
 import { beforeEach, describe, expect, it } from "vitest";
+import { UpstreamError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
 import type { CloneInspector, CloneView } from "../src/services/clone-inspector.js";
@@ -44,12 +45,13 @@ class FakeInspector implements CloneInspector {
 
 function recordingLog() {
   const warnings: { context: Record<string, unknown>; message: string }[] = [];
+  const errors: { context: Record<string, unknown>; message: string }[] = [];
   const log: Logger = {
     info: () => undefined,
-    error: () => undefined,
+    error: (context, message) => void errors.push({ context: context as Record<string, unknown>, message }),
     warn: (context, message) => void warnings.push({ context: context as Record<string, unknown>, message }),
   };
-  return { log, warnings };
+  return { log, warnings, errors };
 }
 
 const NOW = new Date("2026-09-29T10:00:00Z");
@@ -211,7 +213,7 @@ describe("the clone inspector during code health", () => {
     expect(inspector.asked).toEqual([]);
   });
 
-  it("logs an inspector that throws, and still saves the snapshot as it would have been", async () => {
+  it("logs an inspector that throws as an error, and still saves the snapshot as it would have been", async () => {
     inspector.failWith = new Error("lockfile exploded");
 
     const snapshot = await service.analyse("t", repoId);
@@ -219,10 +221,21 @@ describe("the clone inspector during code health", () => {
     expect(snapshot.error).toBeNull();
     expect(store.latestCodeSnapshot(repoId)).toEqual(snapshot);
     expect(analyser.analysed).toHaveLength(1);
-    expect(logged.warnings).toEqual([
-      { context: { err: new Error("lockfile exploded"), repoId }, message: "could not inspect the clone" },
+    // A bug in the inspection is not one the person can act on, so it is an error in the log, as in the security crawl.
+    expect(logged.errors).toEqual([
+      { context: { err: new Error("lockfile exploded"), repoId }, message: "could not inspect the clone unexpectedly" },
     ]);
+    expect(logged.warnings).toEqual([]);
     expect(checkout.disposed).toHaveLength(1);
+  });
+
+  it("logs an inspection that fails for a reason the person can act on as a warning only", async () => {
+    inspector.failWith = new UpstreamError("GitHub refused to list the files", 502);
+
+    await service.analyse("t", repoId);
+
+    expect(logged.warnings.map((w) => w.message)).toEqual(["could not inspect the clone"]);
+    expect(logged.errors).toEqual([]);
   });
 
   it("logs a failed inspection of an unchanged head, disposes of the clone and saves no failed snapshot", async () => {
@@ -235,7 +248,7 @@ describe("the clone inspector during code health", () => {
     expect(analyser.analysed).toHaveLength(1);
     expect(checkout.disposed).toHaveLength(2);
     expect(store.codeSnapshotKeys(repoId).latest).toBe(store.codeSnapshotKeys(repoId).good);
-    expect(logged.warnings.map((w) => w.message)).toEqual(["could not inspect the clone"]);
+    expect(logged.errors.map((w) => w.message)).toEqual(["could not inspect the clone unexpectedly"]);
   });
 
   it("logs a clone that fails for an unchanged head and keeps the stored snapshot", async () => {
@@ -344,6 +357,38 @@ describe("the clone inspector during code health", () => {
       await service.analyse("t", repoId);
 
       expect(inspector.failures).toEqual([{ repoId, message: CLONE_FAILURE }]);
+    });
+
+    it("records a failure to clone for the analysis too, so the older facts are not shown as read without a warning", async () => {
+      await service.analyse("t", repoId);
+      checkout.head = "def5678";
+      checkout.failWith = new Error("network down at /tmp/clone-x");
+
+      const snapshot = await service.analyse("t", repoId);
+
+      // The code snapshot records the error as before, and the supply chain facts are marked as older than the head.
+      expect(snapshot.error).not.toBeNull();
+      expect(inspector.failures).toEqual([{ repoId, message: CLONE_FAILURE }]);
+    });
+
+    it("records a clone that fails on a repository never cloned before", async () => {
+      checkout.failWith = new Error("network down");
+
+      await service.analyse("t", repoId);
+
+      expect(inspector.failures).toEqual([{ repoId, message: CLONE_FAILURE }]);
+    });
+
+    it("logs, and still saves the failed snapshot, when the clone failure cannot be recorded", async () => {
+      checkout.failWith = new Error("network down");
+      inspector.fail = () => {
+        throw new Error("database is locked");
+      };
+
+      const snapshot = await service.analyse("t", repoId);
+
+      expect(snapshot.error).not.toBeNull();
+      expect(logged.warnings.map((w) => w.message)).toContain("could not record the failed clone");
     });
 
     it("records a clone that cannot be listed, though the analysis goes on", async () => {

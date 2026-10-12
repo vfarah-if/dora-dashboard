@@ -23,11 +23,12 @@ function withoutTrailingSlashes(text: string): string {
   return text.slice(0, end);
 }
 
+// eslint-disable-next-line no-control-regex -- matching control characters is the point: they are rejected.
+const PLAIN = /^(?!-)[^\s\u0000-\u001f\u007f]*$/u;
+
 /**
  * A branch name that is safe to hand to git and to put in a request path: empty (meaning the default), no leading `-`,
  * no whitespace or control characters, and no `.` or `..` segment, which a path would resolve to another address.
  */
-// eslint-disable-next-line no-control-regex -- matching control characters is the point: they are rejected.
-const PLAIN = /^(?!-)[^\s\u0000-\u001f\u007f]*$/u;
 export const isSafeBranch = (branch: string): boolean =>
   PLAIN.test(branch) && !branch.split("/").some((segment) => segment === "." || segment === "..");

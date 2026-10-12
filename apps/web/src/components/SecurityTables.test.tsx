@@ -344,6 +344,32 @@ describe("AlertsTable", () => {
     expect(screen.queryByText(copy.security.alerts.none)).not.toBeInTheDocument();
   });
 
+  it("says how many alerts of the chosen source are missing when the cut leaves only some of them", () => {
+    const base = securityReport();
+    const inList = base.openAlerts.filter((alert) => alert.source === "dependabot").length;
+    show(
+      securityReport({ openAlertTotal: 140, open: { ...base.open, bySource: { ...base.open.bySource, dependabot: 12 } } }),
+      "?source=dependabot",
+    );
+    expect(bodyRows()).toHaveLength(inList);
+    expect(
+      screen.getByText(copy.security.alerts.partlyInWorst("Dependabot alerts", inList, 12, base.openAlerts.length)),
+    ).toBeInTheDocument();
+  });
+
+  it("gives no missing-alerts note when the list is not cut, or the chosen source is wholly listed", () => {
+    const base = securityReport();
+    const listed = base.openAlerts.filter((alert) => alert.source === "dependabot").length;
+    const { unmount } = show(securityReport({ openAlertTotal: base.openAlerts.length }), "?source=dependabot");
+    expect(screen.queryByText(/because only the/)).not.toBeInTheDocument();
+    unmount();
+    show(
+      securityReport({ openAlertTotal: 140, open: { ...base.open, bySource: { ...base.open.bySource, dependabot: listed } } }),
+      "?source=dependabot",
+    );
+    expect(screen.queryByText(/because only the/)).not.toBeInTheDocument();
+  });
+
   it("notes when the list is cut to the worst alerts", () => {
     show(securityReport({ openAlertTotal: 140 }));
     expect(screen.getByText("Showing the 2 worst of 140 open alerts.")).toBeInTheDocument();

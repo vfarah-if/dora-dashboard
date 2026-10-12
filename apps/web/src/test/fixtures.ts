@@ -978,13 +978,36 @@ const line = (
 
 type ReportFields = Omit<SecurityReport, "grade" | "gradeMissing">;
 
+/** When a source last read well, by the same rule as the API's, so that a report built here agrees with its sources. */
+const lastGoodOf = (sources: SecurityReport["sources"]): SecurityReport["lastGoodAt"] => {
+  const at = (state: SourceState): string | null =>
+    state.status === "ok" ? state.readAt : state.status === "error" ? (state.lastGood?.readAt ?? null) : null;
+  return {
+    dependabot: at(sources.dependabot),
+    code_scanning: at(sources.code_scanning),
+    secret_scanning: at(sources.secret_scanning),
+    osv: at(sources.osv),
+  };
+};
+
+/** Which sources count: those with a good read, with OSV only standing in when Dependabot cannot be used. */
+const usedOf = (sources: SecurityReport["sources"]): SecurityReport["used"] => {
+  const read = lastGoodOf(sources);
+  return {
+    dependabot: read.dependabot !== null,
+    code_scanning: read.code_scanning !== null,
+    secret_scanning: read.secret_scanning !== null,
+    osv: read.dependabot === null && read.osv !== null,
+  };
+};
+
 /** The fields of a report, with the grade or the reason for none given as two optional fields that are settled together. */
 type ReportOverrides = Partial<ReportFields> & { grade?: SecurityGrade | null; gradeMissing?: SecurityGradeMissing | null };
 
 /** A report for acme/widgets that is graded medium, with a little of everything so each section has something to show. */
 export function securityReport(overrides: ReportOverrides = {}): SecurityReport {
   const merged: ReportFields & { grade: SecurityGrade | null; gradeMissing: SecurityGradeMissing | null } = {
-    repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z" },
+    repo: { id: 1, owner: "acme", name: "widgets", deployBranch: "main", lastCrawledAt: "2026-03-01T10:00:00Z" },
     range: { from: "2026-01-01T00:00:00Z", to: "2026-03-01T23:59:59Z" },
     gradedAt: "2026-03-01T12:00:00Z",
     thresholds: {
@@ -995,6 +1018,8 @@ export function securityReport(overrides: ReportOverrides = {}): SecurityReport 
     },
     settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
     sources: securitySources(),
+    used: usedOf(overrides.sources ?? securitySources()),
+    lastGoodAt: lastGoodOf(overrides.sources ?? securitySources()),
     supplyChain: {
       status: "ok",
       commitSha: "abcdef1234567890",
@@ -1003,6 +1028,8 @@ export function securityReport(overrides: ReportOverrides = {}): SecurityReport 
       workflowsUnread: [],
       dockerfilesUnread: [],
       dockerfilesUnreadTotal: 0,
+      findingsDropped: 0,
+      actionsDropped: 0,
       lines: [
         line("prHeadCheckout", true),
         line("scriptInjection", true),

@@ -14,7 +14,7 @@ The OpenSSF Scorecard rates open source projects on practices such as pinned dep
 
 **Off by default.** `SCORECARD_LOOKUP=on` switches it on, and `/api/health` reports it.
 
-**Public repositories only.** The lookup runs only when the posture read of the same crawl (ADR 0031) succeeded and says the repository's visibility is `public`, so no private name leaves the host. A stored posture is not enough, because the repository may have been made private since. When visibility could not be read it is treated as not public, and the page shows `not_public` and no stored score unless the stored posture says `public`.
+**Public repositories only.** The lookup runs only when the posture read of the same crawl (ADR 0031) succeeded and says the repository's visibility is `public`, so no private name leaves the host. A stored posture is not enough, because the repository may have been made private since. When visibility could not be read the repository is not looked up and the page shows `not_read` with no stored score, and `not_public` is shown only for a repository known to be private or internal.
 
 **A port of its own.** `ScorecardSource` has one adapter, wired only in `main.ts` and `cli.ts` (ADR 0003). It uses the fixed host `api.securityscorecards.dev`, sends no token, refuses redirects, has a timeout and a body cap, and keeps only the score, its date and each check's name, score and reason, never the details. A reply whose score is missing or whose date is not a valid ISO date or date-time is refused as an error.
 
@@ -42,3 +42,4 @@ The OpenSSF Scorecard rates open source projects on practices such as pinned dep
 
 - 2026-10-12: Corrected the daily rule to say when an ordinary and a full crawl read again and what a failed read keeps, required a successful posture read in the same crawl, and recorded that unreadable visibility shows as not public with no stored score.
 - 2026-10-12: Added the `not_read` state, stored the failure's message and attempt time instead of one neutral text, and showed the last good result beside an error.
+- 2026-10-12: Unread visibility shows `not_read` and not `not_public`, which now means a repository known to be private or internal.

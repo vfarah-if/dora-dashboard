@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, useLocation, useMatch } from "react-router";
+import { Link, NavLink, useLocation, useMatch } from "react-router";
 import type { AuthState } from "../api/hooks";
 import { useHealth, useLogout, useRepos } from "../api/hooks";
 import { copy } from "../copy";
@@ -63,35 +63,51 @@ export function useRepoSubpage(): "code" | "security" | null {
 }
 
 /**
+ * A tab whose lit state is decided by the caller. NavLink derives `aria-current` from its own match, which would leave
+ * Repositories announced as the current page on a repository's code or security page, so the class and the attribute
+ * are both set here from the one decision and can never disagree.
+ */
+function Tab({ to, lit, onClick, children }: LinkProps & { to: string; lit: boolean; children: string }) {
+  return (
+    <Link to={to} onClick={onClick} className={lit ? "active" : undefined} aria-current={lit ? "page" : undefined}>
+      {children}
+    </Link>
+  );
+}
+
+/**
  * The Repositories tab covers the repository pages but not the code analysis or security page of a repository, which
  * belong to their own tabs. Otherwise two tabs would be lit at once.
  */
 function RepositoriesNavLink({ onClick }: LinkProps) {
   const subpage = useRepoSubpage();
+  const inRepos = useMatch({ path: "/repos", end: false }) !== null;
   return (
-    <NavLink to="/repos" onClick={onClick} className={({ isActive }) => (isActive && subpage === null ? "active" : undefined)}>
+    <Tab to="/repos" onClick={onClick} lit={inRepos && subpage === null}>
       {copy.nav.repositories}
-    </NavLink>
+    </Tab>
   );
 }
 
 /** Lit on the list at /code and on the code analysis page of any repository. */
 function CodeAnalysisNavLink({ onClick }: LinkProps) {
-  const onCodePage = useRepoSubpage() === "code";
+  const subpage = useRepoSubpage();
+  const onList = useMatch({ path: "/code", end: false }) !== null;
   return (
-    <NavLink to="/code" onClick={onClick} className={({ isActive }) => (isActive || onCodePage ? "active" : undefined)}>
+    <Tab to="/code" onClick={onClick} lit={onList || subpage === "code"}>
       {copy.nav.codeAnalysis}
-    </NavLink>
+    </Tab>
   );
 }
 
 /** Lit on the list at /security and on the security page of any repository. */
 function SecurityNavLink({ onClick }: LinkProps) {
-  const onSecurityPage = useRepoSubpage() === "security";
+  const subpage = useRepoSubpage();
+  const onList = useMatch({ path: "/security", end: false }) !== null;
   return (
-    <NavLink to="/security" onClick={onClick} className={({ isActive }) => (isActive || onSecurityPage ? "active" : undefined)}>
+    <Tab to="/security" onClick={onClick} lit={onList || subpage === "security"}>
       {copy.nav.security}
-    </NavLink>
+    </Tab>
   );
 }
 

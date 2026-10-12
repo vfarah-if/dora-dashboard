@@ -1,14 +1,18 @@
 import {
+  ALERT_SOURCES,
   BAND_RANK,
   DAY_MS,
   securityReport,
   securitySummary,
+  type AlertSource,
   type Repo,
   type ScorecardState,
   type SecurityReport,
   type SecuritySummary,
+  type SourceState,
 } from "@dora-dashboard/core";
 import { NotFoundError } from "../core/errors.js";
+import { noopLogger, type Logger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SecurityStore, StoredScorecard } from "../interfaces/security-store.js";
 import { rulesOf } from "./saved-override.js";
@@ -43,7 +47,7 @@ export interface SecurityReportOptions {
  * here: the grade, the actions and every figure come from core (ADR 0033).
  */
 export class SecurityReportService {
-  /** Insertion order is recency order, as in `CodeDetailService`. */
+  /** One summary per repository, rebuilt when its key changes. Entries for deleted repositories are dropped in `summaries`. */
   private readonly memo = new Map<number, { key: string; summary: SecuritySummary }>();
 
   constructor(
@@ -51,6 +55,7 @@ export class SecurityReportService {
     private readonly securityStore: SecurityStore,
     private readonly options: SecurityReportOptions,
     private readonly clock: () => Date = () => new Date(),
+    private readonly log: Logger = noopLogger,
   ) {}
 
   report(repoId: number, query: SecurityReportQuery = {}): SecurityReport {
@@ -58,7 +63,7 @@ export class SecurityReportService {
     validateDateRange(query, dayOf(now));
     const repo = this.store.getRepo(repoId);
     if (!repo) throw new NotFoundError(`Unknown repository ${repoId}`);
-    return this.build(repo, query, now);
+    return this.build(repo, query, now, false);
   }
 
   /** Every repository's summary, or those of `ids`, worst first with ungraded last. */
@@ -87,31 +92,43 @@ export class SecurityReportService {
     const hit = this.memo.get(repo.id);
     if (hit && hit.key === key) return { ...hit.summary, repo: { ...hit.summary.repo, crawlStatus: repo.crawlStatus } };
     const from = dayOf(new Date(now.getTime() - SUMMARY_WINDOW_DAYS * DAY_MS));
-    const summary = securitySummary(this.build(repo, { from, to: dayOf(now) }, now), repo.crawlStatus);
+    const summary = securitySummary(this.build(repo, { from, to: dayOf(now) }, now, true), repo.crawlStatus);
     this.memo.set(repo.id, { key, summary });
     return summary;
   }
 
-  private build(repo: Repo, query: SecurityReportQuery, now: Date): SecurityReport {
+  /**
+   * `lenient` is for the list, where one repository's unreadable pull request or issue row must not fail every row (F8).
+   * Only the stale update count and the issue figures read those, so the repository is still graded from its alerts and
+   * the fault is logged. The repository's own report is not lenient, so its page says something is wrong.
+   */
+  private build(repo: Repo, query: SecurityReportQuery, now: Date, lenient: boolean): SecurityReport {
     const { securityStore, options } = this;
+    const pullRequests = lenient
+      ? this.tolerate(repo, "pull requests", () => this.store.pullRequests(repo.id), [])
+      : this.store.pullRequests(repo.id);
+    const issues = lenient ? this.tolerate(repo, "issues", () => this.store.issues(repo.id), null) : this.store.issues(repo.id);
     const supplyChain = securityStore.supplyChain(repo.id);
     const posture = securityStore.posture(repo.id);
     const scorecard = securityStore.scorecard(repo.id);
+    const { alerts, unreadable } = securityStore.securityAlertScan(repo.id);
+    const sources = withUnreadable(securityStore.sourceStates(repo.id), unreadable);
     const shown = this.scorecardOf(posture?.value.visibility ?? null, scorecard);
     return securityReport(
       {
         repo,
-        alerts: securityStore.securityAlerts(repo.id),
-        sources: securityStore.sourceStates(repo.id),
-        supplyChain,
-        supplyChainMissing: supplyChain ? null : options.codeAnalysis ? "not_read" : "analysis_off",
-        pullRequests: this.store.pullRequests(repo.id),
+        alerts,
+        sources,
+        ...(supplyChain
+          ? { supplyChain, supplyChainMissing: null }
+          : { supplyChain: null, supplyChainMissing: options.codeAnalysis ? "not_read" : "analysis_off" }),
+        pullRequests,
         settingsUrl: options.settingsUrl(repo.owner, repo.name),
         posture,
         postureFailure: securityStore.postureFailure(repo.id),
         supplyChainFailure: securityStore.supplyChainFailure(repo.id),
         scorecard: shown,
-        issues: this.store.issues(repo.id),
+        issues,
         issueLabels: rulesOf(this.store.issueState(repo.id).labels),
       },
       {
@@ -122,20 +139,58 @@ export class SecurityReportService {
     );
   }
 
+  private tolerate<T>(repo: Repo, what: string, read: () => T, fallback: T): T {
+    try {
+      return read();
+    } catch (err) {
+      this.log.error(
+        { err, repoId: repo.id },
+        `the stored ${what} of a repository could not be read; building its summary without them`,
+      );
+      return fallback;
+    }
+  }
+
   /**
    * What the Scorecard panel shows. A repository that is not known to be public is never looked up, and one whose
-   * visibility is unread counts as not public (ADR 0035), so any stored result is not shown unless the current posture
-   * says `public`. A failed read shows `error`, with its message and the last good result beside it, until the next
-   * good read. Nothing held yet is `not_read`, and a lookup that found the project absent from the scan is `not_scanned`.
+   * visibility is unread is not looked up (ADR 0035), so any stored result is not shown unless the current posture says
+   * `public`. Unread visibility is `not_read`, because calling the repository not public would contradict the posture
+   * failure shown beside it. A failed read shows `error`, with its message and the last good result beside it, until the
+   * next good read. Nothing held, or a stored result that could not be read, is `not_read`, and only a lookup that found
+   * the project absent from the scan is `not_scanned`.
    */
   private scorecardOf(visibility: "public" | "private" | "internal" | null, held: StoredScorecard | null): ScorecardState {
     if (!this.options.scorecardLookup) return { status: "off" };
+    if (visibility === null) return { status: "not_read" };
     if (visibility !== "public") return { status: "not_public" };
     if (held === null) return { status: "not_read" };
     if (held.failure) return { status: "error", ...held.failure, lastGood: held.result };
+    if (held.readAt === null) return { status: "not_read" };
     if (held.result) return { status: "ok", result: held.result };
     return { status: "not_scanned" };
   }
+}
+
+/**
+ * The source states with the stored alerts that could not be read added to each read's `skipped` count, so the page says
+ * that some alerts are missing from the figures in the way it does for alerts the host listed that could not be mapped.
+ * Only a state whose alerts are in use is changed, because the others show no figures.
+ */
+function withUnreadable(
+  states: Record<AlertSource, SourceState>,
+  unreadable: Record<AlertSource, number>,
+): Record<AlertSource, SourceState> {
+  const next = { ...states };
+  for (const source of ALERT_SOURCES) {
+    const state = states[source];
+    const missing = unreadable[source];
+    if (missing === 0) continue;
+    if (state.status === "ok") next[source] = { ...state, skipped: state.skipped + missing };
+    else if (state.status === "error" && state.lastGood) {
+      next[source] = { ...state, lastGood: { ...state.lastGood, skipped: state.lastGood.skipped + missing } };
+    }
+  }
+  return next;
 }
 
 /** Worst band first, ungraded last; then past fix-by, open critical and open high, most first; then by name. */

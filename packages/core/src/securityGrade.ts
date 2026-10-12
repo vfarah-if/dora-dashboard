@@ -50,8 +50,15 @@ export const CHECK_BAND: Record<SecurityCheckName, Band> = {
   forcePushAllowed: "high",
 };
 
-/** Everything the grade reads, gathered by the caller. Nothing here is a clock or a store. */
-export interface SecurityFacts {
+/**
+ * The supply chain record, or why there is none, which is that code analysis is off or that the clone has not been read
+ * yet. Exactly one of the two is set, so every reader takes the same view of a missing record.
+ */
+export type SupplyChainOutcome =
+  | { supplyChain: SupplyChainRecord; supplyChainMissing: null }
+  | { supplyChain: null; supplyChainMissing: "analysis_off" | "not_read" };
+
+interface SecurityFactsFields {
   owner: string;
   /** ISO. */
   now: string;
@@ -59,10 +66,11 @@ export interface SecurityFacts {
   crawled: boolean;
   alerts: readonly SecurityAlert[];
   sources: Record<AlertSource, SourceState>;
-  supplyChain: SupplyChainRecord | null;
-  supplyChainMissing: "analysis_off" | "not_read" | null;
   posture: RepoPosture | null;
 }
+
+/** Everything the grade reads, gathered by the caller. Nothing here is a clock or a store. */
+export type SecurityFacts = SecurityFactsFields & SupplyChainOutcome;
 
 // ---- alerts ---------------------------------------------------------------------------------------------------
 
@@ -140,8 +148,11 @@ const sameOwner = (use: ActionUse, owner: string) => use.action.split("/")[0]!.t
 export interface SupplyChainFound {
   prHeadCheckout: WorkflowFinding[];
   scriptInjection: WorkflowFinding[];
-  /** Only in a public repository, where anyone can open a pull request that runs on the machine. */
-  selfHostedPublic: WorkflowFinding[];
+  /**
+   * Only in a public repository, where anyone can open a pull request that runs on the machine. Null when pull requests
+   * run on a self-hosted runner but the repository's visibility is not known, so the check cannot be measured.
+   */
+  selfHostedPublic: WorkflowFinding[] | null;
   permissions: WorkflowFinding[];
   unsecureCommands: WorkflowFinding[];
   curlPipeShell: WorkflowFinding[];
@@ -157,6 +168,14 @@ export interface SupplyChainFound {
   weakKeys: KeyFile[];
 }
 
+/** `SupplyChainFound.selfHostedPublic` from every self-hosted finding and the repository's visibility, when it was read. */
+function selfHostedPublicOf(selfHosted: WorkflowFinding[], visibility: RepoPosture["visibility"]): WorkflowFinding[] | null {
+  // Only a workflow that pull requests trigger lets someone outside the team run code on the machine.
+  const onPullRequest = selfHosted.filter((f) => f.onPullRequest === true);
+  if (onPullRequest.length === 0 || visibility === "public") return onPullRequest;
+  return visibility === null ? null : [];
+}
+
 export function supplyChainFound(record: SupplyChainRecord, owner: string, posture: RepoPosture | null): SupplyChainFound {
   const { facts } = record;
   const risk = (...risks: WorkflowFinding["risk"][]) => facts.findings.filter((f) => risks.includes(f.risk));
@@ -164,8 +183,7 @@ export function supplyChainFound(record: SupplyChainRecord, owner: string, postu
   return {
     prHeadCheckout: risk("prHeadCheckout"),
     scriptInjection: risk("scriptInjection"),
-    // Only a workflow that pull requests trigger lets someone outside the team run code on the machine.
-    selfHostedPublic: posture?.visibility === "public" ? risk("selfHosted").filter((f) => f.onPullRequest === true) : [],
+    selfHostedPublic: selfHostedPublicOf(risk("selfHosted"), posture?.visibility ?? null),
     permissions: risk("writeAll", "noPermissions"),
     unsecureCommands: risk("unsecureCommands"),
     curlPipeShell: risk("curlPipeShell"),
@@ -286,7 +304,11 @@ function supplyChainChecks(facts: SecurityFacts, cleared: ReadonlySet<SecurityCh
   return [
     make("prHeadCheckout", found.prHeadCheckout.length, files(found.prHeadCheckout)),
     make("scriptInjection", found.scriptInjection.length, files(found.scriptInjection)),
-    make("selfHostedPublic", found.selfHostedPublic.length, files(found.selfHostedPublic)),
+    // A visibility that was not read leaves the check unmeasured rather than passed, as a secret source that cannot be
+    // used leaves `secretExposed`.
+    found.selfHostedPublic === null
+      ? { part: "supplyChain", check: "selfHostedPublic", value: null, limits: false }
+      : make("selfHostedPublic", found.selfHostedPublic.length, files(found.selfHostedPublic)),
     make("unpinnedActions", found.thirdPartyUnpinned.length, files(found.thirdPartyUnpinned), found.remoteActions),
     make("workflowPermissions", found.permissions.length, files(found.permissions)),
     make("unsecureCommands", found.unsecureCommands.length, files(found.unsecureCommands)),

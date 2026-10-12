@@ -93,6 +93,11 @@ describe("the security report service", () => {
       expect(report.grade?.overall.band).toBe("high");
     });
 
+    it("names the branch the repository is set up to deploy from, for a ready workflow's push trigger", () => {
+      const id = store.addRepo("acme", "gadgets", [], "develop").id;
+      expect(service().report(id).repo.deployBranch).toBe("develop");
+    });
+
     it("works from stored data on a repository nothing has read, and says so", () => {
       const id = store.addRepo("acme", "widgets", [], "main").id;
 
@@ -260,17 +265,17 @@ describe("the security report service", () => {
         }
       });
 
-      it("is not public, and shows no stored score, while the visibility is unread", () => {
+      it("is not read, and shows no stored score, while the visibility is unread, and does not call the repository private", () => {
         wired();
         const id = repoWith("widgets");
         store.saveScorecard(id, "t", scorecardResult({ score: 9 }));
 
-        // No posture was ever read.
-        expect(state(id)).toEqual({ status: "not_public" });
+        // No posture was ever read, so a public repository must not be told that it is not public.
+        expect(state(id)).toEqual({ status: "not_read" });
 
         // A posture that was read but could not say (a null visibility) is treated the same way.
         store.savePosture(id, repoPosture({ visibility: null }), "t");
-        expect(state(id)).toEqual({ status: "not_public" });
+        expect(state(id)).toEqual({ status: "not_read" });
 
         isPublic(id);
         expect(state(id)).toEqual({ status: "ok", result: scorecardResult({ score: 9 }) });
@@ -306,6 +311,27 @@ describe("the security report service", () => {
 
         store.saveScorecard(id, "t2", scorecardResult({ score: 7 }));
         expect(state(id)).toEqual({ status: "ok", result: scorecardResult({ score: 7 }) });
+      });
+
+      it("makes no claim about the scan when the stored result cannot be read, rather than saying it is not scanned", () => {
+        wired();
+        const id = repoWith("widgets");
+        isPublic(id);
+        store.saveScorecard(id, "t", scorecardResult());
+        raw(store).prepare("UPDATE security_scorecard SET data = ? WHERE repo_id = ?").run('{"score":"text"}', id);
+
+        expect(state(id)).toEqual({ status: "not_read" });
+      });
+
+      it("makes no claim either for a failed first read an earlier build stored with no attempt time", () => {
+        wired();
+        const id = repoWith("widgets");
+        isPublic(id);
+        raw(store)
+          .prepare("INSERT INTO security_scorecard (repo_id, read_at, data, error, attempted_at) VALUES (?, NULL, NULL, ?, NULL)")
+          .run(id, "down");
+
+        expect(state(id)).toEqual({ status: "not_read" });
       });
 
       it("shows an error with no earlier score when the first read failed", () => {
@@ -382,6 +408,80 @@ describe("the security report service", () => {
       expect(summary).toMatchObject({ band: report.grade?.overall.band, open: report.open.bySeverity });
     });
 
+    describe("a repository whose stored rows cannot be read", () => {
+      it("still lists every repository when one has a corrupt pull request or issue row, and logs it", () => {
+        const good = repoWith("good", [dependabotAlert({ key: "1", severity: "high", createdAt: "2026-09-20T10:00:00Z" })]);
+        const bad = repoWith("bad", [dependabotAlert({ key: "1", severity: "high", createdAt: "2026-09-20T10:00:00Z" })]);
+        raw(store)
+          .prepare("INSERT INTO pull_requests (repo_id, number, updated_at, data) VALUES (?, 1, 't', ?)")
+          .run(bad, "{not json");
+        raw(store).prepare("INSERT INTO issues (repo_id, number, updated_at, data) VALUES (?, 1, 't', ?)").run(bad, "{not json");
+        const errors: { context: object; message: string }[] = [];
+        const log = {
+          info: () => undefined,
+          warn: () => undefined,
+          error: (context: object, message: string) => errors.push({ context, message }),
+        };
+
+        const rows = new SecurityReportService(store, store, options, () => clock, log).summaries();
+
+        expect(rows.map((r) => r.repo.id).sort()).toEqual([good, bad].sort());
+        // The repository is still graded from its alerts, and says so as the good one does.
+        expect(rows.find((r) => r.repo.id === bad)).toMatchObject({ open: { high: 1 }, read: true });
+        expect(errors.map((e) => e.context)).toEqual([
+          expect.objectContaining({ repoId: bad }),
+          expect.objectContaining({ repoId: bad }),
+        ]);
+      });
+
+      it("does not hide the fault from the repository's own report, which still fails", () => {
+        const bad = repoWith("bad");
+        raw(store)
+          .prepare("INSERT INTO pull_requests (repo_id, number, updated_at, data) VALUES (?, 1, 't', ?)")
+          .run(bad, "{not json");
+
+        expect(() => service().report(bad)).toThrow();
+      });
+    });
+
+    describe("an alert that cannot be read", () => {
+      it("is counted in what the source says it could not read, so the figures are not shown as complete", () => {
+        const id = repoWith("widgets", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })]);
+        raw(store).prepare("UPDATE security_alerts SET data = '{broken' WHERE repo_id = ? AND key = '2'").run(id);
+        store.setSourceState(id, "dependabot", { ...okState(), skipped: 1 });
+
+        const { sources, open } = service().report(id);
+
+        // One the host listed and could not be mapped, and one that was stored and can no longer be read.
+        expect(sources.dependabot).toMatchObject({ status: "ok", skipped: 2 });
+        // The unreadable alert is left out of the figures, which is why the count above is shown.
+        expect(Object.values(open.bySeverity).reduce((total, n) => total + n, 0)).toBe(1);
+      });
+
+      it("is counted against the last good read of a source whose latest read failed", () => {
+        const id = repoWith("widgets", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })]);
+        raw(store).prepare("UPDATE security_alerts SET data = '{broken' WHERE repo_id = ? AND key = '2'").run(id);
+        store.setSourceState(id, "dependabot", {
+          status: "error",
+          error: "down",
+          attemptedAt: "2026-09-29T09:30:00.000Z",
+          lastGood: { readAt: "2026-09-29T09:00:00.000Z", truncated: false, skipped: 0 },
+        });
+
+        expect(service().report(id).sources.dependabot).toMatchObject({ status: "error", lastGood: { skipped: 1 } });
+      });
+
+      it("changes nothing for a source with none unreadable, or one that is not in use", () => {
+        const id = repoWith("widgets", [dependabotAlert({ key: "1" })]);
+        store.setSourceState(id, "code_scanning", { status: "off", reason: "not_set_up", attemptedAt: "t" });
+
+        const { sources } = service().report(id);
+
+        expect(sources.dependabot).toMatchObject({ skipped: 0 });
+        expect(sources.code_scanning).toEqual({ status: "off", reason: "not_set_up", attemptedAt: "t" });
+      });
+    });
+
     describe("memoising", () => {
       let svc: SecurityReportService;
       let id: number;
@@ -390,7 +490,7 @@ describe("the security report service", () => {
       beforeEach(() => {
         id = repoWith("widgets", [dependabotAlert({ key: "1", severity: "high", createdAt: "2026-09-20T10:00:00Z" })]);
         svc = service();
-        alertReads = vi.spyOn(store, "securityAlerts");
+        alertReads = vi.spyOn(store, "securityAlertScan");
       });
 
       it("does not rebuild a second time when nothing has changed", () => {

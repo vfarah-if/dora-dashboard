@@ -33,7 +33,7 @@ function Summary({ report }: { report: SecurityReport }) {
   const top = topActions(report.actions);
   const past = pastFixTotal(report.open.pastFix);
   const missing = unreadParts(report);
-  if (notReadYet(report.sources)) return <NotReadNotice repoId={report.repo.id} sources={report.sources} />;
+  if (notReadYet(report)) return <NotReadNotice repoId={report.repo.id} sources={report.sources} />;
   return (
     <>
       {grade ? (

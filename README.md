@@ -79,7 +79,7 @@ A repository with several packages can upload one artefact each, such as `covera
 
 ### Security lookups (optional)
 
-GitHub's own security alerts are read with the token the crawl already holds and need no setting. Two lookups to outside services are off unless you switch them on in `.env`. `OSV_LOOKUP=on` asks OSV.dev about locked dependencies when Dependabot alerts cannot be read, sending only the ecosystem, name and version of packages whose lockfile proves a public registry, at most 20,000 distinct packages for a repository, and it needs `CODE_ANALYSIS=on` (ADR 0034). Its alerts are graded in place of Dependabot's whenever it is the dependency source. `OSV_PRIVATE_NPM_SCOPES` lists npm scopes that must never be sent. `SCORECARD_LOOKUP=on` shows the OpenSSF Scorecard for repositories that the crawl has just read as public, sending only the public owner and name, and it never changes a grade (ADR 0035). [SETUP.md](SETUP.md) says what each token right and setting does.
+GitHub's own security alerts are read with the token the crawl already holds and need no setting. Two lookups to outside services are off unless you switch them on in `.env`. `OSV_LOOKUP=on` asks OSV.dev about locked dependencies when Dependabot alerts cannot be used, sending only the ecosystem, name and version of packages whose lockfile proves a public registry, at most 20,000 distinct packages for a repository, and it needs `CODE_ANALYSIS=on` (ADR 0034). Its alerts are graded in place of Dependabot's whenever it is the dependency source. `OSV_PRIVATE_NPM_SCOPES` lists npm scopes that must never be sent. `SCORECARD_LOOKUP=on` shows the OpenSSF Scorecard for repositories that the crawl has just read as public, sending only the public owner and name, and it never changes a grade (ADR 0035). [SETUP.md](SETUP.md) says what each token right and setting does.
 
 ## Signing in
 
@@ -118,7 +118,7 @@ docs/           metrics reference and architecture decision records
 
 ## Contributing
 
-- `make quality` must pass: formatting, the private-name guard, typecheck and coverage floors.
+- `make quality` must pass: formatting, lint, the private-name guard, typecheck and coverage floors. Once `make install` has run, a pre-push hook runs it before every push, and `git push --no-verify` skips it once (ADR 0038).
 - Take dependency updates with `make upgrade`, which offers them under the same cooldown and rules as Dependabot and runs every gate before you commit (ADR 0024). `make upgrade-check` lists what is available without changing anything. Each pull request also runs dependency review, which fails one that adds a dependency with a known vulnerability (ADR 0037).
 - Report a security problem privately, as [SECURITY.md](SECURITY.md) describes, never in a public issue.
 - New external systems (GitLab, Jira and so on) go behind a port; see `.claude/skills/source-provider/SKILL.md`.

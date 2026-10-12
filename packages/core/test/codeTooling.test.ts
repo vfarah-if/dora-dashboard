@@ -413,12 +413,14 @@ describe("hostile input", () => {
 
     it("reads variables after a long run of spaces in time proportional to the run", () => {
       // A line break other than \n ends the value early, so the line is not a variable and every way of reading the
-      // spaces used to be tried before giving up.
+      // spaces used to be tried before giving up. Four thousand lines make the small input take over a millisecond,
+      // enough to time on a busy runner, and only the run of spaces grows. Runs of 200 and 800 spaces keep the work that
+      // tried every way to about six seconds, so it fails in that time rather than running for half a minute.
       const makefile = (spaces: number) =>
-        file("Makefile", Array.from({ length: 50 }, () => `A=${" ".repeat(spaces)}x\r`).join("\n"));
+        file("Makefile", Array.from({ length: 4_000 }, () => `A=${" ".repeat(spaces)}x\r`).join("\n"));
       const run = workflowOf("steps:\n  - run: make lint\n");
 
-      expect(growth((m) => detectTooling([m, run]), makefile(1_000), makefile(4_000))).toBeLessThan(PROPORTIONAL);
+      expect(growth((m) => detectTooling([m, run]), makefile(200), makefile(800))).toBeLessThan(PROPORTIONAL);
     });
 
     it("stops a target's prerequisites at a comment", () => {

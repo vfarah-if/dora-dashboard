@@ -287,6 +287,13 @@ describe("Dependabot switched off", () => {
     expect(part({ sources: { ...disabled, osv: ok() } }, "vulnerabilities")).toMatchObject({ band: "elite", check: "all" });
   });
 
+  it("caps at medium when OSV was not used because every public package is in a private scope", () => {
+    // Nothing was sent, so nothing watches the dependencies, however completely the lockfiles were read.
+    const result = grade({ sources: { ...disabled, osv: notUsed("all_withheld") } });
+    expect(result.grade!.parts.vulnerabilities).toMatchObject({ band: "medium", check: "dependenciesUnwatched" });
+    expect(result.checks.find((c) => c.check === "dependenciesUnwatched")).toMatchObject({ value: true, count: 1 });
+  });
+
   it("measures the part even when it is the only thing known", () => {
     const sources = {
       dependabot: off("disabled"),
@@ -355,6 +362,29 @@ describe("the supply chain part", () => {
     });
     expect(part({ supplyChain, posture: posture({ visibility: "private" }) }, "supplyChain").band).toBe("elite");
     expect(part({ supplyChain, posture: null }, "supplyChain").band).toBe("elite");
+  });
+
+  it.each([
+    ["no posture has been read", null],
+    ["the posture could not show the visibility", posture({ visibility: null })],
+  ])("leaves the self-hosted check unmeasured when %s, rather than passing it", (_, held) => {
+    const supplyChain = record({ findings: [{ ...finding("selfHosted"), onPullRequest: true }] });
+    const result = grade({ supplyChain, posture: held });
+    expect(result.checks.find((c) => c.check === "selfHostedPublic")).toEqual({
+      part: "supplyChain",
+      check: "selfHostedPublic",
+      value: null,
+      limits: false,
+    });
+  });
+
+  it("measures the self-hosted check without a visibility when no pull request runs on a self-hosted runner", () => {
+    const supplyChain = record({ findings: [{ ...finding("selfHosted"), onPullRequest: false }] });
+    expect(grade({ supplyChain, posture: null }).checks.find((c) => c.check === "selfHostedPublic")).toMatchObject({
+      value: 0,
+      band: "elite",
+      met: true,
+    });
   });
 
   it("does not count a self-hosted runner in a public repository when pull requests never trigger the workflow", () => {

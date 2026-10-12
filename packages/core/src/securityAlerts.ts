@@ -1,6 +1,9 @@
 import {
   LIKELY_EXPLOITED_EPSS,
+  type AlertLifecycle,
   type AlertSource,
+  type AlertState,
+  type CloseReason,
   type SecurityAlert,
   type Severity,
   type SourceError,
@@ -53,6 +56,19 @@ export function severityOf(alert: SecurityAlert): Severity | null {
       return publiclyLeaked || validity !== "inactive" ? "critical" : "low";
     }
   }
+}
+
+/**
+ * An alert's state with the facts of its close, or null for a fixed or dismissed alert that has no close time, which a
+ * source skips and counts as it does an alert with no creation time. An open alert carries no close facts.
+ */
+export function alertLifecycle(
+  state: AlertState,
+  closedAt: string | null,
+  closeReason: CloseReason | null,
+): AlertLifecycle | null {
+  if (state === "open") return { state, closedAt: null, closeReason: null };
+  return closedAt === null ? null : { state, closedAt, closeReason };
 }
 
 /**

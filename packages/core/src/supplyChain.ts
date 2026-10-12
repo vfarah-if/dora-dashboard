@@ -6,10 +6,16 @@
  * Workflows are read line by line with indentation, as `enforcingLines` in `codeTooling.ts` is, with no YAML parser.
  * That is a heuristic: it recognises the forms people write, not every legal YAML spelling. Every loop is bounded,
  * because the text is untrusted. Lines are cut at 2,000 characters and a file is read to 20,000 lines. At most 500
- * workflows and 50 Dockerfiles are read, and the rest are reported as unread. A file yields at most 2,000 findings and
- * 10,000 actions, a `run:` block is scanned once however deeply its keys nest, a step is looked at within 200 rows,
- * and nothing pushes a large array through a spread argument, which would overflow the call stack. A joined line is
- * cut at 8,000 characters.
+ * workflows and 50 Dockerfiles are read, and the rest are reported as unread. At most 2,000 findings of each risk are
+ * kept from one file and again across the repository, so advice can never crowd out a finding that is graded. At most
+ * 10,000 action uses of each kind are kept the same way, pinned and unpinned counted apart, so pinned uses and GitHub's
+ * own actions cannot crowd out an unpinned one. What the caps leave out is counted. A `run:` block is scanned once
+ * however deeply its keys nest, a step is looked at within 200 rows, and nothing pushes a large array through a spread
+ * argument, which would overflow the call stack. A joined line is cut at 8,000 characters.
+ *
+ * A composite action and a reusable workflow run with the event of the workflow that calls them, so each takes on the
+ * triggers of every workflow in the repository that calls it by local path, directly or through another such file.
+ * One called only from other repositories is read with its own triggers alone, which are none for a composite action.
  */
 import { baseName, commandsByFile, isActionPath, isTestPath, isWorkflowPath, type CandidateFile } from "./codeTooling.js";
 import { isLockfile, isReadableLockfile } from "./lockfiles.js";
@@ -378,6 +384,28 @@ function joinContinuations(lines: readonly TextLine[], pipes: boolean): TextLine
 
 const clip = (text: string) => text.slice(0, MAX_EVIDENCE);
 
+/** A list that keeps at most `limit` items of each group, so one group cannot crowd out another, and counts the rest. */
+function capped<T>(limit: number, groupOf: (item: T) => string): { items: T[]; add: (item: T) => void; dropped: () => number } {
+  const items: T[] = [];
+  const counts = new Map<string, number>();
+  let dropped = 0;
+  return {
+    items,
+    add: (item) => {
+      const group = groupOf(item);
+      const count = counts.get(group) ?? 0;
+      if (count < limit) {
+        items.push(item);
+        counts.set(group, count + 1);
+      } else dropped++;
+    },
+    dropped: () => dropped,
+  };
+}
+
+const findingGroup = (finding: WorkflowFinding) => finding.risk;
+const actionGroup = (use: ActionUse) => `${use.kind}|${use.pinned}`;
+
 // ---- security tools -------------------------------------------------------------------------------------------------
 
 const TOOL_ACTIONS: [string, string, SecurityToolCategory][] = [
@@ -432,6 +460,85 @@ interface WorkflowReading {
   actions: ActionUse[];
   findings: WorkflowFinding[];
   tools: SecurityTool[];
+  findingsDropped: number;
+  actionsDropped: number;
+}
+
+/**
+ * The events a file runs with, as the checks need them. `privileged` is a trigger that runs with secrets on text an
+ * outsider wrote, `headTrigger` one that can check out a pull request's code with them, and `onPullRequest` one that
+ * pull requests start. Triggers that cannot be read set all three, so nothing is hidden; see `triggersOf`.
+ */
+interface RunContext {
+  privileged: boolean;
+  headTrigger: boolean;
+  onPullRequest: boolean;
+}
+
+const NO_CONTEXT: RunContext = { privileged: false, headTrigger: false, onPullRequest: false };
+
+function contextOf(triggers: ReadonlySet<string> | null): RunContext {
+  if (triggers === null) return { privileged: true, headTrigger: true, onPullRequest: true };
+  return {
+    privileged: [...triggers].some((trigger) => PRIVILEGED.has(trigger)),
+    headTrigger: triggers.has("pull_request_target") || triggers.has("workflow_run"),
+    onPullRequest: triggers.has("pull_request") || triggers.has("pull_request_target"),
+  };
+}
+
+/**
+ * The files a workflow or composite action calls by local path, which are `./.github/workflows/x.yml` for a reusable
+ * workflow and `./dir` for the composite action in `dir/action.yml` or `dir/action.yaml`. Only paths in `known` count.
+ */
+function localCalls(rows: readonly Row[], known: ReadonlySet<string>): string[] {
+  const called = new Set<string>();
+  for (const row of rows) {
+    if (row.scalar) continue;
+    const value = /^uses\s*:\s*(.+)$/.exec(row.text)?.[1];
+    if (value === undefined) continue;
+    const target = unquote(value.trim());
+    if (!target.startsWith("./")) continue;
+    const path = target.slice(2).replace(/\/+$/, "");
+    for (const candidate of [path, `${path}/action.yml`, `${path}/action.yaml`]) if (known.has(candidate)) called.add(candidate);
+  }
+  return [...called];
+}
+
+/**
+ * Each file's context, its own triggers joined with the context of every file that calls it by local path. A flag only
+ * ever turns on, so each file is passed on at most three times and the work stays in proportion to the calls. Each
+ * file's rows are dropped once its triggers and calls are known, so no more than one file's rows are held at a time.
+ */
+function runContexts(files: readonly CandidateFile[]): Map<string, RunContext> {
+  const known = new Set(files.map((file) => file.path));
+  const contexts = new Map<string, RunContext>();
+  const calls = new Map<string, string[]>();
+  for (const { path, content } of files) {
+    const rows = rowsOf(content);
+    contexts.set(path, isActionPath(path) ? NO_CONTEXT : contextOf(triggersOf(rows)));
+    calls.set(path, localCalls(rows, known));
+  }
+  const queue = files.map((file) => file.path);
+  for (let next = 0; next < queue.length; next++) {
+    const caller = contexts.get(queue[next]!)!;
+    for (const path of calls.get(queue[next]!)!) {
+      const callee = contexts.get(path)!;
+      const joined: RunContext = {
+        privileged: callee.privileged || caller.privileged,
+        headTrigger: callee.headTrigger || caller.headTrigger,
+        onPullRequest: callee.onPullRequest || caller.onPullRequest,
+      };
+      if (
+        joined.privileged === callee.privileged &&
+        joined.headTrigger === callee.headTrigger &&
+        joined.onPullRequest === callee.onPullRequest
+      )
+        continue;
+      contexts.set(path, joined);
+      queue.push(path);
+    }
+  }
+  return contexts;
 }
 
 /**
@@ -497,20 +604,20 @@ function runsOnValue(rows: readonly Row[], k: number, inline: string): string[] 
   return parts;
 }
 
-function readWorkflow(file: CandidateFile, commands: readonly string[]): WorkflowReading {
+function readWorkflow(
+  file: CandidateFile,
+  rows: readonly Row[],
+  context: RunContext,
+  commands: readonly string[],
+): WorkflowReading {
   const isAction = isActionPath(file.path);
-  const rows = rowsOf(file.content);
-  const triggers = isAction ? new Set<string>() : triggersOf(rows);
-  // Triggers that cannot be read count as privileged, so nothing is hidden; see `triggersOf`.
-  const privileged = triggers === null || [...triggers].some((trigger) => PRIVILEGED.has(trigger));
-  const headTrigger = triggers === null || triggers.has("pull_request_target") || triggers.has("workflow_run");
-  const onPullRequest = triggers === null || triggers.has("pull_request") || triggers.has("pull_request_target");
+  const { privileged, headTrigger, onPullRequest } = context;
 
-  const actions: ActionUse[] = [];
-  const findings: WorkflowFinding[] = [];
+  const actions = capped(MAX_ACTIONS, actionGroup);
+  const findings = capped(MAX_FINDINGS, findingGroup);
   const tools: SecurityTool[] = [];
   const found = (risk: WorkflowRisk, line: number | null, evidence: string, extra: Partial<WorkflowFinding> = {}) => {
-    if (findings.length < MAX_FINDINGS) findings.push({ file: file.path, line, risk, evidence: clip(evidence), ...extra });
+    findings.add({ file: file.path, line, risk, evidence: clip(evidence), ...extra });
   };
   const addTool = (tool: string, category: SecurityToolCategory) => {
     if (!tools.some((t) => t.tool === tool)) tools.push({ tool, category, file: file.path });
@@ -529,12 +636,11 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
     const uses = /^uses\s*:\s*(.+)$/.exec(row.text);
     if (uses) {
       const parsed = parseUses(unquote(uses[1]!.trim()));
-      if (actions.length < MAX_ACTIONS) actions.push({ file: file.path, line: row.no, ...parsed });
+      actions.add({ file: file.path, line: row.no, ...parsed });
       const tool = toolOfAction(parsed.action);
       if (tool) addTool(tool.tool, tool.category);
       if (
         privileged &&
-        !isAction &&
         parsed.action.toLowerCase() === "actions/checkout" &&
         persistsCredentials(rows, k, (saysFalse ??= rows.map((r) => PERSIST_FALSE.test(r.text))))
       ) {
@@ -548,7 +654,7 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
       const block = runLines(rows, k);
       scannedTo = block.next;
       for (const { no, text } of block.lines) {
-        if (privileged && !isAction) {
+        if (privileged) {
           for (const expression of text.matchAll(/\$\{\{(.{0,500}?)\}\}/g)) {
             // Strings are blanked so a name inside quotes is not read as a reference to the event, and so a literal,
             // which may be a hardcoded token, is never stored as evidence.
@@ -589,7 +695,13 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
     const tool = COMMAND_TOOLS.find(([pattern]) => pattern.test(command));
     if (tool) addTool(tool[1], tool[2]);
   }
-  return { actions, findings, tools };
+  return {
+    actions: actions.items,
+    findings: findings.items,
+    tools,
+    findingsDropped: findings.dropped(),
+    actionsDropped: actions.dropped(),
+  };
 }
 
 // ---- Dockerfiles ----------------------------------------------------------------------------------------------------
@@ -812,15 +924,20 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
   const readable = input.workflows.filter((file) => isWorkflowPath(file.path) || isActionPath(file.path)).sort(byPath);
   const files = readable.slice(0, MAX_WORKFLOWS);
   const commands = commandsByFile(files, input.tooling ?? []);
-  const actions: ActionUse[] = [];
-  const findings: WorkflowFinding[] = [];
+  const contexts = runContexts(files);
+  const actions = capped(MAX_ACTIONS, actionGroup);
+  const findings = capped(MAX_FINDINGS, findingGroup);
   const securityTools: SecurityTool[] = [];
+  let findingsDropped = 0;
+  let actionsDropped = 0;
   // Each list is added to one item at a time: a spread argument of a large array overflows the call stack.
   for (const file of files) {
-    const reading = readWorkflow(file, commands.get(file.path) ?? []);
-    for (const use of reading.actions) if (actions.length < MAX_ACTIONS) actions.push(use);
-    for (const finding of reading.findings) if (findings.length < MAX_FINDINGS) findings.push(finding);
+    const reading = readWorkflow(file, rowsOf(file.content), contexts.get(file.path)!, commands.get(file.path) ?? []);
+    for (const use of reading.actions) actions.add(use);
+    for (const finding of reading.findings) findings.add(finding);
     for (const tool of reading.tools) securityTools.push(tool);
+    findingsDropped += reading.findingsDropped;
+    actionsDropped += reading.actionsDropped;
   }
 
   const dockerfileFiles = (input.dockerfiles ?? [])
@@ -888,8 +1005,10 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     workflowsUnread: [...workflowsUnread].slice(0, MAX_WORKFLOWS),
     dockerfilesUnread: [...dockerfilesUnread].slice(0, MAX_LISTED),
     dockerfilesUnreadTotal: dockerfilesUnread.size,
-    actions,
-    findings,
+    actions: actions.items,
+    findings: findings.items,
+    findingsDropped: findingsDropped + findings.dropped(),
+    actionsDropped: actionsDropped + actions.dropped(),
     securityTools,
     updateConfig: UPDATE_CONFIGS.find((path) => configs.has(path)) ?? null,
     securityPolicy: securityPolicy(paths),

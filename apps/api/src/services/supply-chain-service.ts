@@ -34,7 +34,8 @@ const unreadable = (path: string): LockfileSummary => ({
  * files `supplyChainCandidates` names, so a key-like file is never opened, and it runs nothing from the clone.
  *
  * An inspection that completes stores a row even when some files could not be read; the facts say which. One that
- * throws stores no facts, so they stay stale and the next crawl tries again; the caller records the failure beside them.
+ * throws stores no facts, so they stay stale and a later crawl tries again, until the caller's limit of attempts for one
+ * head is reached; the caller records the failure beside them.
  */
 export class SupplyChainService implements CloneInspector {
   constructor(

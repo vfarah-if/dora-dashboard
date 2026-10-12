@@ -66,7 +66,8 @@ function ReviewExemptionsForm({ repo }: { repo: RepoListing }) {
   const defaults = defaultsQuery.data;
   const limits = defaults?.limits;
   const current = inputsFor(repo.reviewExemptions.kind === "override" ? repo.reviewExemptions.rules : null, defaults);
-  // Only what the person has typed is held here, so the boxes follow the defaults until they load or are reset.
+  // Only what the person has typed is held here, so an untouched box keeps showing the rules in force, including defaults
+  // that arrive after the first render and the defaults again after a reset.
   const [typed, setTyped] = useState<Partial<ExemptionInputs>>({});
   const [done, setDone] = useState<"saved" | "reset" | null>(null);
   const titleId = useId();

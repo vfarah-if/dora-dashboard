@@ -11,9 +11,6 @@ export const byPath = <T extends { path: string }>(a: T, b: T): number => compar
 /** Orders paths with the shallowest first, then by code unit. */
 export const shallowestFirst = (a: string, b: string): number => a.split("/").length - b.split("/").length || compareText(a, b);
 
-/** A share from 0 to 1 as text with one decimal, such as `12.5%`. */
-export const percentText = (share: number): string => `${(share * 100).toFixed(1)}%`;
-
 export function hoursBetween(from: string | null, to: string | null): number | null {
   if (!from || !to) return null;
   const delta = (Date.parse(to) - Date.parse(from)) / HOUR_MS;

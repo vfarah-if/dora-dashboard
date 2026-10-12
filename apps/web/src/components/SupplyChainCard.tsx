@@ -96,6 +96,9 @@ export function SupplyChainCard({ report, group }: { report: SecurityReport; gro
       {group === "workflows" && chain.status === "ok" && (
         <p className="chart-subtitle">{c.readOn(shortSha(chain.commitSha), formatDateTime(chain.readAt), chain.workflowsRead)}</p>
       )}
+      {group === "workflows" && chain.status === "ok" && chain.findingsDropped + chain.actionsDropped > 0 && (
+        <p className="chart-subtitle">{c.dropped(chain.findingsDropped, chain.actionsDropped)}</p>
+      )}
       {group === "workflows" && chain.status === "ok" && chain.workflowsUnread.length > 0 && (
         <UnreadNote
           sentence={c.unread(chain.workflowsUnread.length)}

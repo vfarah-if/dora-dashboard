@@ -27,9 +27,9 @@ export type AlertState = "open" | "fixed" | "dismissed";
 export const LIKELY_EXPLOITED_EPSS = 0.1;
 
 /**
- * Every code an alert can be closed with, as the host publishes it, never free text: Dependabot's `fixed`,
- * `auto_dismissed` and dismissal reasons, code scanning's and secret scanning's resolutions, and `not_found` for an OSV
- * finding the crawl no longer found.
+ * Every code an alert can be closed with, never free text. Dependabot's `fixed`, `auto_dismissed` and dismissal reasons
+ * and secret scanning's resolutions are kept as published, code scanning's dismissal reasons are mapped to the same
+ * snake case, and `not_found` marks an OSV finding the crawl no longer found.
  */
 export const CLOSE_REASONS = [
   "fixed",
@@ -49,16 +49,25 @@ export const CLOSE_REASONS = [
 ] as const;
 export type CloseReason = (typeof CLOSE_REASONS)[number];
 
+/**
+ * An alert's state with the facts of its close, held together so that a fixed or dismissed alert always says when it
+ * closed. Without that time the weekly replay would count it as open for ever while the open tiles left it out.
+ */
+export type AlertLifecycle =
+  | { state: "open"; closedAt: null; closeReason: null }
+  | {
+      state: Exclude<AlertState, "open">;
+      /** When it was fixed or dismissed, or for OSV the crawl in which it was no longer found. */
+      closedAt: string;
+      /** Null for a close the host gave no known reason for. */
+      closeReason: CloseReason | null;
+    };
+
 interface AlertBase {
   /** GitHub's alert number as text, or `${osvId}|${ecosystem}|${name}|${lockfile}` for OSV. Unique per source. */
   key: string;
-  state: AlertState;
   /** When GitHub raised it, or for OSV the crawl that first found it, or found it again after it had been fixed. */
   createdAt: string;
-  /** When it was fixed or dismissed, or for OSV the crawl in which it was no longer found. */
-  closedAt: string | null;
-  /** Null while open, and for a close the host gave no known reason for. */
-  closeReason: CloseReason | null;
   /** The advisory summary, the rule description, or the secret type's display name. */
   title: string;
   /** GitHub's page for the alert, or the OSV advisory page. */
@@ -78,7 +87,10 @@ export interface DependencyFacts {
   /** The first version that fixes it, or null when there is none yet. */
   patchedVersion: string | null;
   vulnerableRange: string | null;
-  /** The GHSA id, else the CVE id, or null when the advisory carries neither. */
+  /**
+   * For Dependabot, the GHSA id, else the CVE id, or null when the advisory carries neither. For OSV, the lowest GHSA id
+   * of the alias group, else the group's lowest id of any kind, and never null.
+   */
   advisoryId: string | null;
   cveId: string | null;
   /** The exploit prediction scoring system figures, as fractions from 0 to 1. */
@@ -92,12 +104,14 @@ export interface DependencyFacts {
   cwes: string[];
 }
 
-export interface DependabotAlert extends AlertBase {
+interface DependabotFields extends AlertBase {
   source: "dependabot";
   /** As published: GitHub's advisory severity, with moderate read as medium, else unknown. */
   severity: Severity;
   dependency: DependencyFacts;
 }
+
+export type DependabotAlert = DependabotFields & AlertLifecycle;
 
 /**
  * What OSV says about a locked package. The lockfile names the package, so it is always known, and OSV publishes no
@@ -117,17 +131,22 @@ export interface OsvDependencyFacts extends DependencyFacts {
   cvssScore: null;
 }
 
-export interface OsvAlert extends AlertBase {
+interface OsvFields extends AlertBase {
   source: "osv";
-  /** As published: the worst `database_specific.severity` among the advisory's records, else unknown. */
+  /**
+   * As published, the worst `database_specific.severity` among the advisory's records that publish one, else unknown. An
+   * alias record that publishes none, such as a PYSEC or RUSTSEC twin, does not raise the severity the others agree on.
+   */
   severity: Severity;
   dependency: OsvDependencyFacts;
 }
 
+export type OsvAlert = OsvFields & AlertLifecycle;
+
 /** An alert about a vulnerable dependency, from either source; both share `DependencyFacts`. */
 export type DependencyAlert = DependabotAlert | OsvAlert;
 
-export interface CodeAlert extends AlertBase {
+interface CodeFields extends AlertBase {
   source: "code_scanning";
   code: {
     /** Null when the host named no rule, so the alert gets an action of its own rather than one shared with others. */
@@ -143,7 +162,9 @@ export interface CodeAlert extends AlertBase {
   };
 }
 
-export interface SecretAlert extends AlertBase {
+export type CodeAlert = CodeFields & AlertLifecycle;
+
+interface SecretFields extends AlertBase {
   source: "secret_scanning";
   /** Named so that no stored field is ever called `secret`; the value itself is never read. */
   exposure: {
@@ -153,6 +174,8 @@ export interface SecretAlert extends AlertBase {
     pushProtectionBypassed: boolean;
   };
 }
+
+export type SecretAlert = SecretFields & AlertLifecycle;
 
 export type SecurityAlert = DependencyAlert | CodeAlert | SecretAlert;
 
@@ -173,9 +196,10 @@ export type NoAccessReason = (typeof NO_ACCESS_REASONS)[number];
 
 /**
  * Why the OSV lookup was not used, each a reason for it never to be read rather than a failure: the lookup is switched
- * off, Dependabot's alerts could be used instead, or no lockfile held a package to look up.
+ * off, Dependabot's alerts could be used instead, no lockfile held a package to look up, or every lockfile was read in
+ * full from a complete listing and every public package it named was withheld by a private scope.
  */
-export const NOT_USED_REASONS = ["lookup_off", "dependabot_ok", "no_inventory"] as const;
+export const NOT_USED_REASONS = ["lookup_off", "dependabot_ok", "no_inventory", "all_withheld"] as const;
 export type NotUsedReason = (typeof NOT_USED_REASONS)[number];
 
 export type SourceReason = OffReason | NoAccessReason | NotUsedReason;
@@ -279,11 +303,8 @@ export interface Vulnerability {
 
 // --- Supply chain facts from the clone ------------------------------------------------------------------------------
 
-/**
- * Raised when what the clone is read for changes, so every repository's facts are read again (ADR 0032). Version 2
- * added `LockfileSummary.capped` and stores script injection evidence with its string literals blanked.
- */
-export const SUPPLY_CHAIN_VERSION = 2;
+/** Raised when what the clone is read for changes, so every repository's facts are read again (ADR 0032). */
+export const SUPPLY_CHAIN_VERSION = 3;
 
 export interface ActionUse {
   file: string;
@@ -316,7 +337,11 @@ export interface WorkflowFinding {
   risk: WorkflowRisk;
   /** The expression, key or command fragment, at most 200 characters, never a whole run script. */
   evidence: string;
-  /** Set on `selfHosted` findings only: true when the workflow also runs on `pull_request` or `pull_request_target`. */
+  /**
+   * Set on `selfHosted` findings only. True when the workflow also runs on `pull_request` or `pull_request_target`, or
+   * when its triggers could not be read, which `triggersOf` treats as possibly privileged. A reusable workflow called
+   * by such a workflow in the same repository takes it from its caller.
+   */
   onPullRequest?: boolean;
 }
 
@@ -354,8 +379,18 @@ export interface SupplyChainFacts {
   dockerfilesUnread: string[];
   /** How many Dockerfiles were not read in all, which is more than `dockerfilesUnread` holds when that was cut. */
   dockerfilesUnreadTotal: number;
+  /**
+   * At most 10,000 of each `kind`, pinned and unpinned uses counted apart, so pinned uses and actions owned by GitHub
+   * cannot crowd out an unpinned use of another owner's action. The split between the repository's own organisation
+   * and third parties is made at report time, so those two still share a cap.
+   */
   actions: ActionUse[];
+  /** At most 2,000 of each risk, so advice can never crowd out a finding that is graded. */
   findings: WorkflowFinding[];
+  /** Findings left out by the caps above, so a line can say that it is incomplete. */
+  findingsDropped: number;
+  /** Action uses left out by the caps above. */
+  actionsDropped: number;
   securityTools: SecurityTool[];
   updateConfig: string | null;
   securityPolicy: string | null;
@@ -372,8 +407,7 @@ export interface SupplyChainFacts {
   ecosystems: string[];
   /**
    * False when the listing of the clone stopped short, so a lockfile missing from `lockfiles` may still exist and its
-   * OSV alerts must not be closed as deleted. A row stored before this field was added has none, which
-   * `presentLockfiles` reads as false.
+   * OSV alerts must not be closed as deleted.
    */
   listingComplete: boolean;
 }
@@ -407,9 +441,10 @@ export interface RepoPosture {
     protected: boolean | null;
     rules: BranchRules;
     /**
-     * `full` when classic protection was read, or when the branch is known to have none and the rulesets were read.
-     * `rulesets_only` when the rulesets were read but classic protection could not be. `none` when the rulesets could
-     * not be read, so nothing shows whether a ruleset protects the branch, even one known to have no classic protection.
+     * `full` when classic protection was read, or when the branch is known to have none and every ruleset was read.
+     * `rulesets_only` when rulesets were read but classic protection could not be, or when the branch has none and a
+     * ruleset list cut short still shows a rule in force. `none` when the rulesets could not be read, or were cut short
+     * with nothing seen in force, so nothing shows whether a ruleset protects the branch.
      */
     detail: "full" | "rulesets_only" | "none";
   };
@@ -726,7 +761,8 @@ export interface SecurityThresholds {
 }
 
 interface SecurityReportFields {
-  repo: Pick<Repo, "id" | "owner" | "name" | "lastCrawledAt">;
+  /** `deployBranch` is the branch the dashboard is set up for, which a ready workflow's push trigger names. */
+  repo: Pick<Repo, "id" | "owner" | "name" | "deployBranch" | "lastCrawledAt">;
   range: { from: string; to: string };
   gradedAt: string;
   /** The limits the grade and the advice use, so copy never repeats a number. */
@@ -734,6 +770,16 @@ interface SecurityReportFields {
   /** The host's page for the repository's security settings. */
   settingsUrl: string;
   sources: Record<AlertSource, SourceState>;
+  /**
+   * Whether each source's alerts are in use as the grade uses them, because the source was read now or failed after an
+   * earlier read. OSV is in use only when Dependabot is not. `SecuritySummary.used` is the same record.
+   */
+  used: Record<AlertSource, boolean>;
+  /**
+   * When each source last read successfully, from this attempt when it succeeded or from the last good read an `error`
+   * state carries. Null for every other state, including `no_access`, whose stored alerts are kept but not used.
+   */
+  lastGoodAt: Record<AlertSource, string | null>;
   supplyChain:
     | {
         status: "ok";
@@ -743,6 +789,9 @@ interface SecurityReportFields {
         workflowsUnread: string[];
         dockerfilesUnread: string[];
         dockerfilesUnreadTotal: number;
+        /** Workflow findings and action uses the caps left out, so the lines may count fewer than there are. */
+        findingsDropped: number;
+        actionsDropped: number;
         lines: SupplyChainLine[];
       }
     | { status: "none"; reason: "analysis_off" | "not_read" };

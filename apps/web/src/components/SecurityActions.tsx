@@ -27,7 +27,7 @@ const c = copy.security;
 export function fixContext(report: SecurityReport): FixContext {
   return {
     ecosystems: report.ecosystems,
-    branch: report.posture?.value.branch.name ?? "main",
+    branch: report.repo.deployBranch,
     settingsUrl: report.settingsUrl,
     versionUpdates: report.dependabotVersionUpdates,
     updateConfig: updateConfigPath(report),

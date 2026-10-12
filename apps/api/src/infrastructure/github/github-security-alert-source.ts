@@ -1,14 +1,15 @@
-import type {
-  AlertOf,
-  AlertSource,
-  AlertState,
-  BranchRules,
-  CloseReason,
-  CodeAlert,
-  DependabotAlert,
-  RepoPosture,
-  SecretAlert,
-  Severity,
+import {
+  alertLifecycle,
+  type AlertOf,
+  type AlertSource,
+  type AlertState,
+  type BranchRules,
+  type CloseReason,
+  type CodeAlert,
+  type DependabotAlert,
+  type RepoPosture,
+  type SecretAlert,
+  type Severity,
 } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { AlertRead, SecurityAlertSource } from "../../interfaces/security-alert-source.js";
@@ -103,24 +104,20 @@ function dependabotAlert(raw: Json, web: string, address: (kind: string, number:
   const cvssScore = scores.map(num).find((score) => score !== null && score > 0) ?? null;
   const cwes = Array.isArray(advisory?.cwes) ? advisory.cwes.flatMap((cwe: unknown) => cweOf(obj(cwe)?.cwe_id) ?? []) : [];
   const closedAt =
-    alertState === "open"
-      ? null
-      : (str(state === "fixed" ? raw.fixed_at : state === "auto_dismissed" ? raw.auto_dismissed_at : raw.dismissed_at) ??
-        str(raw.updated_at));
+    str(state === "fixed" ? raw.fixed_at : state === "auto_dismissed" ? raw.auto_dismissed_at : raw.dismissed_at) ??
+    str(raw.updated_at);
+  const lifecycle = alertLifecycle(
+    alertState,
+    closedAt,
+    state === "fixed" || state === "auto_dismissed" ? state : oneOf(raw.dismissed_reason, DEPENDABOT_DISMISSALS),
+  );
+  // A closed alert with no time to place its close is skipped and counted, as one with no creation time is.
+  if (lifecycle === null) return null;
   return {
     source: "dependabot",
     key: String(number),
-    state: alertState,
+    ...lifecycle,
     createdAt,
-    closedAt,
-    closeReason:
-      alertState === "open"
-        ? null
-        : state === "fixed"
-          ? "fixed"
-          : state === "auto_dismissed"
-            ? "auto_dismissed"
-            : oneOf(raw.dismissed_reason, DEPENDABOT_DISMISSALS),
     title: title(str(advisory?.summary) ?? str(pkg?.name) ?? "Vulnerable dependency"),
     url: pageOf(raw.html_url, web, address("dependabot", number)),
     severity: severityOf(advisory?.severity) ?? severityOf(vulnerability?.severity) ?? "unknown",
@@ -154,13 +151,17 @@ function codeAlert(raw: Json, web: string, address: (kind: string, number: numbe
   const tags = Array.isArray(rule?.tags) ? rule.tags.filter((tag): tag is string => typeof tag === "string") : [];
   const dismissed = typeof raw.dismissed_reason === "string" ? (CODE_DISMISSALS.get(raw.dismissed_reason) ?? null) : null;
   const ruleId = str(rule?.id);
+  const lifecycle = alertLifecycle(
+    state,
+    str(state === "fixed" ? raw.fixed_at : raw.dismissed_at) ?? str(raw.updated_at),
+    state === "fixed" ? "fixed" : dismissed,
+  );
+  if (lifecycle === null) return null;
   return {
     source: "code_scanning",
     key: String(number),
-    state,
+    ...lifecycle,
     createdAt,
-    closedAt: state === "open" ? null : (str(state === "fixed" ? raw.fixed_at : raw.dismissed_at) ?? str(raw.updated_at)),
-    closeReason: state === "open" ? null : state === "fixed" ? "fixed" : dismissed,
     title: title(str(rule?.description) ?? str(rule?.name) ?? ruleId ?? "Code scanning alert"),
     url: pageOf(raw.html_url, web, address("code_scanning", number)),
     code: {
@@ -190,13 +191,13 @@ function secretAlert(raw: Json, web: string, address: (kind: string, number: num
   const resolution = oneOf(raw.resolution, SECRET_RESOLUTIONS);
   const name = str(raw.secret_type_display_name) ?? str(raw.secret_type) ?? "Secret";
   const alertState: AlertState = state === "open" ? "open" : resolution === "revoked" ? "fixed" : "dismissed";
+  const lifecycle = alertLifecycle(alertState, str(raw.resolved_at) ?? str(raw.updated_at), resolution);
+  if (lifecycle === null) return null;
   return {
     source: "secret_scanning",
     key: String(number),
-    state: alertState,
+    ...lifecycle,
     createdAt,
-    closedAt: state === "open" ? null : (str(raw.resolved_at) ?? str(raw.updated_at)),
-    closeReason: state === "open" ? null : resolution,
     title: title(name),
     url: pageOf(raw.html_url, web, address("secret_scanning", number)),
     exposure: {
@@ -308,13 +309,13 @@ function mergeRules(classic: Rules | null, rulesets: Rules | null, rulesetsCompl
   return merged;
 }
 
+/** `: message` for a message of a known kind, else nothing, so no free text from upstream reaches an error. */
+const shown = (message: string): string => (knownMessage(message) ? `: ${knownMessage(message)}` : "");
+
 /**
  * The answer for a refusal of a part of the posture: null when the credential may not see it, which leaves the part
  * unknown. Any other refusal, such as a single sign-on block, raises so the crawl keeps the earlier posture.
  */
-/** `: message` for a message of a known kind, else nothing, so no free text from upstream reaches an error. */
-const shown = (message: string): string => (knownMessage(message) ? `: ${knownMessage(message)}` : "");
-
 function unseen(page: { status: number; message: string }, label: string): null {
   if (page.status === 403 && NOT_PERMITTED.test(page.message)) return null;
   throw new UpstreamError(`GitHub refused to read ${label}${shown(page.message)}`, page.status);
@@ -339,16 +340,22 @@ const enabledOf = (body: Json | null, key = "status"): boolean | null => {
  *   404 is `no_access` (`forbidden`); a 403 that says the resource is not accessible is `no_access` (`forbidden`).
  * - Secret scanning is read with `hide_secret=true`, and a 404, which GitHub also sends to a person who is not an
  *   administrator, is `no_access` (`admin_only_or_off`); so is a 403 that says the resource is not accessible.
- * - Any other 403, such as a single sign-on block, raises `UpstreamError` with GitHub's message. A rate limit raises
- *   too, whatever the status and whether or not GitHub sent its headers, and is never read as "off".
- * - The posture reads each part on its own. A part is left null only when GitHub says this credential may not see it
- *   (a 403 that says the resource is not accessible or that admin rights are needed) or, for the parts that need an
- *   administrator or a plan that has them, a 404. Any other refusal raises, and so does a 404 for the repository or the
+ * - Any other 403, such as a single sign-on block, raises `UpstreamError`, which carries GitHub's message only when
+ *   `knownMessage` accepts it (rule 9). A rate limit raises too, whatever the status and whether or not GitHub sent its
+ *   headers, and is never read as "off".
+ * - The posture reads each part on its own. A part is left null when GitHub says this credential may not see it (a 403
+ *   that says the resource is not accessible or that admin rights are needed) or, for the parts that need an
+ *   administrator or a plan that has them, a 404. A part is also null when the reply leaves it out, as the repository
+ *   read does for the security settings when the credential is not an administrator's, and private vulnerability
+ *   reporting and the advisories are not requested unless the repository is known to be public. The advisories are
+ *   counted only for an administrator, because GitHub answers 200 to anyone else with the draft and triage advisories
+ *   left out, which would read as none waiting. Any other refusal raises, and so does a 404 for the repository or the
  *   deploy branch, so the crawl keeps the earlier posture rather than saving one made of nulls.
  * - Rule 9 (ADR 0031): the whole reply is parsed, but only these are mapped: GitHub's codes and numbers, times,
- *   package, rule and tool names, paths, CWE ids, and the published titles (an advisory summary, a rule description
- *   or a secret type's display name, each cut to 300 characters). No person, comment, rule help or advisory
- *   description is mapped, and the secret value is never requested (`hide_secret=true`) and never mapped.
+ *   package, rule and tool names, paths, CWE ids, the alert's own page on github.com, version ranges and patched
+ *   versions, and the published titles (an advisory summary, a rule description or a secret type's display name, each cut
+ *   to 300 characters). No person, comment, rule help or advisory description is mapped, and the secret value is never
+ *   requested (`hide_secret=true`) and never mapped.
  */
 export class GitHubSecurityAlertSource implements SecurityAlertSource {
   readonly kind = "github";
@@ -456,9 +463,13 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
           (await this.fetchOne(token, `${repoPath}/private-vulnerability-reporting`, "private vulnerability reporting"))?.enabled,
         )
       : null;
-    const advisories = isPublic
-      ? await this.fetchList(token, `${repoPath}/security-advisories?per_page=100`, "the repository's advisories")
-      : null;
+    // Draft and triage advisories are listed only for an administrator or security manager of the repository, and GitHub
+    // answers 200 without them to anyone else, so a count made by another credential would say that none are waiting.
+    // `permissions.admin` is the signal the repository read gives, so the count is made for an administrator alone.
+    const advisories =
+      isPublic && bool(permissions?.admin) === true
+        ? await this.fetchList(token, `${repoPath}/security-advisories?per_page=100`, "the repository's advisories")
+        : null;
 
     return {
       visibility,
@@ -467,10 +478,11 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
         name: branch,
         protected: isProtected,
         rules,
-        // Rules a partly read ruleset list left unseen are null whatever the detail says. A branch known to be unprotected
-        // whose rulesets were cut is "full" only when they were read in full: otherwise a ruleset past the cut might
-        // protect it, so with nothing seen to be enforced the rules are not known (`none`), and core does not grade it
-        // as unprotected.
+        // Rules a partly read ruleset list left unseen are null whatever the detail says. Classic protection read is
+        // "full". A branch known to have none is "full" only when every ruleset was read; when the list was cut short it
+        // is "rulesets_only" while a rule is still seen in force, and otherwise "none", since a ruleset past the cut might
+        // protect it, so core does not grade it as unprotected. Classic protection that could not be read is
+        // "rulesets_only" when the rulesets were read, and "none" when they were not.
         detail: protection
           ? "full"
           : rulesets

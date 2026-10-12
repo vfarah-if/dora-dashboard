@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SEVERITY_RANK,
+  alertLifecycle,
   cwesOf,
   epssOf,
   failedSource,
@@ -12,7 +13,7 @@ import {
   usedSources,
   worseSeverity,
 } from "../src/securityAlerts.js";
-import { CLOSE_REASONS, type SourceState } from "../src/securityTypes.js";
+import { CLOSE_REASONS, type DependabotAlert, type SourceState } from "../src/securityTypes.js";
 import { PROPORTIONAL, growth } from "./growth.js";
 import { codeAlert, depAlert, failed, noAccess, notRead, notUsed, off, ok, osvAlert, secretAlert } from "./security.js";
 
@@ -222,10 +223,13 @@ describe("normaliseCwe", () => {
     ]);
   });
 
-  it("reads a long run of zeros in time proportional to its length", () => {
-    const zeros = (count: number) => `cwe-${"0".repeat(count)}x`;
-    expect(normaliseCwe(zeros(40_000))).toBe(zeros(40_000));
-    expect(growth(normaliseCwe, zeros(10_000), zeros(40_000))).toBeLessThan(PROPORTIONAL);
+  it("reads long runs of zeros in time proportional to their length", () => {
+    // One id takes microseconds, too little to time on a busy runner, so each input holds 1,000 ids, which take a couple
+    // of milliseconds, and only the length of each run of zeros grows.
+    const ids = (zeros: number) => Array.from({ length: 1_000 }, (_, i) => `cwe-${"0".repeat(zeros)}x${i}`);
+    const work = (list: readonly string[]) => list.map(normaliseCwe);
+    expect(work(ids(4_000))).toEqual(ids(4_000));
+    expect(growth(work, ids(1_000), ids(4_000))).toBeLessThan(PROPORTIONAL);
   });
 });
 
@@ -268,5 +272,31 @@ describe("CLOSE_REASONS", () => {
       // OSV
       "not_found",
     ]);
+  });
+});
+
+describe("alertLifecycle", () => {
+  const AT = "2026-10-01T00:00:00Z";
+
+  it("gives an open alert no close facts, whatever it was given", () => {
+    expect(alertLifecycle("open", AT, "fixed")).toEqual({ state: "open", closedAt: null, closeReason: null });
+  });
+
+  it.each(["fixed", "dismissed"] as const)("keeps a %s alert's close time and reason", (state) => {
+    expect(alertLifecycle(state, AT, "fixed")).toEqual({ state, closedAt: AT, closeReason: "fixed" });
+    expect(alertLifecycle(state, AT, null)).toEqual({ state, closedAt: AT, closeReason: null });
+  });
+
+  it.each(["fixed", "dismissed"] as const)("refuses a %s alert with no close time, which no week could place", (state) => {
+    expect(alertLifecycle(state, null, "fixed")).toBeNull();
+  });
+
+  it("holds the pairing in the alert's type, so neither half can be left out of step", () => {
+    const open = depAlert();
+    // @ts-expect-error A fixed alert must say when it closed.
+    const closed: DependabotAlert = { ...open, state: "fixed", closedAt: null, closeReason: "fixed" };
+    // @ts-expect-error An open alert carries no close time.
+    const reopened: DependabotAlert = { ...open, state: "open", closedAt: AT, closeReason: null };
+    expect([closed.state, reopened.state]).toEqual(["fixed", "open"]);
   });
 });

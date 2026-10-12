@@ -29,7 +29,7 @@ describe("the printed security report", () => {
   });
 
   it("keeps a closed explanation whole but lets an opened one run over a page", () => {
-    expect(css).toMatch(/\.action-item:not\(:has\(\.action-details\[open\]\)\)/);
+    expect(printRule(".action-item:not(:has(.action-details[open]))")).toMatch(/break-inside:\s*avoid/);
   });
 
   it("leaves a closed glossary out, since only the word to press would print", () => {

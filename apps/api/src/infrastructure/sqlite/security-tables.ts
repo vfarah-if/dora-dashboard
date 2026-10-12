@@ -20,7 +20,7 @@ import {
 } from "@dora-dashboard/core";
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
-import type { SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import type { AlertScan, SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
 
 /**
  * The scorecard table. `read_at` is null until a read succeeds, so a failed first read can be stored; a failure carries
@@ -92,10 +92,10 @@ ${scorecardTable("IF NOT EXISTS security_scorecard")};
  *
  * - A source table without the `skipped` column gets it, with 0 for the rows already there, and its `error` rows lose
  *   their read time (see below).
- * - A scorecard or posture table that lacks the `error` column (or the scorecard's `attempted_at`), or has `read_at`
- *   NOT NULL, is rebuilt so a failed first read can be stored. SQLite cannot loosen a constraint in place, so each such
- *   table is rebuilt in one transaction, which leaves both as they were if anything fails; a table that is already
- *   current is not touched, and a second run does nothing.
+ * - A scorecard or posture table that lacks the `error` or `attempted_at` column, or has `read_at` NOT NULL, is rebuilt so
+ *   a failed first read can be stored. SQLite cannot loosen a constraint in place, so each such table is rebuilt in one
+ *   transaction, which leaves both as they were if anything fails; a table that is already current is not touched, and a
+ *   second run does nothing.
  */
 export function migrateSecurityTables(db: DatabaseSync): void {
   const columnsOf = (table: string) =>
@@ -226,7 +226,11 @@ const ALERT_PARTS: Record<AlertSource, string> = {
   secret_scanning: "exposure",
 };
 
-/** A stored alert that has the shape the report reads: its source, a state, a key, a time and the part for its source. */
+/**
+ * A stored alert that has the shape the report reads: its source, a state, a key, a time and the part for its source.
+ * An open alert carries no close time or reason, and a fixed or dismissed one always has a close time, as
+ * `AlertLifecycle` holds them.
+ */
 function isAlert(value: unknown, source: string, key: string): value is SecurityAlert {
   return (
     isObject(value) &&
@@ -236,6 +240,7 @@ function isAlert(value: unknown, source: string, key: string): value is Security
     isString(value.createdAt) &&
     isString(value.state) &&
     ALERT_STATES.includes(value.state) &&
+    (value.state === "open" ? value.closedAt === null && value.closeReason === null : isString(value.closedAt)) &&
     (value.closeReason === null ||
       (isString(value.closeReason) && (CLOSE_REASONS as readonly string[]).includes(value.closeReason))) &&
     isObject(value[ALERT_PARTS[source as AlertSource]])
@@ -247,9 +252,13 @@ function isFacts(value: unknown): value is SupplyChainFacts {
   if (!isObject(value) || value.version !== SUPPLY_CHAIN_VERSION) return false;
   const lists = ["workflowsUnread", "dockerfilesUnread", "actions", "findings", "securityTools", "missingLockfiles"];
   const more = ["lockfiles", "keyFiles", "dockerfiles", "ecosystems"];
-  // Rows stored before the listing was reported lack `listingComplete`, which reads as an incomplete listing.
-  const listing = value.listingComplete === undefined || typeof value.listingComplete === "boolean";
-  return listing && [...lists, ...more].every((name) => Array.isArray(value[name])) && isObject(value.manifestsByEcosystem);
+  const counts = ["findingsDropped", "actionsDropped"];
+  return (
+    typeof value.listingComplete === "boolean" &&
+    counts.every((name) => typeof value[name] === "number") &&
+    [...lists, ...more].every((name) => Array.isArray(value[name])) &&
+    isObject(value.manifestsByEcosystem)
+  );
 }
 
 function isPosture(value: unknown): value is RepoPosture {
@@ -312,11 +321,17 @@ export class SecurityTables implements SecurityStore {
   }
 
   securityAlerts(repoId: number): SecurityAlert[] {
+    return this.securityAlertScan(repoId).alerts;
+  }
+
+  securityAlertScan(repoId: number): AlertScan {
     const rows = this.db
       .prepare("SELECT source, key, data FROM security_alerts WHERE repo_id = ? ORDER BY source, key")
       .all(repoId) as unknown as { source: string; key: string; data: string }[];
-    // One corrupt row costs that alert only; it must not turn every report of the repository into a 500.
-    return rows.flatMap((row) => {
+    const unreadable = Object.fromEntries(ALERT_SOURCES.map((source) => [source, 0])) as Record<AlertSource, number>;
+    // One corrupt row costs that alert only; it must not turn every report of the repository into a 500. It is counted, so
+    // the report can say that the figures leave it out.
+    const alerts = rows.flatMap((row) => {
       try {
         const alert = parse<unknown>(row.data, `${row.source} alert ${row.key} of repository ${repoId}`);
         if (!isAlert(alert, row.source, row.key)) throw new Error(`Stored ${row.source} alert ${row.key} has an unknown shape`);
@@ -327,9 +342,13 @@ export class SecurityTables implements SecurityStore {
           { err, repoId, source: row.source },
           "a stored security alert is not readable; leaving it out",
         );
+        // Checked against the sources themselves, since `in` would also match a key every object inherits, such as
+        // `toString`, and count a row stored under it.
+        if (ALERT_SOURCES.includes(row.source as AlertSource)) unreadable[row.source as AlertSource]++;
         return [];
       }
     });
+    return { alerts, unreadable };
   }
 
   /** Reports a stored row that cannot be read once, so a polled report does not repeat the warning. */
@@ -520,9 +539,12 @@ export class SecurityTables implements SecurityStore {
       .get(repoId) as unknown as
       { read_at: string | null; data: string | null; error: string | null; attempted_at: string | null } | undefined;
     if (!row) return null;
+    const result = row.data === null ? null : this.readOrNull(repoId, "scorecard", row.data, isScorecard);
     return {
-      readAt: row.read_at,
-      result: row.data === null ? null : this.readOrNull(repoId, "scorecard", row.data, isScorecard),
+      // A result that cannot be read leaves nothing to show for the read time either, so the report makes no claim about
+      // the scan and the crawl's daily throttle reads the project again at the next crawl.
+      readAt: row.data !== null && result === null ? null : row.read_at,
+      result,
       // A failure stored without its attempt time, by an earlier build, is not shown; the next attempt stores it again.
       failure: row.error && row.attempted_at ? { message: row.error, attemptedAt: row.attempted_at } : null,
     };

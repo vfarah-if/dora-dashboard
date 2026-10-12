@@ -513,31 +513,50 @@ describe("GitHubSecurityAlertSource alerts", () => {
     expect(read.truncated).toBe(false);
   });
 
-  it("skips and counts an alert with no number, no creation time or a state it does not know", async () => {
-    const http = host({
-      [listUrl("dependabot/alerts")]: () =>
-        json([
-          dependabotRaw,
-          { ...dependabotRaw, number: undefined },
-          { ...dependabotRaw, created_at: undefined },
-          { ...dependabotRaw, state: "mystery" },
-          "junk",
-          null,
-        ]),
-    });
+  it.each([
+    ["dependencyAlerts", "dependabot/alerts", dependabotRaw, "dependabot"],
+    ["codeAlerts", "code-scanning/alerts", codeRaw, "code_scanning"],
+    ["secretAlerts", "secret-scanning/alerts", secretRaw, "secret_scanning"],
+  ] as const)(
+    "skips and counts a %s alert with no number, no creation time or a state it does not know, and names the numbered ones",
+    async (read, path, raw, source) => {
+      const url = path.startsWith("secret") ? `${listUrl(path)}&hide_secret=true` : listUrl(path);
+      const http = host({
+        [url]: () =>
+          json([
+            raw,
+            { ...raw, number: undefined },
+            { ...raw, created_at: undefined },
+            { ...raw, number: 90, state: "mystery" },
+            // A closed alert with no time to close it at cannot be told from a stale one, so it is left for the next read.
+            {
+              ...raw,
+              number: 91,
+              state: path.startsWith("secret") ? "resolved" : "dismissed",
+              updated_at: undefined,
+              dismissed_at: undefined,
+              resolved_at: undefined,
+              fixed_at: undefined,
+            },
+            "junk",
+            null,
+          ]),
+      });
 
-    const read = (await new GitHubSecurityAlertSource(http).dependencyAlerts("t", "acme", "widgets")) as {
-      alerts: unknown[];
-      skipped: number;
-      status: string;
-    };
+      const result = (await new GitHubSecurityAlertSource(http)[read]("t", "acme", "widgets")) as {
+        alerts: { source: string }[];
+        skipped: number;
+        status: string;
+        skippedKeys: string[];
+      };
 
-    expect(read.status).toBe("ok");
-    expect(read.alerts).toHaveLength(1);
-    expect(read.skipped).toBe(5);
-    // Only the two that had a number can be named; the unnumbered ones, the text and the null cannot.
-    expect((read as unknown as { skippedKeys: string[] }).skippedKeys).toEqual(["7", "7"]);
-  });
+      expect(result.status).toBe("ok");
+      expect(result.alerts.map((alert) => alert.source)).toEqual([source]);
+      expect(result.skipped).toBe(6);
+      // Only those that had a number can be named; the unnumbered one, the text and the null cannot.
+      expect(result.skippedKeys).toEqual([String(raw.number), "90", "91"]);
+    },
+  );
 
   it("uses the page it knows for an alert whose address GitHub gave on another site", async () => {
     const http = host({
@@ -864,7 +883,8 @@ describe("GitHubSecurityAlertSource posture", () => {
         validityChecks: null,
         privateVulnerabilityReporting: false,
       },
-      advisories: { draft: 0, triage: 0, published: 0, closed: 0 },
+      // This credential is not an administrator, so the advisories are not counted (see the test of that below).
+      advisories: null,
     });
     expect(urlsOf(http).some((url) => url.endsWith("/protection"))).toBe(false);
   });
@@ -929,7 +949,7 @@ describe("GitHubSecurityAlertSource posture", () => {
 
   it("still reads both for a public repository", async () => {
     const http = host({
-      [REPO]: () => json({ visibility: "public" }),
+      [REPO]: () => json({ visibility: "public", permissions: { admin: true } }),
       [`${REPO}/branches/main`]: () => json({ protected: false }),
       [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
@@ -939,6 +959,66 @@ describe("GitHubSecurityAlertSource posture", () => {
     const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
     expect(posture.settings.privateVulnerabilityReporting).toBe(true);
     expect(posture.advisories).toEqual({ draft: 1, triage: 0, published: 0, closed: 0 });
+  });
+
+  it.each([
+    ["says it is not one", { admin: false, push: true }],
+    ["sends no permissions", undefined],
+  ])(
+    "does not count the advisories of a public repository when the read %s, since GitHub then leaves out drafts",
+    async (_case, permissions) => {
+      // GitHub answers 200 to a credential that is no administrator, with only the published and closed advisories listed,
+      // so a count of them would say that nothing waits in draft or triage.
+      const http = host({
+        [REPO]: () => json({ visibility: "public", ...(permissions ? { permissions } : {}) }),
+        [`${REPO}/branches/main`]: () => json({ protected: false }),
+        [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
+        [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+        [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
+        [`${REPO}/security-advisories?per_page=100`]: () => json([{ state: "published" }, { state: "closed" }]),
+      });
+
+      const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+      expect(posture.advisories).toBeNull();
+      expect(posture.settings.privateVulnerabilityReporting).toBe(true);
+    },
+  );
+
+  it("leaves the rules and the advisories unknown when GitHub answers with an object where a list belongs", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "public", permissions: { admin: true } }),
+      [`${REPO}/branches/main`]: () => json({ protected: false }),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json({ message: "not a list" }),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
+      [`${REPO}/security-advisories?per_page=100`]: () => json({ message: "not a list" }),
+    });
+
+    const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+    // Reading the first as an empty list would call an unprotected branch one with no rules of any kind.
+    expect(posture.branch.detail).toBe("none");
+    expect(posture.branch.protected).toBe(false);
+    expect(posture.branch.rules.blockForcePushes).toBeNull();
+    expect(posture.advisories).toBeNull();
+    expect(urlsOf(http)).toContain(`${REPO}/security-advisories?per_page=100`);
+  });
+
+  it("leaves the rules only classic protection could show unknown when its reply is a list and not an object", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "private", permissions: { admin: true } }),
+      [`${REPO}/branches/main`]: () => json({ protected: true }),
+      [`${REPO}/branches/main/protection`]: () => json([{ allow_force_pushes: { enabled: false } }]),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([{ type: "deletion" }]),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+    });
+
+    const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+    // Reading it as "no classic protection" would make every other rule known to be absent.
+    expect(branch.detail).toBe("rulesets_only");
+    expect(branch.rules).toMatchObject({ blockDeletion: true, blockForcePushes: null, requirePullRequest: null });
   });
 
   it("leaves rules it could not see as null, and says only rulesets were read, when a non-administrator meets classic protection", async () => {
@@ -995,12 +1075,12 @@ describe("GitHubSecurityAlertSource posture", () => {
       [`${REPO}/branches/main`]: hidden,
       [`${REPO}/rules/branches/main?per_page=100`]: () => refusal(404, "Not Found"),
       [`${REPO}/automated-security-fixes`]: () => refusal(404, "Not Found"),
-      [`${REPO}/private-vulnerability-reporting`]: () => refusal(404, "Not Found"),
-      [`${REPO}/security-advisories?per_page=100`]: () => json({ message: "not a list" }),
     });
 
     const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
 
+    // With no visibility the repository is not known to be public, so neither of the public-only parts is asked for.
+    expect(urlsOf(http).some((url) => /private-vulnerability-reporting|security-advisories/.test(url))).toBe(false);
     expect(posture.visibility).toBeNull();
     expect(posture.isAdmin).toBeNull();
     expect(posture.branch.protected).toBeNull();
@@ -1101,14 +1181,21 @@ describe("GitHubSecurityAlertSource refusals that are not a permission", () => {
     });
   const posture = (http: ReturnType<typeof host>) => new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
 
-  const PARTS: [string, string][] = [
-    ["the repository", REPO],
-    ["the branch", `${REPO}/branches/main`],
-    ["classic protection", PROTECTION],
-    ["the branch's rules", `${REPO}/rules/branches/main?per_page=100`],
-    ["automated security fixes", `${REPO}/automated-security-fixes`],
-    ["private vulnerability reporting", `${REPO}/private-vulnerability-reporting`],
-    ["the advisories", `${REPO}/security-advisories?per_page=100`],
+  type Posture = Awaited<ReturnType<typeof posture>>;
+  /** Each part of the posture, the address that feeds it, and the field that must read as unknown when it is not seen. */
+  const PARTS: [string, string, (read: Posture) => unknown][] = [
+    ["the repository", REPO, (read) => read.visibility],
+    ["the branch", `${REPO}/branches/main`, (read) => read.branch.protected],
+    // The rulesets are an empty list here, so only classic protection could say a rule is enforced or is not.
+    ["classic protection", PROTECTION, (read) => read.branch.rules.blockForcePushes],
+    ["the branch's rules", `${REPO}/rules/branches/main?per_page=100`, (read) => read.branch.rules.requireLinearHistory],
+    ["automated security fixes", `${REPO}/automated-security-fixes`, (read) => read.settings.dependabotSecurityUpdates],
+    [
+      "private vulnerability reporting",
+      `${REPO}/private-vulnerability-reporting`,
+      (read) => read.settings.privateVulnerabilityReporting,
+    ],
+    ["the advisories", `${REPO}/security-advisories?per_page=100`, (read) => read.advisories],
   ];
 
   it.each(PARTS)("raises, rather than saving nulls, for a single sign-on 403 on %s", async (_part, url) => {
@@ -1122,9 +1209,11 @@ describe("GitHubSecurityAlertSource refusals that are not a permission", () => {
     await expect(posture(postureHost({ [url]: () => refusal(403, SECONDARY) }))).rejects.toThrow(RATE_LIMIT_MESSAGE);
   });
 
-  it.each(PARTS)("leaves %s unknown, and raises nothing, when GitHub says admin rights are needed", async (_part, url) => {
+  it.each(PARTS)("leaves %s unknown, and raises nothing, when GitHub says admin rights are needed", async (_part, url, field) => {
     const read = await posture(postureHost({ [url]: () => refusal(403, "Must have admin rights to Repository.") }));
     expect(read.branch.name).toBe("main");
+    // Null, and not false or an empty list, because the part was not seen and may well be on.
+    expect(field(read)).toBeNull();
   });
 
   it("raises for a branch GitHub cannot find, naming the branch, so the earlier posture is kept", async () => {
@@ -1143,9 +1232,10 @@ describe("GitHubSecurityAlertSource refusals that are not a permission", () => {
 
   it.each(PARTS.filter(([part]) => part !== "the repository" && part !== "the branch"))(
     "leaves %s unknown for a 404, which GitHub sends when only an administrator can read it",
-    async (_part, url) => {
+    async (_part, url, field) => {
       const read = await posture(postureHost({ [url]: () => refusal(404, "Not Found") }));
       expect(read.visibility).toBe("public");
+      expect(field(read)).toBeNull();
     },
   );
 
@@ -1235,7 +1325,7 @@ describe("GitHubSecurityAlertSource lists that go on", () => {
   /** An unprotected public branch, so classic protection is fully known and only the rulesets decide. */
   const base = (extra: Record<string, () => Response>) =>
     host({
-      [REPO]: () => json({ visibility: "public" }),
+      [REPO]: () => json({ visibility: "public", permissions: { admin: true } }),
       [`${REPO}/branches/main`]: () => json({ protected: false }),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
@@ -1415,6 +1505,19 @@ describe("GitHubSecurityAlertSource mapping details", () => {
     expect((await one("dependabot/alerts", "dependencyAlerts", { ...fixed, fixed_at: null })).closedAt).toBe(
       "2026-09-04T10:00:00Z",
     );
+  });
+
+  it.each([
+    ["dependabot/alerts", "dependencyAlerts", "", () => ({ ...dependabotRaw, state: "fixed", fixed_at: null })],
+    ["code-scanning/alerts", "codeAlerts", "", () => ({ ...codeRaw, state: "fixed", fixed_at: null })],
+    ["secret-scanning/alerts", "secretAlerts", "&hide_secret=true", () => ({ ...secretRaw, resolved_at: null })],
+  ] as const)("skips and counts a closed %s entry with no close or update time", async (path, call, extra, raw) => {
+    // With no time the close cannot be placed in a week, so the alert would read as open for ever in the weekly chart.
+    const closed = { ...raw(), updated_at: null };
+    const http = host({ [listUrl(path, extra)]: () => json([closed]) });
+    const read = ok(await new GitHubSecurityAlertSource(http)[call]("t", "acme", "widgets"));
+    expect(read.alerts).toEqual([]);
+    expect(read.skipped).toBe(1);
   });
 
   it("closes a resolved secret alert at resolved_at, and at updated_at when it has none", async () => {

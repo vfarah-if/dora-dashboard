@@ -21,7 +21,10 @@ export interface SecurityStep {
   read(token: string, repo: CrawledRepo, full: boolean): Promise<void>;
 }
 
-/** The optional steps after the pull requests and deploy runs, each a bonus that never fails the crawl. */
+/**
+ * The optional steps after the pull requests and deploy runs. The crawl survives the failure of any of them, except a
+ * rejected credential, which fails it.
+ */
 export interface CrawlSteps {
   codeHealth?: CodeHealthService;
   issues?: IssueCrawlService;

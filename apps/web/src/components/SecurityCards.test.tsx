@@ -17,14 +17,18 @@ const tile = (label: string) => screen.getByRole("heading", { level: 3, name: la
 describe("SupplyChainCard", () => {
   it("shows each workflow check as an icon and a word with a sentence and whether it counts towards the grade", () => {
     render(<SupplyChainCard report={securityReport()} group="workflows" />);
-    const rows = screen.getAllByRole("listitem").filter((li) => li.classList.contains("check-row"));
-    expect(rows.map((r) => r.querySelector(".check-row-title")?.textContent)).toEqual([
+    // Each row is the list item holding its title, and they come in the order the report gives.
+    const titles = [
       supplyTitle("prHeadCheckout"),
       supplyTitle("scriptInjection"),
       supplyTitle("unpinnedActions"),
       supplyTitle("workflowPermissions"),
       supplyTitle("keyFiles"),
-    ]);
+    ];
+    const rows = titles.map((title) => screen.getByText(title).closest("li")!);
+    const order = screen.getAllByRole("listitem");
+    const positions = rows.map((row) => order.indexOf(row));
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(within(rows[0]!).getByText("Met")).toBeInTheDocument();
     expect(within(rows[0]!).getByText("No workflow does this.")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("Not met")).toBeInTheDocument();
@@ -65,6 +69,28 @@ describe("SupplyChainCard", () => {
     );
     expect(screen.getByText("2 workflow files were not read, so they are left out of the checks.")).toBeInTheDocument();
     expect(screen.getByText("b.yml")).toBeInTheDocument();
+  });
+
+  it.each([
+    { findingsDropped: 3, actionsDropped: 0, said: "3 workflow findings were left out" },
+    { findingsDropped: 0, actionsDropped: 1, said: "1 use of an action was left out" },
+    { findingsDropped: 1, actionsDropped: 2, said: "1 workflow finding and 2 uses of actions were left out" },
+  ])("says the lists are incomplete when the caps left out $findingsDropped findings and $actionsDropped actions", (dropped) => {
+    const chain = securityReport().supplyChain;
+    if (chain.status !== "ok") throw new Error("fixture");
+    const { findingsDropped, actionsDropped } = dropped;
+    render(
+      <SupplyChainCard
+        report={securityReport({ supplyChain: { ...chain, findingsDropped, actionsDropped } })}
+        group="workflows"
+      />,
+    );
+    expect(screen.getByText(new RegExp(`^The lists below are incomplete.*${dropped.said}`))).toBeInTheDocument();
+  });
+
+  it("says nothing about incomplete lists when the caps left nothing out", () => {
+    render(<SupplyChainCard report={securityReport()} group="workflows" />);
+    expect(screen.queryByText(/incomplete/)).not.toBeInTheDocument();
   });
 
   it("says how many Dockerfiles were not read on the container images card, with the paths behind a button", async () => {
@@ -135,7 +161,8 @@ describe("SupplyChainCard", () => {
 
   it("says there is nothing to check in a section the report has no lines for", () => {
     render(<SupplyChainCard report={securityReport()} group="updates" />);
-    expect(screen.getAllByRole("listitem").filter((li) => li.classList.contains("check-row"))).toHaveLength(2);
+    expect(screen.getByText(supplyTitle("updateConfig"))).toBeInTheDocument();
+    expect(screen.getByText(supplyTitle("lockfiles"))).toBeInTheDocument();
     const chain = securityReport().supplyChain;
     if (chain.status !== "ok") throw new Error("fixture");
     render(<SupplyChainCard report={securityReport({ supplyChain: { ...chain, lines: [] } })} group="images" />);
@@ -148,7 +175,7 @@ const supplyTitle = (id: keyof typeof copy.security.supplyChain) => copy.securit
 describe("BranchProtectionCard", () => {
   it("shows each rule and setting as Met, Not met or Not visible, each with its words", () => {
     render(<BranchProtectionCard report={securityReport()} />);
-    const row = (label: string) => screen.getByText(label, { selector: ".check-row-title" }).closest("li")!;
+    const row = (label: string) => screen.getByText(label).closest("li")!;
     expect(within(row(copy.security.branch.rules.requirePullRequest)).getByText("Met")).toBeInTheDocument();
     expect(within(row(copy.security.branch.rules.blockForcePushes)).getByText("Not met")).toBeInTheDocument();
     expect(within(row(copy.security.branch.rules.requireStatusChecks)).getByText("Not visible")).toBeInTheDocument();
@@ -159,17 +186,16 @@ describe("BranchProtectionCard", () => {
 
   it("shows only the rules about protection from direct pushes, rewrites and deletion, and none about approvals", () => {
     render(<BranchProtectionCard report={securityReport()} />);
-    const titles = [...document.querySelectorAll(".check-row-title")].map((el) => el.textContent);
     const rules = copy.security.branch.rules;
-    expect(titles).toEqual(
-      expect.arrayContaining([
-        rules.requirePullRequest,
-        rules.requireStatusChecks,
-        rules.blockForcePushes,
-        rules.blockDeletion,
-        rules.requireSignedCommits,
-      ]),
-    );
+    for (const title of [
+      rules.requirePullRequest,
+      rules.requireStatusChecks,
+      rules.blockForcePushes,
+      rules.blockDeletion,
+      rules.requireSignedCommits,
+    ]) {
+      expect(screen.getByText(title)).toBeInTheDocument();
+    }
     expect(Object.keys(rules)).toEqual([
       "requirePullRequest",
       "requireStatusChecks",
@@ -252,9 +278,7 @@ describe("BranchProtectionCard", () => {
         }}
       />,
     );
-    const row = screen
-      .getByText(copy.security.branch.settings.privateVulnerabilityReporting, { selector: ".check-row-title" })
-      .closest("li")!;
+    const row = screen.getByText(copy.security.branch.settings.privateVulnerabilityReporting).closest("li")!;
     expect(within(row).getByText(copy.security.branch.publicOnly)).toBeInTheDocument();
     expect(within(row).queryByText("Not visible")).not.toBeInTheDocument();
     expect(screen.getByText(copy.security.branch.publicOnly, { selector: "p" })).toBeInTheDocument();
@@ -515,7 +539,9 @@ describe("SourcesPanel", () => {
 
   it("shows each source with its state in a word and an icon, and when it was read", () => {
     render(<SourcesPanel report={securityReport()} />);
-    expect(card("Dependabot alerts")).toHaveTextContent("Read");
+    // The state word is matched whole, because the read-on line below it also contains "Read".
+    expect(within(card("Dependabot alerts")).getByText("Read")).toBeInTheDocument();
+    expect(within(card("Dependabot alerts")).queryByText(copy.security.sources.status.not_read)).not.toBeInTheDocument();
     expect(card("Dependabot alerts")).toHaveTextContent("Read on 1 Mar 2026, 10:00");
     expect(card("OSV.dev lookup")).toHaveTextContent("Switched off");
     // A lookup that is not in use was never going to be read, so it carries no read line.
@@ -581,10 +607,25 @@ describe("SourcesPanel", () => {
     expect(osv).not.toHaveTextContent(copy.security.passFail.unmet);
     expect(osv.querySelector(".checks-none")).not.toBeNull();
     expect(osv.querySelector(".checks-failing")).toBeNull();
-    // A source that is off for another reason is still drawn as not met.
-    const off = card("Dependabot alerts");
-    expect(off.querySelector(".checks-failing")).toBeNull();
-    expect(off.querySelector(".checks-passing")).not.toBeNull();
+    // A source that was read is drawn as met.
+    const read = card("Dependabot alerts");
+    expect(read.querySelector(".checks-failing")).toBeNull();
+    expect(read.querySelector(".checks-passing")).not.toBeNull();
+  });
+
+  it("draws an OSV lookup that is switched off on the dashboard as not met, unlike one that is simply not needed", () => {
+    const base = securityReport();
+    render(
+      <SourcesPanel
+        report={{
+          ...base,
+          sources: { ...base.sources, osv: { status: "not_used", reason: "lookup_off", attemptedAt: "2026-03-01T10:00:00Z" } },
+        }}
+      />,
+    );
+    const osv = card("OSV.dev lookup");
+    expect(osv.querySelector(".checks-failing")).not.toBeNull();
+    expect(osv.querySelector(".checks-none")).toBeNull();
   });
 
   it("draws a source that is off or refused as not met, and one never read as neutral", () => {

@@ -1,4 +1,12 @@
-import type { AlertSource, LockedPackage, NotUsedReason, Repo, SecurityAlert, SourceState } from "@dora-dashboard/core";
+import type {
+  AlertSource,
+  LockedPackage,
+  LockfileSummary,
+  NotUsedReason,
+  Repo,
+  SecurityAlert,
+  SourceState,
+} from "@dora-dashboard/core";
 import {
   DAY_MS,
   failedSource,
@@ -9,7 +17,7 @@ import {
   presentLockfiles,
   reconcileOsvAlerts,
 } from "@dora-dashboard/core";
-import { AppError, UnauthorisedError } from "../core/errors.js";
+import { AppError, UnauthorisedError, UpstreamError } from "../core/errors.js";
 import type { Logger } from "../interfaces/logger.js";
 import type { AlertRead, SecurityAlertSource } from "../interfaces/security-alert-source.js";
 import type { ScorecardSource } from "../interfaces/scorecard-source.js";
@@ -46,7 +54,7 @@ export function scrub(message: string, token: string): string {
 /**
  * The packages to look up: every entry whose ecosystem, name and version is among the first `MAX_OSV_PACKAGES`
  * distinct ones, so a package named by several lockfiles keeps all its entries. `dropped` holds the entries past the
- * limit, which are not looked up, so the lockfiles that name them cannot be said to have been read.
+ * limit, which are not looked up, so the caller counts their packages as unanswered and leaves their alerts as they were.
  */
 function capDistinct(packages: readonly LockedPackage[]): { kept: LockedPackage[]; dropped: LockedPackage[] } {
   const allowed = new Set<string>();
@@ -64,6 +72,42 @@ function capDistinct(packages: readonly LockedPackage[]): { kept: LockedPackage[
     kept.push(pkg);
   }
   return { kept, dropped };
+}
+
+/** A lockfile that could hold public packages but was not read in full: unreadable, malformed, or parsed and capped. */
+const notReadInFull = (lockfile: LockfileSummary): boolean => lockfile.read !== "not_supported" && !isLockfileComplete(lockfile);
+
+/**
+ * True when every public package the record counts is among the `stored` ones, which needs a complete listing of the
+ * clone, no lockfile that could hold public packages left unreadable, malformed or capped, and the public packages of
+ * the lockfiles that were read to add up to what is stored. Only then can an empty lookup be put down to the private
+ * scopes alone rather than to something that could not be read.
+ */
+function everyPackageStored(lockfiles: readonly LockfileSummary[], listingComplete: boolean, stored: number): boolean {
+  if (!listingComplete || lockfiles.some(notReadInFull)) return false;
+  let counted = 0;
+  for (const lockfile of lockfiles) if (lockfile.read === "parsed") counted += lockfile.publicPackages;
+  return counted === stored;
+}
+
+/**
+ * Why a lookup that could have held packages sent none when something could not be read, which is a failed read. Each
+ * message is fixed text, so none names a path, a package or an address. A package withheld by a private scope cannot be
+ * sent, so the lockfiles that were read are said to hold none that can be sent whether they named none or every one was
+ * withheld. The last message covers a capped lockfile and a record whose public packages are not all stored with it.
+ */
+function nothingLookedUp(lockfiles: readonly LockfileSummary[], listingComplete: boolean): string {
+  if (lockfiles.some((l) => l.read === "unreadable" || l.read === "malformed")) {
+    return lockfiles.some((l) => l.read === "parsed")
+      ? "A lockfile could not be read, and those that were read hold no public package that can be sent, so nothing was looked up"
+      : "No lockfile could be read, so nothing was looked up";
+  }
+  if (!listingComplete) {
+    return lockfiles.length === 0
+      ? "The listing of the clone stopped short before it found any lockfile, so nothing was looked up"
+      : "The listing of the clone stopped short, and the lockfiles it found hold no public package that can be sent, so nothing was looked up";
+  }
+  return "Not every public package of the lockfiles that were read was kept, so nothing was looked up";
 }
 
 /** True for an npm package whose scope is the repository's owner or one the operator listed as private. */
@@ -178,7 +222,9 @@ export class SecurityCrawlService implements SecurityStep {
       // credential cannot see the list, so what a more privileged one stored stays; core uses only a source that was
       // read, and the state carries no read time, so the kept alerts are not counted while access is lacking.
       if (read.status === "off") this.store.clearSecurityAlerts(repo.id, source);
-      this.store.setSourceState(repo.id, source, { status: read.status, reason: read.reason, attemptedAt: at } as SourceState);
+      // Spreading the narrowed read keeps each status with its own reason, so a new status that `SourceState` lacks would
+      // fail to compile here instead of storing a row that cannot be read back.
+      this.store.setSourceState(repo.id, source, { ...read, attemptedAt: at });
       return;
     }
     if (read.skipped > 0)
@@ -212,6 +258,10 @@ export class SecurityCrawlService implements SecurityStep {
   private failSource(repo: Repo, source: AlertSource, err: unknown, at: string, token = ""): void {
     const message = err instanceof AppError ? scrub(err.message, token) : UNEXPECTED_FAILURE;
     this.logFailure(err, { repoId: repo.id, source }, `reading ${SOURCE_LABEL[source]} alerts failed`);
+    this.storeFailure(repo, source, message, at);
+  }
+
+  private storeFailure(repo: Repo, source: AlertSource, message: string, at: string): void {
     this.store.setSourceState(repo.id, source, failedSource(this.store.sourceStates(repo.id)[source], message, at));
   }
 
@@ -245,27 +295,49 @@ export class SecurityCrawlService implements SecurityStep {
       }
       return;
     }
-    const lockfiles = record.facts.lockfiles;
+    const { lockfiles, listingComplete } = record.facts;
     // `no_inventory` says the clone holds no lockfile that could name a public package. A lockfile that exists but could
-    // not be read might, and its alerts are left alone below.
+    // not be read might, and its alerts are left alone below. A cut listing proves nothing about the lockfiles it missed,
+    // so it never says there are none, and the alerts stored from an earlier crawl are not erased on its word.
     const couldHold = lockfiles.some((l) => l.read !== "not_supported" && !(l.read === "parsed" && l.publicPackages === 0));
-    if (!couldHold) return this.skipOsv(repo, "no_inventory", at);
+    if (!couldHold && listingComplete) return this.skipOsv(repo, "no_inventory", at);
 
     // Only public packages ever leave, and never one whose scope could name a private registry (ADR 0034).
     const held = this.store.lockedPackages(repo.id);
     const withheld = held.filter((pkg) => isPrivateScope(pkg, repo.owner, this.scopes));
     const { kept: packages, dropped } = capDistinct(held.filter((pkg) => !isPrivateScope(pkg, repo.owner, this.scopes)));
+    // The rule follows what is sent, not which lockfiles were read. When everything that could hold public packages was
+    // read in full and every one of those packages is withheld by a private scope, there is nothing the lookup may ask
+    // about. That is a reason not to use it rather than a failure, so its alerts clear as for any other such reason, and
+    // a source that is not used cannot lift the unwatched dependencies check.
+    if (packages.length === 0 && held.length > 0 && everyPackageStored(lockfiles, listingComplete, held.length)) {
+      return this.skipOsv(repo, "all_withheld", at);
+    }
+    // Otherwise sending nothing, or reading no lockfile at all, means something could not be read. A lockfile read in full
+    // that names no public package says nothing about one beside it that could not be read. Nothing was checked, which
+    // is not an all clear, and an `ok` read would stand in for Dependabot and lift the unwatched dependencies check, so it
+    // is a failed read that keeps the last good one and leaves every stored alert as it was.
+    if (packages.length === 0 || !lockfiles.some((l) => l.read === "parsed")) {
+      const reason = nothingLookedUp(lockfiles, listingComplete);
+      this.log.warn({ repoId: repo.id, reason }, "nothing was looked up in OSV");
+      return this.storeFailure(repo, "osv", reason, at);
+    }
     if (dropped.length > 0) {
       this.log.warn({ repoId: repo.id, limit: MAX_OSV_PACKAGES }, "too many distinct packages; looking up the first ones only");
     }
-    const { results } = packages.length === 0 ? { results: [] } : await this.osv.lookup(packages);
+    const { results } = await this.osv.lookup(packages);
+    // A reply that does not line up with the question could close alerts for packages it never answered.
+    if (results.length !== packages.length)
+      throw new UpstreamError("OSV answered a different number of packages than were asked", 502);
 
     // A package that was withheld, past the limit or not answered in full says nothing about its alerts, which stay as
     // they were. Every other package of a lockfile read in full is answered, so what it no longer has closes.
     const unanswered = new Set([...withheld, ...dropped].map(osvPackageKey));
-    let cutShort = dropped.length > 0 || lockfiles.some((l) => l.read === "parsed" && l.capped);
+    // A lockfile that could hold public packages but was not read in full, or a listing that stopped short, means some
+    // packages were never looked for, so the source says only part was read.
+    let cutShort = dropped.length > 0 || !listingComplete || lockfiles.some(notReadInFull);
     packages.forEach((pkg, i) => {
-      if (results[i] !== null) return;
+      if (Array.isArray(results[i])) return;
       unanswered.add(osvPackageKey(pkg));
       cutShort = true;
     });

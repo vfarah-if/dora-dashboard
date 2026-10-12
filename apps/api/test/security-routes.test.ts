@@ -109,8 +109,10 @@ describe("security routes and wiring", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({
-        repo: { id, owner: "acme", name: "widgets" },
+        repo: { id, owner: "acme", name: "widgets", deployBranch: "main" },
         range: { from: "2026-01-01", to: "2026-01-31" },
+        used: { dependabot: false, code_scanning: false, secret_scanning: false, osv: false },
+        lastGoodAt: { dependabot: null, code_scanning: null, secret_scanning: null, osv: null },
         supplyChain: { status: "none", reason: "not_read" },
         scorecard: { status: "off" },
         sources: { dependabot: { status: "not_read" } },
@@ -234,6 +236,25 @@ describe("security routes and wiring", () => {
 
       expect(rows.map((r) => r.repo.id)).toEqual([second, id]);
       expect(rows[0]).toMatchObject({ band: "low", pastFix: 1, sources: { dependabot: "ok" }, failed: false });
+    });
+
+    it("answers every repository when one has a pull request row that cannot be read, rather than failing the list", async () => {
+      const { app, store, id } = await setup();
+      const second = store.addRepo("acme", "gadgets", [], "main").id;
+      for (const repoId of [id, second]) store.finishCrawl(repoId, null);
+      (store as unknown as { db: DatabaseSync }).db
+        .prepare("INSERT INTO pull_requests (repo_id, number, updated_at, data) VALUES (?, 1, 't', ?)")
+        .run(second, "{not json");
+
+      const response = await app.inject("/api/security");
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        response
+          .json<{ repo: { id: number } }[]>()
+          .map((r) => r.repo.id)
+          .sort(),
+      ).toEqual([id, second].sort());
     });
 
     it("limits to the ids asked for, and refuses a bad list, an unknown id or an extra parameter", async () => {

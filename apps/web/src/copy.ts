@@ -273,7 +273,7 @@ const FIX = {
       `${some(count, "low severity alert")} ${plural(count, "has", "have")} been open for more than ${thresholds ? `${thresholds.lowAlertAdviceDays} days` : "the time a low severity alert is allowed"}.`,
     why: "Low severity alerts rarely cause harm on their own, but they pile up, and attackers often combine several small flaws into a serious one.",
     steps: [
-      "Sort the alerts table below by age and start with the oldest.",
+      "Start with the oldest low severity alerts, which the alerts table lists after the more severe ones. If the table is cut short, find the rest on GitHub's Security tab.",
       "Fix the ones that are quick, such as upgrading a package, and dismiss the rest with a reason that says why they do not apply.",
       "Set aside a little time each month so that the list does not grow back.",
     ],
@@ -2489,7 +2489,7 @@ export const copy = {
       selfMerged: "Merged by its own author",
     },
     likelyExploitedWhy: (share: string) =>
-      `The exploit prediction score (EPSS) estimates how likely it is that a flaw will be used in real attacks within the next month. At ${share} or more we say it is likely to be exploited soon, which puts it ahead of other alerts of the same severity but never changes its severity or your grade.`,
+      `The exploit prediction score (EPSS) estimates how likely it is that a flaw will be used in real attacks within the next month. At ${share} or more we say it is likely to be exploited soon, which puts it ahead of other alerts of the same severity that are equally past or within their fix-by date, but never changes its severity or your grade.`,
     likelyExploitedTitle:
       "Its exploit prediction score (EPSS) says this flaw is likely to be used in real attacks soon. It never changes the severity or the grade.",
     cvss: (score: number) => `Score ${score.toFixed(1)} out of 10`,
@@ -2566,9 +2566,9 @@ export const copy = {
         not_crawled: "This repository has not been crawled yet, so there is nothing to grade.",
         nothing_measured: "Nothing could be measured yet. Open the report to see which sources could not be read.",
       },
-      failedTitle: "Some alerts could not be read",
+      failedTitle: "Some sources failed the last time they were read",
       failedBody: (names: string) =>
-        `The last attempt to read alerts failed for ${names}. The figures below use the earlier read, which may be out of date.`,
+        `The last attempt to read alerts, branch settings or workflow files failed for ${names}. Where there was an earlier read the figures use it and may be out of date, and a source with no earlier read is left out of them.`,
       osvOff:
         "Dependencies are not being looked up in OSV.dev, which is an optional extra that covers repositories where Dependabot alerts are off. Set OSV_LOOKUP=on in the environment file of the dashboard to switch it on.",
       coverage: {
@@ -2588,7 +2588,7 @@ export const copy = {
 
     page: {
       title: "Security",
-      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix and the dependency update counts. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
+      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix, the dependency update counts and the security issues closed in the range. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
       backToRepo: "Back to the repository",
       reportLabel: "security report",
       loading: "Loading the security report",
@@ -2598,7 +2598,8 @@ export const copy = {
       invalidAddress: "This address does not name a repository.",
       alertsRead: (when: string) => `Alerts read on ${when}`,
       alertsNotRead: "Alerts have not been read yet",
-      alertsStale: (when: string) => `Some alerts are older than this, and the oldest was read on ${when}`,
+      alertsStale: (when: string) =>
+        `Some alerts are from an earlier read because a later one failed, and the oldest was read on ${when}`,
       gradeLine: "Security grade",
       gradeNone: "No security grade yet",
       rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
@@ -2655,7 +2656,7 @@ export const copy = {
       secretExposed: {
         good: "No secrets were found that are active or have been made public.",
         bad: (count: number) =>
-          `${count} exposed ${count === 1 ? "secret is" : "secrets are"} still active or has been made public.`,
+          `${count} exposed ${count === 1 ? "secret is still active or has" : "secrets are still active or have"} been made public.`,
       },
       criticalPastFix: {
         good: (days: number) => `No critical alert has waited longer than its ${days} day fix-by date.`,
@@ -2673,7 +2674,7 @@ export const copy = {
           `${count} high severity ${count === 1 ? "alert has" : "alerts have"} waited longer than the ${days} day fix-by date${oldest === null ? "" : `, the oldest for ${oldest} days`}.`,
       },
       dependenciesUnwatched: {
-        good: "Something is watching your dependencies for known vulnerabilities.",
+        good: "Dependabot alerts were not found to be switched off.",
         bad: "Nothing is watching your dependencies for known vulnerabilities, because Dependabot alerts are switched off.",
       },
       highOpen: {
@@ -2789,7 +2790,7 @@ export const copy = {
 
     snippetNotes: {
       semgrep:
-        "Semgrep Community Edition runs inside your own pipeline, so it needs no GitHub Code Security plan. The auto setting fetches its rules from the Semgrep registry and shares usage figures with Semgrep, so check that this suits a private repository, or choose a rule set of your own. Findings fail the run, and they appear in the job log, not on GitHub's Security tab.",
+        "Semgrep Community Edition runs inside your own pipeline, so it needs no GitHub Code Security plan. Before you use it, replace <digest> in the image line with the digest that the command in the comment above it finds, because the workflow cannot pull the image until you do. The auto setting fetches its rules from the Semgrep registry and shares usage figures with Semgrep, so check that this suits a private repository, or choose a rule set of your own. Findings fail the run, and they appear in the job log, not on GitHub's Security tab.",
       codeql:
         "CodeQL uploads its results to GitHub code scanning. That is free on a public repository, but on a private repository it needs GitHub Code Security.",
       dependencyReview:
@@ -2855,7 +2856,6 @@ export const copy = {
         `${name} comes in through another package, so installing it yourself would add a dependency you do not otherwise use. Update the package that depends on it, and if that is not enough, force version ${version} with ${mechanism}.`,
       mixed: (name: string, version: string, mechanism: string) =>
         `${name} is a direct dependency in some places and comes in through other packages in others. Use version ${version} where you depend on it directly, and force the same version everywhere else with ${mechanism}.`,
-      /** For a source that does not say how the package comes in, such as OSV.dev, which reads only the lockfile. */
       /**
        * For a source that does not say how the package comes in, such as OSV.dev, which reads only the lockfile. It
        * names every command and file itself, because the upgrades table shows it without the blocks that follow it in
@@ -3274,8 +3274,9 @@ export const copy = {
     },
 
     alerts: {
-      title: "Every open alert",
-      subtitle: "Every open alert, worst first, with where it is and how long it has been open.",
+      title: "The worst open alerts",
+      subtitle:
+        "The open alerts, worst first, up to the number the report carries, with where each is and how long it has been open.",
       filterLabel: "Show alerts from",
       filterAll: "Every source",
       filterOption: (name: string, count: number) => `${name} (${count})`,
@@ -3283,6 +3284,8 @@ export const copy = {
       capped: (shown: number, total: number) => `Showing the ${shown} worst of ${total} open alerts.`,
       noneInWorst: (name: string, shown: number) =>
         `None of the ${shown} worst open alerts come from ${name}, though it has others further down the list.`,
+      partlyInWorst: (name: string, shown: number, total: number, listed: number) =>
+        `Showing ${shown} of the ${total} open alerts from ${name}, because only the ${listed} worst open alerts are listed.`,
       none: "No open alerts match.",
       severity: "Severity",
       problem: "Problem",
@@ -3379,6 +3382,14 @@ export const copy = {
         `${count} workflow ${count === 1 ? "file was" : "files were"} not read, so ${count === 1 ? "it is" : "they are"} left out of the checks.`,
       dockerfilesUnread: (count: number) =>
         `${count} ${count === 1 ? "Dockerfile was" : "Dockerfiles were"} not read, so ${count === 1 ? "it is" : "they are"} left out of the checks.`,
+      /** For a repository with so many findings or action uses that the report kept only the first of each kind. */
+      dropped: (findings: number, actions: number) =>
+        `The lists below are incomplete, because ${[
+          findings > 0 ? `${findings} workflow ${findings === 1 ? "finding" : "findings"}` : null,
+          actions > 0 ? `${actions} ${actions === 1 ? "use of an action" : "uses of actions"}` : null,
+        ]
+          .filter((part) => part !== null)
+          .join(" and ")} ${findings + actions === 1 ? "was" : "were"} left out to keep the report a manageable size.`,
       nothingFound: "There is nothing to check in this section.",
       totalNote: (shown: number, total: number) => `Showing ${shown} of ${total}.`,
       table: { check: "Check", result: "Result", detail: "What was found" },
@@ -3519,8 +3530,8 @@ export const copy = {
       failedNone: (message: string) =>
         `The latest attempt to read the branch rules and settings failed${withMessage(message)}, so nothing has been read yet. It is tried again at the next crawl.`,
       about: (branch: string, visibility: string | null, admin: boolean | null) =>
-        `The deploy branch is ${branch}${visibility ? ` in a ${visibility} repository` : ""}. ${admin === true ? "The account the dashboard uses is an administrator, so it can read the branch rules and settings." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
-      visibility: { public: "public", private: "private", internal: "internal" },
+        `The deploy branch is ${branch}${visibility ? ` in ${visibility} repository` : ""}. ${admin === true ? "The account the dashboard uses is an administrator, so it can read the branch rules and settings." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
+      visibility: { public: "a public", private: "a private", internal: "an internal" },
       detail: {
         full: "Both rulesets and classic branch protection could be read.",
         rulesets_only: "Only rulesets could be read, because classic branch protection needs an administrator.",
@@ -3603,7 +3614,7 @@ export const copy = {
         not_read:
           "Scorecard has not been asked about this repository yet. It is asked at the next crawl, once the lookup is switched on.",
         error:
-          "The Scorecard lookup failed the last time it ran. Any earlier score is kept, and the lookup is tried again at a crawl once the last good read is more than a day old, and at every full crawl.",
+          "The Scorecard lookup failed the last time it ran. Any earlier score is kept. The lookup is tried again at every full crawl, at other crawls once the last good read is more than a day old, and at every crawl while no score has been read.",
       },
       failedWith: (message: string, when: string) => `The lookup failed on ${when}${withMessage(message)}.`,
       earlierScore: "The score and checks below are from the last lookup that worked.",
@@ -3623,7 +3634,8 @@ export const copy = {
       howTo: "How to switch it on.",
       readOn: (when: string) => `Read on ${when}`,
       notYet: "Not read yet",
-      truncated: "More alerts exist than the dashboard reads in one go, so the oldest are not shown.",
+      truncated:
+        "GitHub holds more alerts than the dashboard reads in one crawl, so the least recently updated were not read this time. Those stored by an earlier crawl are kept as they were, and any never read are left out of the figures and the grade.",
       skipped: (count: number) => `${count} ${count === 1 ? "alert" : "alerts"} could not be read.`,
       failed: (message: string) => `The last attempt failed${withMessage(message)}. Earlier results are kept.`,
       failedNoEarlier: (message: string) =>
@@ -3641,6 +3653,7 @@ export const copy = {
         lookup_off: "Switched off",
         dependabot_ok: "Not needed",
         no_inventory: "Nothing to look up",
+        all_withheld: "Nothing to send",
       } satisfies Record<NotUsedReason, string>,
       reasons: {
         disabled: "It is switched off for this repository.",
@@ -3654,6 +3667,8 @@ export const copy = {
         dependabot_failed:
           "Dependabot's last read failed, so its earlier alerts are still graded and this lookup is not used in their place.",
         no_inventory: "There were no lockfiles that prove where packages came from, so there was nothing to look up.",
+        all_withheld:
+          "Every lockfile was read in full, and every package they prove came from a public registry is in the repository owner's scope or one listed as private, so none was sent and there was nothing to look up.",
       },
       enable: {
         dependabot:

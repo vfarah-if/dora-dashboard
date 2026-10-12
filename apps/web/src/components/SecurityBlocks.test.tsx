@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { copy } from "../copy";
 import { noSecurity, offSource, securityAction, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
+import type { SecurityReport } from "@dora-dashboard/core";
 import { CopySnippet } from "./CopySnippet";
 import { Glossary } from "./Glossary";
 import { PassFail } from "./PassFail";
@@ -131,6 +132,9 @@ describe("PassFail", () => {
   });
 });
 
+/** A report with no grade and no reason, which the fixture would fill in. It is the one shape the fallback exists for. */
+const noReason = () => ({ ...noSecurity(), gradeMissing: null }) as unknown as SecurityReport;
+
 describe("StartHere", () => {
   it("gives the grade, what raises it, the first three things with their effort and the advice that does not count", () => {
     render(<StartHere report={securityReport()} />);
@@ -183,8 +187,12 @@ describe("StartHere", () => {
     expect(screen.getByText(copy.security.start.missing.not_crawled)).toBeInTheDocument();
     rerender(<StartHere report={noSecurity({ gradeMissing: "nothing_measured" })} />);
     expect(screen.getByText(copy.security.start.missing.nothing_measured)).toBeInTheDocument();
-    rerender(<StartHere report={noSecurity({ gradeMissing: null })} />);
+  });
+
+  it("falls back to the nothing measured wording when a report with no grade gives no reason", () => {
+    render(<StartHere report={noReason()} />);
     expect(screen.getByText(copy.security.start.missing.nothing_measured)).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.start.missing.not_crawled)).not.toBeInTheDocument();
   });
 
   it("leaves out the count of more actions and the advice when there is none", () => {
@@ -269,7 +277,7 @@ describe("SecurityGrade", () => {
   });
 
   it("falls back to the nothing measured wording when no reason is given", () => {
-    render(<SecurityGrade report={noSecurity({ gradeMissing: null })} />);
+    render(<SecurityGrade report={noReason()} />);
     expect(screen.getByText(copy.security.start.missing.nothing_measured)).toBeInTheDocument();
   });
 });
@@ -495,6 +503,25 @@ describe("ActionItem", () => {
     );
     expect(screen.getByRole("group", { name: copy.security.snippets.codeql })).toHaveTextContent("security-events: write");
     expect(screen.getByText(copy.security.snippetNotes.codeql)).toBeInTheDocument();
+  });
+
+  it("names the configured deploy branch in a CodeQL snippet, even when no branch rules were read", () => {
+    const base = securityReport();
+    const report = securityReport({
+      repo: { ...base.repo, deployBranch: "trunk" },
+      posture: null,
+      sources: { ...base.sources, code_scanning: offSource("needs_advanced_security") },
+    });
+    // With no branch rules read and code scanning off, the snippet must still come from the repository's own branch.
+    render(
+      <ol>
+        <ActionItem
+          action={securityAction({ kind: "enable_code_scanning", refs: [] })}
+          context={{ ...fixContext(report), codeScanning: true }}
+        />
+      </ol>,
+    );
+    expect(screen.getByRole("group", { name: copy.security.snippets.codeql })).toHaveTextContent("branches: [trunk]");
   });
 
   it("says, in words and with no Copy button, how to fix a package that comes in through another package", () => {
@@ -728,7 +755,7 @@ describe("Glossary", () => {
     expect(screen.getByText(/^A catalogue number that identifies one published flaw/)).toBeInTheDocument();
   });
 
-  it("prints as it is on screen, closed until someone opens it", () => {
+  it("stays closed when the page prints, so the print rule leaves it out", () => {
     const { container } = render(<Glossary />);
     startPrint();
     expect(container.querySelector("details")).not.toHaveAttribute("open");

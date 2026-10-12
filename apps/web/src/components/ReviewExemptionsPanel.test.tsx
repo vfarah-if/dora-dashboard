@@ -241,12 +241,32 @@ describe("ReviewExemptionsPanel", () => {
     expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
   });
 
-  it("keeps Save off, with a notice, while the defaults load, and shows an error with retry if they fail", async () => {
-    const { user } = setup(repo(), undefined, { status: 500, body: { error: "defaults failed" } });
+  it("keeps Save off, with a notice, while the defaults load, and offers a retry that recovers if they fail", async () => {
+    const listing = repo();
+    const user = userEvent.setup();
+    let answer: (response: { status?: number; body?: unknown }) => void = () => undefined;
+    const first = new Promise<{ status?: number; body?: unknown }>((resolve) => (answer = resolve));
+    let calls = 0;
+    mockFetch({
+      "GET /api/repos": { body: [listing] },
+      "GET /api/review-exemptions/defaults": () => {
+        calls += 1;
+        return calls === 1 ? first : { body: reviewExemptionDefaults() };
+      },
+    });
+    renderRoute(<ReviewExemptionsPanel repo={listing} />);
     await user.click(screen.getByRole("button", { name: text.open }));
+    expect(await screen.findByText(text.loadingDefaults)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
+
+    answer({ status: 500, body: { error: "defaults failed" } });
     expect(await screen.findByText(/defaults failed/)).toBeInTheDocument();
+    expect(screen.queryByText(text.loadingDefaults)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: text.save })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: copy.common.retry }));
+    await waitFor(() => expect(screen.getByRole("button", { name: text.save })).toBeEnabled());
+    expect(screen.queryByText(/defaults failed/)).not.toBeInTheDocument();
   });
 
   it("closes again", async () => {

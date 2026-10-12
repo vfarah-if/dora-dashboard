@@ -656,7 +656,7 @@ describe("sources", () => {
     // A failure is not a feature switched off, so it is not told to switch it on.
     expect(lines[0]!.enable).toBeNull();
     expect(lines[1]!.detail).toMatch(/GitHub Code Security/);
-    expect(lines[2]!.detail).toMatch(/more alerts exist/i);
+    expect(lines[2]!.detail).toContain(copy.security.sources.truncated);
     expect(lines[3]!.enable).toBeNull();
     // OSV was not needed, which is information and not a failure, and it does not claim a fresh Dependabot read.
     expect(lines[3]).toMatchObject({ tone: "unseen", stateLabel: "Not needed" });
@@ -723,10 +723,15 @@ describe("sources", () => {
       )[3]!;
       expect(line.status).toBe("not_used");
       expect(line.readNote).toBeNull();
+      // Every reason has words of its own, so a new one cannot be drawn with an empty label or explanation.
+      expect(copy.security.sources.reasons[reason]).toMatch(/\.$/);
+      expect(copy.security.sources.notUsedLabel[reason]).not.toBe("");
       expect(line.detail).toBe(copy.security.sources.reasons[reason]);
       expect(line.stateLabel).toBe(copy.security.sources.notUsedLabel[reason]);
       // Only a lookup that is switched off says how to switch it on.
       expect(line.enable === null).toBe(reason !== "lookup_off");
+      // A lookup switched off is a gap to close, so it is drawn as not met. The others need nothing, so they are neutral.
+      expect(line.tone).toBe(reason === "lookup_off" ? "unmet" : "unseen");
     },
   );
 
@@ -766,6 +771,15 @@ describe("sources", () => {
   });
 
   it("finds the latest time any alert source was read when every one in use is fresh", () => {
+    // The first source listed was read last, so the latest read differs from the earliest and from the last one listed.
+    const base = securityReport().sources;
+    const sources = {
+      ...base,
+      dependabot: okAt("2026-03-01T10:09:00Z"),
+      code_scanning: okAt("2026-03-01T10:01:00Z"),
+      secret_scanning: okAt("2026-03-01T10:02:00Z"),
+    };
+    expect(alertsReadAt(securityReport({ sources }))).toEqual({ at: "2026-03-01T10:09:00Z", stale: false });
     expect(alertsReadAt(securityReport())).toEqual({ at: "2026-03-01T10:02:00Z", stale: false });
     expect(alertsReadAt(noSecurity())).toEqual({ at: null, stale: false });
   });
@@ -776,12 +790,41 @@ describe("sources", () => {
       ...securityReport().sources,
       dependabot: errorSource("down", { readAt: "2026-02-10T08:00:00Z", truncated: false, skipped: 0 }),
     };
-    expect(alertsReadAt({ sources })).toEqual({ at: "2026-02-10T08:00:00Z", stale: true });
+    expect(alertsReadAt(securityReport({ sources }))).toEqual({ at: "2026-02-10T08:00:00Z", stale: true });
     // A source in error with no earlier read is not in use, so it does not make the rest stale.
-    expect(alertsReadAt({ sources: { ...sources, dependabot: errorSource("down") } })).toEqual({
+    expect(alertsReadAt(securityReport({ sources: { ...sources, dependabot: errorSource("down") } }))).toEqual({
       at: "2026-03-01T10:02:00Z",
       stale: false,
     });
+  });
+
+  it("gives the oldest of several failed last good reads, whichever is listed first", () => {
+    const read = (readAt: string) => ({ readAt, truncated: false, skipped: 0 });
+    const sources = {
+      ...securityReport().sources,
+      dependabot: errorSource("down", read("2026-02-20T08:00:00Z")),
+      code_scanning: errorSource("down", read("2026-02-10T08:00:00Z")),
+    };
+    expect(alertsReadAt(securityReport({ sources }))).toEqual({ at: "2026-02-10T08:00:00Z", stale: true });
+  });
+
+  it("names a failed inspection of the clone with when the files were last read, or that they never were", () => {
+    const failure = { message: "clone failed", attemptedAt: "2026-03-02T10:00:00Z" };
+    expect(failedSources(securityReport({ supplyChainFailure: failure }))).toEqual([
+      { name: "workflow and dependency files", lastGoodAt: "2026-03-01T10:05:00Z" },
+    ]);
+    expect(
+      failedSources(securityReport({ supplyChain: { status: "none", reason: "not_read" }, supplyChainFailure: failure })),
+    ).toEqual([{ name: "workflow and dependency files", lastGoodAt: null }]);
+  });
+
+  it("does not name the workflow and dependency files twice when the page already says they were not read", () => {
+    const report = noSecurity({
+      supplyChainFailure: { message: "clone failed", attemptedAt: "2026-03-02T10:00:00Z" },
+      postureFailure: { message: "x", attemptedAt: "2026-03-02T10:00:00Z" },
+    });
+    expect(failedSources(report).map((f) => f.name)).toEqual(["workflow and dependency files", "Branch rules and settings"]);
+    expect(failedSources(report, true).map((f) => f.name)).toEqual(["Branch rules and settings"]);
   });
 
   it("leaves a failed source out when the page already names it as unread, and keeps one that something covers for", () => {
@@ -1178,17 +1221,21 @@ describe("Dependabot version updates and alerts", () => {
 describe("notReadYet", () => {
   it("is true only when no source's alerts are in use, as core's read says", () => {
     const none = noSecurity().sources;
-    expect(notReadYet(none)).toBe(true);
-    expect(notReadYet(securityReport().sources)).toBe(false);
-    expect(notReadYet({ ...none, secret_scanning: ok })).toBe(false);
+    const given = (sources: typeof none) => notReadYet(securityReport({ sources }));
+    expect(notReadYet(noSecurity())).toBe(true);
+    expect(notReadYet(securityReport())).toBe(false);
+    // It follows the `used` that the report carries, which core works out, and does not work it out again.
+    expect(notReadYet({ used: { dependabot: false, code_scanning: false, secret_scanning: false, osv: true } })).toBe(false);
+    expect(notReadYet({ used: { dependabot: false, code_scanning: false, secret_scanning: false, osv: false } })).toBe(true);
+    expect(given({ ...none, secret_scanning: ok })).toBe(false);
     // Switched off, or refused, is attempted but not in use, so the page has nothing to grade.
-    expect(notReadYet({ ...none, osv: offSource() })).toBe(true);
-    expect(notReadYet({ ...none, dependabot: noAccessSource() })).toBe(true);
+    expect(given({ ...none, osv: offSource() })).toBe(true);
+    expect(given({ ...none, dependabot: noAccessSource() })).toBe(true);
     // A source that failed after an earlier read is still in use.
     expect(
-      notReadYet({ ...none, dependabot: errorSource("down", { readAt: "2026-02-01T00:00:00Z", truncated: false, skipped: 0 }) }),
+      given({ ...none, dependabot: errorSource("down", { readAt: "2026-02-01T00:00:00Z", truncated: false, skipped: 0 }) }),
     ).toBe(false);
-    expect(notReadYet({ ...none, dependabot: errorSource("down") })).toBe(true);
+    expect(given({ ...none, dependabot: errorSource("down") })).toBe(true);
   });
 });
 

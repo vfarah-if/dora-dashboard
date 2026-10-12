@@ -633,6 +633,11 @@ describe("RepoPage code analysis button", () => {
 });
 
 describe("RepoPage security", () => {
+  const value = (section: HTMLElement, label: string) =>
+    within(section).getByRole("heading", { level: 3, name: label }).closest("article")!.querySelector(".tile-value")!.textContent;
+  /** A summary tile, found by its level 3 heading so that its figure is read with it. */
+  const tile = (section: HTMLElement, label: string) =>
+    within(section).getByRole("heading", { level: 3, name: label }).closest("article")!;
   const open = async (security = securityReport(), route = "/repos/1") => {
     const fetchMock = mockFetch({
       "GET /api/repos/1/report": { body: report() },
@@ -660,10 +665,13 @@ describe("RepoPage security", () => {
     expect(codeHealth.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const within_ = within(section);
     expect(within_.getByText("Medium")).toBeInTheDocument();
-    expect(within_.getByText(copy.security.section.tiles.critical)).toBeInTheDocument();
-    expect(within_.getByText(copy.security.section.tiles.high)).toBeInTheDocument();
-    expect(within_.getByText(copy.security.section.tiles.pastFix).closest("article")).toHaveClass("tile-danger");
-    expect(within_.getByText(copy.security.section.tiles.actions).closest("article")).toHaveTextContent("4");
+    expect(value(section, copy.security.section.tiles.critical)).toBe("1");
+    expect(value(section, copy.security.section.tiles.high)).toBe("2");
+    const pastFix = tile(section, copy.security.section.tiles.pastFix);
+    expect(pastFix).toHaveClass("tile-danger");
+    expect(value(section, copy.security.section.tiles.pastFix)).toBe("1");
+    expect(pastFix).toHaveTextContent(copy.security.list.tiles.pastFixHint(1));
+    expect(tile(section, copy.security.section.tiles.actions)).toHaveTextContent("4");
     expect(within_.getByText(/left-pad has 2 open critical alerts, and version 1.3.1 fixes them/)).toBeInTheDocument();
     expect(within_.getByText(copy.security.section.more(1))).toBeInTheDocument();
     expect(
@@ -671,11 +679,33 @@ describe("RepoPage security", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not outline the past fix-by tile, or hint at anything, when nothing is past its date", async () => {
+    const base = securityReport();
+    await open(
+      securityReport({
+        open: { ...base.open, pastFix: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 } },
+      }),
+    );
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    const pastFix = tile(section, copy.security.section.tiles.pastFix);
+    expect(pastFix).not.toHaveClass("tile-danger");
+    expect(value(section, copy.security.section.tiles.pastFix)).toBe("0");
+    expect(pastFix).not.toHaveTextContent(copy.security.list.tiles.pastFixHint(0));
+  });
+
   it("leaves the link to the full report out of the printed copy", async () => {
     await open();
     const link = await screen.findByRole("link", { name: copy.security.section.detail });
     expect(link.closest("p")).toHaveClass("screen-only");
     expect(link).toHaveAttribute("href", "/repos/1/security");
+  });
+
+  it("carries the date range, and nothing else, from the summary to the full report", async () => {
+    await open(securityReport(), "/repos/1?from=2026-01-01&to=2026-02-01&exclude=ada");
+    expect(await screen.findByRole("link", { name: copy.security.section.detail })).toHaveAttribute(
+      "href",
+      "/repos/1/security?from=2026-01-01&to=2026-02-01",
+    );
   });
 
   it("leads with a notice, a Crawl now button and no empty figures when nothing has been read yet", async () => {

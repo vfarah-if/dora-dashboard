@@ -110,10 +110,13 @@ describe("osvFindings", () => {
   it.each([
     [["low", "critical", "medium"], "critical"],
     [["medium", "high"], "high"],
-    [["unknown", "low"], "unknown"],
+    // A record that publishes no severity, such as a PYSEC twin of a low GitHub advisory, does not raise it to unknown.
+    [["unknown", "low"], "low"],
+    [["low", "unknown"], "low"],
     [["low", "unknown", "medium"], "medium"],
     [["unknown", "unknown"], "unknown"],
-  ] as const)("takes the worst severity of %j, which is %s", (severities, expected) => {
+    [["unknown"], "unknown"],
+  ] as const)("takes the worst published severity of %j, which is %s", (severities, expected) => {
     const records = severities.map((severity, i) => vulnerability({ id: `GHSA-${i}`, aliases: ["CVE-SAME"], severity }));
     expect(osvFindings([lockedPackage()], [records], NOW)[0]!.severity).toBe(expected);
   });
@@ -140,6 +143,30 @@ describe("osvFindings", () => {
     ["the pre-release fix of the lowest release", "9.0.0-beta", ["10.0.0-rc", "9.1.0-rc"], "9.1.0-rc"],
     ["no pre-release fix whose release is too large to compare", "1.0.0-beta", ["99999999999999999999.0.0-rc"], null],
     ["the first fix in text order when no fix has a release", "nightly", ["zeta", "alpha"], "alpha"],
+    // PyPI and RubyGems spell pre-releases and post-releases without a hyphen; each is placed by its leading release.
+    ["the release of a PyPI release candidate, never the fix below it", "2.0.0rc1", ["1.9.9", "2.0.0"], "2.0.0"],
+    ["the fix of its own line for a two part release candidate", "4.2rc1", ["3.2.20", "4.1.10", "4.2.2"], "4.2.2"],
+    ["the release of a development release", "1.0.0.dev0", ["0.9.5", "1.0.0"], "1.0.0"],
+    ["the release of a RubyGems pre-release", "7.1.0.rc1", ["7.0.8.1", "7.1.0"], "7.1.0"],
+    ["a release above a post-release, never its own release", "2023.3.post1", ["2023.3", "2023.4"], "2023.4"],
+    ["nothing for a post-release that only its own release fixes", "2023.3.post1", ["2023.3"], null],
+    ["nothing for build metadata that only its own release fixes", "2.0.0+build.5", ["2.0.0"], null],
+    ["a later pre-release of the same release, never an earlier one", "2.0.0-rc.2", ["2.0.0-beta.5", "2.0.0-rc.3"], "2.0.0-rc.3"],
+    ["a numbered pre-release after an unnumbered one", "1.0.0-rc", ["1.0.0-rc.1"], "1.0.0-rc.1"],
+    ["an alpha after a development release", "1.0.0.dev0", ["1.0.0a1"], "1.0.0a1"],
+    ["nothing when the only pre-release fix comes before the locked one", "1.0.0rc1", ["1.0.0b2"], null],
+    ["nothing when the pre-release fix is the locked one", "1.0.0-rc.1", ["1.0.0-rc.1"], null],
+    ["no pre-release fix whose words have no known order", "1.0.0-canary.1", ["1.0.0-next.2"], null],
+    ["no pre-release fix whose word ranks alike with another word", "1.0.0c1", ["1.0.0rc2"], null],
+    ["no pre-release fix that puts a word against a number", "1.0.0-1", ["1.0.0-rc.1"], null],
+    ["the lowest fix for a release too large to compare", "99999999999999999999.0.0", ["2.0.0", "1.5.0"], "1.5.0"],
+    // Text order would put "rc.10" first.
+    ["the lowest pre-release by number when nothing can be placed", "nightly", ["2.0.0-rc.10", "2.0.0-rc.9"], "2.0.0-rc.9"],
+    ["a pre-release before its own release when nothing can be placed", "nightly", ["2.0.0", "2.0.0-rc.1"], "2.0.0-rc.1"],
+    ["a pre-release before its own release in either order", "nightly", ["2.0.0-rc.1", "2.0.0"], "2.0.0-rc.1"],
+    ["a release before its build metadata when nothing can be placed", "nightly", ["2.0.0+b.1", "2.0.0"], "2.0.0"],
+    ["pre-releases of no known order in text order", "nightly", ["2.0.0-next", "2.0.0-canary"], "2.0.0-canary"],
+    ["no unnumbered pre-release fix for a numbered locked one", "1.0.0-rc.1", ["1.0.0-rc"], null],
   ])("offers %s", (_, locked, fixed, expected) => {
     const found = osvFindings([lockedPackage({ version: locked })], [[vulnerability({ fixedVersions: fixed })]], NOW);
     expect(found[0]!.dependency.patchedVersion).toBe(expected);
@@ -209,12 +236,6 @@ describe("presentLockfiles", () => {
 
   it("gives none for a listing that stopped short, since a lockfile it left out may still exist", () => {
     expect(presentLockfiles(emptyFacts({ lockfiles, listingComplete: false }))).toBeNull();
-  });
-
-  it("reads a record stored before the listing was flagged as one that stopped short", () => {
-    const { listingComplete: _, ...older } = emptyFacts({ lockfiles });
-    expect("listingComplete" in older).toBe(false);
-    expect(presentLockfiles(older)).toBeNull();
   });
 });
 

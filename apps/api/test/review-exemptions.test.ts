@@ -389,8 +389,9 @@ describe("review exemptions through the routes", () => {
         pr({ number: 2, title: "Sync shared library 23 September" }),
         pr({ number: 3, title: "Mirror upstream" }),
       ]);
-      // Widgets keeps the defaults. Gadgets exempts mirrors instead, so its sync title is counted.
-      await put({ exemptions: { titleWords: ["mirror"], labels: [] } }, `/api/repos/${other}/review-exemptions`);
+      // Widgets keeps the defaults. Gadgets saves empty lists, so it exempts nothing. The two differ in their totals, which
+      // a comparison that applied one repository's rules to both could not reproduce.
+      await put({ exemptions: { titleWords: [], labels: [] } }, `/api/repos/${other}/review-exemptions`);
 
       const compared = (await app.inject(`/api/compare?ids=${id},${other}&to=2026-09-13`)).json<
         { repo: { name: string }; totals: { unreviewedCount: number; exemptCount: number } }[]
@@ -399,8 +400,8 @@ describe("review exemptions through the routes", () => {
       expect(compared.map((r) => [r.repo.name, r.totals.unreviewedCount, r.totals.exemptCount])).toEqual([
         // Widgets: 4 merged, the sync title exempt, so 3 counted.
         ["widgets", 3, 1],
-        // Gadgets: 3 merged, the mirror exempt, so 2 counted.
-        ["gadgets", 2, 1],
+        // Gadgets: 3 merged, none exempt, so 3 counted.
+        ["gadgets", 3, 0],
       ]);
     });
 

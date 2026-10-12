@@ -15,7 +15,7 @@ import {
   type Repo,
   type ToolingFacts,
 } from "@dora-dashboard/core";
-import { NotFoundError } from "../core/errors.js";
+import { AppError, NotFoundError } from "../core/errors.js";
 import type { AnalyserReach, CodeAnalyser } from "../interfaces/code-analyser.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
@@ -169,7 +169,7 @@ export class CodeHealthService {
   }
 
   /**
-   * Notes the outcome of an inspection for `head`. A failure is counted, so it is not retried more than
+   * Notes the outcome of an inspection for `head`. A failure is counted, so it is not attempted more than
    * `MAX_INSPECTION_ATTEMPTS` times for one head, and recorded beside the supply chain facts with a message that names no
    * path or address, so the page can say the facts are older than the code. A good inspection clears the count; the
    * store clears the recorded failure when it saves the facts.
@@ -215,8 +215,8 @@ export class CodeHealthService {
 
   /**
    * Clones the branch only so the inspector can read it, for a head whose code is already measured or cannot be
-   * measured. Nothing is analysed and no code snapshot is saved. Whatever fails is logged and left for the next
-   * crawl, because the stored snapshot is still right.
+   * measured. Nothing is analysed and no code snapshot is saved. Whatever fails is logged and a later crawl tries again,
+   * until `MAX_INSPECTION_ATTEMPTS` is reached for the head, because the stored snapshot is still right.
    */
   private async inspectOnly(
     token: string,
@@ -281,14 +281,32 @@ export class CodeHealthService {
       });
       this.recordInspection(repoId, clone.commitSha, null);
     } catch (err) {
-      this.log.warn({ err, repoId }, "could not inspect the clone");
+      // A bug in the inspection or a failure of the store is not one the person can act on, so it stands out in the log.
+      if (err instanceof AppError) this.log.warn({ err, repoId }, "could not inspect the clone");
+      else this.log.error({ err, repoId }, "could not inspect the clone unexpectedly");
       this.recordInspection(repoId, clone.commitSha, INSPECTION_FAILURE);
+    }
+  }
+
+  private recordCloneFailure(repoId: number): void {
+    try {
+      this.inspector?.fail(repoId, CLONE_FAILURE);
+    } catch (err) {
+      this.log.warn({ err, repoId }, "could not record the failed clone");
     }
   }
 
   /** Clones the branch, measures it and reads its tooling, and removes the clone whatever happens. */
   private async analyseClone(token: string, repo: Repo, checkout: SourceCheckout, analyser: CodeAnalyser): Promise<CodeSnapshot> {
-    const clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    let clone: Checkout;
+    try {
+      clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    } catch (err) {
+      // The failure reaches the code snapshot as before, but the security page must not go on showing the previous
+      // commit's workflow and lockfile facts as read with no warning.
+      this.recordCloneFailure(repo.id);
+      throw err;
+    }
     try {
       const listing = this.listing(clone.dir, repo.id);
       if (this.inspector) await this.inspect(this.inspector, clone, repo.id, listing);

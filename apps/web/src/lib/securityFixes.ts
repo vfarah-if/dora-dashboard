@@ -21,7 +21,7 @@ export interface Snippet {
 export interface FixContext {
   /** Dependabot ecosystem names the repository needs, from the report. */
   ecosystems: readonly string[];
-  /** The deploy branch when it is known, else main. */
+  /** The branch the dashboard is set up for, which a CodeQL workflow names in its push trigger. */
   branch: string;
   /** The host's page for the repository's security settings. */
   settingsUrl: string;
@@ -536,7 +536,8 @@ export const semgrepSnippet = (): string =>
     "  semgrep:",
     "    runs-on: ubuntu-latest",
     "    container:",
-    "      image: semgrep/semgrep",
+    "      # Pin the image to a digest. Find it with docker buildx imagetools inspect semgrep/semgrep",
+    "      image: semgrep/semgrep@sha256:<digest>",
     "    steps:",
     ...checkoutStep(),
     "      - run: semgrep scan --config auto --error",

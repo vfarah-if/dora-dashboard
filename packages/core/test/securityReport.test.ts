@@ -6,6 +6,7 @@ import {
   WEAKNESS_LIMIT,
   securityReport,
   securitySummary,
+  type SecurityInput,
 } from "../src/securityReport.js";
 import {
   FIX_WITHIN_DAYS,
@@ -46,7 +47,13 @@ describe("a repository with nothing in it", () => {
   const report = build();
 
   it("names the repository, the day it ranges over and when it was graded", () => {
-    expect(report.repo).toEqual({ id: 7, owner: "acme", name: "widgets", lastCrawledAt: "2026-10-07T08:00:00Z" });
+    expect(report.repo).toEqual({
+      id: 7,
+      owner: "acme",
+      name: "widgets",
+      deployBranch: "main",
+      lastCrawledAt: "2026-10-07T08:00:00Z",
+    });
     expect(report.range).toEqual({ from: "2026-10-07", to: "2026-10-07" });
     expect(report.gradedAt).toBe(NOW);
   });
@@ -662,6 +669,14 @@ describe("the supply chain lines", () => {
     expect(line("selfHostedPublic", { findings: pushOnly }, { posture: held(posture({ visibility: "public" })) }).met).toBe(true);
   });
 
+  it("leaves the self-hosted line out when pull requests run on one and the visibility is not known", () => {
+    const findings = [{ file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted", onPullRequest: true }];
+    expect(lines({ findings }, { posture: null }).map((l) => l.check)).not.toContain("selfHostedPublic");
+    expect(lines({ findings }, { posture: held(posture({ visibility: null })) }).map((l) => l.check)).not.toContain(
+      "selfHostedPublic",
+    );
+  });
+
   it("separates strong and weak key files and write-all from no permissions", () => {
     const facts = {
       keyFiles: [
@@ -760,6 +775,11 @@ describe("the supply chain lines", () => {
     expect(report.supplyChain).toMatchObject({ status: "ok", dockerfilesUnread: ["a/Dockerfile"], dockerfilesUnreadTotal: 3 });
   });
 
+  it("carries how many findings and action uses the caps left out, so a line can say that it is incomplete", () => {
+    const report = build({ supplyChain: record({ findingsDropped: 12, actionsDropped: 3 }) });
+    expect(report.supplyChain).toMatchObject({ status: "ok", findingsDropped: 12, actionsDropped: 3 });
+  });
+
   it("describes the commit and the workflows read", () => {
     const report = build({ supplyChain: record({ workflowsRead: 4, workflowsUnread: ["big.yml"] }) });
     expect(report.supplyChain).toMatchObject({
@@ -771,14 +791,65 @@ describe("the supply chain lines", () => {
     });
   });
 
+  it("holds the record and the reason it is missing together in the input's type", () => {
+    const given = input();
+    // @ts-expect-error A missing record needs its reason, so no reader has to guess one.
+    const neither: SecurityInput = { ...given, supplyChain: null, supplyChainMissing: null };
+    // @ts-expect-error A record has no reason to be missing.
+    const both: SecurityInput = { ...given, supplyChainMissing: "not_read" };
+    expect([neither.supplyChainMissing, both.supplyChainMissing]).toEqual([null, "not_read"]);
+  });
+
   it.each([
     ["analysis_off", "analysis_off"],
     ["not_read", "not_read"],
-    [null, "not_read"],
   ] as const)("says why there is no record when missing is %s", (missing, reason) => {
     const report = build({ supplyChain: null, supplyChainMissing: missing });
     expect(report.supplyChain).toEqual({ status: "none", reason });
     expect(report.ecosystems).toEqual([]);
+  });
+});
+
+describe("which sources are in use and when each last read", () => {
+  it("says whether each source's alerts are in use, as the grade uses them", () => {
+    expect(build().used).toEqual({ dependabot: true, code_scanning: true, secret_scanning: true, osv: false });
+    // Dependabot failed with no earlier read, so OSV stands in; a source without access is attempted but not in use.
+    const sources = { dependabot: failed(null), code_scanning: noAccess(), secret_scanning: off(), osv: ok() };
+    expect(build({ sources }).used).toEqual({ dependabot: false, code_scanning: false, secret_scanning: false, osv: true });
+  });
+
+  it("gives each source's last good read, from this attempt or from the one before a failure, and null otherwise", () => {
+    const sources = {
+      dependabot: failed("2026-09-01T00:00:00Z"),
+      code_scanning: ok("2026-10-07T07:00:00Z"),
+      secret_scanning: noAccess(),
+      osv: ok("2026-10-07T09:30:00Z"),
+    };
+    // OSV's read is given although Dependabot's alerts are the ones in use; `used` says which count.
+    expect(build({ sources }).lastGoodAt).toEqual({
+      dependabot: "2026-09-01T00:00:00Z",
+      code_scanning: "2026-10-07T07:00:00Z",
+      secret_scanning: null,
+      osv: "2026-10-07T09:30:00Z",
+    });
+    expect(build({ sources: { ...sources, dependabot: failed(null), osv: notUsed() } }).lastGoodAt).toMatchObject({
+      dependabot: null,
+      osv: null,
+    });
+  });
+
+  it("names the deploy branch in the report but leaves it out of the list page's row", () => {
+    const report = build({
+      repo: { id: 7, owner: "acme", name: "widgets", deployBranch: "develop", lastCrawledAt: "2026-10-07T08:00:00Z" },
+    });
+    expect(report.repo.deployBranch).toBe("develop");
+    expect(securitySummary(report, "idle").repo).toEqual({
+      id: 7,
+      owner: "acme",
+      name: "widgets",
+      lastCrawledAt: "2026-10-07T08:00:00Z",
+      crawlStatus: "idle",
+    });
   });
 });
 
@@ -981,6 +1052,22 @@ describe("raising the grade by what the actions clear", () => {
     expect(report.raiseGrade).toEqual({ to: "medium", actions: 1 });
   });
 
+  it("stops at high when the same package also has an advisory with no fix, which the upgrade cannot clear", () => {
+    const patched = depAlert({ key: "patched", severity: "critical", createdAt: daysAgo(2) });
+    const unpatched = depAlert({
+      key: "unpatched",
+      severity: "high",
+      createdAt: daysAgo(2),
+      dependency: { patchedVersion: null },
+    });
+    const report = build({ alerts: [patched, unpatched] });
+    // The critical alert is open within 7 days (medium). Upgrading lodash clears it and leaves the high alert open within
+    // 30 days, which holds the grade at high; without the critical alert the report grades high on `highOpen`.
+    expect(report.grade!.overall).toMatchObject({ band: "medium", check: "criticalOpen" });
+    expect(report.raiseGrade).toEqual({ to: "high", actions: 1 });
+    expect(build({ alerts: [unpatched] }).grade!.overall).toMatchObject({ band: "high", check: "highOpen" });
+  });
+
   it("reaches elite by rotating one active secret that feeds a low and a medium check", () => {
     expect(build({ alerts: [secretAlert()] }).raiseGrade).toEqual({ to: "elite", actions: 1 });
   });
@@ -1174,7 +1261,7 @@ describe("the summary", () => {
     expect(securitySummary(build({ supplyChain: null, supplyChainMissing: "analysis_off" }), "idle").supplyChain).toBe(
       "analysis_off",
     );
-    expect(securitySummary(build({ supplyChain: null, supplyChainMissing: null }), "idle").supplyChain).toBe("not_read");
+    expect(securitySummary(build({ supplyChain: null, supplyChainMissing: "not_read" }), "idle").supplyChain).toBe("not_read");
   });
 
   it("names what was unmeasured, with or without a grade", () => {

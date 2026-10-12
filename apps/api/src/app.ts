@@ -235,6 +235,7 @@ function registerRoutes(
         settingsUrl: (owner: string, name: string) => deps.securityAlerts?.settingsUrl(owner, name) ?? "",
       },
       deps.clock,
+      app.log,
     ),
   });
   const workItemCrawler = jira && jiraAuth && registerJira(app, deps, requireSession(auth), jira, jiraAuth);

@@ -10,6 +10,9 @@ describe("compareVersions", () => {
     ["v1.2.3", "1.2.3", 0],
     ["1.2", "1.2.0", 0],
     ["1.2", "1.2.1", -1],
+    // The shorter version on the right, whose missing part must count as zero too.
+    ["1.2.1", "1.2", 1],
+    ["1.2.0", "1.2", 0],
     ["1", "0.9.9", 1],
     [" 1.0.0 ", "1.0.0", 0],
   ])("orders %s against %s as %s", (a, b, expected) => {

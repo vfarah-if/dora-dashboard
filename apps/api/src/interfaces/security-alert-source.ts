@@ -9,7 +9,10 @@ export type AlertRead<S extends AlertSource = AlertSource> =
   | {
       status: "ok";
       alerts: AlertOf<S>[];
-      /** True when the host held more alerts than the page limit allowed, so the oldest updates were not read. */
+      /**
+       * True when the read stopped before the end of the list, at the page limit or at a next page that could not be
+       * followed, so the least recently updated alerts were not read.
+       */
       truncated: boolean;
       /** How many alerts were left out because they lacked a number, a creation time or a state this port knows. */
       skipped: number;
@@ -41,7 +44,9 @@ export type AlertRead<S extends AlertSource = AlertSource> =
  *   independent: a refusal that says this credential may not see the part leaves it null, and so does a 404 from an
  *   endpoint only an administrator, or a plan that has the feature, can read. A host answer that classic protection
  *   does not exist for the branch means the branch is known to be unprotected, which is not the same as null. Private
- *   vulnerability reporting and the repository's advisories are read only for a public repository. A rejected
+ *   vulnerability reporting and the repository's advisories are read only for a public repository, and the advisories
+ *   only when the credential is an administrator's, because the host leaves draft and triage advisories out of the list
+ *   for anyone else and a count without them would read as none waiting; `advisories` is null otherwise. A rejected
  *   credential and a rate limit raise, as above, and so does any other refusal, and a missing repository or deploy
  *   branch, so the crawl keeps the earlier posture and never saves one made of nulls.
  * - `settingsUrl` is a page on the host a person can open to switch features on. It makes no request.

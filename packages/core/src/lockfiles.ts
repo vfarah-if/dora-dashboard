@@ -38,7 +38,10 @@ export function isLockfile(path: string): boolean {
   return LOCKFILE_SET.has(baseName(path)) && !isTestPath(path);
 }
 
-/** True for a lockfile worth reading: one whose registry can be proved from its text. Pnpm and Bun are lockfiles but not these. */
+/**
+ * True for a lockfile worth reading, one whose registry can be proved from its text. pnpm, Bun, Go and Composer lockfiles
+ * are lockfiles but not these.
+ */
 export function isReadableLockfile(path: string): boolean {
   return isLockfile(path) && !UNSUPPORTED_NAMES.has(baseName(path));
 }

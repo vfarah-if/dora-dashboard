@@ -669,6 +669,9 @@ export class FakeWorkspaceReader implements WorkspaceReader {
 
 // --- Security ---------------------------------------------------------------------------------------------------
 
+// The alert builders take overrides that may close an alert, which the type only accepts with its close time, so each
+// result is cast; a test that closes an alert gives its `closedAt` too.
+
 type DependabotOverrides = Partial<Omit<DependabotAlert, "dependency">> & { dependency?: Partial<DependencyFacts> };
 
 /** An open Dependabot alert for a public package in `acme/widgets`. */
@@ -701,7 +704,7 @@ export function dependabotAlert(overrides: DependabotOverrides = {}): Dependabot
       ...dependency,
     },
     ...rest,
-  };
+  } as DependabotAlert;
 }
 
 type OsvOverrides = Partial<Omit<OsvAlert, "dependency">> & { dependency?: Partial<OsvDependencyFacts> };
@@ -736,7 +739,7 @@ export function osvAlert(overrides: OsvOverrides = {}): OsvAlert {
       ...dependency,
     },
     ...rest,
-  };
+  } as OsvAlert;
 }
 
 type CodeOverrides = Partial<Omit<CodeAlert, "code">> & { code?: Partial<CodeAlert["code"]> };
@@ -764,7 +767,7 @@ export function codeScanningAlert(overrides: CodeOverrides = {}): CodeAlert {
       ...code,
     },
     ...rest,
-  };
+  } as CodeAlert;
 }
 
 type SecretOverrides = Partial<Omit<SecretAlert, "exposure">> & { exposure?: Partial<SecretAlert["exposure"]> };
@@ -788,10 +791,13 @@ export function secretScanningAlert(overrides: SecretOverrides = {}): SecretAler
       ...exposure,
     },
     ...rest,
-  };
+  } as SecretAlert;
 }
 
-/** A repository with a protected branch nobody has configured further, so every rule is unknown or off. */
+/**
+ * A private repository whose deploy branch is unprotected and was read in full, so every rule is known to be off. That is
+ * a shape the GitHub adapter returns; `rulesets_only` goes with unseen rules left null, and an unprotected branch has none.
+ */
 export function repoPosture(overrides: Partial<RepoPosture> = {}): RepoPosture {
   return {
     visibility: "private",
@@ -799,7 +805,7 @@ export function repoPosture(overrides: Partial<RepoPosture> = {}): RepoPosture {
     branch: {
       name: "main",
       protected: false,
-      detail: "rulesets_only",
+      detail: "full",
       rules: {
         requirePullRequest: false,
         requiredApprovals: 0,
@@ -835,6 +841,8 @@ export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): Sup
     dockerfilesUnreadTotal: 0,
     actions: [],
     findings: [],
+    findingsDropped: 0,
+    actionsDropped: 0,
     securityTools: [],
     updateConfig: null,
     securityPolicy: null,
@@ -955,6 +963,8 @@ export class FakeVulnerabilityDatabase implements VulnerabilityDatabase {
   failWith: Error | null = null;
   private readonly known = new Map<string, Vulnerability[]>();
   private readonly incomplete = new Set<string>();
+  /** When set, replaces the answers entirely, so a test can send a reply that does not line up with the question. */
+  replyWith: ((packages: readonly LockedPackage[]) => unknown[]) | null = null;
 
   /** Makes `pkg` vulnerable to `vulnerabilities`. */
   know(pkg: Pick<LockedPackage, "ecosystem" | "name" | "version">, vulnerabilities: Vulnerability[]): void {
@@ -969,6 +979,7 @@ export class FakeVulnerabilityDatabase implements VulnerabilityDatabase {
   async lookup(packages: readonly LockedPackage[]): Promise<{ results: (Vulnerability[] | null)[] }> {
     this.asked.push([...packages]);
     if (this.failWith) throw this.failWith;
+    if (this.replyWith) return { results: this.replyWith(packages) as (Vulnerability[] | null)[] };
     return {
       results: packages.map((pkg) => {
         const key = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;

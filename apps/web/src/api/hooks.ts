@@ -504,7 +504,7 @@ export function useIssueLabelDefaults() {
   return useQuery({
     queryKey: queryKeys.issueLabelDefaults,
     queryFn: () => apiRequest<IssueLabelDefaults>("/api/issue-labels/defaults"),
-    // The defaults change only with a release of the API, so one read serves the whole session.
+    // The defaults change only with a release of the API, so reading them once an hour is plenty.
     staleTime: 60 * 60 * 1000,
   });
 }
@@ -531,7 +531,7 @@ export function useReviewExemptionDefaults() {
   return useQuery({
     queryKey: queryKeys.reviewExemptionDefaults,
     queryFn: () => apiRequest<ReviewExemptionDefaults>("/api/review-exemptions/defaults"),
-    // The defaults change only with a release of the API, so one read serves the whole session.
+    // The defaults change only with a release of the API, so reading them once an hour is plenty.
     staleTime: 60 * 60 * 1000,
   });
 }

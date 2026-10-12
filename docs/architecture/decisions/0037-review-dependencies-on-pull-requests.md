@@ -22,7 +22,7 @@ The check is not required on `main`, because `main` has no branch protection by 
 
 - A vulnerable addition is named in the pull request that adds it, before it reaches the default branch.
 - The security page's "Dependency review on pull requests" check is met by the repository's own example.
-- One more action, owned by GitHub, pinned to a commit and kept current by the `github-actions` group in `.github/dependabot.yml`.
+- One more action, owned by GitHub, pinned to a commit and kept current by the `actions` group of the `github-actions` entry in `.github/dependabot.yml`.
 
 ### Negative
 

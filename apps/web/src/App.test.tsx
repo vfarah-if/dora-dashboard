@@ -190,12 +190,11 @@ describe("App sign-in gate", () => {
       "GET /api/repos": { body: [repo()] },
     };
 
-    it("shows the Security tab straight after Code analysis, even when no repository has alerts", async () => {
+    it("shows the Security tab even when no repository has alerts", async () => {
+      // Where it sits among the tabs is proved in Header.test.tsx.
       mockFetch({ ...base, "GET /api/repos": { body: [] } });
       renderApp();
-      const code = await screen.findByRole("link", { name: copy.nav.codeAnalysis });
-      expect(code.nextElementSibling).toBe(screen.getByRole("link", { name: copy.nav.security }));
-      expect(screen.getByRole("link", { name: copy.nav.security })).toHaveAttribute("href", "/security");
+      expect(await screen.findByRole("link", { name: copy.nav.security })).toHaveAttribute("href", "/security");
     });
 
     it("opens the security list at /security", async () => {

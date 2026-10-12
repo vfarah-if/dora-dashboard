@@ -1,4 +1,3 @@
-import { lastGoodRead, usedSources } from "@dora-dashboard/core";
 import type {
   AlertSource,
   AlertWhere,
@@ -399,7 +398,7 @@ export function actionSentence(
  * True when no source's alerts are in use, as core's `read` says it, so every figure would be a zero that means nothing.
  * A source that answered `no_access` is attempted but not in use, so it does not count as read.
  */
-export const notReadYet = (sources: SecurityReport["sources"]): boolean => !Object.values(usedSources(sources)).some(Boolean);
+export const notReadYet = (report: Pick<SecurityReport, "used">): boolean => !Object.values(report.used).some(Boolean);
 
 /** An exploit prediction share such as 0.1 as "10%". */
 export const likelyShare = (thresholds: Pick<SecurityThresholds, "likelyExploitedEpss">): string =>
@@ -418,7 +417,7 @@ export function topActions(actions: readonly SecurityAction[], count = 3): TopAc
 
 export interface StartHere {
   band: Band | null;
-  /** What it takes to reach the next band, or null when nothing stands between the repository and it. */
+  /** What it takes to reach the next band, or null when the repository is already elite or has no grade. */
   raise: { count: number; from: Band; to: Band } | null;
   top: TopActions;
   /** Pieces of advice that never move the grade. */
@@ -542,10 +541,10 @@ const coverageName = (source: AlertSource) => copy.security.list.coverage.source
 
 /**
  * The parts of the page that could not be read, in words. The OSV lookup is optional and stands in for Dependabot,
- * so it is only named when it was read, and Dependabot only counts as missing when OSV did not cover for it.
+ * so it is never named here, and Dependabot only counts as missing when OSV did not cover for it.
  */
-export function unreadParts(report: Pick<SecurityReport, "sources" | "supplyChain">): string[] {
-  const used = usedSources(report.sources);
+export function unreadParts(report: Pick<SecurityReport, "used" | "supplyChain">): string[] {
+  const used = report.used;
   const missing: string[] = [];
   if (!used.dependabot && !used.osv) missing.push(coverageName("dependabot"));
   if (!used.code_scanning) missing.push(coverageName("code_scanning"));
@@ -601,7 +600,8 @@ function alertSourceLine(source: AlertSource, state: SourceState, dependabotFail
         status: "error",
         tone: "unmet",
         stateLabel: text.status.error,
-        // The feature is not the trouble, so it is not told to switch it on. The retry line says what helps.
+        // A failed read is not a feature that is switched off, so the reader is not told to switch it on. Where NotReadNotice
+        // lists the source, its retry line says that a crawl tries again.
         enable: null,
         detail: [good ? text.failed(state.error) : text.failedNoEarlier(state.error), ...notes]
           .filter((note) => note !== null)
@@ -913,7 +913,7 @@ export interface RuleRow {
 
 /**
  * The branch rules the page shows. The approval, stale approval, code owner and linear history rules are never shown
- * (ADR 0036).
+ * (ADR 0036, and the revision of 2026-10-12 in ADR 0033 for linear history).
  */
 type ShownRule = Exclude<
   keyof BranchRules,
@@ -1036,15 +1036,17 @@ export const pastFixTotal = (pastFix: Record<Severity, number>): number => SEVER
 export interface AlertsRead {
   /** The latest fresh read when every source in use is fresh; else the oldest read that the page still stands on. */
   at: string | null;
-  /** True when a source in use failed its last attempt, so some of the alerts are older than `at` suggests. */
+  /**
+   * True when a source in use failed its last attempt. `at` is then the oldest last good read among those sources, not the
+   * latest read.
+   */
   stale: boolean;
 }
 
 /** When the alerts were read. A source in error is graded on its last good read, which is never passed off as fresh. */
-export function alertsReadAt(report: Pick<SecurityReport, "sources">): AlertsRead {
-  const used = usedSources(report.sources);
-  const reads = ALERT_SOURCES.filter((source) => used[source]).map((source) => ({
-    at: lastGoodRead(report.sources[source])?.readAt ?? null,
+export function alertsReadAt(report: Pick<SecurityReport, "sources" | "used" | "lastGoodAt">): AlertsRead {
+  const reads = ALERT_SOURCES.filter((source) => report.used[source]).map((source) => ({
+    at: report.lastGoodAt[source],
     failed: report.sources[source].status === "error",
   }));
   const stale = reads.some((r) => r.failed);
@@ -1054,14 +1056,14 @@ export function alertsReadAt(report: Pick<SecurityReport, "sources">): AlertsRea
 }
 
 /** The coverage sentence for a full report, worded as the list page words it for a summary. */
-export function reportCoverage(report: Pick<SecurityReport, "sources" | "supplyChain">): string {
+export function reportCoverage(report: Pick<SecurityReport, "sources" | "used" | "supplyChain">): string {
   const chain = report.supplyChain;
   const statuses = Object.fromEntries(ALERT_SOURCES.map((s) => [s, report.sources[s].status])) as Record<
     AlertSource,
     SourceStatus
   >;
   return sourceCoverage({
-    used: usedSources(report.sources),
+    used: report.used,
     sources: statuses,
     supplyChain: chain.status === "ok" ? "ok" : chain.reason,
   });
@@ -1075,7 +1077,7 @@ export interface FailedSource {
 
 /** Every source whose last attempt failed, with when it last worked, for the warning near the top of a page. */
 export function failedSources(
-  report: Pick<SecurityReport, "sources" | "posture" | "postureFailure" | "supplyChain" | "supplyChainFailure">,
+  report: Pick<SecurityReport, "sources" | "used" | "posture" | "postureFailure" | "supplyChain" | "supplyChainFailure">,
   /** True where the page already names the sources that could not be read, so none is named twice. */
   leaveOutUnreadNamed = false,
 ): FailedSource[] {
@@ -1086,7 +1088,7 @@ export function failedSources(
     if (state.status === "error" && !named.includes(coverageName(source)))
       failed.push({ name: coverageName(source), lastGoodAt: state.lastGood?.readAt ?? null });
   }
-  if (report.supplyChainFailure) {
+  if (report.supplyChainFailure && !named.includes(copy.security.list.coverage.supplyChain)) {
     failed.push({
       name: copy.security.list.coverage.supplyChain,
       lastGoodAt: report.supplyChain.status === "ok" ? report.supplyChain.readAt : null,

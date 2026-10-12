@@ -3,7 +3,7 @@ import { SecurityBlock } from "./SecurityParts";
 
 const c = copy.security.glossary;
 
-/** Plain meanings for the terms used on the page, in a native disclosure that prints as it shows on screen. */
+/** Plain meanings for the terms used on the page, in a native disclosure. The printed report leaves the section out while it is closed. */
 export function Glossary() {
   return (
     <SecurityBlock id="security-glossary" title={c.title} lede={c.lede}>

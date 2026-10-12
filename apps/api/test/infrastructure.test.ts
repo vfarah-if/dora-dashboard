@@ -82,6 +82,36 @@ describe("GitHubProvider", () => {
     expect(serialised).not.toContain("no trailer");
   });
 
+  it("asks for each reviewer's type and maps it to authorIsBot, leaving it unset for a review with no author", async () => {
+    const node = {
+      ...gqlNode,
+      reviews: {
+        nodes: [
+          { author: { login: "review-helper", __typename: "Bot" }, state: "APPROVED", submittedAt: "2026-09-01T10:30:00Z" },
+          { author: { login: "bob", __typename: "User" }, state: "APPROVED", submittedAt: "2026-09-01T10:40:00Z" },
+          { author: null, state: "COMMENTED", submittedAt: "2026-09-01T10:50:00Z" },
+        ],
+      },
+    };
+    const http = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      json({
+        data: {
+          repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, totalCount: 1, nodes: [node] } },
+        },
+      }),
+    );
+
+    const mapped = (await new GitHubProvider(http).fetchPullRequestPage("t", "acme", "widgets", null)).pullRequests[0]!;
+
+    const sent = JSON.parse(http.mock.calls[0]![1]!.body as string).query as string;
+    expect(sent).toContain("reviews(first: 100) { nodes { author { login __typename } state submittedAt } }");
+    expect(mapped.reviews.map((r) => ({ author: r.author, authorIsBot: r.authorIsBot }))).toEqual([
+      { author: "review-helper", authorIsBot: true },
+      { author: "bob", authorIsBot: false },
+      { author: null, authorIsBot: undefined },
+    ]);
+  });
+
   it("leaves labels and coAuthors absent when GitHub sent neither", async () => {
     const http = vi.fn(async () =>
       json({

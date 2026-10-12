@@ -18,7 +18,8 @@
     "test:coverage": "turbo run test:coverage",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "eslint . --max-warnings 0"
+    "lint": "eslint . --max-warnings 0",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -26,6 +27,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.13.0",
+    "husky": "^9.1.7",
     "prettier": "^3.9.9",
     "turbo": "^2.11.7",
     "typescript": "~5.9.3",

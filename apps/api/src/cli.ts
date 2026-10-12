@@ -101,11 +101,17 @@ try {
     ...(coverage ? { coverage } : {}),
   }).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));
-  const [summary] = new SecurityReportService(store, store, {
-    codeAnalysis: config.codeAnalysis,
-    scorecardLookup: config.scorecardLookup,
-    settingsUrl: (owner, name) => alertSource.settingsUrl(owner, name),
-  }).summaries([repo.id]);
+  const [summary] = new SecurityReportService(
+    store,
+    store,
+    {
+      codeAnalysis: config.codeAnalysis,
+      scorecardLookup: config.scorecardLookup,
+      settingsUrl: (owner, name) => alertSource.settingsUrl(owner, name),
+    },
+    undefined,
+    log,
+  ).summaries([repo.id]);
   if (summary) console.log(describeSecurity(summary));
 } finally {
   clearInterval(timer);

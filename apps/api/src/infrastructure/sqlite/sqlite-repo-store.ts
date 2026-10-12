@@ -34,7 +34,7 @@ import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
-import type { SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import type { AlertScan, SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
 import { SECURITY_SCHEMA, SecurityTables, migrateSecurityTables } from "./security-tables.js";
 
 /** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
@@ -230,9 +230,9 @@ function isRuleGroup(value: unknown, known: ReadonlySet<string>): boolean {
 }
 
 /**
- * A saved label override. `rules` is null when none was saved or what was saved cannot be used; an override is never
- * worth a failed read, and a wrong shape would make every report throw, so unusable rules read back as the defaults
- * with `unreadable` set, which lets the person be told. The repository id is logged so the row can be found, once per
+ * A saved label override, as an `IssueLabelState`. Nothing saved reads as `defaults`, and a value that cannot be used
+ * reads as `unreadable`, because an override is never worth a failed read and a wrong shape would make every report
+ * throw, and the person can then be told. The repository id is logged so the row can be found, once per
  * repository in `warned`, because the list is polled.
  */
 function labelsOf(saved: string | null, repoId: number, log: Logger, warned: Set<number>): IssueLabelState {
@@ -838,6 +838,10 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
 
   securityAlerts(repoId: number): SecurityAlert[] {
     return this.security.securityAlerts(repoId);
+  }
+
+  securityAlertScan(repoId: number): AlertScan {
+    return this.security.securityAlertScan(repoId);
   }
 
   setSourceState(repoId: number, source: AlertSource, state: SourceState): void {

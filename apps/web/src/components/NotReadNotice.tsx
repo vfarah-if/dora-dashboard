@@ -6,13 +6,19 @@ import { notReadKind, unusedSources } from "../lib/security";
 const c = copy.security.notRead;
 
 /**
- * Shown in place of empty figures when no alert source has been read yet. It offers an incremental crawl, the same
- * one the repository page starts, and shows that one is running. The repository list is polled during a crawl, and the
- * report is read again when it finishes.
+ * Shown in place of empty figures when no alert source has been read yet. It offers an incremental crawl, the same one
+ * the repositories list starts, and shows that one is running. The repository list is polled during a crawl, and the
+ * report is read again when it finishes. The status region is in the page from the first render, because a live region
+ * that is mounted together with its text is not reliably announced.
  */
 export function NotReadNotice({ repoId, sources }: { repoId: number; sources: SecurityReport["sources"] }) {
   const crawl = useCrawl();
   const crawling = useRepos().data?.find((r) => r.id === repoId)?.crawlStatus === "crawling" || crawl.isPending;
+  const progress = (
+    <p role="status" className="visually-hidden">
+      {crawling ? c.crawling : ""}
+    </p>
+  );
   if (notReadKind(sources) === "refused") {
     const unused = unusedSources(sources);
     const retryable = unused.some((source) => source.status === "error");
@@ -42,6 +48,7 @@ export function NotReadNotice({ repoId, sources }: { repoId: number; sources: Se
             </button>
           </>
         )}
+        {progress}
         {crawl.isError && <p>{c.failed}</p>}
       </aside>
     );
@@ -58,11 +65,7 @@ export function NotReadNotice({ repoId, sources }: { repoId: number; sources: Se
       >
         {crawling ? c.crawling : c.crawl}
       </button>
-      {crawling && (
-        <p role="status" className="visually-hidden">
-          {c.crawling}
-        </p>
-      )}
+      {progress}
       {crawl.isError && <p>{c.failed}</p>}
     </aside>
   );
