@@ -14,14 +14,18 @@ Person(operator, "Operator", "Sets the dashboard up, chooses which projects it f
 
 System(dashboard, "DORA Dashboard", "Turns the history of the team's code changes and releases into charts, including the four DORA measures of how often, how quickly and how safely the team releases. It runs on the team's own equipment and only reads from the services below.")
 
-System_Ext(github, "GitHub", "Where the team keeps its code, reviews each change and releases it.")
+System_Ext(github, "GitHub", "Where the team keeps its code, reviews each change, releases it and is warned about security problems.")
 System_Ext(jira, "Jira (optional)", "Where the team plans and tracks its work.")
+System_Ext(osv, "OSV.dev (optional)", "A public list of known weaknesses in software libraries.")
+System_Ext(scorecard, "OpenSSF Scorecard (optional)", "A public safety rating of open source projects.")
 
 Rel(reader, dashboard, "Looks at charts, comparisons and changes waiting for review")
 Rel(operator, dashboard, "Sets up and refreshes")
 
 Rel(dashboard, github, "Reads the history of changes and releases")
 Rel(dashboard, jira, "Reads planned work, when connected")
+Rel(dashboard, osv, "Asks which library versions are known to be weak, when switched on")
+Rel(dashboard, scorecard, "Asks for the rating of public projects, when switched on")
 
 SHOW_LEGEND()
 @enduml

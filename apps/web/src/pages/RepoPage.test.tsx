@@ -2,11 +2,22 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
-import { mockFetch, renderRoute } from "../test/render";
-import { repo, report, week } from "../test/fixtures";
+import { mockFetch as stubFetch, renderRoute, type Handler, type MockResponse } from "../test/render";
+import { noSecurity, repo, report, securityAction, securityReport, week } from "../test/fixtures";
 import { copy } from "../copy";
 
 const noHealth = { body: { status: "none" } };
+
+/**
+ * The routes every test of this page needs. The security section is part of the page, so each test answers it, with a
+ * report that has no grade, so that no security band is drawn among the DORA bands the tests count.
+ */
+const routes = (extra: Record<string, Handler | MockResponse> = {}) => ({
+  "GET /api/repos/1/security": { body: noSecurity() },
+  ...extra,
+});
+
+const mockFetch = (extra: Record<string, Handler | MockResponse> = {}) => stubFetch(routes(extra));
 
 const manyPrs = Array.from({ length: 25 }, (_, i) => ({
   ...report().prs[0]!,
@@ -579,5 +590,148 @@ describe("RepoPage code analysis button", () => {
     renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1?from=2026-01-01&to=2026-02-01&exclude=bot-one" });
     const link = await screen.findByRole("link", { name: copy.codeAnalysis.repoLink });
     expect(link).toHaveAttribute("href", "/repos/1/code?from=2026-01-01&to=2026-02-01");
+  });
+});
+
+describe("RepoPage security", () => {
+  const open = async (security = securityReport(), route = "/repos/1") => {
+    const fetchMock = mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+      "GET /api/repos/1/security": { body: security },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route });
+    await screen.findByRole("heading", { level: 1, name: "acme/widgets" });
+    return fetchMock;
+  };
+
+  it("links to the security report, carrying the date range and nothing else", async () => {
+    await open(securityReport(), "/repos/1?from=2026-01-01&to=2026-02-01&exclude=ada");
+    expect(screen.getByRole("link", { name: copy.security.section.link })).toHaveAttribute(
+      "href",
+      "/repos/1/security?from=2026-01-01&to=2026-02-01",
+    );
+  });
+
+  it("shows the security summary after code health, with the grade, the tiles and the first actions", async () => {
+    await open();
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    const codeHealth = screen.getByRole("heading", { level: 2, name: copy.codeHealth.title });
+    expect(codeHealth.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const within_ = within(section);
+    expect(within_.getByText("Medium")).toBeInTheDocument();
+    expect(within_.getByText(copy.security.section.tiles.critical)).toBeInTheDocument();
+    expect(within_.getByText(copy.security.section.tiles.high)).toBeInTheDocument();
+    expect(within_.getByText(copy.security.section.tiles.pastFix).closest("article")).toHaveClass("tile-danger");
+    expect(within_.getByText(copy.security.section.tiles.actions).closest("article")).toHaveTextContent("4");
+    expect(within_.getByText(/left-pad has 2 open critical alerts, and version 1.3.1 fixes them/)).toBeInTheDocument();
+    expect(within_.getByText(copy.security.section.more(1))).toBeInTheDocument();
+    expect(
+      within_.getByText("Read Dependabot alerts, code scanning, secret scanning and workflow and dependency files."),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves the link to the full report out of the printed copy", async () => {
+    await open();
+    const link = await screen.findByRole("link", { name: copy.security.section.detail });
+    expect(link.closest("p")).toHaveClass("screen-only");
+    expect(link).toHaveAttribute("href", "/repos/1/security");
+  });
+
+  it("leads with a notice, a Crawl now button and no empty figures when nothing has been read yet", async () => {
+    await open(noSecurity());
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).getByText(copy.security.notRead.title)).toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: copy.security.notRead.crawl })).toBeInTheDocument();
+    expect(within(section).queryByText(copy.security.section.tiles.critical)).not.toBeInTheDocument();
+  });
+
+  it("says the counts may be low when only some sources were read", async () => {
+    const base = securityReport();
+    await open(
+      securityReport({
+        sources: {
+          ...base.sources,
+          secret_scanning: { ...base.sources.secret_scanning, status: "no_access", reason: "forbidden" },
+        },
+      }),
+    );
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).getByText(copy.security.section.partial("secret scanning"))).toBeInTheDocument();
+    expect(within(section).queryByText(copy.security.open.noneButUnread)).not.toBeInTheDocument();
+  });
+
+  it("says no alert was found, although some sources could not be read, when the counts are zero", async () => {
+    const base = securityReport();
+    await open(
+      securityReport({
+        sources: { ...base.sources, code_scanning: { ...base.sources.code_scanning, status: "off", reason: "disabled" } },
+        open: { ...base.open, total: 0 },
+      }),
+    );
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).getByText(copy.security.open.noneButUnread)).toBeInTheDocument();
+  });
+
+  it("says nothing about unread sources when every source was read", async () => {
+    await open(securityReport());
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).queryByText(/could not read/)).not.toBeInTheDocument();
+    expect(within(section).queryByText(copy.security.open.noneButUnread)).not.toBeInTheDocument();
+  });
+
+  it("uses the report's own Dependabot version updates file and limits in the first actions", async () => {
+    const base = securityReport();
+    await open(
+      securityReport({
+        sources: { ...base.sources, dependabot: { ...base.sources.dependabot, status: "off", reason: "disabled" } },
+        dependabotVersionUpdates: ".github/dependabot.yml",
+        actions: [
+          securityAction({
+            kind: "enable_dependabot",
+            target: "dependabot",
+            ecosystem: null,
+            manifestPath: null,
+            count: 1,
+            refs: [],
+          }),
+          securityAction({ kind: "require_review", target: null, ecosystem: null, manifestPath: null, count: 2, refs: [] }),
+        ],
+        thresholds: { ...base.thresholds, reviewWindowDays: 45 },
+      }),
+    );
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).getByText(/Dependabot version updates are set up in \.github\/dependabot\.yml/)).toBeInTheDocument();
+    expect(within(section).getByText(/in the last 45 days had no approval/)).toBeInTheDocument();
+  });
+
+  it("says no grade has been produced when sources were read but nothing could be measured", async () => {
+    await open(securityReport({ grade: null, gradeMissing: "nothing_measured", actions: [], raiseGrade: null }));
+    const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
+    expect(within(section).getByText(copy.security.start.missing.nothing_measured)).toBeInTheDocument();
+    expect(within(section).queryByText(copy.security.section.none)).not.toBeInTheDocument();
+  });
+
+  it("says nothing needs fixing when a graded repository has no actions", async () => {
+    await open(securityReport({ actions: [], raiseGrade: null }));
+    expect(await screen.findByText(copy.security.section.none)).toBeInTheDocument();
+  });
+
+  it("shows an error with a retry when the security report cannot be read, leaving the rest of the page alone", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    mockFetch({
+      "GET /api/repos/1/report": { body: report() },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+      "GET /api/repos/1/security": () =>
+        ++attempts === 1 ? { status: 500, body: { error: "Alerts are unavailable" } } : { body: securityReport() },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    expect(await screen.findByText("Alerts are unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: copy.dora.title })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: copy.common.retry })[0]!);
+    expect(await screen.findByText(copy.security.section.tiles.critical)).toBeInTheDocument();
   });
 });

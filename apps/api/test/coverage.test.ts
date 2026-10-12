@@ -474,7 +474,7 @@ describe("coverage during a crawl", () => {
     checkout = new FakeSourceCheckout();
     const health = new CodeHealthService(store, checkout, new FakeCodeAnalyser(), () => at(0));
     const coverage = overrides.coverage === false ? undefined : new CoverageService(store, source, () => at(clock++));
-    crawler = new CrawlService(store, provider, health, undefined, undefined, coverage);
+    crawler = new CrawlService(store, provider, { codeHealth: health, coverage });
     provider.seed("acme/widgets", { prs: [pr({ number: 1 })], runs: [run({ runId: 1 })] });
     repoId = store.addRepo("acme", "widgets", ["deploy.yml"], "main").id;
   };
@@ -530,11 +530,14 @@ describe("coverage during a crawl", () => {
   it("logs a coverage step that throws apart from the service's own log", async () => {
     build();
     const logged = recordingLog();
-    const broken = new CrawlService(store, provider, undefined, logged.log, undefined, {
-      read: async () => {
-        throw new Error("boom");
-      },
-    } as unknown as CoverageService);
+    const broken = new CrawlService(store, provider, {
+      log: logged.log,
+      coverage: {
+        read: async () => {
+          throw new Error("boom");
+        },
+      } as unknown as CoverageService,
+    });
 
     await broken.crawl("t", repoId);
 
@@ -564,11 +567,13 @@ describe("coverage during a crawl", () => {
 
   it("logs and carries on when the service throws something that is not a rejected credential", async () => {
     build();
-    const broken = new CrawlService(store, provider, undefined, undefined, undefined, {
-      read: async () => {
-        throw new Error("boom");
-      },
-    } as unknown as CoverageService);
+    const broken = new CrawlService(store, provider, {
+      coverage: {
+        read: async () => {
+          throw new Error("boom");
+        },
+      } as unknown as CoverageService,
+    });
 
     await expect(broken.crawl("t", repoId)).resolves.toBeUndefined();
   });

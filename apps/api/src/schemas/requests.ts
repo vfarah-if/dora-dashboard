@@ -73,6 +73,19 @@ export const issueReportQuery = {
   properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },
 } as const;
 
+export const securityReportQuery = {
+  type: "object",
+  additionalProperties: false,
+  properties: { from: date, to: date },
+} as const;
+
+/** `ids` is optional: leave it out for every repository. */
+export const securityListQuery = {
+  type: "object",
+  additionalProperties: false,
+  properties: { ids: { type: "string", pattern: "^\\d+(,\\d+){0,49}$" } },
+} as const;
+
 /** `ids` is optional: leave it out for every repository. */
 export const reviewQueueQuery = {
   type: "object",

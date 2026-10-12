@@ -15,6 +15,8 @@ import { ComparePage } from "./pages/ComparePage";
 import { SpacePage } from "./pages/SpacePage";
 import { SpacesPage } from "./pages/SpacesPage";
 import { ReviewQueuePage } from "./pages/ReviewQueuePage";
+import { SecurityListPage } from "./pages/SecurityListPage";
+import { SecurityPage } from "./pages/SecurityPage";
 
 export function App() {
   const me = useMe();
@@ -31,6 +33,8 @@ export function App() {
         <Route path="/repos/:id" element={<RepoPage />} />
         <Route path="/repos/:id/code" element={<CodeAnalysisPage />} />
         <Route path="/code" element={<CodeAnalysisListPage />} />
+        <Route path="/repos/:id/security" element={<SecurityPage />} />
+        <Route path="/security" element={<SecurityListPage />} />
         <Route path="/compare" element={<ComparePage />} />
         <Route path="/spaces" element={<SpacesPage />} />
         <Route path="/spaces/:id" element={<SpacePage />} />

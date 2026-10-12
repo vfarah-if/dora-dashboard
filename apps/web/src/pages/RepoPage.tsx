@@ -16,6 +16,7 @@ import { DownloadReportButton } from "../components/DownloadReportButton";
 import { PrTable } from "../components/PrTable";
 import { ProfileLine } from "../components/ProfileLine";
 import { PartWeekNote, RepoCharts } from "../components/RepoCharts";
+import { SecuritySection } from "../components/SecuritySection";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { StickyPanel } from "../components/StickyPanel";
@@ -110,6 +111,8 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
       <AiCohorts cohorts={report.aiCohorts} />
 
       <CodeHealthSection repoId={repoId} range={range} />
+
+      <SecuritySection repoId={repoId} range={range} />
 
       <section aria-labelledby="flow-title" className="section">
         <h2 id="flow-title" className="section-title">
@@ -224,6 +227,9 @@ function RepoView({ id }: { id: number }) {
         <p className="button-row">
           <Link to={{ pathname: `/repos/${id}/code`, search: searchForCodePage(search) }} className="button button-secondary">
             {copy.codeAnalysis.repoLink}
+          </Link>
+          <Link to={{ pathname: `/repos/${id}/security`, search: searchForCodePage(search) }} className="button button-secondary">
+            {copy.security.section.link}
           </Link>
           {showIssuesLink && (
             <Link to={`/issues/${id}`} className="button button-secondary">

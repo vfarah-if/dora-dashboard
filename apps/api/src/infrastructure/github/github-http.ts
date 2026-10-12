@@ -1,9 +1,9 @@
 import { isIP } from "node:net";
 import { AppError, NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
+import { parseJsonValue, readCappedText } from "../http/capped-text.js";
+import type { Fetch } from "../http/fetch.js";
 
 export const API = "https://api.github.com";
-
-export type Fetch = typeof fetch;
 
 /** How long one request may take before it is given up as a gateway timeout, which the page readers retry smaller. */
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -42,28 +42,131 @@ export async function throwForStatus(response: Response): Promise<void> {
   }
 }
 
-export async function request<T>(http: Fetch, token: string, url: string, init: RequestInit = {}): Promise<T> {
-  let response: Response;
+/** The most redirects followed for one request. GitHub's answer for a renamed repository is a single one. */
+const MAX_REDIRECTS = 3;
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * The address `target` names relative to `from`, when it is https on the same origin as `origin` (by default `from`), else null. This is the
+ * one rule for any address GitHub hands back, so the token can never be sent to another host or over http.
+ */
+function sameOriginHttps(target: string, from: string, origin = from): string | null {
   try {
-    response = await http(url, {
-      ...init,
-      signal: init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "dora-dashboard",
-        ...init.headers,
-      },
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new UpstreamError(`GitHub did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`, 504);
-    }
-    throw error;
+    const url = new URL(target, from);
+    return url.protocol === "https:" && url.origin === new URL(origin).origin ? url.toString() : null;
+  } catch {
+    return null;
   }
+}
+
+/** Maps a failure to reach GitHub or a timeout to an error that carries no address. */
+function fromTransport(error: unknown): unknown {
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return new UpstreamError(`GitHub did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`, 504);
+  }
+  return error;
+}
+
+/**
+ * Sends one API request with the token. Redirects are followed here, by hand, at most three and only to https on the
+ * origin of the original request, so the token never leaves GitHub's API host whatever the runtime does with
+ * `Authorization` on a redirect. A timeout is mapped to a gateway timeout that carries no address.
+ */
+async function send(http: Fetch, token: string, url: string, init: RequestInit): Promise<Response> {
+  const signal = init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  let target = url;
+  let current: RequestInit = init;
+  for (let hops = 0; ; hops++) {
+    let response: Response;
+    try {
+      response = await http(target, {
+        ...current,
+        redirect: "manual",
+        signal,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "dora-dashboard",
+          ...init.headers,
+        },
+      });
+    } catch (error) {
+      throw fromTransport(error);
+    }
+    if (!REDIRECTS.has(response.status)) return response;
+    await response.body?.cancel().catch(() => undefined);
+    const location = response.headers.get("location");
+    const next = location === null ? null : sameOriginHttps(location, target, url);
+    if (next === null) {
+      throw new UpstreamError("GitHub redirected the request somewhere that is not allowed", 502);
+    }
+    if (hops === MAX_REDIRECTS) throw new UpstreamError("GitHub redirected the request too many times", 502);
+    target = next;
+    // A 303 asks for the result with a plain GET; the others repeat the request as it was.
+    if (response.status === 303) current = { ...current, method: "GET", body: null };
+  }
+}
+
+/** The most one reply is read up to. A page of 100 alerts or pull requests is far below it. */
+const MAX_REPLY_BYTES = 16 * 1024 * 1024;
+
+/** The reply's JSON, read up to the cap; a body that is not JSON or is too large is an `UpstreamError`. */
+async function readJson(response: Response): Promise<unknown> {
+  return parseJsonValue(await readCappedText(response, MAX_REPLY_BYTES, "GitHub"), "GitHub");
+}
+
+export async function request<T>(http: Fetch, token: string, url: string, init: RequestInit = {}): Promise<T> {
+  const response = await send(http, token, url, init);
   await throwForStatus(response);
-  return (await response.json()) as T;
+  return (await readJson(response)) as T;
+}
+
+/** The longest `Link` header read; a longer one is treated as having no next page. */
+const MAX_LINK_HEADER = 4096;
+
+/**
+ * The address of the next page in a `Link` header, or null when there is none. Only an https address on the same
+ * origin as `from` is accepted, so a header that points elsewhere can never receive the token.
+ */
+export function nextLink(header: string | null, from: string): string | null {
+  if (!header || header.length > MAX_LINK_HEADER) return null;
+  for (const [, target = "", params = ""] of header.matchAll(/<([^>]*)>([^<]*)/g)) {
+    if (!/;\s*rel\s*=\s*"?next"?\s*(?:[;,]|$)/i.test(params)) continue;
+    return sameOriginHttps(target, from);
+  }
+  return null;
+}
+
+/** One page of a list, with where the next is, or a refusal the caller expected and can classify. */
+export type PageResult<T> = { body: T; next: string | null } | { status: number; message: string };
+
+/** The text GitHub gives as the reason for a refusal, cut short; empty when the body is not the usual JSON. */
+async function messageOf(response: Response): Promise<string> {
+  try {
+    const body = (await readJson(response)) as { message?: unknown } | null;
+    return typeof body?.message === "string" ? body.message.slice(0, 300) : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Reads one page of a list. A 401 raises `UnauthorisedError` and a rate limit raises the rate limit error, both before
+ * any refusal is looked at, so a rate-limited 403 is never read as "switched off". A 403 or 404 named in `refusals`
+ * returns its status and GitHub's message for the caller to classify; any other failure is raised as `request` does.
+ */
+export async function requestPage<T>(
+  http: Fetch,
+  token: string,
+  url: string,
+  refusals: readonly number[],
+): Promise<PageResult<T>> {
+  const response = await send(http, token, url, {});
+  if (response.status === 401 || isRateLimited(response)) await throwForStatus(response);
+  if (refusals.includes(response.status)) return { status: response.status, message: await messageOf(response) };
+  await throwForStatus(response);
+  return { body: (await readJson(response)) as T, next: nextLink(response.headers.get("link"), url) };
 }
 
 /** A download may take longer than an API call, as an artefact can be tens of megabytes. */

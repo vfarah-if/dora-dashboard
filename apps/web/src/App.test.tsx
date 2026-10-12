@@ -5,14 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { App } from "./App";
 import { mockFetch } from "./test/render";
-import { repo } from "./test/fixtures";
+import { repo, securityReport, securitySummary } from "./test/fixtures";
 import { copy } from "./copy";
 
-function renderApp() {
+function renderApp(route = "/") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[route]}>
         <App />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -179,6 +179,49 @@ describe("App sign-in gate", () => {
       await user.click(issues);
       expect(await screen.findByRole("heading", { level: 1, name: copy.issues.title })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: copy.issues.openReport("acme/widgets") })).toHaveAttribute("href", "/issues/1");
+    });
+  });
+
+  describe("Security pages", () => {
+    const signedIn = { body: { mode: "oauth", user: { login: "ada", avatarUrl: "" }, error: null } };
+    const base = {
+      "GET /api/auth/me": signedIn,
+      "GET /api/health": { body: { jira: false, osv: true } },
+      "GET /api/repos": { body: [repo()] },
+    };
+
+    it("shows the Security tab straight after Code analysis, even when no repository has alerts", async () => {
+      mockFetch({ ...base, "GET /api/repos": { body: [] } });
+      renderApp();
+      const code = await screen.findByRole("link", { name: copy.nav.codeAnalysis });
+      expect(code.nextElementSibling).toBe(screen.getByRole("link", { name: copy.nav.security }));
+      expect(screen.getByRole("link", { name: copy.nav.security })).toHaveAttribute("href", "/security");
+    });
+
+    it("opens the security list at /security", async () => {
+      mockFetch({ ...base, "GET /api/security": { body: [securitySummary()] } });
+      renderApp("/security");
+      expect(await screen.findByRole("heading", { level: 1, name: copy.security.list.title })).toBeInTheDocument();
+      expect(await screen.findByRole("link", { name: copy.security.list.open("acme/widgets") })).toHaveAttribute(
+        "href",
+        "/repos/1/security",
+      );
+    });
+
+    it("opens a repository's security report at /repos/:id/security", async () => {
+      mockFetch({ ...base, "GET /api/repos/1/security": { body: securityReport() } });
+      renderApp("/repos/1/security");
+      expect(await screen.findByRole("heading", { level: 1, name: copy.security.page.title })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { level: 2, name: copy.security.start.title })).toBeInTheDocument();
+    });
+
+    it("follows the tab from the nav to the list", async () => {
+      const user = userEvent.setup();
+      mockFetch({ ...base, "GET /api/security": { body: [] } });
+      renderApp();
+      await user.click(await screen.findByRole("link", { name: copy.nav.security }));
+      expect(await screen.findByRole("heading", { level: 1, name: copy.security.list.title })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: copy.nav.security })).toHaveClass("active");
     });
   });
 });

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  AlertSource,
   BoardAccess,
   BoardColumn,
   CodeSnapshot,
@@ -10,9 +11,15 @@ import type {
   CrawlStatus,
   DeployRun,
   IssueLabelRules,
+  LockedPackage,
   PullRequest,
   Repo,
   RepoIssue,
+  RepoPosture,
+  ScorecardResult,
+  SecurityAlert,
+  SourceState,
+  SupplyChainRecord,
   TrackerSpace,
   TrackerStatus,
   WorkItem,
@@ -21,6 +28,8 @@ import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
+import type { SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import { SECURITY_SCHEMA, SecurityTables, migrateSecurityTables } from "./security-tables.js";
 
 /** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
 const failedFlag = (error: string | null | undefined): number => (error === null || error === undefined ? 0 : 1);
@@ -267,8 +276,9 @@ const RESTARTED_DURING_CRAWL = "The API restarted during this crawl. Crawl again
  * SQLite on Node's built-in `node:sqlite`, so there is no native module to compile. `now` stamps every time the store
  * records itself (`added_at`, `last_crawled_at`), so a test can pin them.
  */
-export class SqliteRepoStore implements RepoStore {
+export class SqliteRepoStore implements RepoStore, SecurityStore {
   private db: DatabaseSync;
+  private readonly security: SecurityTables;
   /** Repositories whose unusable saved labels were already reported, so a polled list does not repeat it. */
   private readonly warnedLabels = new Set<number>();
 
@@ -281,6 +291,8 @@ export class SqliteRepoStore implements RepoStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    this.db.exec(SECURITY_SCHEMA);
+    this.security = new SecurityTables(this.db, this.log);
     this.migrate();
     // A crawl interrupted by a restart must not stay "crawling" forever.
     this.db.exec("UPDATE repos SET crawl_status = 'idle', crawl_progress = NULL WHERE crawl_status = 'crawling'");
@@ -299,6 +311,7 @@ export class SqliteRepoStore implements RepoStore {
    * as it was, so a column added later has to be added here. Each step checks first, so running it twice is safe.
    */
   private migrate(): void {
+    migrateSecurityTables(this.db);
     const repoColumns = this.db.prepare("PRAGMA table_info(repos)").all() as unknown as { name: string }[];
     // Issues read from the code host (ADR 0028): whether they are switched on, where the next read resumes, the
     // label override and why the last read failed. Null means no issue read has recorded them yet.
@@ -758,5 +771,69 @@ export class SqliteRepoStore implements RepoStore {
   workItemCount(spaceId: number): number {
     const row = this.db.prepare("SELECT count(*) AS n FROM work_items WHERE space_id = ?").get(spaceId) as { n: number };
     return row.n;
+  }
+
+  saveSecurityAlerts(repoId: number, source: AlertSource, alerts: readonly SecurityAlert[], complete: boolean): void {
+    this.security.saveSecurityAlerts(repoId, source, alerts, complete);
+  }
+
+  clearSecurityAlerts(repoId: number, source: AlertSource): void {
+    this.security.clearSecurityAlerts(repoId, source);
+  }
+
+  securityAlerts(repoId: number): SecurityAlert[] {
+    return this.security.securityAlerts(repoId);
+  }
+
+  setSourceState(repoId: number, source: AlertSource, state: SourceState): void {
+    this.security.setSourceState(repoId, source, state);
+  }
+
+  sourceStates(repoId: number): Record<AlertSource, SourceState> {
+    return this.security.sourceStates(repoId);
+  }
+
+  saveSupplyChain(repoId: number, record: SupplyChainRecord, packages: readonly LockedPackage[]): void {
+    this.security.saveSupplyChain(repoId, record, packages);
+  }
+
+  supplyChain(repoId: number): SupplyChainRecord | null {
+    return this.security.supplyChain(repoId);
+  }
+
+  lockedPackages(repoId: number): LockedPackage[] {
+    return this.security.lockedPackages(repoId);
+  }
+
+  savePosture(repoId: number, posture: RepoPosture, readAt: string): void {
+    this.security.savePosture(repoId, posture, readAt);
+  }
+
+  failPosture(repoId: number, error: string, attemptedAt: string): void {
+    this.security.failPosture(repoId, error, attemptedAt);
+  }
+
+  postureFailure(repoId: number): { error: string; attemptedAt: string | null } | null {
+    return this.security.postureFailure(repoId);
+  }
+
+  posture(repoId: number): { posture: RepoPosture; readAt: string } | null {
+    return this.security.posture(repoId);
+  }
+
+  saveScorecard(repoId: number, readAt: string, result: ScorecardResult | null): void {
+    this.security.saveScorecard(repoId, readAt, result);
+  }
+
+  failScorecard(repoId: number, error: string): void {
+    this.security.failScorecard(repoId, error);
+  }
+
+  scorecard(repoId: number): StoredScorecard | null {
+    return this.security.scorecard(repoId);
+  }
+
+  securityKeys(repoId: number): SecurityKeys {
+    return this.security.securityKeys(repoId);
   }
 }

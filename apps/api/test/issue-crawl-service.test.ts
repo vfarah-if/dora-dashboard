@@ -245,7 +245,7 @@ describe("the repository crawl with issues", () => {
       warn: (context) => void warnings.push(context as { err?: unknown }),
       error: (context) => void errors.push(context),
     };
-    crawler = new CrawlService(store, provider, undefined, log, new IssueCrawlService(store, issues, log));
+    crawler = new CrawlService(store, provider, { log, issues: new IssueCrawlService(store, issues, log) });
     provider.seed("acme/widgets", { prs: [pr({ number: 1 })] });
     issues.seed("acme/widgets", seeded());
     repoId = store.addRepo("acme", "widgets", [], "main").id;

@@ -99,6 +99,13 @@ const CANDIDATE_NAMES: RegExp[] = [
 ];
 
 const WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+const ACTION = /^\.github\/actions\/(?:[^/]+\/)*action\.ya?ml$/;
+
+/** True for a GitHub Actions workflow file, `.github/workflows/*.yml` or `.yaml`. */
+export const isWorkflowPath = (path: string): boolean => WORKFLOW.test(path);
+
+/** True for a local composite action definition, `.github/actions/**\/action.yml` or `.yaml`. */
+export const isActionPath = (path: string): boolean => ACTION.test(path);
 
 /** Whether `detectTooling` can use this file. Fixtures inside test directories are ignored. */
 export function isToolingCandidate(path: string): boolean {
@@ -297,21 +304,29 @@ const words = (text: string) => text.split(/\s+/).filter((w) => /^[\w:.-]+$/.tes
 const PACKAGE_RUN =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:(?:-r|-w|--recursive|--workspaces?|--filter[= ]\S{1,100}|-F\s+\S{1,100}|-C\s+\S{1,100})\s+){0,4}(?:run(?:-script)?\s+)?([\w:.-]{1,100})/g;
 
+/** The scripts of every package.json and the recipes of every Makefile, which a CI command may name. */
+interface CommandSources {
+  scripts: Map<string, string[]>;
+  targets: Map<string, string[]>;
+}
+
+const commandSources = (files: readonly CandidateFile[]): CommandSources => ({
+  scripts: packageScripts(files),
+  targets: makeTargets(files),
+});
+
 /**
- * Every command a workflow would run, one per entry: its own commands, plus the recipe of each `make` target and the
- * body of each package script it names, followed transitively. This is how `make check` in CI reaches
- * `prettier --check`. The result is capped in total size.
+ * Every command the given lines would run, one per entry: their own commands, plus the recipe of each `make` target
+ * and the body of each package script they name, followed transitively. The result is capped in total size.
  */
-function ciCommands(files: readonly CandidateFile[]): string[] {
-  const scripts = packageScripts(files);
-  const targets = makeTargets(files);
+function expandCommands({ scripts, targets }: CommandSources, lines: readonly string[]): string[] {
   const seen = new Set<string>();
   const commands: string[] = [];
   const queue: string[] = [];
   let size = 0;
 
-  const take = (lines: string[]) => {
-    for (const command of lines.flatMap(commandsOf)) {
+  const take = (found: readonly string[]) => {
+    for (const command of found.flatMap(commandsOf)) {
       if ((size += command.length) > MAX_CI_CHARS) return;
       commands.push(command);
       queue.push(command);
@@ -324,7 +339,7 @@ function ciCommands(files: readonly CandidateFile[]): string[] {
     take(kind === "make" ? (targets.get(name) ?? []) : (scripts.get(name) ?? []));
   };
 
-  for (const file of files.filter((f) => WORKFLOW.test(f.path))) take(enforcingLines(file.content));
+  take(lines);
   for (let command = queue.shift(); command !== undefined; command = queue.shift()) {
     for (const m of command.matchAll(/\bmake\s+([^\n;&|#]{0,200})/g)) words(m[1]!).forEach((w) => follow("make", w));
     for (const m of command.matchAll(PACKAGE_RUN)) follow("script", m[1]!);
@@ -332,6 +347,34 @@ function ciCommands(files: readonly CandidateFile[]): string[] {
       words(m[1]!).forEach((w) => follow("script", w));
   }
   return commands;
+}
+
+/**
+ * Every command a workflow would run, one per entry: its own commands, plus the recipe of each `make` target and the
+ * body of each package script it names, followed transitively. This is how `make check` in CI reaches
+ * `prettier --check`. The result is capped in total size.
+ */
+function ciCommands(files: readonly CandidateFile[]): string[] {
+  const lines = files.filter((f) => WORKFLOW.test(f.path)).flatMap((f) => enforcingLines(f.content));
+  return expandCommands(commandSources(files), lines);
+}
+
+/**
+ * The commands each given file would run, keyed by path, with make targets and package scripts from `support` (the
+ * Makefiles and package.json files) followed. Unlike `ciCommands` a step marked `continue-on-error` still counts,
+ * because the supply chain facts ask what a workflow runs, not whether it can fail the build.
+ */
+export function commandsByFile(files: readonly CandidateFile[], support: readonly CandidateFile[]): Map<string, string[]> {
+  const sources = commandSources(support);
+  const found = new Map<string, string[]>();
+  for (const file of files) {
+    const lines = file.content
+      .split("\n")
+      .map((raw) => raw.slice(0, MAX_LINE))
+      .filter((line) => !line.trimStart().startsWith("#"));
+    found.set(file.path, expandCommands(sources, lines));
+  }
+  return found;
 }
 
 const CI_LINTERS: [string, RegExp][] = [

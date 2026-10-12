@@ -42,7 +42,7 @@ describe("code health during a crawl", () => {
     checkout = new FakeSourceCheckout();
     analyser = new FakeCodeAnalyser();
     service = new CodeHealthService(store, checkout, analyser, () => NOW);
-    crawler = new CrawlService(store, provider, service);
+    crawler = new CrawlService(store, provider, { codeHealth: service });
     provider.seed("acme/widgets", { prs: [pr({ number: 1 })], runs: [run({ runId: 1 })] });
     repoId = store.addRepo("acme", "widgets", ["deploy.yml"], "release").id;
   });
@@ -858,7 +858,7 @@ describe("hardening of the code health service", () => {
   it("re-analyses on a full crawl even when the head is unchanged", async () => {
     const provider = new FakeProvider();
     provider.seed("acme/widgets", {});
-    const crawler = new CrawlService(store, provider, service);
+    const crawler = new CrawlService(store, provider, { codeHealth: service });
     await crawler.crawl("t", repoId);
     await crawler.crawl("t", repoId);
     expect(checkout.requests).toHaveLength(1);
@@ -874,10 +874,13 @@ describe("hardening of the code health service", () => {
     store.saveCodeSnapshot = () => {
       throw new Error("disk full");
     };
-    const crawler = new CrawlService(store, provider, service, {
-      warn: (context, message) => void logged.push({ context, message }),
-      info: () => undefined,
-      error: () => undefined,
+    const crawler = new CrawlService(store, provider, {
+      codeHealth: service,
+      log: {
+        warn: (context, message) => void logged.push({ context, message }),
+        info: () => undefined,
+        error: () => undefined,
+      },
     });
 
     await crawler.crawl("t", repoId);
@@ -947,9 +950,16 @@ describe("branch and repository validation", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it.each(["release/1.2", "main", "feature_x-y"])("accepts the branch %s", (branch) => {
+  it.each(["release/1.2", "main", "feature_x-y", "v1.0", ".github", "a..b", "..x", "x.."])("accepts the branch %s", (branch) => {
     expect(isSafeBranch(branch)).toBe(true);
   });
+
+  it.each([".", "..", "../main", "main/..", "a/../b", "a/./b", "./x"])(
+    "rejects the branch %s, whose dot segment would change the address",
+    (branch) => {
+      expect(isSafeBranch(branch)).toBe(false);
+    },
+  );
 
   it("refuses an unsafe branch reaching the service directly", () => {
     const repos = new RepoService(new SqliteRepoStore(":memory:"), new FakeProvider());

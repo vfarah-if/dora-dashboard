@@ -5,6 +5,9 @@ import { DEFAULT_DORA_PROFILE, doraProfile, type DoraProfile } from "./doraProfi
 
 export type Band = "elite" | "high" | "medium" | "low";
 
+/** Bands in order, so a higher number is a better band. */
+export const BAND_RANK: Record<Band, number> = { low: 0, medium: 1, high: 2, elite: 3 };
+
 /**
  * Bands follow a named, cited profile (ADR 0016), simplified to fixed thresholds so a figure always maps to one
  * band. Each function grades against the default profile unless another is passed.
