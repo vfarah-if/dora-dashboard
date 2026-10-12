@@ -496,6 +496,13 @@ describe("branch state", () => {
     expect(part({ posture: unprotected }, "changeControl")).toMatchObject({ band: "high", check: "branchUnprotected" });
   });
 
+  it("is unprotected when the whole branch was read with detail full and no rule is in force", () => {
+    const full = posture({ branch: { ...unprotected.branch, detail: "full" } });
+    expect(full.branch.detail).toBe("full");
+    expect(branchState(full)).toEqual({ read: true, unprotected: true, forcePushAllowed: false, enforced: false });
+    expect(part({ posture: full }, "changeControl")).toMatchObject({ band: "high", check: "branchUnprotected" });
+  });
+
   it("is protected by a ruleset alone", () => {
     const ruleset = posture({ branch: { protected: false, detail: "rulesets_only", rules: { blockForcePushes: true } } });
     const nothing = { ...unprotected.branch.rules };

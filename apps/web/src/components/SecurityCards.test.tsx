@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SourceState, SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
@@ -29,7 +29,7 @@ describe("SupplyChainCard", () => {
     expect(within(rows[0]!).getByText("Met")).toBeInTheDocument();
     expect(within(rows[0]!).getByText("No workflow does this.")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("Not met")).toBeInTheDocument();
-    expect(within(rows[2]!).getByText("1 is not pinned.")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("1 use of an action is not pinned to a commit.")).toBeInTheDocument();
     expect(within(rows[2]!).getByText(copy.security.tags.countsTowardsGrade)).toBeInTheDocument();
   });
 
@@ -171,6 +171,71 @@ describe("BranchProtectionCard", () => {
     expect(screen.getByText(/^The deploy branch is main in a public repository\./)).toBeInTheDocument();
     expect(screen.getByText(/The branch is protected\. Only rulesets could be read/)).toBeInTheDocument();
     expect(screen.getByText(/Read on 1 Mar 2026, 10:03\./)).toBeInTheDocument();
+  });
+
+  it("never says only rulesets could be read for an unprotected branch or for an administrator", () => {
+    const base = securityReport();
+    const posture = base.posture!;
+    const { rerender } = render(<BranchProtectionCard report={base} />);
+    expect(screen.getByText(/Only rulesets could be read/)).toBeInTheDocument();
+    rerender(
+      <BranchProtectionCard
+        report={{ ...base, posture: { ...posture, branch: { ...posture.branch, protected: false, detail: "rulesets_only" } } }}
+      />,
+    );
+    expect(screen.getByText(/The branch is not protected\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Only rulesets could be read/)).not.toBeInTheDocument();
+    rerender(<BranchProtectionCard report={{ ...base, posture: { ...posture, isAdmin: true } }} />);
+    expect(screen.queryByText(/Only rulesets could be read/)).not.toBeInTheDocument();
+    expect(screen.getByText(/The account the dashboard uses is an administrator/)).toBeInTheDocument();
+  });
+
+  it("shows private vulnerability reporting and advisories as public only, neutrally, on a private repository", () => {
+    const base = securityReport();
+    const posture = base.posture!;
+    render(
+      <BranchProtectionCard
+        report={{
+          ...base,
+          posture: {
+            ...posture,
+            visibility: "private",
+            isAdmin: true,
+            branch: {
+              ...posture.branch,
+              rules: {
+                requirePullRequest: true,
+                requiredApprovals: 1,
+                dismissStaleReviews: true,
+                requireCodeOwnerReview: true,
+                requireStatusChecks: true,
+                blockForcePushes: true,
+                blockDeletion: true,
+                requireSignedCommits: true,
+                requireLinearHistory: true,
+              },
+            },
+            settings: {
+              dependabotSecurityUpdates: true,
+              secretScanning: true,
+              pushProtection: true,
+              validityChecks: true,
+              privateVulnerabilityReporting: null,
+            },
+            advisories: null,
+          },
+        }}
+      />,
+    );
+    const row = screen
+      .getByText(copy.security.branch.settings.privateVulnerabilityReporting, { selector: ".check-row-title" })
+      .closest("li")!;
+    expect(within(row).getByText(copy.security.branch.publicOnly)).toBeInTheDocument();
+    expect(within(row).queryByText("Not visible")).not.toBeInTheDocument();
+    expect(screen.getByText(copy.security.branch.publicOnly, { selector: "p" })).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.branch.advisoriesHidden)).not.toBeInTheDocument();
+    // Nothing is actually hidden, so the explainer about administrators has no place.
+    expect(screen.queryByText(copy.security.branch.notVisibleTitle)).not.toBeInTheDocument();
   });
 
   it("says advisories are not visible, or counts them by state", () => {
@@ -323,14 +388,24 @@ describe("ChangeControlCard", () => {
     expect(screen.getByText(copy.security.control.none)).toBeInTheDocument();
   });
 
-  it("shows ten rows and the rest behind a button", async () => {
+  it("shows five titles by default and the rest behind a button, since the titles are mostly ticket references", async () => {
     const user = userEvent.setup();
     const review = securityReport().review;
     const pullRequests = Array.from({ length: 11 }, (_, i) => ({ ...review.pullRequests[1]!, number: 100 + i }));
     render(<ChangeControlCard report={securityReport({ review: { ...review, pullRequests } })} />);
-    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(11);
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(6);
     await user.click(screen.getByRole("button", { name: copy.space.showAll(11) }));
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(12);
+  });
+
+  it("prints the five it shows and a line saying how many more there are on the page", () => {
+    const review = securityReport().review;
+    const pullRequests = Array.from({ length: 11 }, (_, i) => ({ ...review.pullRequests[1]!, number: 100 + i }));
+    render(<ChangeControlCard report={securityReport({ review: { ...review, pullRequests } })} />);
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(6);
+    expect(screen.getByText(copy.security.printMore(6))).toHaveClass("print-only");
+    act(() => void window.dispatchEvent(new Event("afterprint")));
   });
 });
 
@@ -395,6 +470,7 @@ describe("SecurityIssuesCard", () => {
     expect(tile(copy.security.issues.timeToClose)).toHaveTextContent("3.0 days");
     expect(tile(copy.security.issues.timeToClose)).toHaveTextContent("Across 4 closed issues.");
     expect(screen.getByRole("link", { name: copy.security.issues.link })).toHaveAttribute("href", "/issues/1");
+    expect(screen.getByRole("link", { name: copy.security.issues.link }).closest("p")).toHaveClass("screen-only");
   });
 
   it("says security issues are not counted when the repository has no stored issues", () => {
@@ -488,9 +564,17 @@ describe("SourcesPanel", () => {
     expect(card("Dependabot alerts")).toHaveTextContent("Read");
     expect(card("Dependabot alerts")).toHaveTextContent("Read on 1 Mar 2026, 10:00");
     expect(card("OSV.dev lookup")).toHaveTextContent("Switched off");
-    expect(card("OSV.dev lookup")).toHaveTextContent("Not read yet");
+    // A lookup that is not in use was never going to be read, so it carries no read line.
+    expect(card("OSV.dev lookup")).not.toHaveTextContent("Not read yet");
     expect(card("Workflow and dependency files")).toHaveTextContent("Read from commit abcdef1");
     expect(card("Branch rules and settings")).toHaveTextContent("Read on 1 Mar 2026, 10:03.");
+  });
+
+  it("gives the time once for the workflow files and the branch settings, whose own sentence already carries it", () => {
+    render(<SourcesPanel report={securityReport()} />);
+    const times = (text: string) => text.match(/1 Mar 2026, 10:0\d/g) ?? [];
+    expect(times(card("Workflow and dependency files").textContent ?? "")).toHaveLength(1);
+    expect(times(card("Branch rules and settings").textContent ?? "")).toHaveLength(1);
   });
 
   it("says how to switch on each source that is off, with a link to the Dependabot settings", () => {
@@ -534,6 +618,9 @@ describe("SourcesPanel", () => {
     );
     const osv = card("OSV.dev lookup");
     expect(osv).toHaveTextContent(copy.security.sources.notNeeded);
+    // Something that is not needed was never going to be read, so it has no read line at all.
+    expect(osv).not.toHaveTextContent(copy.security.sources.notYet);
+    expect(osv).not.toHaveTextContent(/Read on/);
     expect(osv).not.toHaveTextContent(copy.security.passFail.unmet);
     expect(osv.querySelector(".checks-none")).not.toBeNull();
     expect(osv.querySelector(".checks-failing")).toBeNull();

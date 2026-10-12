@@ -84,6 +84,21 @@ describe("SecurityPage", () => {
     expect(await screen.findByRole("heading", { level: 2, name: copy.security.start.title })).toBeInTheDocument();
   });
 
+  it("prints as it shows: charts drawn in full, disclosures as left, long lists as collapsed, and no controls to press", async () => {
+    const actions = Array.from({ length: 12 }, (_, i) => securityAction({ target: `npm:pkg-${i + 1}` }));
+    const { container } = show(securityReport({ actions }));
+    await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    const bars = [...container.querySelectorAll(".recharts-rectangle")];
+    expect(bars.length).toBeGreaterThan(0);
+    expect(bars.every((bar) => Number(bar.getAttribute("height")) > 0 && Number(bar.getAttribute("width")) > 0)).toBe(true);
+    expect(container.querySelectorAll("details[open]")).toHaveLength(0);
+    expect(container.querySelectorAll(".action-item")).toHaveLength(10);
+    expect(screen.getByText(copy.security.printMore(2))).toHaveClass("print-only");
+    expect(container.querySelector("#start-here a")).toHaveClass("screen-only");
+    act(() => void window.dispatchEvent(new Event("afterprint")));
+  });
+
   it("offers a PDF named for the security report of the repository, with the date range controls and no bots switch", async () => {
     const user = userEvent.setup();
     let printedAs = "";

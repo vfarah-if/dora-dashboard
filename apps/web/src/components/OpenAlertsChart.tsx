@@ -53,7 +53,15 @@ export function OpenAlertsChart({ weekly, part }: { weekly: SecurityReport["week
             cursor={{ fill: "var(--surface-sunken)" }}
           />
           {series.map((s) => (
-            <Bar key={s.key} dataKey={s.key} name={s.label} stackId="open" fill={s.colour} shape={WeeklyCountBar} />
+            <Bar
+              key={s.key}
+              dataKey={s.key}
+              name={s.label}
+              stackId="open"
+              fill={s.colour}
+              shape={WeeklyCountBar}
+              isAnimationActive={false}
+            />
           ))}
           {zoom && <Brush {...zoom.brush} />}
         </BarChart>

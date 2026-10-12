@@ -1,6 +1,5 @@
 import type { SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { formatDateTime } from "../lib/format";
 import { safeHttpUrl, sourceLines } from "../lib/security";
 import { ExternalLink } from "./ExternalLink";
 import { PassFail } from "./PassFail";
@@ -19,7 +18,7 @@ export function SourcesPanel({ report }: { report: SecurityReport }) {
             <h3 className="chart-title">{line.name}</h3>
             <PassFail state={line.tone} label={line.stateLabel} />
             {line.detail && <p>{line.detail}</p>}
-            <p className="chart-subtitle">{line.readAt ? c.readOn(formatDateTime(line.readAt)) : c.notYet}</p>
+            {line.readNote && <p className="chart-subtitle">{line.readNote}</p>}
             {line.enable && (
               <p>
                 <strong>{c.howTo}</strong> {line.enable}

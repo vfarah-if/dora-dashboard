@@ -30,7 +30,7 @@ export function SecurityIssuesCard({ report }: { report: SecurityReport }) {
               hint={c.timeToCloseHint(issues.timeToClose.count)}
             />
           </div>
-          <p>
+          <p className="screen-only">
             <Link to={`/issues/${report.repo.id}`} className="button button-secondary">
               {c.link}
             </Link>

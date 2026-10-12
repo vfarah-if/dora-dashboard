@@ -336,7 +336,6 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
     add("require_review", {
       band: (review.share ?? 0) <= UNAPPROVED_LIMITS.high ? "high" : "medium",
       count: review.unapproved,
-      refs: review.pullRequests.slice(0, MAX_REFS).map((pr) => ({ label: `#${pr.number} ${pr.title}`, url: pr.url })),
     });
   }
   if (posture !== null) {

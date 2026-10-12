@@ -189,6 +189,8 @@ export interface CheckLine {
   band: Band;
   /** True for the check that set its part's band. */
   limits: boolean;
+  /** "grade" for the one check that sets the overall grade, "part" for another part's limiting check, else null. */
+  sets: "grade" | "part" | null;
   text: string;
 }
 
@@ -196,16 +198,19 @@ const BAND_ORDER: Record<Band, number> = { low: 0, medium: 1, high: 2, elite: 3 
 
 /** Every check core could measure, in the order core lists them. A check with no band could not be measured and is left out. */
 export function checkLines(report: SecurityReport): CheckLine[] {
+  const overall = report.grade?.overall;
   return report.checks
     .filter((c): c is SecurityCheck & { band: Band } => c.band !== undefined)
     .map((c) => {
       const good = c.band === "elite" || c.met === true;
+      const setsGrade = c.limits && overall !== undefined && overall.part === c.part && overall.check === c.check;
       return {
         check: c.check,
         part: c.part,
         good,
         band: c.band,
         limits: c.limits,
+        sets: setsGrade ? "grade" : c.limits ? "part" : null,
         text: checkSentence[c.check]({ check: c, good, fix: report.fixWithinDays }),
       };
     });
@@ -447,8 +452,14 @@ export function alertWhere(where: AlertWhere): string {
 /** The plain name and one line of meaning for each weakness id that the page knows, keyed by its id such as "CWE-79". */
 export const CWE_NAMES: Record<string, { name: string; meaning: string }> = copy.security.cwe;
 
-export const weaknessName = (cwe: string): string => CWE_NAMES[cwe]?.name ?? cwe;
-export const weaknessMeaning = (cwe: string): string => CWE_NAMES[cwe]?.meaning ?? copy.security.weaknesses.unnamed;
+/** A weakness id as one spelling, so "CWE-020", "cwe-20" and "CWE-20" are the same one. Anything else is left as it came. */
+export function normaliseCwe(cwe: string): string {
+  const match = /^cwe-0*(\d+)$/i.exec(cwe.trim());
+  return match ? `CWE-${match[1]}` : cwe;
+}
+
+export const weaknessName = (cwe: string): string => CWE_NAMES[normaliseCwe(cwe)]?.name ?? normaliseCwe(cwe);
+export const weaknessMeaning = (cwe: string): string => CWE_NAMES[normaliseCwe(cwe)]?.meaning ?? copy.security.weaknesses.unnamed;
 
 export interface WeaknessRow {
   cwe: string;
@@ -458,14 +469,20 @@ export interface WeaknessRow {
   fixed: number;
 }
 
+/** One row for each weakness, with ids normalised for display and the counts of any that were the same id added together. */
 export function weaknessRows(weaknesses: SecurityReport["weaknesses"]): WeaknessRow[] {
-  return weaknesses.map((w) => ({
-    cwe: w.cwe,
-    name: weaknessName(w.cwe),
-    meaning: weaknessMeaning(w.cwe),
-    open: w.open,
-    fixed: w.fixedInRange,
-  }));
+  const rows = new Map<string, WeaknessRow>();
+  for (const w of weaknesses) {
+    const cwe = normaliseCwe(w.cwe);
+    const row = rows.get(cwe);
+    if (row) {
+      row.open += w.open;
+      row.fixed += w.fixedInRange;
+    } else {
+      rows.set(cwe, { cwe, name: weaknessName(cwe), meaning: weaknessMeaning(cwe), open: w.open, fixed: w.fixedInRange });
+    }
+  }
+  return [...rows.values()];
 }
 
 export interface TimeToFixRow {
@@ -536,7 +553,18 @@ export interface SourceLine {
   /** How to switch it on, or null when it needs nothing. */
   enable: string | null;
   readAt: string | null;
+  /**
+   * The line saying when it was read, or that it was not, or null when another line already says it or when it
+   * needs no reading at all, so that no row says "Not needed" and "Not read yet" together or gives the time twice.
+   */
+  readNote: string | null;
 }
+
+/** Why the OSV lookup is not used, which are reasons for it never to be read, so "not read yet" would mislead. */
+const NOT_USED_REASONS: ReadonlySet<string> = new Set(["lookup_off", "dependabot_ok", "no_inventory"]);
+
+const readNoteFor = (readAt: string | null): string =>
+  readAt ? copy.security.sources.readOn(formatDateTime(readAt)) : copy.security.sources.notYet;
 
 function alertSourceLine(source: AlertSource, state: SourceState): SourceLine {
   const text = copy.security.sources;
@@ -555,6 +583,7 @@ function alertSourceLine(source: AlertSource, state: SourceState): SourceLine {
     detail,
     enable: needsNothing ? null : text.enable[source],
     readAt: state.readAt,
+    readNote: state.reason !== null && NOT_USED_REASONS.has(state.reason) ? null : readNoteFor(state.readAt),
   };
 }
 
@@ -579,6 +608,8 @@ export function sourceLines(report: SecurityReport): SourceLine[] {
         : text.supplyChain[chain.reason],
     enable: chain.status === "ok" ? null : text.supplyChain.enable,
     readAt: chain.status === "ok" ? chain.readAt : null,
+    // The detail of a file set that was read already gives the time.
+    readNote: chain.status === "ok" ? null : readNoteFor(null),
   });
   const postureStatus: SourceStatus = report.posture ? "ok" : "not_read";
   lines.push({
@@ -590,6 +621,8 @@ export function sourceLines(report: SecurityReport): SourceLine[] {
     detail: report.postureReadAt ? text.posture.ok(formatDateTime(report.postureReadAt)) : text.posture.notRead,
     enable: report.posture ? null : text.posture.enable,
     readAt: report.postureReadAt,
+    // The detail of settings that were read already gives the time.
+    readNote: report.postureReadAt ? null : readNoteFor(null),
   });
   return lines;
 }
@@ -741,6 +774,8 @@ export interface RuleRow {
   hint: string;
   state: RuleState;
   detail: string | null;
+  /** Replaces the word for the state, as in "Only for public repositories". Such a row is neutral, never a gap. */
+  stateLabel?: string;
 }
 
 const RULE_KEYS = keysOf<keyof BranchRules>({
@@ -786,15 +821,46 @@ const SETTING_KEYS = keysOf<keyof RepoPosture["settings"]>({
   privateVulnerabilityReporting: true,
 });
 
+/** Private vulnerability reporting and advisories exist only on public repositories, whoever asks. */
+export const publicOnlyHere = (posture: RepoPosture): boolean =>
+  posture.visibility === "private" || posture.visibility === "internal";
+
 export function settingRows(posture: RepoPosture): RuleRow[] {
   const text = copy.security.branch;
-  return SETTING_KEYS.map((key) => ({
-    key,
-    label: text.settings[key],
-    hint: text.settingHints[key],
-    state: stateOf(posture.settings[key]),
-    detail: null,
-  }));
+  return SETTING_KEYS.map((key) => {
+    const value = posture.settings[key];
+    const notOffered = key === "privateVulnerabilityReporting" && value === null && publicOnlyHere(posture);
+    return {
+      key,
+      label: text.settings[key],
+      hint: text.settingHints[key],
+      state: stateOf(value),
+      detail: null,
+      ...(notOffered ? { stateLabel: text.publicOnly } : {}),
+    };
+  });
+}
+
+/** True when something on the card could not be seen, which a setting that does not exist here never counts as. */
+export function hasNotVisible(posture: RepoPosture, rows: readonly RuleRow[]): boolean {
+  const advisoriesHidden = posture.advisories === null && !publicOnlyHere(posture);
+  return advisoriesHidden || rows.some((row) => row.state === "unseen" && row.stateLabel === undefined);
+}
+
+/** The advisory counts, or why there are none to count. */
+export function advisoriesText(posture: RepoPosture): string {
+  if (posture.advisories) return advisorySentence(posture.advisories);
+  return publicOnlyHere(posture) ? copy.security.branch.publicOnly : copy.security.branch.advisoriesHidden;
+}
+
+/**
+ * What was readable of the branch's protection. The caveat that only rulesets could be read is left out for an
+ * unprotected branch, which has no classic protection to read, and for an administrator, who can read it.
+ */
+export function branchDetailLine(posture: RepoPosture): string | null {
+  const { detail, protected: isProtected } = posture.branch;
+  if (detail !== "full" && (isProtected === false || posture.isAdmin === true)) return null;
+  return copy.security.branch.detail[detail];
 }
 
 export function branchProtectedLine(posture: RepoPosture): string {

@@ -1,13 +1,11 @@
 import type { SecurityAction, SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { usePrinting } from "../lib/print";
 import { ACTION_EFFORT, actionSentence, safeHttpUrl, severityLabel } from "../lib/security";
 import { LEARN_MORE, settingsLinkFor, snippetsFor, upgradeInstruction, type FixContext } from "../lib/securityFixes";
 import { CopySnippet } from "./CopySnippet";
 import { ExternalLink } from "./ExternalLink";
 import { PathText } from "./PathText";
-import { EffortTag, LikelyExploitedTag, SecurityBlock, Tag } from "./SecurityParts";
-import { ShowAllList } from "./ShowAllList";
+import { EffortTag, LikelyExploitedTag, SecurityBlock, SecurityList, Tag } from "./SecurityParts";
 
 const c = copy.security;
 
@@ -44,19 +42,10 @@ function Refs({ refs }: { refs: SecurityAction["refs"] }) {
 }
 
 /**
- * One thing to fix. The explanation sits in a native disclosure that is forced open when printing. Whether the page is
- * printing is passed in, because an item that only appears for the printed copy would start after the print event had
- * gone, and so would never learn of it.
+ * One thing to fix. The explanation sits in a native disclosure, and the printed report keeps it as it is on screen,
+ * so what is closed on screen stays closed on paper.
  */
-export function ActionItem({
-  action,
-  context,
-  printing = false,
-}: {
-  action: SecurityAction;
-  context: FixContext;
-  printing?: boolean;
-}) {
+export function ActionItem({ action, context }: { action: SecurityAction; context: FixContext }) {
   const fix = c.fix[action.kind];
   const alt = action.kind === "enable_dependabot" && context.versionUpdates ? c.dependabotAlerts : null;
   const sentence = actionSentence(action, context.versionUpdates ?? null, context.thresholds ?? null);
@@ -76,7 +65,7 @@ export function ActionItem({
         {action.band === null && <Tag>{c.tags.advice}</Tag>}
         {action.likelyExploited && <LikelyExploitedTag />}
       </p>
-      <details className="action-details" open={printing ? true : undefined}>
+      <details className="action-details">
         <summary>
           {c.fixTitle}
           <span className="visually-hidden"> {sentence}</span>
@@ -113,9 +102,8 @@ export function ActionItem({
   );
 }
 
-/** What to fix first, as a numbered list with the first ten shown and the rest behind a button. Printed in full. */
+/** What to fix first, as a numbered list with the first ten shown and the rest behind a button. Prints as it shows. */
 export function SecurityActions({ report }: { report: SecurityReport }) {
-  const printing = usePrinting();
   const context = fixContext(report);
   const actions = report.actions;
   return (
@@ -125,7 +113,7 @@ export function SecurityActions({ report }: { report: SecurityReport }) {
       ) : (
         <>
           <p className="chart-subtitle">{c.actions.counting(actions.length)}</p>
-          <ShowAllList total={actions.length} limit={10}>
+          <SecurityList total={actions.length} limit={10}>
             {(limit) => (
               <ol className="action-list">
                 {actions.slice(0, limit).map((action) => (
@@ -133,12 +121,11 @@ export function SecurityActions({ report }: { report: SecurityReport }) {
                     key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}
                     action={action}
                     context={context}
-                    printing={printing}
                   />
                 ))}
               </ol>
             )}
-          </ShowAllList>
+          </SecurityList>
         </>
       )}
     </SecurityBlock>

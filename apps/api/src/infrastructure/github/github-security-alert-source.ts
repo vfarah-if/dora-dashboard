@@ -62,10 +62,10 @@ const SECRET_RESOLUTIONS = [
   "pattern_deleted",
 ] as const;
 
-/** `CWE-79` for any case of `cwe-79`, and nothing for text that is not a weakness id. */
+/** `CWE-79` for any case of `cwe-79` or zero padded `cwe-079`, and nothing for text that is not a weakness id. */
 const cweOf = (value: unknown): string | null => {
-  const text = str(value);
-  return text !== null && /^cwe-\d{1,6}$/i.test(text) ? text.toUpperCase() : null;
+  const match = /^cwe-0*(\d{1,6})$/i.exec(str(value) ?? "");
+  return match ? `CWE-${Number(match[1])}` : null;
 };
 
 /** Where an alert's own page is, when GitHub sent an address on its own site, else the page we know it has. */
@@ -387,10 +387,14 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
       hint !== null &&
       hint.enforcement_level !== "off" &&
       ((Array.isArray(hint.contexts) && hint.contexts.length > 0) || (Array.isArray(hint.checks) && hint.checks.length > 0));
-    const protection = isProtected === true ? await this.fetchOne(token, `${repoPath}/branches/${branchPath}/protection`) : null;
+    // An unprotected branch has no classic protection to read, so it is asked nothing and counts as fully known.
+    const classicRead =
+      isProtected === true ? await this.readProtection(token, `${repoPath}/branches/${branchPath}/protection`) : null;
+    const protection = classicRead?.kind === "rules" ? classicRead.body : null;
+    const noClassic = isProtected === false || classicRead?.kind === "none";
     const ruleList = await this.fetchRaw(token, `${repoPath}/rules/branches/${branchPath}`);
 
-    const classic = protection ? fromProtection(protection) : isProtected === false ? noRules() : null;
+    const classic = protection ? fromProtection(protection) : noClassic ? noRules() : null;
     const rulesets = Array.isArray(ruleList) ? fromRulesets(ruleList) : null;
     const rules = mergeRules(classic, rulesets);
     if (rules.requireStatusChecks === null && hintChecks) rules.requireStatusChecks = true;
@@ -399,8 +403,12 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
     const fixes =
       enabledOf(obj(analysis?.dependabot_security_updates)) ??
       bool((await this.fetchOne(token, `${repoPath}/automated-security-fixes`))?.enabled);
-    const reporting = bool((await this.fetchOne(token, `${repoPath}/private-vulnerability-reporting`))?.enabled);
-    const advisories = await this.fetchRaw(token, `${repoPath}/security-advisories?per_page=100`);
+    // Both features exist only for public repositories, and GitHub answers 404 for a private one, so it is not asked.
+    const isPublic = visibility === "public";
+    const reporting = isPublic
+      ? bool((await this.fetchOne(token, `${repoPath}/private-vulnerability-reporting`))?.enabled)
+      : null;
+    const advisories = isPublic ? await this.fetchRaw(token, `${repoPath}/security-advisories?per_page=100`) : null;
 
     return {
       visibility,
@@ -409,7 +417,7 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
         name: branch,
         protected: isProtected,
         rules,
-        detail: protection ? "full" : rulesets ? "rulesets_only" : "none",
+        detail: protection ? "full" : rulesets ? (noClassic ? "full" : "rulesets_only") : "none",
       },
       settings: {
         dependabotSecurityUpdates: fixes,
@@ -420,6 +428,16 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
       },
       advisories: Array.isArray(advisories) ? countAdvisories(advisories) : null,
     };
+  }
+
+  /** Classic protection, "none" when GitHub says the branch is not protected, or null when this credential cannot see it. */
+  private async readProtection(token: string, url: string): Promise<{ kind: "rules"; body: Json } | { kind: "none" } | null> {
+    const page = await requestPage<unknown>(this.http, token, url, [403, 404]);
+    if ("body" in page) {
+      const body = obj(page.body);
+      return body ? { kind: "rules", body } : null;
+    }
+    return page.status === 404 && /branch not protected/i.test(page.message) ? { kind: "none" } : null;
   }
 
   private repoPath(owner: string, name: string): string {

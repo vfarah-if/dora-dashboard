@@ -47,3 +47,4 @@ The dashboard shows delivery flow, DORA, code health and issues, but says nothin
 ## Revision History
 
 - 2026-10-12: Recorded the permissions in full, the failure messages and their scrubbing, that `no_access` keeps stored alerts and only `off` clears them, the stricter reading of code scanning's 404, the manual redirect rule, the reply cap, stored posture failures and the shared token as a negative consequence.
+- 2026-10-12: An unprotected branch is now fully known. When the branch read says `protected: false`, or classic protection answers 404 "Branch not protected", the classic part is reported as read and `detail` is `full` when rulesets were also read; other 404 and 403 answers still mean not visible. Private vulnerability reporting and repository security advisories are requested only when the visibility is `public`, because GitHub answers 404 for a private repository even to an administrator. Weakness ids are normalised to `CWE-<number>`.

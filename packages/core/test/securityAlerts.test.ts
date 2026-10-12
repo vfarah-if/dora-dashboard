@@ -103,6 +103,11 @@ describe("cwesOf", () => {
     expect(cwesOf(codeAlert({ code: { cwes: ["CWE-94"] } }))).toEqual(["CWE-94"]);
   });
 
+  it("normalises zero padded and lower case ids, and drops the duplicates that results in", () => {
+    expect(cwesOf(codeAlert({ code: { cwes: ["CWE-020", "cwe-20", "CWE-079"] } }))).toEqual(["CWE-20", "CWE-79"]);
+    expect(cwesOf(depAlert({ dependency: { cwes: ["CWE-0089", "not-a-cwe"] } }))).toEqual(["CWE-89", "not-a-cwe"]);
+  });
+
   it("gives a secret alert none", () => {
     expect(cwesOf(secretAlert())).toEqual([]);
   });

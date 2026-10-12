@@ -346,7 +346,7 @@ describe("what each action describes", () => {
     expect(of(list, "review_weak_key_files")[0]!.refs).toEqual([{ label: "cert.pem", url: null }]);
   });
 
-  it("asks for review with the unapproved pull requests as links, and not when the share is at most 5%", () => {
+  it("asks for review with no pull request links, and not when the share is at most 5%", () => {
     const pullRequests = [
       { number: 4, title: "Fix it", url: "https://github.com/acme/widgets/pull/4", mergedAt: daysAgo(2), selfMerged: false },
     ];
@@ -354,8 +354,8 @@ describe("what each action describes", () => {
     expect(of(bad, "require_review")[0]).toMatchObject({
       band: "medium",
       count: 3,
-      refs: [{ label: "#4 Fix it", url: "https://github.com/acme/widgets/pull/4" }],
     });
+    expect(of(bad, "require_review")[0]!.refs).toEqual([]);
     expect(of(actions({ review: controls({ merged: 100, unapproved: 5, share: 0.05 }) }), "require_review")).toEqual([]);
     expect(of(actions({ review: controls({ merged: 100, unapproved: 6, share: 0.06 }) }), "require_review")[0]!.band).toBe(
       "high",

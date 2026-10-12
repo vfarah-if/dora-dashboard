@@ -14,8 +14,7 @@ import { safeHttpUrl } from "../lib/security";
 import { useTextParam } from "../lib/urlState";
 import { ExternalLink } from "./ExternalLink";
 import { PathText } from "./PathText";
-import { LikelyExploitedTag, SecurityBlock, SeverityTag, Tag } from "./SecurityParts";
-import { ShowAllList } from "./ShowAllList";
+import { LikelyExploitedTag, SecurityBlock, SecurityList, SeverityTag, Tag } from "./SecurityParts";
 
 const c = copy.security.alerts;
 
@@ -48,7 +47,7 @@ function Row({ alert }: { alert: SecurityAlertRef }) {
   );
 }
 
-/** The worst open alerts, with a filter by source held in the address so a view can be shared. It prints in full. */
+/** The worst open alerts, with a filter by source held in the address so a view can be shared. It prints as it shows. */
 export function AlertsTable({ report }: { report: SecurityReport }) {
   const [raw, setSource] = useTextParam("source");
   const source = parseAlertSource(raw);
@@ -79,7 +78,7 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
         {alerts.length === 0 ? (
           <p className="chart-empty">{c.none}</p>
         ) : (
-          <ShowAllList total={alerts.length}>
+          <SecurityList total={alerts.length}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table alerts-table">
@@ -102,7 +101,7 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
                 </table>
               </div>
             )}
-          </ShowAllList>
+          </SecurityList>
         )}
       </div>
     </SecurityBlock>

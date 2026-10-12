@@ -61,9 +61,15 @@ export function isLikelyExploited(alert: SecurityAlert): boolean {
   return epss !== null && epss >= LIKELY_EXPLOITED_EPSS;
 }
 
-/** The weakness ids an alert names, such as "CWE-79". Secrets name none. */
+/** `CWE-79` for `cwe-079`, `CWE-079` or `CWE-79`. Text that is not a weakness id is returned unchanged. */
+export function normaliseCwe(id: string): string {
+  const match = /^cwe-0*(\d+)$/i.exec(id.trim());
+  return match ? `CWE-${match[1]}` : id;
+}
+
+/** The weakness ids an alert names, such as "CWE-79", normalised so stored zero padded ids read the same. Secrets name none. */
 export function cwesOf(alert: SecurityAlert): string[] {
-  if (alert.source === "code_scanning") return alert.code.cwes;
-  if (alert.source === "secret_scanning") return [];
-  return alert.dependency.cwes;
+  const raw =
+    alert.source === "code_scanning" ? alert.code.cwes : alert.source === "secret_scanning" ? [] : alert.dependency.cwes;
+  return [...new Set(raw.map(normaliseCwe))];
 }

@@ -8,12 +8,15 @@ import {
   ACTION_EFFORT,
   ALERT_SOURCES,
   CWE_NAMES,
+  normaliseCwe,
   SEVERITIES,
   SEVERITY_COLOUR,
   SUPPLY_CHAIN_CHECK_IDS,
   SUPPLY_CHAIN_GROUPS,
   actionSentence,
+  advisoriesText,
   advisorySentence,
+  branchDetailLine,
   alertWhere,
   alertsReadAt,
   branchProtectedLine,
@@ -474,6 +477,51 @@ describe("weaknesses and time to fix", () => {
     expect(CWE_NAMES["CWE-79"]!.name).toBe("Cross-site scripting");
   });
 
+  it("names every weakness on the list a developer is likely to meet, with a name and a meaning for each", () => {
+    const wanted = [
+      20, 22, 59, 74, 77, 78, 79, 89, 94, 113, 116, 125, 190, 200, 248, 285, 287, 295, 311, 312, 319, 326, 327, 330, 345, 346,
+      347, 352, 362, 384, 400, 401, 407, 434, 444, 476, 502, 532, 601, 611, 613, 639, 668, 674, 693, 732, 754, 770, 776, 787, 798,
+      829, 835, 862, 863, 915, 918, 1035, 1236, 1284, 1321, 1333,
+    ];
+    for (const id of wanted) expect(weaknessName(`CWE-${id}`), `CWE-${id}`).not.toBe(`CWE-${id}`);
+    expect(weaknessName("CWE-835")).toBe("Infinite loop");
+    expect(weaknessName("CWE-674")).toBe("Uncontrolled recursion");
+    expect(weaknessName("CWE-754")).toBe("Improper check for unusual conditions");
+    expect(weaknessName("CWE-1284")).toBe("Improper validation of a quantity");
+    expect(weaknessName("CWE-407")).toBe("Inefficient algorithm (slow on crafted input)");
+  });
+
+  it("gives every id in the map a name, a meaning in plain words and a key that is already normalised", () => {
+    for (const [id, entry] of Object.entries(CWE_NAMES)) {
+      expect(id, id).toBe(normaliseCwe(id));
+      expect(entry.name.length, id).toBeGreaterThan(3);
+      expect(entry.meaning.length, id).toBeGreaterThan(30);
+      expect(entry.meaning.endsWith("."), id).toBe(true);
+      expect(`${entry.name} ${entry.meaning}`, id).not.toMatch(NO_DASH);
+    }
+  });
+
+  it("resolves padded and lower case ids, and leaves anything else as it came", () => {
+    expect(normaliseCwe("CWE-020")).toBe("CWE-20");
+    expect(normaliseCwe("cwe-0079")).toBe("CWE-79");
+    expect(normaliseCwe("CWE-1284")).toBe("CWE-1284");
+    expect(normaliseCwe("NVD-CWE-Other")).toBe("NVD-CWE-Other");
+    expect(weaknessName("CWE-020")).toBe(CWE_NAMES["CWE-20"]!.name);
+    expect(weaknessMeaning("CWE-0754")).toBe(CWE_NAMES["CWE-754"]!.meaning);
+  });
+
+  it("shows a padded id unpadded in the rows and adds together two spellings of the same id", () => {
+    const rows = weaknessRows([
+      { cwe: "CWE-020", open: 2, fixedInRange: 1 },
+      { cwe: "CWE-79", open: 1, fixedInRange: 0 },
+      { cwe: "CWE-20", open: 1, fixedInRange: 3 },
+    ]);
+    expect(rows.map((r) => [r.cwe, r.name, r.open, r.fixed])).toEqual([
+      ["CWE-20", CWE_NAMES["CWE-20"]!.name, 3, 4],
+      ["CWE-79", "Cross-site scripting", 1, 0],
+    ]);
+  });
+
   it("shows an unknown weakness as its id and says it has no plain name yet", () => {
     expect(weaknessName("CWE-89")).toBe("SQL injection");
     expect(weaknessName("CWE-9999")).toBe("CWE-9999");
@@ -732,14 +780,24 @@ describe("supply chain lines", () => {
 
   it("states the number found for an unmet line", () => {
     expect(supplyChainSentence({ check: "unpinnedActions", met: false, graded: true, items: [], total: 2 })).toBe(
-      "2 are not pinned.",
+      "2 uses of actions are not pinned to a commit.",
     );
     expect(supplyChainSentence({ check: "unpinnedActions", met: false, graded: true, items: [], total: 1 })).toBe(
-      "1 is not pinned.",
+      "1 use of an action is not pinned to a commit.",
     );
     expect(supplyChainSentence({ check: "unpinnedActions", met: true, graded: true, items: [], total: 0 })).toBe(
       "Every one is pinned.",
     );
+  });
+
+  it("says Dockerfiles for the image checks, because each counts Dockerfiles and not images", () => {
+    const line = (check: "baseImagesPinned" | "latestImages" | "nonRootImages" | "remoteAdd", total: number) =>
+      supplyChainSentence({ check, met: false, graded: false, items: [], total });
+    expect(line("baseImagesPinned", 4)).toBe("4 Dockerfiles use images that are not pinned to a digest.");
+    expect(line("baseImagesPinned", 1)).toBe("1 Dockerfile uses an image that is not pinned to a digest.");
+    expect(line("latestImages", 2)).toBe("2 Dockerfiles use the latest tag or none.");
+    expect(line("nonRootImages", 2)).toBe("2 Dockerfiles run their images as the root user.");
+    expect(line("remoteAdd", 1)).toBe("1 Dockerfile fetches a file with ADD.");
   });
 
   it("takes each section's lines in the section's order and leaves out what the report did not carry", () => {
@@ -816,9 +874,35 @@ describe("branch rules and settings", () => {
       "The deploy branch is main in a public repository. The account the dashboard uses is not an administrator, so some settings are not visible.",
     );
     expect(postureAbout({ ...posture, visibility: null, isAdmin: true })).toBe(
-      "The deploy branch is main. The dashboard could read every setting, because its account is an administrator.",
+      "The deploy branch is main. The account the dashboard uses is an administrator, so it can read the branch rules and settings.",
     );
     expect(postureAbout({ ...posture, isAdmin: null })).toMatch(/not known whether/);
+  });
+
+  it("drops the rulesets only caveat for an unprotected branch and for an administrator, and keeps it otherwise", () => {
+    const only = { ...posture, branch: { ...posture.branch, detail: "rulesets_only" as const } };
+    expect(branchDetailLine({ ...only, isAdmin: false })).toBe(copy.security.branch.detail.rulesets_only);
+    expect(branchDetailLine({ ...only, isAdmin: true })).toBeNull();
+    expect(branchDetailLine({ ...only, isAdmin: false, branch: { ...only.branch, protected: false } })).toBeNull();
+    expect(
+      branchDetailLine({ ...only, isAdmin: false, branch: { ...only.branch, detail: "none", protected: false } }),
+    ).toBeNull();
+    expect(branchDetailLine({ ...only, branch: { ...only.branch, detail: "full" }, isAdmin: true })).toBe(
+      copy.security.branch.detail.full,
+    );
+  });
+
+  it("calls private vulnerability reporting and advisories public only on a private or internal repository", () => {
+    for (const visibility of ["private", "internal"] as const) {
+      const here = { ...posture, visibility };
+      const row = settingRows(here).find((r) => r.key === "privateVulnerabilityReporting")!;
+      expect(row.stateLabel).toBe(copy.security.branch.publicOnly);
+      expect(advisoriesText(here)).toBe(copy.security.branch.publicOnly);
+    }
+    const open = settingRows(posture).find((r) => r.key === "privateVulnerabilityReporting")!;
+    expect(open.stateLabel).toBeUndefined();
+    expect(advisoriesText(posture)).toBe(copy.security.branch.advisoriesHidden);
+    expect(advisoriesText({ ...posture, visibility: null })).toBe(copy.security.branch.advisoriesHidden);
   });
 
   it("writes the advisory counts", () => {

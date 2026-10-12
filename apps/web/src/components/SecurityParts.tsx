@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { Severity } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { effortLabel, severityLabel, type Effort } from "../lib/security";
+import { ShowAllList } from "./ShowAllList";
 
 /** A titled section of the security report, with a lede saying what it shows. */
 export function SecurityBlock({ id, title, lede, children }: { id: string; title: string; lede?: string; children: ReactNode }) {
@@ -42,4 +43,12 @@ export function LikelyExploitedTag() {
       <Tag tone="danger">{copy.security.tags.likelyExploited}</Tag>
     </span>
   );
+}
+
+/**
+ * A long list on a security page. The printed report follows the screen, so a list left collapsed prints its first
+ * entries and a line saying how many more there are on the security page, instead of running to dozens of pages.
+ */
+export function SecurityList(props: Omit<Parameters<typeof ShowAllList>[0], "printAll" | "printNote">) {
+  return <ShowAllList {...props} printAll={false} printNote={copy.security.printMore} />;
 }

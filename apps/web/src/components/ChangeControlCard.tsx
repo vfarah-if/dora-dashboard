@@ -3,11 +3,12 @@ import { copy } from "../copy";
 import { formatDate, formatNumber, formatPercent } from "../lib/format";
 import { reviewNotGraded, safeHttpUrl } from "../lib/security";
 import { ExternalLink } from "./ExternalLink";
-import { SecurityBlock, Tag } from "./SecurityParts";
-import { ShowAllList } from "./ShowAllList";
+import { SecurityBlock, SecurityList, Tag } from "./SecurityParts";
 import { StatTile } from "./StatTile";
 
 const c = copy.security.control;
+/** Titles are mostly ticket references, so a handful says enough and the rest wait behind the button. */
+const PULL_REQUEST_LIMIT = 5;
 
 /** Whether merged changes were reviewed by someone else, with no names, because the page is about habits and not people. */
 export function ChangeControlCard({ report }: { report: SecurityReport }) {
@@ -48,7 +49,7 @@ export function ChangeControlCard({ report }: { report: SecurityReport }) {
         {review.pullRequests.length === 0 ? (
           <p className="chart-empty">{c.none}</p>
         ) : (
-          <ShowAllList total={review.pullRequests.length}>
+          <SecurityList total={review.pullRequests.length} limit={PULL_REQUEST_LIMIT}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table">
@@ -80,7 +81,7 @@ export function ChangeControlCard({ report }: { report: SecurityReport }) {
                 </table>
               </div>
             )}
-          </ShowAllList>
+          </SecurityList>
         )}
       </section>
     </SecurityBlock>

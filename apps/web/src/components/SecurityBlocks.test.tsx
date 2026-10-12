@@ -146,6 +146,8 @@ describe("StartHere", () => {
     expect(within(card).getByText("and 1 more.", { exact: false })).toBeInTheDocument();
     expect(within(card).getByText("There are also 2 pieces of advice that do not change the grade.")).toBeInTheDocument();
     expect(within(card).getByRole("link", { name: copy.security.start.seeAll })).toHaveAttribute("href", "#security-actions");
+    // An in-page jump has nowhere to go on paper, so it is left out of the printed report.
+    expect(within(card).getByRole("link", { name: copy.security.start.seeAll })).toHaveClass("screen-only");
   });
 
   it("says this one thing when a single action raises the grade", () => {
@@ -214,7 +216,7 @@ describe("SecurityGrade", () => {
     expect(change).not.toHaveTextContent(/Elite|High|Medium|Low/);
   });
 
-  it("lists what is good and what to improve, marking only the limiting checks with the words Sets the grade", () => {
+  it("lists what is good and what to improve, marking only the check that sets the overall grade with Sets the grade", () => {
     render(<SecurityGrade report={securityReport()} />);
     const good = screen.getByRole("heading", { name: copy.security.grade.goodTitle }).closest("section")!;
     expect(
@@ -232,7 +234,10 @@ describe("SecurityGrade", () => {
     expect(items[0]).toHaveTextContent(copy.security.tags.setsGrade);
     expect(items[1]).not.toHaveTextContent(copy.security.tags.setsGrade);
     expect(items[2]).toHaveTextContent("not pinned to a commit");
-    expect(items[2]).toHaveTextContent(copy.security.tags.setsGrade);
+    // Another part's limiting check does not set the overall grade, so it carries the part wording instead.
+    expect(items[2]).not.toHaveTextContent(copy.security.tags.setsGrade);
+    expect(items[2]).toHaveTextContent(copy.security.tags.setsPartGrade);
+    expect(items[0]).not.toHaveTextContent(copy.security.tags.setsPartGrade);
     expect(items[3]).not.toHaveTextContent(copy.security.tags.setsGrade);
   });
 
@@ -492,13 +497,38 @@ describe("ActionItem", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens its disclosure when told the page is printing", () => {
+  it("keeps its disclosure as it is on screen when the page prints, so a closed one stays closed", () => {
     const { container } = render(
       <ol>
-        <ActionItem action={securityAction()} context={context} printing />
+        <ActionItem action={securityAction()} context={context} />
       </ol>,
     );
-    expect(container.querySelector("details")).toHaveAttribute("open");
+    startPrint();
+    expect(container.querySelector("details")).not.toHaveAttribute("open");
+    endPrint();
+  });
+
+  it("leaves no empty Where to look heading when the action has nothing to point at", () => {
+    const { rerender } = render(
+      <ol>
+        <ActionItem action={securityAction({ kind: "require_review", count: 3, band: "high", refs: [] })} context={context} />
+      </ol>,
+    );
+    expect(screen.queryByRole("heading", { name: copy.security.affected })).not.toBeInTheDocument();
+    rerender(
+      <ol>
+        <ActionItem
+          action={securityAction({
+            kind: "require_review",
+            count: 3,
+            band: "high",
+            refs: [{ label: ".github/workflows/ci.yml", url: null }],
+          })}
+          context={context}
+        />
+      </ol>,
+    );
+    expect(screen.getByRole("heading", { name: copy.security.affected })).toBeInTheDocument();
   });
 });
 
@@ -543,16 +573,26 @@ describe("SecurityActions", () => {
     expect(screen.getByRole("button", { name: copy.space.showFewer })).toBeInTheDocument();
   });
 
-  it("prints every action, each with its explanation open, and no button", () => {
+  it("prints what the screen shows, with the explanations as they are and a line for the actions left out", async () => {
+    const user = userEvent.setup();
     const { container } = renderRoute(<SecurityActions report={many(12)} />);
+    await user.click(container.querySelector("summary")!);
     startPrint();
-    expect(container.querySelectorAll(".action-item")).toHaveLength(12);
-    expect(screen.queryByRole("button", { name: copy.space.showAll(12) })).not.toBeInTheDocument();
-    // The two that appear only for the printed copy are open as well, because the page decides, not each item.
-    expect(container.querySelectorAll("details[open]")).toHaveLength(12);
-    endPrint();
-    expect(container.querySelectorAll("details[open]")).toHaveLength(0);
     expect(container.querySelectorAll(".action-item")).toHaveLength(10);
+    // Only the one opened on screen is open on paper.
+    expect(container.querySelectorAll("details[open]")).toHaveLength(1);
+    const note = screen.getByText(copy.security.printMore(2));
+    expect(note).toHaveClass("print-only");
+    endPrint();
+  });
+
+  it("hides the show all button from the printed copy, and prints no note once everything is shown", async () => {
+    const user = userEvent.setup();
+    const { container } = renderRoute(<SecurityActions report={many(12)} />);
+    expect(screen.getByRole("button", { name: copy.space.showAll(12) })).toHaveClass("screen-only");
+    await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
+    expect(container.querySelectorAll(".action-item")).toHaveLength(12);
+    expect(screen.queryByText(copy.security.printMore(2))).not.toBeInTheDocument();
   });
 
   it("says nothing needs fixing when there are no actions", () => {
@@ -591,9 +631,9 @@ describe("Glossary", () => {
     expect(screen.getByText(/^A catalogue number that identifies one published flaw/)).toBeInTheDocument();
   });
 
-  it("opens itself when printing", () => {
+  it("prints as it is on screen, closed until someone opens it", () => {
     const { container } = render(<Glossary />);
     startPrint();
-    expect(container.querySelector("details")).toHaveAttribute("open");
+    expect(container.querySelector("details")).not.toHaveAttribute("open");
   });
 });

@@ -3743,17 +3743,38 @@ th > .tag {
     display: none !important;
   }
 
-  .action-item,
+  /* An item is kept whole while its explanation is closed. An opened one holds long code blocks, and keeping those
+     whole would leave most of a page empty before a long snippet, so an opened item and its snippets may break. */
+  .action-item:not(:has(.action-details[open])),
   .check-row,
-  .source-row,
-  .copy-snippet {
+  .source-row {
     break-inside: avoid;
+  }
+
+  .action-heading,
+  .copy-snippet-head,
+  .copy-snippet-note {
+    break-after: avoid;
+  }
+
+  /* A block may break between its lines, but never leaves fewer than four lines behind the label or on a page of
+     their own, so the label always travels with the first lines of its code. */
+  .copy-snippet,
+  .copy-snippet-code {
+    break-inside: auto;
+    orphans: 4;
+    widows: 4;
   }
 
   .copy-snippet-code {
     overflow: visible;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+
+  /* The glossary is a disclosure like the explanations, and closed it has nothing to print but the word to press. */
+  #security-glossary:has(.glossary:not([open])) {
+    display: none;
   }
 
   .alerts-table {

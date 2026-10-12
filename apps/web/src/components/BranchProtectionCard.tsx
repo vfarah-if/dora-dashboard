@@ -1,7 +1,16 @@
 import type { SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatDateTime } from "../lib/format";
-import { advisorySentence, branchProtectedLine, postureAbout, ruleRows, settingRows, type RuleRow } from "../lib/security";
+import {
+  advisoriesText,
+  branchDetailLine,
+  branchProtectedLine,
+  hasNotVisible,
+  postureAbout,
+  ruleRows,
+  settingRows,
+  type RuleRow,
+} from "../lib/security";
 import { PassFail } from "./PassFail";
 import { SecurityBlock } from "./SecurityParts";
 
@@ -13,7 +22,7 @@ function Rows({ rows }: { rows: RuleRow[] }) {
       {rows.map((row) => (
         <li key={row.key} className="check-row">
           <div className="check-row-head">
-            <PassFail state={row.state} />
+            <PassFail state={row.state} label={row.stateLabel} />
             <span className="check-row-title">{row.label}</span>
           </div>
           <p className="check-row-text">
@@ -40,14 +49,16 @@ export function BranchProtectionCard({ report }: { report: SecurityReport }) {
   }
   const rules = ruleRows(posture);
   const settings = settingRows(posture);
-  const hidden = [...rules, ...settings].some((row) => row.state === "unseen") || posture.advisories === null;
+  const hidden = hasNotVisible(posture, [...rules, ...settings]);
+  const detail = branchDetailLine(posture);
   return (
     <SecurityBlock id="security-branch" title={c.title} lede={c.lede}>
       <div className="card">
         {report.postureError && <p className="chart-subtitle">{c.postureError}</p>}
         <p>{postureAbout(posture)}</p>
         <p className="chart-subtitle">
-          {branchProtectedLine(posture)} {c.detail[posture.branch.detail]}
+          {branchProtectedLine(posture)}
+          {detail && ` ${detail}`}
           {report.postureReadAt && ` ${c.readOn(formatDateTime(report.postureReadAt))}.`}
         </p>
         <h3 className="chart-title">{c.rulesTitle}</h3>
@@ -55,7 +66,7 @@ export function BranchProtectionCard({ report }: { report: SecurityReport }) {
         <h3 className="chart-title">{c.settingsTitle}</h3>
         <Rows rows={settings} />
         <h3 className="chart-title">{c.advisoriesTitle}</h3>
-        <p>{posture.advisories ? advisorySentence(posture.advisories) : c.advisoriesHidden}</p>
+        <p>{advisoriesText(posture)}</p>
       </div>
       {hidden && (
         <aside className="notice notice-info">

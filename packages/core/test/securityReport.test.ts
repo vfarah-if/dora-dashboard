@@ -422,6 +422,13 @@ describe("weaknesses", () => {
   const cwe = (key: string, cwes: string[], extra: Parameters<typeof depAlert>[0] = {}) =>
     depAlert({ key, severity: "high", dependency: { cwes }, ...extra });
 
+  it("counts a zero padded id stored earlier under its plain id", () => {
+    const report = build({
+      alerts: [cwe("1", ["CWE-020"]), cwe("2", ["CWE-20"]), codeAlert({ key: "3", code: { cwes: ["CWE-020"] } })],
+    });
+    expect(report.weaknesses).toEqual([{ cwe: "CWE-20", open: 3, fixedInRange: 0 }]);
+  });
+
   it("counts open alerts and fixes in the range per weakness, most open first", () => {
     const report = build(
       {

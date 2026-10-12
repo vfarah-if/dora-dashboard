@@ -5,8 +5,7 @@ import { shortSha } from "../lib/codeHealth";
 import { groupLines, lineItemText, supplyChainSentence, supplyChainTitle, type SupplyChainGroup } from "../lib/security";
 import { PassFail } from "./PassFail";
 import { PathText } from "./PathText";
-import { SecurityBlock, Tag } from "./SecurityParts";
-import { ShowAllList } from "./ShowAllList";
+import { SecurityBlock, SecurityList, Tag } from "./SecurityParts";
 
 const c = copy.security.chain;
 const ITEM_LIMIT = 5;
@@ -15,7 +14,7 @@ function Items({ line }: { line: SupplyChainLine }) {
   if (line.items.length === 0) return null;
   return (
     <>
-      <ShowAllList total={line.items.length} limit={ITEM_LIMIT}>
+      <SecurityList total={line.items.length} limit={ITEM_LIMIT}>
         {(limit) => (
           <ul className="check-items mono">
             {line.items.slice(0, limit).map((item, i) => (
@@ -26,7 +25,7 @@ function Items({ line }: { line: SupplyChainLine }) {
             ))}
           </ul>
         )}
-      </ShowAllList>
+      </SecurityList>
       {line.total > line.items.length && <p className="chart-subtitle">{c.totalNote(line.items.length, line.total)}</p>}
     </>
   );
@@ -40,7 +39,7 @@ function UnreadNote({ sentence, paths, total }: { sentence: string; paths: reado
   return (
     <div>
       <p className="chart-subtitle">{sentence}</p>
-      <ShowAllList total={paths.length} limit={ITEM_LIMIT}>
+      <SecurityList total={paths.length} limit={ITEM_LIMIT}>
         {(limit) => (
           <ul className="check-items mono">
             {paths.slice(0, limit).map((path) => (
@@ -50,7 +49,7 @@ function UnreadNote({ sentence, paths, total }: { sentence: string; paths: reado
             ))}
           </ul>
         )}
-      </ShowAllList>
+      </SecurityList>
       {total > paths.length && <p className="chart-subtitle">{c.totalNote(paths.length, total)}</p>}
     </div>
   );

@@ -47,7 +47,9 @@ export function StartHere({ report }: { report: SecurityReport }) {
               </ol>
               <p className="chart-subtitle">
                 {start.top.more > 0 && <>{c.more(start.top.more)} </>}
-                <a href="#security-actions">{c.seeAll}</a>
+                <a href="#security-actions" className="screen-only">
+                  {c.seeAll}
+                </a>
               </p>
               {start.adviceCount > 0 && <p className="chart-subtitle">{c.advice(start.adviceCount)}</p>}
             </>

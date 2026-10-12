@@ -42,7 +42,9 @@ function PartlyRead({ report }: { report: SecurityReport }) {
     <aside className="notice notice-warning">
       <p className="notice-title">{c.partlyRead.title}</p>
       <p>{c.partlyRead.body(joinWords(missing))}</p>
-      <a href="#security-sources">{c.partlyRead.link}</a>
+      <a href="#security-sources" className="screen-only">
+        {c.partlyRead.link}
+      </a>
     </aside>
   );
 }

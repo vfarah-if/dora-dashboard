@@ -46,8 +46,8 @@ export function WeaknessesChart({ weaknesses }: { weaknesses: SecurityReport["we
           <XAxis type="number" {...axisProps} allowDecimals={false} />
           <YAxis type="category" dataKey="name" {...axisProps} {...axis} interval={0} />
           <Tooltip content={<ChartTooltip formatValue={formatCount} />} cursor={{ fill: "var(--surface-sunken)" }} />
-          <Bar dataKey="open" name={text.open} fill={seriesColour(0)} radius={[0, 2, 2, 0]} />
-          <Bar dataKey="fixed" name={text.fixed} fill={seriesColour(1)} radius={[0, 2, 2, 0]} />
+          <Bar dataKey="open" name={text.open} fill={seriesColour(0)} radius={[0, 2, 2, 0]} isAnimationActive={false} />
+          <Bar dataKey="fixed" name={text.fixed} fill={seriesColour(1)} radius={[0, 2, 2, 0]} isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
     </ChartCard>

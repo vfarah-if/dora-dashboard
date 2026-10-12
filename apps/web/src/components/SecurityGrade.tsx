@@ -37,7 +37,9 @@ function Lists({ report }: { report: SecurityReport }) {
             {improve.map((line) => (
               <li key={line.check}>
                 {line.text}
-                {line.limits && <span className="check-limit">{c.tags.setsGrade}</span>}
+                {line.sets && (
+                  <span className="check-limit">{line.sets === "grade" ? c.tags.setsGrade : c.tags.setsPartGrade}</span>
+                )}
               </li>
             ))}
           </ol>

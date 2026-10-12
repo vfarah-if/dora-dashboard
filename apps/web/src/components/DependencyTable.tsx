@@ -3,8 +3,7 @@ import { copy } from "../copy";
 import { SEVERITY_COLOUR, joinWords } from "../lib/security";
 import { upgradeAdvice } from "../lib/securityFixes";
 import { PathText } from "./PathText";
-import { LikelyExploitedTag, SecurityBlock, SeverityTag } from "./SecurityParts";
-import { ShowAllList } from "./ShowAllList";
+import { LikelyExploitedTag, SecurityBlock, SecurityList, SeverityTag } from "./SecurityParts";
 
 const c = copy.security.upgrades;
 
@@ -15,6 +14,8 @@ function UpgradeTo({ group }: { group: DependencyGroup }) {
 }
 
 function Command({ group }: { group: DependencyGroup }) {
+  // Without one fixed version there is nothing to install, whatever the package manager, so say that and not that the manager is unknown.
+  if (!group.upgradeTo) return <span>{group.patchedVersions.length > 0 ? c.chooseVersion : c.nothingToInstall}</span>;
   const advice = upgradeAdvice({
     ecosystem: group.ecosystem,
     manifestPath: group.manifestPath,
@@ -67,7 +68,7 @@ export function DependencyTable({ groups }: { groups: SecurityReport["dependency
         {groups.length === 0 ? (
           <p className="chart-empty">{c.none}</p>
         ) : (
-          <ShowAllList total={groups.length}>
+          <SecurityList total={groups.length}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table">
@@ -91,7 +92,7 @@ export function DependencyTable({ groups }: { groups: SecurityReport["dependency
                 </table>
               </div>
             )}
-          </ShowAllList>
+          </SecurityList>
         )}
       </div>
     </SecurityBlock>

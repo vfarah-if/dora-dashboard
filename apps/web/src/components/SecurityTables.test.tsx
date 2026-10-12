@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { copy } from "../copy";
 import { securityAlert, securityReport } from "../test/fixtures";
@@ -24,6 +24,16 @@ const rowsOf = (table: HTMLElement) =>
     .getAllByRole("row")
     .slice(1)
     .map((row) => [...row.querySelectorAll("th, td")].map((cell) => cell.textContent));
+
+/**
+ * Each drawn bar's size. Recharts grows a bar from nothing when it mounts unless told not to, and printing re-mounts the
+ * chart at the page's width, so a bar still growing at that moment is captured empty in the PDF.
+ */
+const bars = (chart: HTMLElement) =>
+  [...chart.querySelectorAll(".recharts-rectangle")].map((bar) => ({
+    width: Number(bar.getAttribute("width")),
+    height: Number(bar.getAttribute("height")),
+  }));
 
 describe("OpenAlertsChart", () => {
   const { weekly } = securityReport();
@@ -51,6 +61,14 @@ describe("OpenAlertsChart", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(legend).toEqual(["Critical", "High", "Medium", "Low", "Week starting 2 Mar, so far"]);
+  });
+
+  it("draws its bars at full height straight after the page begins printing, not growing up from nothing", () => {
+    render(<OpenAlertsChart weekly={weekly} part={null} />);
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    const drawn = bars(card(copy.security.weekly.chartTitle));
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.every(({ height }) => height > 0)).toBe(true);
   });
 
   it("colours each legend swatch on the stage ramp, never on a band", () => {
@@ -83,6 +101,14 @@ describe("WeaknessesChart", () => {
         .getAllByRole("listitem")
         .map((li) => li.textContent),
     ).toEqual(["Open", "Fixed in range"]);
+  });
+
+  it("draws its bars in full straight after the page begins printing, not growing up from nothing", () => {
+    render(<WeaknessesChart weaknesses={securityReport().weaknesses} />);
+    act(() => void window.dispatchEvent(new Event("beforeprint")));
+    const drawn = bars(card(copy.security.weaknesses.chartTitle));
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.every(({ width, height }) => width > 0 && height > 0)).toBe(true);
   });
 
   it("says there is no data without a weakness", () => {
@@ -332,8 +358,24 @@ describe("DependencyTable", () => {
     expect(first).toHaveTextContent("None");
     expect(second).toHaveTextContent("is-odd");
     expect(second).toHaveTextContent(copy.security.upgrades.noFix);
-    expect(second).toHaveTextContent(copy.security.upgrades.noCommand);
+    expect(second).toHaveTextContent(copy.security.upgrades.nothingToInstall);
+    expect(second).not.toHaveTextContent(copy.security.upgrades.noCommand);
     expect(second).toHaveTextContent("1 past");
+  });
+
+  it("asks for a version to be chosen when the alerts name several fixes, and says no command is known only for an unknown package manager", () => {
+    const [root] = dependencyGroups;
+    render(
+      <DependencyTable
+        groups={[
+          { ...root!, name: "several", upgradeTo: null, patchedVersions: ["1.2.5", "2.0.1"] },
+          { ...root!, name: "mystery", ecosystem: "swift", manifestPath: "Package.resolved", upgradeTo: "3.0.0" },
+        ]}
+      />,
+    );
+    const [several, mystery] = within(screen.getByRole("table")).getAllByRole("row").slice(1);
+    expect(several).toHaveTextContent(copy.security.upgrades.chooseVersion);
+    expect(mystery).toHaveTextContent(copy.security.upgrades.noCommand);
   });
 
   it("shows one row for each manifest, with the command run in that manifest's folder", () => {

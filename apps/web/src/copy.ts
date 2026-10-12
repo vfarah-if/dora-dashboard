@@ -1572,6 +1572,7 @@ export const copy = {
     showPeopleHint: "Group the hygiene lists by assignee name. Names never appear in charts or tiles.",
     showAll: (count: number) => `Show all ${count}`,
     showFewer: "Show fewer",
+    printMore: (count: number) => `and ${count} more, listed on the page on screen`,
     openInJira: "(opens in Jira)",
 
     headline: {
@@ -2489,6 +2490,7 @@ export const copy = {
       pastFix: "Past its fix-by date",
       withinFix: "Within its fix-by date",
       setsGrade: "Sets the grade",
+      setsPartGrade: "Limits its part only",
       holdsGrade: (band: string) => `Holds the grade at ${band}`,
       advice: "Advice only",
       countsTowardsGrade: "Counts towards the grade",
@@ -2593,7 +2595,7 @@ export const copy = {
 
     page: {
       title: "Security",
-      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix and the review figures.",
+      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix and the review figures. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
       backToRepo: "Back to the repository",
       reportLabel: "security report",
       loading: "Loading the security report",
@@ -2649,7 +2651,8 @@ export const copy = {
       goodTitle: "What is going well",
       goodEmpty: "Nothing was measured as good yet.",
       improveTitle: "What to improve",
-      improveHint: "Starting with the check that sets the grade.",
+      improveHint:
+        "Starting with the check that sets the grade. A check that only limits its own part, not the overall grade, is marked as such.",
       improveEmpty: "Nothing needs improving in what was measured.",
       unmeasuredTitle: "What the grade does not cover",
     },
@@ -2767,7 +2770,7 @@ export const copy = {
     snippetsTitle: "Copy and paste",
     learnMore: "Learn more on GitHub",
     affected: "Where to look",
-    printedOpen: "The full explanation is in the printed report.",
+    printMore: (count: number) => `and ${count} more, listed on the security page`,
 
     actions: {
       title: "What to fix first",
@@ -3016,6 +3019,159 @@ export const copy = {
         name: "Improper authorisation",
         meaning: "The program does not properly check what a person is allowed to do.",
       },
+      "CWE-74": {
+        name: "Injection",
+        meaning:
+          "Text from outside is placed into something the program builds for another system, such as a query or a command, and changes what that system does.",
+      },
+      "CWE-113": {
+        name: "Header injection",
+        meaning:
+          "Text from outside is placed in a web response header with a line break, so an attacker can add headers or even a second response.",
+      },
+      "CWE-125": {
+        name: "Read past the end of a buffer",
+        meaning: "The program reads memory beyond the space it was given, which can leak other data or crash the program.",
+      },
+      "CWE-190": {
+        name: "Integer overflow",
+        meaning:
+          "A number grows past the largest value its type can hold and wraps round, so later size or length checks give the wrong answer.",
+      },
+      "CWE-248": {
+        name: "Uncaught exception",
+        meaning: "A failure is not handled anywhere, so one bad input can stop the whole program.",
+      },
+      "CWE-295": {
+        name: "Improper certificate validation",
+        meaning:
+          "The program does not properly check who it is talking to over a secure connection, so someone in the middle could pose as the other side.",
+      },
+      "CWE-311": {
+        name: "Missing encryption of sensitive data",
+        meaning: "Sensitive data is stored or sent without being encrypted, so anyone who reaches it can read it.",
+      },
+      "CWE-326": {
+        name: "Inadequate encryption strength",
+        meaning: "The encryption used is too weak, for example keys that are too short, so it can be broken with enough effort.",
+      },
+      "CWE-330": {
+        name: "Predictable random values",
+        meaning:
+          "Values that should be unguessable, such as tokens or session ids, come from a source that an attacker can predict.",
+      },
+      "CWE-345": {
+        name: "Data origin not verified",
+        meaning: "The program trusts data without checking that it really came from where it claims to have come from.",
+      },
+      "CWE-346": {
+        name: "Origin validation error",
+        meaning: "The program accepts a request or message without properly checking which site or system sent it.",
+      },
+      "CWE-347": {
+        name: "Signature not verified",
+        meaning: "A signature on data is not checked or is checked wrongly, so forged data is accepted as genuine.",
+      },
+      "CWE-362": {
+        name: "Race condition",
+        meaning:
+          "Two things happening at nearly the same time can interfere with each other and leave the program in a state nobody intended.",
+      },
+      "CWE-384": {
+        name: "Session fixation",
+        meaning: "An attacker can choose the session id a person will use, and so take over their session once they sign in.",
+      },
+      "CWE-401": {
+        name: "Memory not released",
+        meaning: "The program keeps taking memory and never gives it back, so it slows down and eventually stops.",
+      },
+      "CWE-407": {
+        name: "Inefficient algorithm (slow on crafted input)",
+        meaning:
+          "The program uses a method that is fast on normal input but becomes very slow on input crafted to make it struggle.",
+      },
+      "CWE-444": {
+        name: "HTTP request smuggling",
+        meaning:
+          "Two servers read the boundaries of the same web request differently, so an attacker can slip a hidden request past the first one.",
+      },
+      "CWE-476": {
+        name: "Null pointer dereference",
+        meaning: "The program uses a value that is missing as though it were there, which usually crashes it.",
+      },
+      "CWE-613": {
+        name: "Sessions last too long",
+        meaning:
+          "A sign in stays valid for too long or after sign out, so a stolen session can be used for far longer than it should.",
+      },
+      "CWE-639": {
+        name: "Access by changing an identifier",
+        meaning:
+          "A person can reach someone else's data just by changing an id in the request, because the program does not check who owns it.",
+      },
+      "CWE-668": {
+        name: "Resource exposed to the wrong people",
+        meaning:
+          "Something that should be private, such as a file, a port or a service, can be reached by people who should not reach it.",
+      },
+      "CWE-674": {
+        name: "Uncontrolled recursion",
+        meaning:
+          "A function can be made to call itself again and again without a limit, which uses up memory and crashes the program.",
+      },
+      "CWE-693": {
+        name: "Protection mechanism failure",
+        meaning: "A safeguard that should have protected the program is missing or does not work as intended.",
+      },
+      "CWE-732": {
+        name: "Wrong permissions on a resource",
+        meaning:
+          "A file or other resource is open to more people than it should be, so it can be read or changed by those who should not.",
+      },
+      "CWE-754": {
+        name: "Improper check for unusual conditions",
+        meaning:
+          "The program does not handle rare situations such as empty, missing or oversized input, so they cause crashes or odd behaviour.",
+      },
+      "CWE-776": {
+        name: "Entity expansion attack",
+        meaning:
+          "A small piece of XML is built to expand into a huge amount of data, which uses up memory and stops the program.",
+      },
+      "CWE-787": {
+        name: "Write past the end of a buffer",
+        meaning:
+          "The program writes memory beyond the space it was given, which can corrupt data or let an attacker run their own code.",
+      },
+      "CWE-829": {
+        name: "Code included from an untrusted source",
+        meaning:
+          "The program loads and runs code from a place that is not under its own control, so whoever controls that place controls the program.",
+      },
+      "CWE-835": {
+        name: "Infinite loop",
+        meaning:
+          "The program can be sent into a loop that never ends, so it uses all the processor time and stops serving anyone.",
+      },
+      "CWE-915": {
+        name: "Unsafe update of object fields",
+        meaning:
+          "Input from outside is allowed to set fields on an object that it should not be able to set, such as an admin flag.",
+      },
+      "CWE-1035": {
+        name: "Known vulnerable component",
+        meaning: "The code relies on a package or library that has a published flaw, so the flaw comes along with it.",
+      },
+      "CWE-1236": {
+        name: "Spreadsheet formula injection",
+        meaning:
+          "Text from outside is placed in a spreadsheet file and begins like a formula, so opening it can run commands on someone's computer.",
+      },
+      "CWE-1284": {
+        name: "Improper validation of a quantity",
+        meaning:
+          "A number such as a length, a count or a quantity is accepted without checking that it is within a sensible range.",
+      },
     },
 
     fixTime: {
@@ -3107,6 +3263,8 @@ export const copy = {
       several: (versions: string) => `Different fixes for different alerts, ${versions}`,
       command: "Command",
       noCommand: "No command is known for this package manager",
+      nothingToInstall: "Nothing to install until a fix is published",
+      chooseVersion: "Choose one of the fixed versions first",
       pastFix: "Past fix-by date",
       pastFixCount: (count: number) => `${count} past`,
       noneText: "None",
@@ -3181,22 +3339,22 @@ export const copy = {
       selfHostedPublic: {
         title: "Pull requests on self hosted machines",
         ok: "No public repository workflow does this.",
-        found: (n: number) => `${n} ${n === 1 ? "workflow does" : "workflows do"} this.`,
+        found: (n: number) => `${n} ${n === 1 ? "place does" : "places do"} this.`,
       },
       unpinnedActions: {
         title: "Actions from other organisations pinned to a commit",
         ok: "Every one is pinned.",
-        found: (n: number) => `${n} ${n === 1 ? "is" : "are"} not pinned.`,
+        found: (n: number) => `${n} ${n === 1 ? "use of an action is" : "uses of actions are"} not pinned to a commit.`,
       },
       ownActionsUnpinned: {
         title: "Your own organisation's actions pinned to a commit",
         ok: "Every one is pinned.",
-        found: (n: number) => `${n} ${n === 1 ? "is" : "are"} not pinned.`,
+        found: (n: number) => `${n} ${n === 1 ? "use of an action is" : "uses of actions are"} not pinned to a commit.`,
       },
       workflowPermissions: {
         title: "Workflows that limit their token",
         ok: "Every workflow sets limits.",
-        found: (n: number) => `${n} ${n === 1 ? "workflow sets" : "workflows set"} no limit or allows everything.`,
+        found: (n: number) => `${n} ${n === 1 ? "place sets" : "places set"} no limit on the token or allows everything.`,
       },
       unsecureCommands: {
         title: "Deprecated unsecure commands",
@@ -3266,22 +3424,23 @@ export const copy = {
       baseImagesPinned: {
         title: "Base images pinned to a digest",
         ok: "Every base image is pinned.",
-        found: (n: number) => `${n} ${n === 1 ? "image is" : "images are"} not pinned.`,
+        found: (n: number) =>
+          `${n} ${n === 1 ? "Dockerfile uses an image that is" : "Dockerfiles use images that are"} not pinned to a digest.`,
       },
       latestImages: {
         title: "Base images on a fixed version",
         ok: "No image uses the latest tag.",
-        found: (n: number) => `${n} ${n === 1 ? "image uses" : "images use"} the latest tag or none.`,
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile uses" : "Dockerfiles use"} the latest tag or none.`,
       },
       nonRootImages: {
         title: "Images that run as an ordinary user",
         ok: "Every image runs as an ordinary user.",
-        found: (n: number) => `${n} ${n === 1 ? "image runs" : "images run"} as the root user.`,
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile runs its image" : "Dockerfiles run their images"} as the root user.`,
       },
       remoteAdd: {
         title: "Files fetched with ADD",
         ok: "No image fetches a file with ADD.",
-        found: (n: number) => `${n} ${n === 1 ? "image fetches" : "images fetch"} a file with ADD.`,
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile fetches" : "Dockerfiles fetch"} a file with ADD.`,
       },
     },
 
@@ -3295,7 +3454,7 @@ export const copy = {
       postureError:
         "The latest attempt to read the branch rules and settings did not succeed, so the facts below are from an earlier read.",
       about: (branch: string, visibility: string | null, admin: boolean | null) =>
-        `The deploy branch is ${branch}${visibility ? ` in a ${visibility} repository` : ""}. ${admin === true ? "The dashboard could read every setting, because its account is an administrator." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
+        `The deploy branch is ${branch}${visibility ? ` in a ${visibility} repository` : ""}. ${admin === true ? "The account the dashboard uses is an administrator, so it can read the branch rules and settings." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
       visibility: { public: "public", private: "private", internal: "internal" },
       detail: {
         full: "Both rulesets and classic branch protection could be read.",
@@ -3311,6 +3470,7 @@ export const copy = {
       advisories: (draft: number, triage: number, published: number, closed: number) =>
         `${draft} in draft, ${triage} in triage, ${published} published and ${closed} closed.`,
       advisoriesHidden: "Not visible, because advisories need administrator access.",
+      publicOnly: "Only for public repositories",
       protectedLine: {
         yes: "The branch is protected.",
         no: "The branch is not protected.",

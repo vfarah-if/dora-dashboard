@@ -63,7 +63,7 @@ const dependabotRaw = {
     cvss: { score: 6.1 },
     cvss_severities: { cvss_v3: { score: 7.2 }, cvss_v4: { score: 0 } },
     epss: [{ percentage: 0.12, percentile: 0.93 }],
-    cwes: [{ cwe_id: "CWE-94", name: "Code Injection" }, { cwe_id: "not-a-cwe" }],
+    cwes: [{ cwe_id: "CWE-094", name: "Code Injection" }, { cwe_id: "not-a-cwe" }],
   },
   security_vulnerability: {
     severity: "high",
@@ -89,7 +89,14 @@ const codeRaw = {
     description: "Use of a broken or weak cryptographic algorithm",
     help: "LONG HELP TEXT that must never be stored",
     full_description: "LONG FULL DESCRIPTION that must never be stored",
-    tags: ["security", "external/cwe/cwe-327", "external/cwe/cwe-328", "maintainability"],
+    tags: [
+      "security",
+      "external/cwe/cwe-327",
+      "external/cwe/cwe-0328",
+      "external/cwe/cwe-020",
+      "external/cwe/CWE-20",
+      "maintainability",
+    ],
   },
   tool: { name: "CodeQL", version: "2.17.0" },
   most_recent_instance: {
@@ -281,7 +288,7 @@ describe("GitHubSecurityAlertSource alerts", () => {
             securityTagged: true,
             path: "src/crypto.ts",
             line: 14,
-            cwes: ["CWE-327", "CWE-328"],
+            cwes: ["CWE-327", "CWE-328", "CWE-20"],
           },
         },
       ],
@@ -728,7 +735,7 @@ describe("GitHubSecurityAlertSource posture", () => {
 
   const full = () =>
     host({
-      [REPO]: () => json(repoBody),
+      [REPO]: () => json({ ...repoBody, visibility: "public", private: false }),
       [`${REPO}/branches/main`]: () => json(branchBody),
       [`${REPO}/branches/main/protection`]: () => json(protectionBody),
       [`${REPO}/rules/branches/main`]: () => json(rulesBody),
@@ -742,7 +749,7 @@ describe("GitHubSecurityAlertSource posture", () => {
     const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
 
     expect(posture).toEqual({
-      visibility: "private",
+      visibility: "public",
       isAdmin: true,
       branch: {
         name: "main",
@@ -812,7 +819,7 @@ describe("GitHubSecurityAlertSource posture", () => {
     expect(posture.branch).toEqual({
       name: "main",
       protected: false,
-      detail: "rulesets_only",
+      detail: "full",
       rules: {
         requirePullRequest: false,
         requiredApprovals: 0,
@@ -838,6 +845,78 @@ describe("GitHubSecurityAlertSource posture", () => {
       advisories: { draft: 0, triage: 0, published: 0, closed: 0 },
     });
     expect(urlsOf(http).some((url) => url.endsWith("/protection"))).toBe(false);
+  });
+
+  it("leaves rules unknown for an unprotected branch whose rulesets could not be read, as detail none", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "private" }),
+      [`${REPO}/branches/main`]: () => json({ protected: false }),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/rules/branches/main`]: () => refusal(404, "Not Found"),
+    });
+    const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+    expect(branch).toMatchObject({
+      protected: false,
+      detail: "none",
+      rules: { requirePullRequest: null, blockForcePushes: null },
+    });
+  });
+
+  it("treats a 404 saying the branch is not protected as no classic protection, so every rule is known", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "private", permissions: { admin: true } }),
+      [`${REPO}/branches/main`]: () => json({ protected: true }),
+      [`${REPO}/branches/main/protection`]: () => refusal(404, "Branch not protected"),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/rules/branches/main`]: () => json([{ type: "deletion" }]),
+    });
+    const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+    expect(branch.detail).toBe("full");
+    expect(branch.rules).toMatchObject({ blockDeletion: true, requirePullRequest: false, blockForcePushes: false });
+  });
+
+  it("does not read a 404 with any other message from the protection address as no protection", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "private" }),
+      [`${REPO}/branches/main`]: () => json({ protected: true }),
+      [`${REPO}/branches/main/protection`]: () => refusal(404, "Not Found"),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/rules/branches/main`]: () => json([]),
+    });
+    const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+    expect(branch.detail).toBe("rulesets_only");
+    expect(branch.rules.requirePullRequest).toBeNull();
+  });
+
+  it("asks nothing about private vulnerability reporting or advisories for a private or internal repository", async () => {
+    for (const visibility of ["private", "internal"]) {
+      const http = host({
+        [REPO]: () => json({ visibility }),
+        [`${REPO}/branches/main`]: () => json({ protected: false }),
+        [`${REPO}/rules/branches/main`]: () => json([]),
+        [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+        [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
+        [`${REPO}/security-advisories?per_page=100`]: () => json([{ state: "draft" }]),
+      });
+      const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+      expect(urlsOf(http).some((url) => /private-vulnerability-reporting|security-advisories/.test(url))).toBe(false);
+      expect(posture.settings.privateVulnerabilityReporting).toBeNull();
+      expect(posture.advisories).toBeNull();
+    }
+  });
+
+  it("still reads both for a public repository", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "public" }),
+      [`${REPO}/branches/main`]: () => json({ protected: false }),
+      [`${REPO}/rules/branches/main`]: () => json([]),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
+      [`${REPO}/security-advisories?per_page=100`]: () => json([{ state: "draft" }]),
+    });
+    const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+    expect(posture.settings.privateVulnerabilityReporting).toBe(true);
+    expect(posture.advisories).toEqual({ draft: 1, triage: 0, published: 0, closed: 0 });
   });
 
   it("leaves rules it could not see as null, and says only rulesets were read, when a non-administrator meets classic protection", async () => {
