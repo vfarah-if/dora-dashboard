@@ -1,8 +1,9 @@
-import type { DeployRun, PullRequest, Repo } from "./types.js";
+import type { DeployRun, PullRequest, Repo, ReviewExemptionRules } from "./types.js";
 import { doraSummary, productionRuns, type DoraSummary } from "./dora.js";
 import { doraDrivers, type DoraDrivers } from "./doraDrivers.js";
 import { DEFAULT_DORA_PROFILE, doraProfile } from "./doraProfiles.js";
 import { aiCohorts, type AiCohorts } from "./aiAssisted.js";
+import { unreviewedFigures } from "./reviewExemptions.js";
 import { isBot, mergeDistribution, prTimings, type PrTimings } from "./pullRequests.js";
 import { isPartialWeek, isWithin, mean, median, summarise, weekRange, weekStart, type Summary } from "./stats.js";
 
@@ -14,6 +15,8 @@ export interface ReportOptions {
   excludeAuthors?: readonly string[];
   /** Id of the DORA profile to grade against (ADR 0016); the default profile when absent. An unknown id throws. */
   profile?: string;
+  /** The repository's rules for leaving pull requests out of the no review figure (ADR 0036); the defaults when absent. */
+  reviewExemptions?: ReviewExemptionRules | null;
 }
 
 /** An author who opened pull requests in the range, whether or not they are excluded, so a filter can offer them. */
@@ -67,6 +70,15 @@ export interface RepoReport {
     authors: number;
     reviewedShare: number | null;
     selfMergedShare: number | null;
+    /**
+     * Merged pull requests that no non-bot account reviewed before the merge, the author's own review included, and
+     * that are not exempt (ADR 0036).
+     */
+    unreviewedCount: number;
+    /** `unreviewedCount` over merged pull requests that are not exempt; null when there are none. */
+    unreviewedShare: number | null;
+    /** Merged pull requests left out because their title or labels say they were reviewed elsewhere. */
+    exemptCount: number;
     /** Sum over weeks of distinct people who opened or merged a PR that week. */
     authorWeeks: number;
     mergedPerAuthorWeek: number | null;
@@ -211,6 +223,7 @@ function totalsOf(
   mergedTimings: PrTimings[],
   weekly: WeekRow[],
   authors: number,
+  reviewExemptions: ReviewExemptionRules | null | undefined,
 ): RepoReport["totals"] {
   const reviewed = mergedTimings.filter((t) => t.reviewed);
   const selfMerged = merged.filter((p) => p.mergedBy !== null && p.mergedBy === p.author);
@@ -224,6 +237,7 @@ function totalsOf(
     authors,
     reviewedShare: share(reviewed.length, merged.length),
     selfMergedShare: share(selfMerged.length, merged.length),
+    ...unreviewedFigures(merged, reviewExemptions),
     authorWeeks,
     mergedPerAuthorWeek: share(merged.length, authorWeeks),
     linesMerged,
@@ -270,7 +284,7 @@ export function buildReport(repo: Repo, allPrs: PullRequest[], runs: DeployRun[]
     },
     range: { from, to },
     projectStart,
-    totals: totalsOf(opened, merged, mergedTimings, weekly, authorNames.size),
+    totals: totalsOf(opened, merged, mergedTimings, weekly, authorNames.size, options.reviewExemptions),
     summary: summaryOf(mergedTimings),
     dora: doraSummary(merged, production, repo.deployBranch, weekly.length, profile),
     doraDrivers: doraDrivers(merged, production, repo.deployBranch, { from, to }, profile),

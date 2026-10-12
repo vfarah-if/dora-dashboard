@@ -13,3 +13,6 @@ repos.local.json
 .run/
 docs/diagrams/*.svg
 docs/diagrams/*.png
+
+# SceneScout exploratory testing output, which holds a live session token
+.scenescout/

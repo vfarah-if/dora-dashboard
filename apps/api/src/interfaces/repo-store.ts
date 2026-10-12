@@ -7,6 +7,7 @@ import type {
   CrawlStatus,
   DeployRun,
   IssueLabelRules,
+  ReviewExemptionRules,
   PullRequest,
   RepoIssue,
   Repo,
@@ -42,6 +43,14 @@ export interface IssueState {
   labelsUnreadable: boolean;
   /** Why the last issue read failed; null when it succeeded or never ran. */
   error: string | null;
+}
+
+/** A repository's saved review exemptions (ADR 0036). */
+export interface ReviewExemptionState {
+  /** The repository's override; null when the defaults apply, or when what was saved cannot be read. */
+  rules: ReviewExemptionRules | null;
+  /** True when an override was saved but cannot be read (bad JSON or the wrong shape); `rules` is then null. */
+  unreadable: boolean;
 }
 
 /** Persistence for tracked repositories and everything crawled from them. */
@@ -141,4 +150,7 @@ export interface RepoStore {
   failIssueCrawl(repoId: number, message: string): void;
   /** Saves the repository's label override, or the defaults again when null. Starts no crawl. */
   setIssueLabels(repoId: number, rules: IssueLabelRules | null): void;
+  reviewExemptionState(repoId: number): ReviewExemptionState;
+  /** Saves the repository's review exemptions, or the defaults again when null. Starts no crawl. */
+  setReviewExemptions(repoId: number, rules: ReviewExemptionRules | null): void;
 }

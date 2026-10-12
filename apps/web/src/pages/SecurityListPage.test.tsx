@@ -182,15 +182,15 @@ describe("SecurityListPage", () => {
   });
 
   it("writes the real number of days in a row's top action from the summary's thresholds", async () => {
-    const thresholds = { ...securitySummary().thresholds, reviewWindowDays: 45 };
+    const thresholds = { ...securitySummary().thresholds, lowAlertAdviceDays: 45 };
     show([
       securitySummary({
         thresholds,
-        topAction: securityAction({ kind: "require_review", target: null, ecosystem: null, count: 3 }),
+        topAction: securityAction({ kind: "fix_low_alerts", target: null, ecosystem: null, count: 3 }),
       }),
     ]);
-    expect(await screen.findByText(/3 merged pull requests in the last 45 days had no approval/)).toBeInTheDocument();
-    expect(screen.queryByText(/in the review window/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/3 low severity alerts have been open for more than 45 days/)).toBeInTheDocument();
+    expect(screen.queryByText(/the time a low severity alert is allowed/)).not.toBeInTheDocument();
   });
 
   it("says nothing about version updates when the summary has none", async () => {

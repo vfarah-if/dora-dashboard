@@ -803,7 +803,6 @@ export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): Sup
     securityTools: [],
     updateConfig: null,
     securityPolicy: null,
-    codeowners: null,
     manifestsByEcosystem: {},
     missingLockfiles: [],
     lockfiles: [],

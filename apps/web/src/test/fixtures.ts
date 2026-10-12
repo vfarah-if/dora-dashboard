@@ -12,7 +12,7 @@ import type {
   SpaceHygieneItemFinding,
   QueueEntry,
   RepoReport,
-  ReviewControls,
+  ReviewExemptionDefaults,
   ReviewQueue,
   SecurityAction,
   SecurityAlertRef,
@@ -60,6 +60,8 @@ export function repo(overrides: Partial<RepoListing> = {}): RepoListing {
     issueLabels: null,
     issueLabelsUnreadable: false,
     issueError: null,
+    reviewExemptions: null,
+    reviewExemptionsUnreadable: false,
     ...overrides,
   };
 }
@@ -87,6 +89,9 @@ export function report(
       authors: authorCount,
       reviewedShare: 0.5,
       selfMergedShare: 0.25,
+      unreviewedCount: 1,
+      unreviewedShare: 0.25,
+      exemptCount: 2,
       authorWeeks: 3,
       mergedPerAuthorWeek: 2,
       linesMerged: 360,
@@ -587,6 +592,15 @@ export function issueReport(options: { people?: boolean } = {}): IssueReport {
   };
 }
 
+/** What `GET /api/review-exemptions/defaults` answers: the title words and label that apply, and the limits it enforces. */
+export function reviewExemptionDefaults(): ReviewExemptionDefaults {
+  return {
+    titleWords: ["sync", "synced", "syncing", "synchronise"],
+    labels: ["reviewed-elsewhere"],
+    limits: { titleWords: 30, labels: 30, length: 100 },
+  };
+}
+
 /** What `GET /api/issue-labels/defaults` answers: the names the API classifies with and the limits it enforces. */
 export function issueLabelDefaults(): IssueLabelDefaults {
   return {
@@ -884,35 +898,6 @@ const noRules: BranchRules = {
   requireLinearHistory: null,
 };
 
-const reviewControls = (overrides: Partial<ReviewControls> = {}): ReviewControls => ({
-  from: "2025-12-01T00:00:00Z",
-  to: "2026-03-01T00:00:00Z",
-  merged: 20,
-  authors: 4,
-  unapproved: 3,
-  selfMergedUnapproved: 1,
-  share: 0.15,
-  graded: true,
-  notGradedBecause: null,
-  pullRequests: [
-    {
-      number: 41,
-      title: "Tidy the invoice export",
-      url: "https://github.com/acme/widgets/pull/41",
-      mergedAt: "2026-02-20T09:00:00Z",
-      selfMerged: true,
-    },
-    {
-      number: 38,
-      title: "Raise the page size",
-      url: "https://github.com/acme/widgets/pull/38",
-      mergedAt: "2026-02-10T09:00:00Z",
-      selfMerged: false,
-    },
-  ],
-  ...overrides,
-});
-
 export function securityAction(overrides: Partial<SecurityAction> = {}): SecurityAction {
   return {
     kind: "upgrade_dependency",
@@ -965,14 +950,10 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
     range: { from: "2026-01-01T00:00:00Z", to: "2026-03-01T23:59:59Z" },
     gradedAt: "2026-03-01T12:00:00Z",
     fixWithinDays: { critical: 7, high: 30, medium: 90, low: 180 },
-    reviewMinMerged: 10,
     likelyExploitedEpss: 0.1,
     thresholds: {
-      reviewWindowDays: 90,
-      reviewMinMerged: 10,
       staleUpdateDays: 30,
       likelyExploitedEpss: 0.1,
-      unapprovedLimits: { elite: 0.05, high: 0.2 },
       lowAlertAdviceDays: 180,
     },
     settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
@@ -994,7 +975,6 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
         line("updateConfig", false, false),
         line("lockfiles", true, false),
         line("securityPolicy", false, false),
-        line("codeowners", true, false),
         line("staticAnalysis", false, false),
         line("baseImagesPinned", false, false, [{ path: "Dockerfile", line: null, detail: null }]),
       ],
@@ -1154,8 +1134,6 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
         likelyExploited: false,
       },
     ],
-    review: reviewControls(),
-    reviewInRange: reviewControls({ merged: 8, unapproved: 1 }),
     dependencyUpdates: {
       openedInRange: 5,
       mergedInRange: 3,
@@ -1255,26 +1233,6 @@ export function noSecurity(overrides: Partial<SecurityReport> = {}): SecurityRep
     openAlerts: [],
     openAlertTotal: 0,
     dependencyGroups: [],
-    review: reviewControls({
-      merged: 0,
-      authors: 0,
-      unapproved: 0,
-      selfMergedUnapproved: 0,
-      share: null,
-      graded: false,
-      notGradedBecause: "too_few",
-      pullRequests: [],
-    }),
-    reviewInRange: reviewControls({
-      merged: 0,
-      authors: 0,
-      unapproved: 0,
-      selfMergedUnapproved: 0,
-      share: null,
-      graded: false,
-      notGradedBecause: "too_few",
-      pullRequests: [],
-    }),
     dependencyUpdates: {
       openedInRange: 0,
       mergedInRange: 0,

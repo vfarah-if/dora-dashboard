@@ -4,7 +4,6 @@ import { isUpdateBot } from "./pullRequests.js";
 import { cwesOf, epssOf, isLikelyExploited, severityOf } from "./securityAlerts.js";
 import { STALE_UPDATE_DAYS, compareAlerts, groupDependencies, securityPlan } from "./securityAdvice.js";
 import {
-  UNAPPROVED_LIMITS,
   fixWithinDays,
   gradeSecurity,
   gradedAlerts,
@@ -14,13 +13,10 @@ import {
   usedAlerts,
   type SecurityFacts,
 } from "./securityGrade.js";
-import { reviewControls } from "./reviewControls.js";
 import {
   ALERT_SOURCES,
   FIX_WITHIN_DAYS,
   LIKELY_EXPLOITED_EPSS,
-  REVIEW_MIN_MERGED,
-  REVIEW_WINDOW_DAYS,
   SEVERITIES,
   type AlertSource,
   type AlertWhere,
@@ -58,11 +54,8 @@ export const WEAKNESS_LIMIT = 10;
 
 /** The limits the grade and the advice use, gathered so the page never repeats a number. */
 export const SECURITY_THRESHOLDS: SecurityThresholds = {
-  reviewWindowDays: REVIEW_WINDOW_DAYS,
-  reviewMinMerged: REVIEW_MIN_MERGED,
   staleUpdateDays: STALE_UPDATE_DAYS,
   likelyExploitedEpss: LIKELY_EXPLOITED_EPSS,
-  unapprovedLimits: { elite: UNAPPROVED_LIMITS.elite, high: UNAPPROVED_LIMITS.high },
   lowAlertAdviceDays: FIX_WITHIN_DAYS.low,
 };
 
@@ -100,7 +93,11 @@ const whereOf = (alert: SecurityAlert): AlertWhere => {
 
 type Item = SupplyChainLine["items"][number];
 
-function supplyChainLines(record: SupplyChainRecord, found: ReturnType<typeof supplyChainFound>): SupplyChainLine[] {
+function supplyChainLines(
+  record: SupplyChainRecord,
+  found: ReturnType<typeof supplyChainFound>,
+  posture: RepoPosture | null,
+): SupplyChainLine[] {
   const { facts } = record;
   const line = (check: SupplyChainCheckId, graded: boolean, met: boolean, items: Item[]): SupplyChainLine => ({
     check,
@@ -159,8 +156,10 @@ function supplyChainLines(record: SupplyChainRecord, found: ReturnType<typeof su
     bad("persistCredentials", false, found.persistCredentials.map(finding)),
     good("updateConfig", facts.updateConfig === null ? [] : [path(facts.updateConfig)]),
     bad("lockfiles", false, facts.missingLockfiles.map(path)),
-    good("securityPolicy", facts.securityPolicy === null ? [] : [path(facts.securityPolicy)]),
-    good("codeowners", facts.codeowners === null ? [] : [path(facts.codeowners)]),
+    // Only a public repository has outside reporters to tell where to send a vulnerability.
+    ...(posture?.visibility === "public"
+      ? [good("securityPolicy", facts.securityPolicy === null ? [] : [path(facts.securityPolicy)])]
+      : []),
     good("dependencyReview", tool("dependency_review")),
     good("secretScanInCi", tool("secret_scan")),
     good("staticAnalysis", tool("sast")),
@@ -246,23 +245,10 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
   const { repo, sources } = input;
   const now = instant(options.now);
   const graded = gradedAlerts(input.alerts, sources);
-  // All time starts at the earliest graded alert or pull request, because review controls and dependency updates read
+  // All time starts at the earliest graded alert or pull request, because dependency updates read
   // pull requests too, so a repository with no alerts still gets its real history rather than a single day.
   const range = rangeOf([...graded, ...input.pullRequests], options);
   const inRange = (iso: string | null) => iso !== null && instant(iso) >= range.start && instant(iso) <= range.end;
-
-  const review = reviewControls(input.pullRequests, {
-    from: new Date(now - REVIEW_WINDOW_DAYS * DAY_MS).toISOString(),
-    to: options.now,
-    deployBranch: repo.deployBranch,
-    now: options.now,
-  });
-  const reviewInRange = reviewControls(input.pullRequests, {
-    from: `${range.from}T00:00:00.000Z`,
-    to: new Date(range.end).toISOString(),
-    deployBranch: repo.deployBranch,
-    now: options.now,
-  });
 
   const facts: SecurityFacts = {
     owner: repo.owner,
@@ -272,7 +258,6 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     sources,
     supplyChain: input.supplyChain,
     supplyChainMissing: input.supplyChainMissing,
-    review,
     posture: input.posture,
   };
   const result = gradeSecurity(facts);
@@ -363,7 +348,6 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     range: { from: range.from, to: range.to },
     gradedAt: options.now,
     fixWithinDays: FIX_WITHIN_DAYS,
-    reviewMinMerged: REVIEW_MIN_MERGED,
     likelyExploitedEpss: LIKELY_EXPLOITED_EPSS,
     thresholds: SECURITY_THRESHOLDS,
     settingsUrl: input.settingsUrl,
@@ -377,7 +361,7 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
           workflowsUnread: record.facts.workflowsUnread,
           dockerfilesUnread: record.facts.dockerfilesUnread,
           dockerfilesUnreadTotal: record.facts.dockerfilesUnreadTotal,
-          lines: supplyChainLines(record, supplyChainFound(record, repo.owner, input.posture)),
+          lines: supplyChainLines(record, supplyChainFound(record, repo.owner, input.posture), input.posture),
         }
       : { status: "none", reason: input.supplyChainMissing ?? "not_read" },
     ecosystems: record?.facts.ecosystems ?? [],
@@ -414,8 +398,6 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     openAlerts,
     openAlertTotal: used.length,
     dependencyGroups: groupDependencies(used).map(({ members: _members, ...group }) => group),
-    review,
-    reviewInRange,
     dependencyUpdates: dependencyUpdates(input.pullRequests, inRange, now),
     securityIssues: securityIssues(input.issues, input.issueLabels, inRange, now),
     scorecard: input.scorecard,
@@ -444,7 +426,6 @@ export function securitySummary(report: SecurityReport, crawlStatus: CrawlStatus
     unmeasured: unmeasuredOf({
       sources: report.sources,
       hasSupplyChain: report.supplyChain.status === "ok",
-      review: report.review,
       posture: report.posture,
     }),
     sources: Object.fromEntries(

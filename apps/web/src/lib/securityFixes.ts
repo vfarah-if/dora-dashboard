@@ -358,16 +358,6 @@ export const securityPolicyMarkdown = (repo: string): string =>
     "The latest release receives security fixes.",
   );
 
-export const codeownersSnippet = (): string =>
-  lines(
-    "# Replace every REPLACE-WITH placeholder with a real user or team before you commit this file.",
-    "# Each line names the people or teams who must review changes to the files it matches.",
-    "# The last matching line wins.",
-    "*                 @REPLACE-WITH-ORG/REPLACE-WITH-TEAM",
-    "/.github/         @REPLACE-WITH-ORG/REPLACE-WITH-TEAM",
-    "/infrastructure/  @REPLACE-WITH-ORG/REPLACE-WITH-TEAM",
-  );
-
 export const gitignoreSnippet = (): string => lines(".env", ".env.*", "!.env.example", "*.pem", "*.key");
 
 /**
@@ -602,7 +592,6 @@ export const SNIPPETS: Record<SecurityActionKind, (action: SecurityAction, ctx: 
   restrict_permissions: () => [snippet("permissions", permissionsSnippet())],
   remove_unsecure_commands: none,
   remove_key_files: (a) => [snippet("untrack", untrackSnippet(a.refs)), snippet("gitignore", gitignoreSnippet())],
-  require_review: none,
   protect_branch: none,
   block_force_push: none,
   enable_dependabot: (a, ctx) => (ctx.versionUpdates ? [] : updateConfig(a, ctx)),
@@ -610,17 +599,13 @@ export const SNIPPETS: Record<SecurityActionKind, (action: SecurityAction, ctx: 
   add_update_config: updateConfig,
   add_lockfile: none,
   add_security_policy: (_a, ctx) => [snippet("securityPolicy", securityPolicyMarkdown(`${ctx.repo.owner}/${ctx.repo.name}`))],
-  add_codeowners: () => [snippet("codeowners", codeownersSnippet())],
   review_weak_key_files: none,
   enable_code_scanning: codeScanner,
   check_secret_scanning: () => [snippet("secretScanner", secretScannerSnippet())],
   grant_alert_access: none,
   turn_on_code_analysis: () => [snippet("analysisOn", analysisOnSnippet())],
   fix_low_alerts: none,
-  require_approvals: none,
   require_status_checks: none,
-  dismiss_stale_reviews: none,
-  require_code_owner_review: none,
   require_signed_commits: none,
   enable_security_updates: none,
   enable_push_protection: none,
@@ -672,7 +657,6 @@ export const LEARN_MORE: Record<SecurityActionKind, string | null> = {
   restrict_permissions: `${DOCS}/actions/tutorials/authenticate-with-github_token`,
   remove_unsecure_commands: HARDENING,
   remove_key_files: REMOVING,
-  require_review: PROTECTED,
   protect_branch: PROTECTED,
   block_force_push: PROTECTED,
   enable_dependabot: `${SECURE_DEPENDENCIES}/configure-dependabot-alerts`,
@@ -680,17 +664,13 @@ export const LEARN_MORE: Record<SecurityActionKind, string | null> = {
   add_update_config: `${SECURE_DEPENDENCIES}/configure-version-updates`,
   add_lockfile: SUPPLY,
   add_security_policy: `${DOCS}/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/add-security-policy`,
-  add_codeowners: `${DOCS}/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners`,
   review_weak_key_files: REMOVING,
   enable_code_scanning: CODE_SCANNING,
   check_secret_scanning: SECRET_SCANNING,
   grant_alert_access: FEATURES,
   turn_on_code_analysis: null,
   fix_low_alerts: ALERTS,
-  require_approvals: PROTECTED,
   require_status_checks: PROTECTED,
-  dismiss_stale_reviews: PROTECTED,
-  require_code_owner_review: PROTECTED,
   require_signed_commits: `${DOCS}/authentication/managing-commit-signature-verification/about-commit-signature-verification`,
   enable_security_updates: `${SECURE_DEPENDENCIES}/configure-security-updates`,
   enable_push_protection: `${DOCS}/code-security/concepts/secret-security/push-protection`,
@@ -723,13 +703,9 @@ export const SETTINGS_KINDS: ReadonlySet<SecurityActionKind> = new Set<SecurityA
 
 /** Kinds whose fix is a rule on the deploy branch. */
 export const BRANCH_KINDS: ReadonlySet<SecurityActionKind> = new Set<SecurityActionKind>([
-  "require_review",
   "protect_branch",
   "block_force_push",
-  "require_approvals",
   "require_status_checks",
-  "dismiss_stale_reviews",
-  "require_code_owner_review",
   "require_signed_commits",
 ]);
 

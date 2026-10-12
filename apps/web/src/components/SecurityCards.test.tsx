@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SourceState, SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { noSecurity, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
 import { BranchProtectionCard } from "./BranchProtectionCard";
-import { ChangeControlCard } from "./ChangeControlCard";
 import { DependencyUpdatesCard } from "./DependencyUpdatesCard";
 import { ScorecardCard } from "./ScorecardCard";
 import { SecurityIssuesCard } from "./SecurityIssuesCard";
@@ -42,9 +41,9 @@ describe("SupplyChainCard", () => {
 
   it("marks advice as advice only, in the files and tools sections", () => {
     const { unmount } = render(<SupplyChainCard report={securityReport()} group="files" />);
-    expect(screen.getAllByText(copy.security.tags.advice)).toHaveLength(2);
+    expect(screen.getAllByText(copy.security.tags.advice)).toHaveLength(1);
     expect(screen.getByText("No security policy was found.")).toBeInTheDocument();
-    expect(screen.getByText("A CODEOWNERS file is in place.")).toBeInTheDocument();
+    expect(screen.queryByText(/CODEOWNERS/)).not.toBeInTheDocument();
     unmount();
     render(<SupplyChainCard report={securityReport()} group="tools" />);
     expect(screen.getByText("No code scanner was found.")).toBeInTheDocument();
@@ -151,13 +150,34 @@ describe("BranchProtectionCard", () => {
     render(<BranchProtectionCard report={securityReport()} />);
     const row = (label: string) => screen.getByText(label, { selector: ".check-row-title" }).closest("li")!;
     expect(within(row(copy.security.branch.rules.requirePullRequest)).getByText("Met")).toBeInTheDocument();
-    expect(within(row(copy.security.branch.rules.requiredApprovals)).getByText("Met")).toBeInTheDocument();
-    expect(row(copy.security.branch.rules.requiredApprovals)).toHaveTextContent("1 approval is required.");
     expect(within(row(copy.security.branch.rules.blockForcePushes)).getByText("Not met")).toBeInTheDocument();
-    expect(within(row(copy.security.branch.rules.dismissStaleReviews)).getByText("Not visible")).toBeInTheDocument();
+    expect(within(row(copy.security.branch.rules.requireStatusChecks)).getByText("Not visible")).toBeInTheDocument();
     expect(within(row(copy.security.branch.settings.pushProtection)).getByText("Not met")).toBeInTheDocument();
     expect(within(row(copy.security.branch.settings.dependabotSecurityUpdates)).getByText("Met")).toBeInTheDocument();
     expect(within(row(copy.security.branch.settings.secretScanning)).getByText("Not visible")).toBeInTheDocument();
+  });
+
+  it("shows only the rules about protection from direct pushes, rewrites and deletion, and none about approvals", () => {
+    render(<BranchProtectionCard report={securityReport()} />);
+    const titles = [...document.querySelectorAll(".check-row-title")].map((el) => el.textContent);
+    const rules = copy.security.branch.rules;
+    expect(titles).toEqual(
+      expect.arrayContaining([
+        rules.requirePullRequest,
+        rules.requireStatusChecks,
+        rules.blockForcePushes,
+        rules.blockDeletion,
+        rules.requireSignedCommits,
+      ]),
+    );
+    expect(Object.keys(rules)).toEqual([
+      "requirePullRequest",
+      "requireStatusChecks",
+      "blockForcePushes",
+      "blockDeletion",
+      "requireSignedCommits",
+    ]);
+    expect(screen.queryByText(/approv|code owner|linear/i)).not.toBeInTheDocument();
   });
 
   it("says why some rules are not visible, and that it does not mean they are off", () => {
@@ -281,7 +301,8 @@ describe("BranchProtectionCard", () => {
     };
     render(<BranchProtectionCard report={{ ...base, posture: seen, postureReadAt: null }} />);
     expect(screen.queryByText(copy.security.branch.notVisibleTitle)).not.toBeInTheDocument();
-    expect(screen.getAllByText("Not met")).toHaveLength(4);
+    // Signed commits, the validity checks and private reporting. The history rule is no longer shown.
+    expect(screen.getAllByText("Not met")).toHaveLength(3);
   });
 
   it("says quietly that the facts are from an earlier read when the latest attempt failed, and keeps showing them", () => {
@@ -296,116 +317,6 @@ describe("BranchProtectionCard", () => {
     render(<BranchProtectionCard report={noSecurity()} />);
     expect(screen.getByText(copy.security.branch.notRead)).toBeInTheDocument();
     expect(screen.queryByText("Met")).not.toBeInTheDocument();
-  });
-});
-
-describe("ChangeControlCard", () => {
-  it("shows the merged, unapproved and self merged counts for the last 90 days with the share", () => {
-    render(<ChangeControlCard report={securityReport()} />);
-    expect(tile(copy.security.control.merged)).toHaveTextContent("20");
-    expect(tile(copy.security.control.unapproved)).toHaveTextContent("3");
-    expect(tile(copy.security.control.unapproved)).toHaveTextContent("15% of the merged pull requests.");
-    expect(tile(copy.security.control.selfMerged)).toHaveTextContent("1");
-    expect(
-      screen.getByText("In the date range you chose, 1 of 8 merged pull requests went in without another person's approval."),
-    ).toBeInTheDocument();
-  });
-
-  it("lists the pull requests with their number, title and date and no person's name", () => {
-    render(<ChangeControlCard report={securityReport()} />);
-    const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1);
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]!).getByRole("link", { name: /#41/ })).toHaveAttribute(
-      "href",
-      "https://github.com/acme/widgets/pull/41",
-    );
-    expect(rows[0]).toHaveTextContent("Tidy the invoice export");
-    expect(rows[0]).toHaveTextContent(copy.security.tags.selfMerged);
-    expect(rows[0]).toHaveTextContent("20 Feb 2026");
-    expect(rows[1]).not.toHaveTextContent(copy.security.tags.selfMerged);
-    expect(screen.getByText(/with no names/)).toBeInTheDocument();
-    expect(within(screen.getByRole("table")).queryByText(/@|login/i)).not.toBeInTheDocument();
-    expect(
-      within(screen.getByRole("table"))
-        .getAllByRole("columnheader")
-        .map((h) => h.textContent),
-    ).toEqual([copy.security.control.number, copy.security.control.titleColumn, copy.security.control.mergedAt]);
-  });
-
-  it("shows a pull request number without a link when its address is not a web address", () => {
-    const review = securityReport().review;
-    render(
-      <ChangeControlCard
-        report={securityReport({
-          review: { ...review, pullRequests: [{ ...review.pullRequests[0]!, url: "javascript:alert(1)" }] },
-        })}
-      />,
-    );
-    expect(screen.getByText("#41")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /#41/ })).not.toBeInTheDocument();
-  });
-
-  it("says why review is not graded and that none were merged", () => {
-    render(<ChangeControlCard report={noSecurity()} />);
-    expect(screen.getByText(copy.security.control.noneYet(90))).toBeInTheDocument();
-    expect(screen.getByText(/too few merged pull requests/)).toBeInTheDocument();
-    expect(screen.getByText(copy.security.control.none)).toBeInTheDocument();
-  });
-
-  it("writes the window, the minimum and the grade limits from the report's thresholds, so a change shows in the words", () => {
-    const base = securityReport();
-    const thresholds = {
-      ...base.thresholds,
-      reviewWindowDays: 45,
-      reviewMinMerged: 25,
-      unapprovedLimits: { elite: 0.02, high: 0.15 },
-    };
-    const { rerender } = render(<ChangeControlCard report={{ ...base, thresholds }} />);
-    expect(screen.getByText("In the last 45 days, which is the window the grade uses.")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Change control is elite when no more than 2% of merges lack another person's approval, and high up to 15%.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/90 days/)).not.toBeInTheDocument();
-    const empty = noSecurity();
-    rerender(<ChangeControlCard report={{ ...empty, thresholds }} />);
-    expect(screen.getByText("No pull requests were merged in the last 45 days.")).toBeInTheDocument();
-    expect(screen.getByText(/at least 25 in the last 45 days are needed/)).toBeInTheDocument();
-  });
-
-  it("says nothing about the range when none were merged in it, and when every merge was approved", () => {
-    const base = securityReport();
-    render(
-      <ChangeControlCard
-        report={securityReport({
-          reviewInRange: { ...base.reviewInRange, merged: 0 },
-          review: { ...base.review, pullRequests: [] },
-        })}
-      />,
-    );
-    expect(screen.queryByText(/In the date range you chose/)).not.toBeInTheDocument();
-    expect(screen.getByText(copy.security.control.none)).toBeInTheDocument();
-  });
-
-  it("shows five titles by default and the rest behind a button, since the titles are mostly ticket references", async () => {
-    const user = userEvent.setup();
-    const review = securityReport().review;
-    const pullRequests = Array.from({ length: 11 }, (_, i) => ({ ...review.pullRequests[1]!, number: 100 + i }));
-    render(<ChangeControlCard report={securityReport({ review: { ...review, pullRequests } })} />);
-    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(6);
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(11) }));
-    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(12);
-  });
-
-  it("prints the five it shows and a line saying how many more there are on the page", () => {
-    const review = securityReport().review;
-    const pullRequests = Array.from({ length: 11 }, (_, i) => ({ ...review.pullRequests[1]!, number: 100 + i }));
-    render(<ChangeControlCard report={securityReport({ review: { ...review, pullRequests } })} />);
-    act(() => void window.dispatchEvent(new Event("beforeprint")));
-    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(6);
-    expect(screen.getByText(copy.security.printMore(6))).toHaveClass("print-only");
-    act(() => void window.dispatchEvent(new Event("afterprint")));
   });
 });
 

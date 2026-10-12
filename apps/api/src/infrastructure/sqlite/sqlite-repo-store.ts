@@ -16,6 +16,7 @@ import type {
   Repo,
   RepoIssue,
   RepoPosture,
+  ReviewExemptionRules,
   ScorecardResult,
   SecurityAlert,
   SourceState,
@@ -27,7 +28,7 @@ import type {
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
-import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
+import type { IssueState, RepoCounts, ReviewExemptionState, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
 import type { SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
 import { SECURITY_SCHEMA, SecurityTables, migrateSecurityTables } from "./security-tables.js";
 
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS repos (
   issue_cursor TEXT,
   issue_labels TEXT,
   issue_error TEXT,
+  review_exemptions TEXT,
   UNIQUE (owner, name)
 );
 CREATE TABLE IF NOT EXISTS pull_requests (
@@ -207,6 +209,7 @@ interface RepoRow {
   issue_cursor: string | null;
   issue_labels: string | null;
   issue_error: string | null;
+  review_exemptions: string | null;
 }
 
 const LABEL_KINDS: ReadonlySet<string> = new Set(ISSUE_LABEL_KINDS);
@@ -257,6 +260,37 @@ function labelsOf(
   return { rules: rules as IssueLabelRules, unreadable: false };
 }
 
+const isNames = (value: unknown): value is string[] => Array.isArray(value) && value.every((name) => typeof name === "string");
+
+/**
+ * Saved review exemptions (ADR 0036), read as `labelsOf` reads a label override: a value that cannot be used reads back
+ * as the defaults with `unreadable` set, and is logged once per repository in `warned`.
+ */
+function exemptionsOf(saved: string | null, repoId: number, log: Logger, warned: Set<number>): ReviewExemptionState {
+  if (saved === null) return { rules: null, unreadable: false };
+  const refuse = (context: Record<string, unknown>, message: string): ReviewExemptionState => {
+    if (!warned.has(repoId)) {
+      warned.add(repoId);
+      log.warn({ ...context, repoId }, message);
+    }
+    return { rules: null, unreadable: true };
+  };
+  let rules: unknown;
+  try {
+    rules = JSON.parse(saved);
+  } catch (err) {
+    return refuse({ err }, "saved review exemptions are not readable JSON; using the defaults");
+  }
+  if (typeof rules !== "object" || rules === null || Array.isArray(rules)) {
+    return refuse({}, "saved review exemptions are not an object; using the defaults");
+  }
+  const { titleWords, labels, ...rest } = rules as Record<string, unknown>;
+  if (Object.keys(rest).length > 0 || !isNames(titleWords) || !isNames(labels)) {
+    return refuse({}, "saved review exemptions do not have the expected shape; using the defaults");
+  }
+  return { rules: { titleWords, labels }, unreadable: false };
+}
+
 const toRepo = (row: RepoRow): Repo => ({
   id: row.id,
   owner: row.owner,
@@ -281,6 +315,8 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
   private readonly security: SecurityTables;
   /** Repositories whose unusable saved labels were already reported, so a polled list does not repeat it. */
   private readonly warnedLabels = new Set<number>();
+  /** The same for unusable saved review exemptions. */
+  private readonly warnedExemptions = new Set<number>();
 
   constructor(
     path: string,
@@ -322,6 +358,10 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
       ["issue_error", "TEXT"],
     ] as const) {
       if (!repoColumns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE repos ADD COLUMN ${column} ${type}`);
+    }
+    // The repository's review exemptions as JSON (ADR 0036); null means the defaults apply.
+    if (!repoColumns.some((c) => c.name === "review_exemptions")) {
+      this.db.exec("ALTER TABLE repos ADD COLUMN review_exemptions TEXT");
     }
     // Whether a snapshot is a failed attempt, kept beside its JSON so that picking the newest good one never parses
     // the data. Null only on rows written before the column existed, which the backfill sets once.
@@ -555,6 +595,19 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
   setIssueLabels(repoId: number, rules: IssueLabelRules | null): void {
     this.warnedLabels.delete(repoId);
     this.db.prepare("UPDATE repos SET issue_labels = ? WHERE id = ?").run(rules === null ? null : JSON.stringify(rules), repoId);
+  }
+
+  reviewExemptionState(repoId: number): ReviewExemptionState {
+    const row = this.db.prepare("SELECT review_exemptions FROM repos WHERE id = ?").get(repoId) as unknown as
+      Pick<RepoRow, "review_exemptions"> | undefined;
+    return exemptionsOf(row?.review_exemptions ?? null, repoId, this.log, this.warnedExemptions);
+  }
+
+  setReviewExemptions(repoId: number, rules: ReviewExemptionRules | null): void {
+    this.warnedExemptions.delete(repoId);
+    this.db
+      .prepare("UPDATE repos SET review_exemptions = ? WHERE id = ?")
+      .run(rules === null ? null : JSON.stringify({ titleWords: rules.titleWords, labels: rules.labels }), repoId);
   }
 
   saveCodeSnapshot(repoId: number, snapshot: CodeSnapshot): void {

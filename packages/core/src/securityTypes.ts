@@ -236,7 +236,6 @@ export interface SupplyChainFacts {
   securityTools: SecurityTool[];
   updateConfig: string | null;
   securityPolicy: string | null;
-  codeowners: string | null;
   manifestsByEcosystem: Record<string, number>;
   missingLockfiles: string[];
   lockfiles: LockfileSummary[];
@@ -299,31 +298,6 @@ export interface ScorecardResult {
 
 export type ScorecardStatus = "ok" | "off" | "not_public" | "not_scanned" | "error";
 
-// --- Review and change control --------------------------------------------------------------------------------------
-
-export const REVIEW_WINDOW_DAYS = 90;
-export const REVIEW_MIN_MERGED = 10;
-
-/**
- * Merged pull requests of the window and how many had an approval. An approval counts when it was given by another
- * person at or before the merge. The crawl stores no commit times for reviews, so an approval given before later,
- * unreviewed commits were pushed still counts.
- */
-export interface ReviewControls {
-  from: string;
-  to: string;
-  merged: number;
-  authors: number;
-  unapproved: number;
-  selfMergedUnapproved: number;
-  /** `unapproved / merged`, or null when nothing was merged. */
-  share: number | null;
-  graded: boolean;
-  notGradedBecause: "too_few" | "single_author" | null;
-  /** Merged without approval, newest first, at most 50. Never a login. */
-  pullRequests: { number: number; title: string; url: string; mergedAt: string; selfMerged: boolean }[];
-}
-
 // --- The grade ------------------------------------------------------------------------------------------------------
 
 /** Days an open alert of each severity may stay open before it is past its fix-by date. Unknown uses medium's. */
@@ -351,7 +325,7 @@ export const SECURITY_CHECKS = {
     "keyFiles",
     "all",
   ],
-  changeControl: ["unapprovedMerges", "branchUnprotected", "forcePushAllowed", "all"],
+  changeControl: ["branchUnprotected", "forcePushAllowed", "all"],
 } as const;
 
 /** The order parts are named in when they tie. */
@@ -399,7 +373,6 @@ export const SECURITY_ACTION_KINDS = [
   "restrict_permissions",
   "remove_unsecure_commands",
   "remove_key_files",
-  "require_review",
   "protect_branch",
   "block_force_push",
   "enable_dependabot",
@@ -408,17 +381,13 @@ export const SECURITY_ACTION_KINDS = [
   "add_update_config",
   "add_lockfile",
   "add_security_policy",
-  "add_codeowners",
   "review_weak_key_files",
   "enable_code_scanning",
   "check_secret_scanning",
   "grant_alert_access",
   "turn_on_code_analysis",
   "fix_low_alerts",
-  "require_approvals",
   "require_status_checks",
-  "dismiss_stale_reviews",
-  "require_code_owner_review",
   "require_signed_commits",
   "enable_security_updates",
   "enable_push_protection",
@@ -476,7 +445,6 @@ export type SupplyChainCheckId =
   | "updateConfig"
   | "lockfiles"
   | "securityPolicy"
-  | "codeowners"
   | "dependencyReview"
   | "secretScanInCi"
   | "staticAnalysis"
@@ -555,15 +523,10 @@ export interface SecurityIssues {
 export type SecurityGradeMissing = "not_crawled" | "nothing_measured";
 
 export interface SecurityThresholds {
-  /** The days of merges the change control check reads. */
-  reviewWindowDays: number;
-  reviewMinMerged: number;
   /** An open update pull request older than this many days is advice to merge or close it. */
   staleUpdateDays: number;
   /** The exploit prediction share, from 0 to 1, at or above which an alert is likely to be exploited. */
   likelyExploitedEpss: number;
-  /** The share of merges without approval up to which change control is elite, and up to which it is high. */
-  unapprovedLimits: { elite: number; high: number };
   /** A low alert becomes advice once it is older than this many days. */
   lowAlertAdviceDays: number;
 }
@@ -574,7 +537,6 @@ export interface SecurityReport {
   gradedAt: string;
   /** Kept beside `thresholds`: the same constants, for readers of the older fields. */
   fixWithinDays: typeof FIX_WITHIN_DAYS;
-  reviewMinMerged: number;
   likelyExploitedEpss: number;
   /** The limits the grade and the advice use, so copy never repeats a number. */
   thresholds: SecurityThresholds;
@@ -637,10 +599,6 @@ export interface SecurityReport {
   openAlerts: SecurityAlertRef[];
   openAlertTotal: number;
   dependencyGroups: DependencyGroup[];
-  /** The 90 day window ending now, used by the grade. */
-  review: ReviewControls;
-  /** The requested range, for display only. */
-  reviewInRange: ReviewControls;
   dependencyUpdates: DependencyUpdates;
   /** Null when the repository has no stored issues. */
   securityIssues: SecurityIssues | null;

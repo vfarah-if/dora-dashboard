@@ -41,7 +41,7 @@ One test: `cd apps/api && npx vitest run test/routes.test.ts -t "compares"`.
 6. **UK English, no em or en dashes**, no consultancy speak. User-facing copy lives in `apps/web/src/copy.ts`.
 7. **Record decisions.** A new dependency, a changed metric definition or a new external system means an ADR.
 8. **A lower grade after an analyser change is not a reason to move the bands.** Compare two stored snapshots of the same commit with core's `codeHealth` first; a more complete measurement lowering a grade is expected (ADR 0026).
-9. **No secret values or people in security data.** Request secret scanning with `hide_secret=true`, never store or return a secret or a login, and never map free text from an alert such as comments, rule help or advisory descriptions. Pull request titles and advisory summaries are returned on purpose (ADR 0031).
+9. **No secret values or people in security data.** Request secret scanning with `hide_secret=true`, never store or return a secret or a login, and never map free text from an alert such as comments, rule help or advisory descriptions. Advisory summaries and rule descriptions are returned on purpose (ADR 0031). Review habits are a delivery figure, never a security finding (ADR 0036).
 
 ## Agents
 

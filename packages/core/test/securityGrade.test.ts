@@ -18,7 +18,6 @@ import {
   NOW,
   allOk,
   codeAlert,
-  controls,
   daysAgo,
   depAlert,
   failed,
@@ -81,7 +80,6 @@ describe("a repository with nothing wrong", () => {
       "workflowPermissions",
       "unsecureCommands",
       "keyFiles",
-      "unapprovedMerges",
       "branchUnprotected",
       "forcePushAllowed",
     ]);
@@ -396,67 +394,32 @@ describe("the supply chain part", () => {
 });
 
 describe("the change control part", () => {
-  it.each([
-    [0, "elite"],
-    [0.05, "elite"],
-    [0.0501, "high"],
-    [0.2, "high"],
-    [0.2001, "medium"],
-    [1, "medium"],
-  ] as const)("a share of %f unapproved allows %s", (share, band) => {
-    const review = controls({ merged: 10000, unapproved: Math.round(share * 10000), share });
-    const result = part({ review }, "changeControl");
-    expect(result.band).toBe(band);
-    expect(result.check).toBe(band === "elite" ? "all" : "unapprovedMerges");
+  it("reports a branch that allows force pushes in words, as the branch's own check", () => {
+    const result = grade({ posture: posture({ branch: { rules: { blockForcePushes: false } } }) });
+    expect(result.grade!.parts.changeControl!.reason).toBe("Force pushes are allowed on the deploy branch");
+    expect(result.checks.filter((c) => c.part === "changeControl").map((c) => c.check)).toEqual([
+      "branchUnprotected",
+      "forcePushAllowed",
+    ]);
   });
 
-  it("reports the figures and a reason in words", () => {
-    const review = controls({ merged: 20, unapproved: 5, share: 0.25 });
-    const result = grade({ review });
-    expect(result.checks.find((c) => c.check === "unapprovedMerges")).toMatchObject({
-      value: 0.25,
-      count: 5,
-      total: 20,
-      band: "medium",
-      met: false,
-      limits: true,
-    });
-    expect(result.grade!.parts.changeControl!.reason).toBe(
-      "25.0% of merged pull requests (5 of 20) had no approval before the merge, and the elite band allows at most 5.0%",
-    );
+  it("ignores how many merges were approved, however few were", () => {
+    // Review habits are a delivery figure (ADR 0036); a branch that is protected is elite whatever was merged.
+    expect(part({}, "changeControl")).toMatchObject({ band: "elite", check: "all" });
   });
 
-  it.each([
-    ["too few merges", controls({ merged: 9, graded: false, notGradedBecause: "too_few", share: 0.5, unapproved: 4 })],
-    [
-      "a single author",
-      controls({ merged: 30, authors: 1, graded: false, notGradedBecause: "single_author", share: 1, unapproved: 30 }),
-    ],
-  ])("leaves merges without a band for %s, and grades the branch alone", (_name, review) => {
-    const result = grade({ review });
-    const unapproved = result.checks.find((c) => c.check === "unapprovedMerges")!;
-    expect(unapproved.band).toBeUndefined();
-    expect(unapproved.met).toBeUndefined();
-    expect(result.grade!.parts.changeControl!.band).toBe("elite");
-  });
-
-  it("is unmeasured when merges are not graded and the branch was not read", () => {
-    const result = grade({ review: controls({ graded: false, merged: 2 }), posture: null });
+  it("is unmeasured when the branch was not read", () => {
+    const result = grade({ posture: null });
     expect(result.grade!.parts.changeControl).toBeNull();
     expect(result.grade!.unmeasured).toEqual(["changeControl"]);
   });
 
   it("does not let change control alone make a grade", () => {
     const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: off("lookup_off") };
-    const result = grade({
-      sources,
-      supplyChain: null,
-      supplyChainMissing: "analysis_off",
-      review: controls({ unapproved: 20, share: 1 }),
-    });
+    const result = grade({ sources, supplyChain: null, supplyChainMissing: "analysis_off" });
     expect(result.grade).toBeNull();
     expect(result.gradeMissing).toBe("nothing_measured");
-    expect(result.checks.find((c) => c.check === "unapprovedMerges")).toMatchObject({ band: "medium", limits: true });
+    expect(result.checks.find((c) => c.check === "branchUnprotected")).toMatchObject({ band: "elite", met: true });
   });
 });
 
@@ -537,13 +500,6 @@ describe("branch state", () => {
     expect(branchState(unread)).toMatchObject({ read: false, unprotected: false });
     expect(branchState(null)).toEqual({ read: false, unprotected: false, forcePushAllowed: false, enforced: false });
   });
-
-  it("names the branch check first when both branch checks tie and nothing else is lower", () => {
-    const both = posture({ branch: { protected: true, rules: { blockForcePushes: false } } });
-    expect(part({ posture: both, review: controls({ merged: 20, unapproved: 5, share: 0.25 }) }, "changeControl").check).toBe(
-      "unapprovedMerges",
-    );
-  });
 });
 
 describe("the overall grade", () => {
@@ -560,19 +516,21 @@ describe("the overall grade", () => {
 
   it("names the first part, in order vulnerabilities, supply chain, change control, when they tie", () => {
     const supplyChain = record({ findings: [finding("writeAll")] }); // high
-    const tied = grade({ alerts: [high], supplyChain, review: controls({ merged: 20, unapproved: 3, share: 0.15 }) });
+    const loose = posture({ branch: { rules: { blockForcePushes: false } } }); // high
+    const tied = grade({ alerts: [high], supplyChain, posture: loose });
     expect(tied.grade!.overall).toMatchObject({ part: "vulnerabilities", band: "high", check: "highOpen" });
-    const noAlert = grade({ supplyChain, review: controls({ merged: 20, unapproved: 3, share: 0.15 }) });
+    const noAlert = grade({ supplyChain, posture: loose });
     expect(noAlert.grade!.overall).toMatchObject({ part: "supplyChain", band: "high" });
-    const reviewOnly = grade({ review: controls({ merged: 20, unapproved: 3, share: 0.15 }) });
-    expect(reviewOnly.grade!.overall).toMatchObject({ part: "changeControl", check: "unapprovedMerges" });
+    const branchOnly = grade({ posture: loose });
+    expect(branchOnly.grade!.overall).toMatchObject({ part: "changeControl", check: "forcePushAllowed" });
   });
 
   it("is lowered by change control when it is the lowest", () => {
-    const result = grade({ alerts: [critical], review: controls({ merged: 10, unapproved: 10, share: 1 }) });
+    const loose = posture({ branch: { protected: false, rules: { blockForcePushes: false } } });
+    const result = grade({ alerts: [critical], posture: loose });
     expect(result.grade!.overall).toMatchObject({ part: "vulnerabilities", band: "medium" });
-    const bad = grade({ alerts: [high], review: controls({ merged: 10, unapproved: 10, share: 1 }) });
-    expect(bad.grade!.overall).toMatchObject({ part: "changeControl", band: "medium" });
+    const fine = grade({ alerts: [high], posture: posture({ branch: { rules: { blockForcePushes: false } } }) });
+    expect(fine.grade!.overall).toMatchObject({ part: "vulnerabilities", band: "high" });
   });
 
   it("sets limits only on the check behind each part, not on equal checks elsewhere", () => {
@@ -610,7 +568,6 @@ describe("a grade that cannot be given", () => {
     const result = grade({
       supplyChain: null,
       supplyChainMissing: "analysis_off",
-      review: controls({ graded: false }),
       posture: null,
     });
     expect(result.grade!.unmeasured).toEqual(["supplyChain", "changeControl"]);
@@ -639,10 +596,9 @@ describe("raising the grade", () => {
     expect(raisedBand(facts({ alerts }))).toBe("elite");
   });
 
-  it("clears the merges first, then reads the branch that is left", () => {
+  it("clears the branch check that holds the grade down", () => {
     const loose = posture({ branch: { rules: { blockForcePushes: false } } });
-    const review = controls({ merged: 10, unapproved: 3, share: 0.3 });
-    expect(raisedBand(facts({ posture: loose, review }))).toBe("high");
+    expect(raisedBand(facts({ posture: loose }))).toBe("elite");
   });
 
   it("clears the unwatched dependencies", () => {
@@ -806,7 +762,6 @@ describe("raising the band by alert, not by check name", () => {
 describe("a branch read only through rulesets", () => {
   const rulesetsOnly = (rules: Partial<BranchRules>) =>
     posture({ branch: { protected: null, detail: "rulesets_only", rules: { ...noRules, ...rules } } });
-  const unreviewed = controls({ graded: false, notGradedBecause: "too_few", share: null, merged: 3 });
 
   it("is not read, and not called unprotected, when the branch call failed and rulesets held no rule", () => {
     expect(branchState(rulesetsOnly({}))).toEqual({ read: false, unprotected: false, forcePushAllowed: false, enforced: false });
@@ -818,21 +773,16 @@ describe("a branch read only through rulesets", () => {
     });
   });
 
-  it("is not graded for the branch check, and names change control as unmeasured when reviews are not graded", () => {
-    const result = grade({ posture: rulesetsOnly({}), review: unreviewed });
+  it("is not graded for the branch check, and names change control as unmeasured", () => {
+    const result = grade({ posture: rulesetsOnly({}) });
     expect(result.grade!.parts.changeControl).toBeNull();
     expect(result.grade!.unmeasured).toContain("changeControl");
     expect(result.checks.some((c) => c.check === "branchUnprotected")).toBe(false);
   });
 
-  it("reports the branch check as not measured, not as found, when reviews are graded", () => {
+  it("lists no change control check at all, rather than a check that found nothing", () => {
     const checks = grade({ posture: rulesetsOnly({}) }).checks;
-    expect(checks.find((c) => c.check === "branchUnprotected")).toEqual({
-      part: "changeControl",
-      check: "branchUnprotected",
-      value: null,
-      limits: false,
-    });
+    expect(checks.filter((c) => c.part === "changeControl")).toEqual([]);
   });
 
   it("is protected, and read, when a ruleset has a rule in force", () => {

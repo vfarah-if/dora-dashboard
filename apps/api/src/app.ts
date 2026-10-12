@@ -24,6 +24,7 @@ import { registerErrorHandler } from "./routes/errors.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerJiraRoutes } from "./routes/jira.js";
 import { registerRepoRoutes } from "./routes/repos.js";
+import { registerReviewExemptionRoutes } from "./routes/review-exemptions.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
 import { registerSecurityRoutes } from "./routes/security.js";
 import { DeviceSignInService } from "./services/device-sign-in-service.js";
@@ -218,6 +219,7 @@ function registerRoutes(
     repos,
     reports: new IssueReportService(deps.store, deps.clock),
   });
+  registerReviewExemptionRoutes(app, { guard: requireSession(auth), config: deps.config, repos });
   registerReviewQueueRoutes(app, {
     guard: requireSession(auth),
     queue: new ReviewQueueService(deps.store, deps.provider, deps.clock),

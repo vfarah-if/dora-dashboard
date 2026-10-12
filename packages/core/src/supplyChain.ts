@@ -659,7 +659,6 @@ const UPDATE_CONFIGS = [
 
 const SECURITY_POLICY = /^(?:(\.github|docs)\/)?security(?:\.md|\.txt)?$/i;
 const SECURITY_POLICY_PLACES = ["", ".github", "docs"];
-const CODEOWNERS_PLACES = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
 
 function securityPolicy(paths: readonly string[]): string | null {
   const found = paths.filter((path) => SECURITY_POLICY.test(path));
@@ -830,7 +829,6 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
   }
 
   const configs = new Set(paths);
-  const codeowners = CODEOWNERS_PLACES.find((path) => configs.has(path)) ?? null;
 
   // Manifests, the lockfiles that satisfy them, and the Dependabot ecosystems the repository needs.
   const counts = new Map<string, number>();
@@ -875,7 +873,6 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     securityTools,
     updateConfig: UPDATE_CONFIGS.find((path) => configs.has(path)) ?? null,
     securityPolicy: securityPolicy(paths),
-    codeowners,
     manifestsByEcosystem: Object.fromEntries([...counts].sort(([a], [b]) => compareText(a, b))),
     missingLockfiles: missing.sort().slice(0, MAX_LISTED),
     lockfiles: [...summaries.values()].sort(byPath),

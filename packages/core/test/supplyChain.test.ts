@@ -766,14 +766,8 @@ describe("repository files", () => {
     expect(chainFacts({ paths }).securityPolicy).toBe(expected);
   });
 
-  it.each([
-    [["CODEOWNERS"], "CODEOWNERS"],
-    [[".github/CODEOWNERS"], ".github/CODEOWNERS"],
-    [["docs/CODEOWNERS"], "docs/CODEOWNERS"],
-    [["docs/CODEOWNERS", "CODEOWNERS", ".github/CODEOWNERS"], ".github/CODEOWNERS"],
-    [["src/CODEOWNERS", "codeowners"], null],
-  ])("finds code owners in %j as %s", (paths, expected) => {
-    expect(chainFacts({ paths }).codeowners).toBe(expected);
+  it("no longer reads code owners, which are advice about review", () => {
+    expect("codeowners" in chainFacts({ paths: [".github/CODEOWNERS"] })).toBe(false);
   });
 });
 
@@ -992,7 +986,6 @@ describe("supplyChainFacts counts and bounds", () => {
       securityTools: [],
       updateConfig: null,
       securityPolicy: null,
-      codeowners: null,
       manifestsByEcosystem: {},
       missingLockfiles: [],
       lockfiles: [],

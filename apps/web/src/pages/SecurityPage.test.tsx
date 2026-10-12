@@ -27,6 +27,16 @@ describe("SecurityPage", () => {
     expect(await screen.findByRole("heading", { level: 2, name: copy.security.start.title })).toBeInTheDocument();
   });
 
+  it("says nothing about approvals, reviews of merges or merged pull requests, which are a delivery matter and not a security one", async () => {
+    show();
+    await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(
+      /approving review|approval|code owner|CODEOWNERS|merged pull request|reviewed by someone|another person/i,
+    );
+    expect(screen.queryByRole("heading", { name: /change control/i })).not.toBeInTheDocument();
+  });
+
   it("runs its sections in order, from Start here to the glossary", async () => {
     show();
     await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
@@ -46,7 +56,6 @@ describe("SecurityPage", () => {
       "Security tools in CI",
       "Container images",
       "Branch protection and settings",
-      "Change control",
       "Security issues",
       "OpenSSF Scorecard",
       "How each source is read",

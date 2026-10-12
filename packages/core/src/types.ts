@@ -457,6 +457,26 @@ export interface IssueLabelDefaults extends IssueLabelLists {
   };
 }
 
+/** A repository's rules for leaving a merged pull request out of "merged with no review" (ADR 0036). */
+export interface ReviewExemptionRules {
+  /** Whole words that mark a title as code reviewed elsewhere, compared without case or punctuation. */
+  titleWords: string[];
+  /** Label names that mark a pull request as reviewed elsewhere, compared without case. */
+  labels: string[];
+}
+
+/** The rules that apply until a repository overrides them, and the limits an override must keep to. */
+export interface ReviewExemptionDefaults extends ReviewExemptionRules {
+  limits: {
+    /** The most title words an override may list. */
+    titleWords: number;
+    /** The most labels an override may list. */
+    labels: number;
+    /** The most characters one entry may have. */
+    length: number;
+  };
+}
+
 /** A pull request named in a finding or a list. */
 export interface PullRequestRef {
   /** "owner/name". */
@@ -478,6 +498,10 @@ export interface RepoListing extends Repo {
   issueLabels: IssueLabelRules | null;
   /** True when an override was saved but cannot be read, so the defaults apply until it is saved again. */
   issueLabelsUnreadable: boolean;
+  /** The repository's review exemptions; null when the defaults apply. */
+  reviewExemptions: ReviewExemptionRules | null;
+  /** True when an override was saved but cannot be read, so the defaults apply until it is saved again. */
+  reviewExemptionsUnreadable: boolean;
   /** Why the last issue read failed; null when it succeeded or never ran. The rest of the crawl is unaffected. */
   issueError: string | null;
 }

@@ -2,7 +2,6 @@ import { BAND_RANK, type Band } from "./dora.js";
 import { SEVERITY_RANK, isLikelyExploited, isUsable, worseSeverity } from "./securityAlerts.js";
 import { compareText } from "./stats.js";
 import {
-  UNAPPROVED_LIMITS,
   bandOfAlert,
   branchState,
   lowest,
@@ -298,8 +297,7 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
       clone.missingLockfiles.length,
       clone.missingLockfiles.map((path) => ({ label: path, url: null })),
     );
-    if (clone.securityPolicy === null) advise("add_security_policy", 1);
-    if (clone.codeowners === null) advise("add_codeowners", 1);
+    if (clone.securityPolicy === null && posture?.visibility === "public") advise("add_security_policy", 1);
     advise(
       "review_weak_key_files",
       found.weakKeys.length,
@@ -331,13 +329,6 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   }
 
   // Change control and settings.
-  const { review } = facts;
-  if (review.graded && (review.share ?? 0) > UNAPPROVED_LIMITS.elite) {
-    add("require_review", {
-      band: (review.share ?? 0) <= UNAPPROVED_LIMITS.high ? "high" : "medium",
-      count: review.unapproved,
-    });
-  }
   if (posture !== null) {
     const branch = branchState(posture);
     const name = posture.branch.name;
@@ -346,10 +337,7 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
     if (branch.read && branch.enforced) {
       const { rules } = posture.branch;
       const note = (kind: SecurityActionKind, on: boolean) => on && add(kind, { count: 1, target: name });
-      note("require_approvals", rules.requirePullRequest === false || rules.requiredApprovals === 0);
       note("require_status_checks", rules.requireStatusChecks === false);
-      note("dismiss_stale_reviews", rules.dismissStaleReviews === false && rules.requirePullRequest !== false);
-      note("require_code_owner_review", rules.requireCodeOwnerReview === false && supplyChain?.facts.codeowners != null);
       note("require_signed_commits", rules.requireSignedCommits === false);
     }
     const { settings, advisories } = posture;

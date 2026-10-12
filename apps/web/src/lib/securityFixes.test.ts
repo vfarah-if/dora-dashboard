@@ -9,7 +9,6 @@ import {
   SETTINGS_KINDS,
   SNIPPETS,
   branchSettingsUrl,
-  codeownersSnippet,
   codeqlLanguages,
   codeqlSnippet,
   dependabotYml,
@@ -346,14 +345,6 @@ describe("fixed snippets", () => {
     expect(text).not.toMatch(NO_DASH);
   });
 
-  it("gives marked placeholders for code owners and says to replace them", () => {
-    const text = codeownersSnippet();
-    expect(text).toContain("@REPLACE-WITH-ORG/REPLACE-WITH-TEAM");
-    expect(text.split("\n")[0]).toContain("Replace every REPLACE-WITH placeholder");
-    expect(text).not.toContain("@your-org");
-    expect(text).not.toContain("@acme");
-  });
-
   it("ignores environment files but keeps the example", () => {
     expect(gitignoreSnippet().split("\n")).toEqual([".env", ".env.*", "!.env.example", "*.pem", "*.key"]);
   });
@@ -647,7 +638,13 @@ describe("snippets for each kind of action", () => {
   });
 
   it("offers no snippet where the fix is a setting or a decision", () => {
-    for (const kind of ["rotate_secret", "protect_branch", "require_review", "replace_dependency", "fix_code_alert"] as const) {
+    for (const kind of [
+      "rotate_secret",
+      "protect_branch",
+      "require_status_checks",
+      "replace_dependency",
+      "fix_code_alert",
+    ] as const) {
       expect(snippetsFor(securityAction({ kind }), context)).toEqual([]);
     }
   });

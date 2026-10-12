@@ -11,6 +11,8 @@ import type {
   Repo,
   RepoListing,
   RepoReport,
+  ReviewExemptionDefaults,
+  ReviewExemptionRules,
   ReviewQueue,
   SecurityReport,
   SecuritySummary,
@@ -94,6 +96,7 @@ export const queryKeys = {
   spaces: ["spaces"] as const,
   spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
   issueLabelDefaults: ["issue-label-defaults"] as const,
+  reviewExemptionDefaults: ["review-exemption-defaults"] as const,
   issues: (id: number) => ["issues", id] as const,
   issueReport: (id: number, range: SpaceRange, people: boolean) => ["issues", id, "report", range, people] as const,
   securityList: ["security-list"] as const,
@@ -519,6 +522,34 @@ export function useUpdateIssueLabels(id: number) {
       Promise.all([
         client.invalidateQueries({ queryKey: queryKeys.repos }),
         client.invalidateQueries({ queryKey: queryKeys.issues(id) }),
+      ]),
+  });
+}
+
+/** The title words and labels that leave a pull request out of "merged with no review", and the limits an override keeps to. */
+export function useReviewExemptionDefaults() {
+  return useQuery({
+    queryKey: queryKeys.reviewExemptionDefaults,
+    queryFn: () => apiRequest<ReviewExemptionDefaults>("/api/review-exemptions/defaults"),
+    // The defaults change only with a release of the API, so one read serves the whole session.
+    staleTime: 60 * 60 * 1000,
+  });
+}
+
+/**
+ * Saves a repository's review exemptions, or clears them with null. The figure is worked out when the report is built,
+ * so no crawl follows: the listing and every report are read again.
+ */
+export function useUpdateReviewExemptions(id: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (exemptions: ReviewExemptionRules | null) =>
+      apiRequest<RepoListing>(`/api/repos/${id}/review-exemptions`, { method: "PUT", body: { exemptions } }),
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.repos }),
+        client.invalidateQueries({ queryKey: ["report", id] }),
+        client.invalidateQueries({ queryKey: ["compare"] }),
       ]),
   });
 }

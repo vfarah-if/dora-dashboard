@@ -13,7 +13,11 @@ export class ReportService {
     validateDateRange(options, dayOf(this.clock()));
     const repo = this.store.getRepo(repoId);
     if (!repo) throw new NotFoundError(`Unknown repository ${repoId}`);
-    return buildReport(repo, this.store.pullRequests(repo.id), this.store.deployRuns(repo.id), options);
+    const { rules } = this.store.reviewExemptionState(repo.id);
+    return buildReport(repo, this.store.pullRequests(repo.id), this.store.deployRuns(repo.id), {
+      ...options,
+      reviewExemptions: rules,
+    });
   }
 
   /** One report per repository over the same range, in the order asked for; unknown ids are an error. */

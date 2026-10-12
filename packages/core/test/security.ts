@@ -8,7 +8,6 @@ import type {
   DependencyAlert,
   LockedPackage,
   RepoPosture,
-  ReviewControls,
   SecretAlert,
   SourceState,
   SupplyChainFacts,
@@ -174,7 +173,6 @@ export function emptyFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyCha
     securityTools: [],
     updateConfig: ".github/dependabot.yml",
     securityPolicy: "SECURITY.md",
-    codeowners: ".github/CODEOWNERS",
     manifestsByEcosystem: { npm: 1 },
     missingLockfiles: [],
     lockfiles: [],
@@ -198,23 +196,6 @@ export function record(overrides: Partial<SupplyChainFacts> = {}): SupplyChainRe
       ],
       ...overrides,
     }),
-  };
-}
-
-/** Review controls graded, with nothing unapproved unless said otherwise. */
-export function controls(overrides: Partial<ReviewControls> = {}): ReviewControls {
-  return {
-    from: "2026-07-09T12:00:00.000Z",
-    to: NOW,
-    merged: 20,
-    authors: 3,
-    unapproved: 0,
-    selfMergedUnapproved: 0,
-    share: 0,
-    graded: true,
-    notGradedBecause: null,
-    pullRequests: [],
-    ...overrides,
   };
 }
 
@@ -258,7 +239,7 @@ export function posture(
   };
 }
 
-/** Facts for an elite repository: every source read, a clean clone, reviewed merges and a protected branch. */
+/** Facts for an elite repository: every source read, a clean clone and a protected branch. */
 export function facts(overrides: Partial<SecurityFacts> = {}): SecurityFacts {
   return {
     owner: "acme",
@@ -268,7 +249,6 @@ export function facts(overrides: Partial<SecurityFacts> = {}): SecurityFacts {
     sources: allOk(),
     supplyChain: record(),
     supplyChainMissing: null,
-    review: controls(),
     posture: posture(),
     ...overrides,
   };

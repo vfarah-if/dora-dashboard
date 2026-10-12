@@ -84,6 +84,43 @@ describe("RepoPage", () => {
     expect(reportUrl).toContain("includeBots=1");
   });
 
+  describe("the merged with no review figure", () => {
+    const show = async (body: ReturnType<typeof report>, listing = repo()) => {
+      mockFetch({
+        "GET /api/repos/1/report": { body },
+        "GET /api/repos/1/code-health": noHealth,
+        "GET /api/repos": { body: [listing] },
+      });
+      renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+      return (await screen.findByText(copy.flow.unreviewed)).closest("div")!;
+    };
+
+    it("shows the share with the counts and how many were left out as reviewed elsewhere", async () => {
+      // 6 merged, 2 left out, so 4 are counted, and 1 of them had no review: 25%.
+      const tile = await show(report());
+      expect(tile).toHaveTextContent("25%");
+      expect(tile).toHaveTextContent("1 of 4 merged pull requests had no review at all; 2 were left out as reviewed elsewhere");
+    });
+
+    it("says not available when every merged pull request was left out", async () => {
+      const base = report();
+      const tile = await show(report({ totals: { ...base.totals, unreviewedCount: 0, unreviewedShare: null, exemptCount: 6 } }));
+      expect(tile).toHaveTextContent(copy.common.notAvailable);
+      expect(tile).toHaveTextContent("0 of 0 merged pull requests had no review at all; 6 were left out as reviewed elsewhere");
+    });
+
+    it("leaves the reviewed and self-merged tiles as they were, beside it", async () => {
+      await show(report());
+      expect(screen.getByRole("heading", { level: 3, name: copy.flow.reviewed })).toHaveTextContent("Reviewed");
+      expect(screen.getByRole("heading", { level: 3, name: copy.flow.selfMerged })).toBeInTheDocument();
+    });
+
+    it("offers the reviewed elsewhere rules beside the tiles once the repository list has loaded", async () => {
+      await show(report());
+      expect(await screen.findByRole("button", { name: copy.reviewExemptions.open })).toBeInTheDocument();
+    });
+  });
+
   describe("the week the range ends part way through", () => {
     afterEach(() => vi.useRealTimers());
 
@@ -696,14 +733,14 @@ describe("RepoPage security", () => {
             count: 1,
             refs: [],
           }),
-          securityAction({ kind: "require_review", target: null, ecosystem: null, manifestPath: null, count: 2, refs: [] }),
+          securityAction({ kind: "fix_low_alerts", target: null, ecosystem: null, manifestPath: null, count: 2, refs: [] }),
         ],
-        thresholds: { ...base.thresholds, reviewWindowDays: 45 },
+        thresholds: { ...base.thresholds, lowAlertAdviceDays: 45 },
       }),
     );
     const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
     expect(within(section).getByText(/Dependabot version updates are set up in \.github\/dependabot\.yml/)).toBeInTheDocument();
-    expect(within(section).getByText(/in the last 45 days had no approval/)).toBeInTheDocument();
+    expect(within(section).getByText(/2 low severity alerts have been open for more than 45 days/)).toBeInTheDocument();
   });
 
   it("says no grade has been produced when sources were read but nothing could be measured", async () => {

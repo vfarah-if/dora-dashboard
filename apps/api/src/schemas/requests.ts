@@ -1,4 +1,10 @@
-import { DORA_PROFILE_IDS, ISSUE_LABEL_KINDS, ISSUE_LABEL_LIMITS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
+import {
+  DORA_PROFILE_IDS,
+  ISSUE_LABEL_KINDS,
+  ISSUE_LABEL_LIMITS,
+  ISSUE_PRIORITIES,
+  REVIEW_EXEMPTION_LIMITS,
+} from "@dora-dashboard/core";
 
 /** JSON schemas Fastify validates request bodies and query strings against before a handler runs. */
 
@@ -167,6 +173,40 @@ export const issueLabelsBody = {
           type: "object",
           additionalProperties: false,
           properties: { kinds: keyed(ISSUE_LABEL_KINDS), priorities: keyed(ISSUE_PRIORITIES) },
+        },
+      ],
+    },
+  },
+} as const;
+
+/** An exemption entry: 1 to `length` characters, none of them a control character. */
+const exemptionEntry = {
+  type: "string",
+  minLength: 1,
+  maxLength: REVIEW_EXEMPTION_LIMITS.length,
+  pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+} as const;
+
+/**
+ * `exemptions: null` returns the repository to the default title words and labels; otherwise both lists are given and
+ * replace the defaults. Unknown fields are refused, and `anyOf` is used for the reason `issueLabelsBody` gives.
+ */
+export const reviewExemptionsBody = {
+  type: "object",
+  required: ["exemptions"],
+  additionalProperties: false,
+  properties: {
+    exemptions: {
+      anyOf: [
+        { const: null },
+        {
+          type: "object",
+          required: ["titleWords", "labels"],
+          additionalProperties: false,
+          properties: {
+            titleWords: { type: "array", items: exemptionEntry, maxItems: REVIEW_EXEMPTION_LIMITS.titleWords },
+            labels: { type: "array", items: exemptionEntry, maxItems: REVIEW_EXEMPTION_LIMITS.labels },
+          },
         },
       ],
     },

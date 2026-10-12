@@ -6,7 +6,6 @@ import { copy } from "../copy";
 import { AlertsTable } from "../components/AlertsTable";
 import { BandLabel } from "../components/BandLabel";
 import { BranchProtectionCard } from "../components/BranchProtectionCard";
-import { ChangeControlCard } from "../components/ChangeControlCard";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DependencyTable } from "../components/DependencyTable";
 import { DependencyUpdatesCard } from "../components/DependencyUpdatesCard";
@@ -122,7 +121,6 @@ function Body({ report }: { report: SecurityReport }) {
       <SupplyChainCard report={report} group="tools" />
       <SupplyChainCard report={report} group="images" />
       <BranchProtectionCard report={report} />
-      <ChangeControlCard report={report} />
       <SecurityIssuesCard report={report} />
       <ScorecardCard report={report} />
       <SourcesPanel report={report} />

@@ -7,7 +7,7 @@ import {
   type SecurityActionKind,
   type WorkflowFinding,
 } from "../src/securityTypes.js";
-import { allOk, codeAlert, controls, daysAgo, depAlert, facts, noAccess, off, posture, record, secretAlert } from "./security.js";
+import { allOk, codeAlert, daysAgo, depAlert, facts, noAccess, off, posture, record, secretAlert } from "./security.js";
 
 const finding = (risk: WorkflowFinding["risk"], file = ".github/workflows/ci.yml", line: number | null = 4): WorkflowFinding => ({
   file,
@@ -44,7 +44,6 @@ const FIXTURES: Record<SecurityActionKind, { overrides?: Parameters<typeof facts
   restrict_permissions: { overrides: { supplyChain: record({ findings: [finding("noPermissions")] }) } },
   remove_unsecure_commands: { overrides: { supplyChain: record({ findings: [finding("unsecureCommands")] }) } },
   remove_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: ".env", strength: "strong" }] }) } },
-  require_review: { overrides: { review: controls({ merged: 20, unapproved: 5, share: 0.25 }) } },
   protect_branch: { overrides: { posture: posture({ branch: { protected: false, rules: { ...unprotectedRules() } } }) } },
   block_force_push: { overrides: { posture: loose({ blockForcePushes: false }) } },
   enable_dependabot: { overrides: { sources: { ...allOk(), dependabot: off("disabled") } } },
@@ -57,18 +56,16 @@ const FIXTURES: Record<SecurityActionKind, { overrides?: Parameters<typeof facts
   },
   add_update_config: { overrides: { supplyChain: record({ updateConfig: null }) } },
   add_lockfile: { overrides: { supplyChain: record({ missingLockfiles: ["web/package.json"] }) } },
-  add_security_policy: { overrides: { supplyChain: record({ securityPolicy: null }) } },
-  add_codeowners: { overrides: { supplyChain: record({ codeowners: null }) } },
+  add_security_policy: {
+    overrides: { supplyChain: record({ securityPolicy: null }), posture: posture({ visibility: "public" }) },
+  },
   review_weak_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: "a.pem", strength: "weak" }] }) } },
   enable_code_scanning: { overrides: { sources: { ...allOk(), code_scanning: off("not_set_up") } } },
   check_secret_scanning: { overrides: { sources: { ...allOk(), secret_scanning: noAccess("admin_only_or_off") } } },
   grant_alert_access: { overrides: { sources: { ...allOk(), dependabot: noAccess("forbidden") } } },
   turn_on_code_analysis: { overrides: { supplyChain: null, supplyChainMissing: "analysis_off" } },
   fix_low_alerts: { overrides: { alerts: [depAlert({ severity: "low", createdAt: daysAgo(181) })] } },
-  require_approvals: { overrides: { posture: loose({ requiredApprovals: 0 }) } },
   require_status_checks: { overrides: { posture: loose({ requireStatusChecks: false }) } },
-  dismiss_stale_reviews: { overrides: { posture: loose({ dismissStaleReviews: false }) } },
-  require_code_owner_review: { overrides: { posture: loose({ requireCodeOwnerReview: false }) } },
   require_signed_commits: { overrides: { posture: loose({ requireSignedCommits: false }) } },
   enable_security_updates: {
     overrides: { posture: posture({ settings: { ...posture().settings, dependabotSecurityUpdates: false } }) },
@@ -155,7 +152,6 @@ describe("every kind of action", () => {
     expect(bandOf("restrict_permissions")).toBe("high");
     expect(bandOf("remove_key_files")).toBe("high");
     expect(bandOf("protect_branch")).toBe("high");
-    expect(bandOf("require_review")).toBe("medium");
     expect(bandOf("pin_own_actions")).toBeNull();
     expect(bandOf("merge_dependency_updates")).toBeNull();
     expect(bandOf("fix_low_alerts")).toBeNull();
@@ -346,25 +342,6 @@ describe("what each action describes", () => {
     expect(of(list, "review_weak_key_files")[0]!.refs).toEqual([{ label: "cert.pem", url: null }]);
   });
 
-  it("asks for review with no pull request links, and not when the share is at most 5%", () => {
-    const pullRequests = [
-      { number: 4, title: "Fix it", url: "https://github.com/acme/widgets/pull/4", mergedAt: daysAgo(2), selfMerged: false },
-    ];
-    const bad = actions({ review: controls({ merged: 10, unapproved: 3, share: 0.3, pullRequests }) });
-    expect(of(bad, "require_review")[0]).toMatchObject({
-      band: "medium",
-      count: 3,
-    });
-    expect(of(bad, "require_review")[0]!.refs).toEqual([]);
-    expect(of(actions({ review: controls({ merged: 100, unapproved: 5, share: 0.05 }) }), "require_review")).toEqual([]);
-    expect(of(actions({ review: controls({ merged: 100, unapproved: 6, share: 0.06 }) }), "require_review")[0]!.band).toBe(
-      "high",
-    );
-    expect(of(actions({ review: controls({ merged: 5, unapproved: 5, share: 1, graded: false }) }), "require_review")).toEqual(
-      [],
-    );
-  });
-
   it("names the branch for branch actions", () => {
     expect(of(actions(FIXTURES.protect_branch.overrides), "protect_branch")[0]).toMatchObject({ target: "main", band: "high" });
     expect(of(actions(FIXTURES.block_force_push.overrides), "block_force_push")[0]!.target).toBe("main");
@@ -376,15 +353,34 @@ describe("what each action describes", () => {
     expect(list.map((a) => a.kind)).toEqual(["protect_branch"]);
   });
 
-  it("asks for code owner review only when a CODEOWNERS file exists", () => {
-    const without = actions({ posture: loose({ requireCodeOwnerReview: false }), supplyChain: record({ codeowners: null }) });
-    expect(of(without, "require_code_owner_review")).toEqual([]);
+  it("never advises on approvals, stale approvals, code owner review or CODEOWNERS, which presuppose review recorded on GitHub", () => {
+    const strict = posture({
+      branch: {
+        rules: { requirePullRequest: false, requiredApprovals: 0, dismissStaleReviews: false, requireCodeOwnerReview: false },
+      },
+    });
+    const kinds = actions({ posture: strict, supplyChain: record({ securityPolicy: null }) }).map((a) => a.kind) as string[];
+    for (const kind of [
+      "require_review",
+      "require_approvals",
+      "dismiss_stale_reviews",
+      "require_code_owner_review",
+      "add_codeowners",
+    ]) {
+      expect(kinds).not.toContain(kind);
+      expect(SECURITY_ACTION_KINDS as readonly string[]).not.toContain(kind);
+    }
   });
 
-  it("does not ask for stale review dismissal when no pull request is required", () => {
-    const list = actions({ posture: loose({ dismissStaleReviews: false, requirePullRequest: false }) });
-    expect(of(list, "dismiss_stale_reviews")).toEqual([]);
-    expect(of(list, "require_approvals")).toHaveLength(1);
+  it("advises on a security policy only for a public repository", () => {
+    const missing = record({ securityPolicy: null });
+    expect(of(actions({ supplyChain: missing, posture: posture({ visibility: "public" }) }), "add_security_policy")).toHaveLength(
+      1,
+    );
+    for (const visibility of ["private", "internal", null] as const) {
+      expect(of(actions({ supplyChain: missing, posture: posture({ visibility }) }), "add_security_policy")).toEqual([]);
+    }
+    expect(of(actions({ supplyChain: missing, posture: null }), "add_security_policy")).toEqual([]);
   });
 
   it("offers Dependabot only when it is off and there is something to watch", () => {
@@ -489,12 +485,6 @@ describe("references", () => {
   it("never carries a person", () => {
     const list = actions({
       alerts: [secretAlert(), depAlert({ severity: "high" }), codeAlert()],
-      review: controls({
-        merged: 10,
-        unapproved: 3,
-        share: 0.3,
-        pullRequests: [{ number: 1, title: "x", url: "u", mergedAt: daysAgo(1), selfMerged: true }],
-      }),
     });
     expect(JSON.stringify(list)).not.toMatch(/alice|bob|login|author/i);
   });

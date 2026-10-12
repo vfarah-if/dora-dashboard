@@ -33,9 +33,6 @@ const some = (count: number, noun: string, nouns = `${noun}s`) => `${count} ${pl
 /** Where to switch a GitHub security feature on. GitHub keeps them together under Advanced Security. */
 const SETTINGS_PATH = "Open the repository's Settings and choose Advanced Security in the Security section of the sidebar";
 
-/** "the last 90 days", or "the review window" where the summary does not carry the figure. */
-const reviewWindow = (t: SecurityThresholds | null) => (t ? `the last ${t.reviewWindowDays} days` : "the review window");
-
 /** Scheduled updates come from Dependabot or from Renovate, and the file says which. */
 const updater = (file: string) =>
   /renovate/i.test(file)
@@ -147,28 +144,18 @@ const FIX = {
       "Stop tracking the files with the git rm --cached command shown below, add them to .gitignore and keep the real values in your secret store or your deployment settings.",
     ],
   },
-  require_review: {
-    what: ({ count, thresholds }) =>
-      `${some(count, "merged pull request")} in ${reviewWindow(thresholds)} had no approval from another person.`,
-    why: "A second pair of eyes is the cheapest way to catch a mistake or a malicious change before it reaches production. When a change can be merged without one, a single stolen account or a single slip goes straight into your product.",
-    steps: [
-      "Open the rules for your deploy branch and require at least one approving review before merging.",
-      "Agree as a team that nobody approves their own change, and use code owners for the folders that matter most.",
-      "Keep a way through for real emergencies, and review those changes afterwards.",
-    ],
-  },
   protect_branch: {
     what: ({ name }) => `The deploy branch ${name} has no protection rules.`,
-    why: "Without rules, anyone with write access can push straight to the branch that gets deployed, skip review and checks, and rewrite its history. One mistake or one stolen token then reaches production directly.",
+    why: "Without rules, anyone with write access can push straight to the branch that gets deployed, skip the checks, and rewrite its history. One mistake or one stolen token then reaches production directly.",
     steps: [
       "Open the branch settings of the repository and create a rule or a ruleset for the deploy branch.",
-      "Require a pull request, at least one approval and passing status checks before anything is merged.",
+      "Require a pull request and passing status checks before anything reaches the branch.",
       "Block force pushes and deletion of the branch while you are there.",
     ],
   },
   block_force_push: {
     what: ({ name }) => `Force pushes are allowed on the deploy branch ${name}.`,
-    why: "A force push can replace the history of the branch, which can remove the evidence of what changed and discard other people's work without any review.",
+    why: "A force push can replace the history of the branch, which can remove the evidence of what changed and discard other people's work without anyone being asked.",
     steps: [
       "Open the rule that protects the deploy branch.",
       "Turn on the option that blocks force pushes.",
@@ -220,15 +207,6 @@ const FIX = {
       "Create SECURITY.md using the starting text shown below.",
       "Replace the contact with an address, or the private reporting feature, that your team really monitors.",
       "Commit it to the default branch so that GitHub links to it from the repository.",
-    ],
-  },
-  add_codeowners: {
-    what: () => "The repository has no CODEOWNERS file saying who reviews which part of the code.",
-    why: "A CODEOWNERS file makes review requests automatic and stops sensitive files from changing without the right people seeing them.",
-    steps: [
-      "Create a file called CODEOWNERS in the .github folder using the example shown below.",
-      "Replace the placeholder with your own teams, giving the sensitive folders such as workflows and infrastructure to the people who understand them.",
-      "Turn on the branch rule that requires a review from code owners, so that the file is enforced as well as informative.",
     ],
   },
   review_weak_key_files: {
@@ -287,15 +265,6 @@ const FIX = {
       "Set aside a little time each month so that the list does not grow back.",
     ],
   },
-  require_approvals: {
-    what: () => "Pull requests can be merged without an approving review.",
-    why: "Approval is what makes review happen. When it is optional, the busiest weeks are the ones in which changes get merged unread.",
-    steps: [
-      "Open the rule for the deploy branch and require at least one approving review.",
-      "Ask the team to review each other's changes and never to approve their own.",
-      "Consider requiring two approvals for the most sensitive folders.",
-    ],
-  },
   require_status_checks: {
     what: () => "Merging does not wait for your tests and checks to pass.",
     why: "Checks only protect you when a failing one blocks the merge. If they are advisory, a rushed change can reach production with a red build.",
@@ -303,24 +272,6 @@ const FIX = {
       "Open the rule for the deploy branch and turn on required status checks.",
       "Choose the checks that must pass, such as your tests and your linter.",
       "Ask for branches to be up to date before merging, so that checks run against what will really be deployed.",
-    ],
-  },
-  dismiss_stale_reviews: {
-    what: () => "An approval stays valid after new commits are pushed to the pull request.",
-    why: "Someone could get a harmless change approved and then add different code afterwards, which would be merged with the earlier approval.",
-    steps: [
-      "Open the rule for the deploy branch.",
-      "Turn on the option that dismisses approvals when new commits are pushed.",
-      "Tell the team that they may be asked to approve again after a change.",
-    ],
-  },
-  require_code_owner_review: {
-    what: () => "Changes to code that has owners do not need an owner's approval.",
-    why: "Owners are the people who understand a part of the system best, so their review is the one most likely to catch a risky change there.",
-    steps: [
-      "Make sure the repository has a CODEOWNERS file that names a team for each sensitive folder.",
-      "Open the rule for the deploy branch and turn on the requirement for a review from code owners.",
-      "Check that each owning team has enough people to review without delay.",
     ],
   },
   require_signed_commits: {
@@ -975,6 +926,33 @@ export const copy = {
     selfMergedHint: "Share of merged PRs merged by their author",
     perAuthorWeek: "Merged per author-week",
     perAuthorWeekHint: "Merged PRs divided by weekly active authors",
+    unreviewed: "Merged with no review",
+    unreviewedHint: (unreviewed: number, counted: number, exempt: number) =>
+      `${unreviewed} of ${counted} merged ${plural(counted, "pull request", "pull requests")} had no review at all; ${exempt} ${plural(exempt, "was", "were")} left out as reviewed elsewhere`,
+  },
+
+  reviewExemptions: {
+    open: "Change what counts as reviewed elsewhere",
+    close: "Hide the reviewed elsewhere rules",
+    title: "Pull requests reviewed elsewhere",
+    lede: "A merged pull request counts as having no review only when nobody reviewed it on GitHub. A review posted by Claude or any other tool under the author's own account counts as a review, because GitHub cannot tell it from the author's own comment. A pull request that copies code which was already reviewed in another repository, such as a sync, can be left out of the figure by a word in its title or by a label.",
+    titleWordsLabel: "Title words",
+    titleWordsHint:
+      "Whole words, separated by commas. Capitals and punctuation are ignored, so Sync: shared library matches sync.",
+    labelsLabel: "Labels",
+    labelsHint: "Label names, separated by commas. Capitals are ignored.",
+    defaultsLine: (words: string, labels: string) => `The defaults are the title words ${words} and the label ${labels}.`,
+    emptyNote: "A box left empty leaves nothing out for that kind. Use the reset button to return to the defaults.",
+    applyNote: "Changes apply to the figure straight away, with no crawl, because it is worked out when the report is built.",
+    save: "Save rules",
+    reset: "Reset to defaults",
+    saved: "Rules saved. The figure already uses them, so no crawl is needed.",
+    resetDone: "Rules reset to the defaults. The figure already uses them, so no crawl is needed.",
+    tooMany: (limit: number) => `Name at most ${limit} entries in each box.`,
+    tooLong: (limit: number) => `Each entry can have at most ${limit} characters.`,
+    control: "Entries cannot contain control characters, such as a tab or a line break.",
+    unreadable: "The rules saved for this repository could not be read, so the defaults apply until you save them again.",
+    loadingDefaults: "Loading the default rules. Saving is available once they have loaded.",
   },
 
   charts: {
@@ -2511,12 +2489,12 @@ export const copy = {
     parts: {
       vulnerabilities: "Known vulnerabilities and secrets",
       supplyChain: "Workflows and supply chain",
-      changeControl: "Change control",
+      changeControl: "Branch protection",
     },
     partDefinitions: {
       vulnerabilities: "Open alerts for your dependencies, your code and exposed secrets, judged by how long each has waited.",
       supplyChain: "How safely your automated workflows, actions and files are set up.",
-      changeControl: "Whether changes to the deploy branch are reviewed by someone else and protected by rules.",
+      changeControl: "Whether the deploy branch is protected from direct pushes, history rewrites and deletion.",
     },
     notMeasured: "Not measured",
     unmeasured: {
@@ -2524,13 +2502,12 @@ export const copy = {
       code: "Code scanning alerts could not be read, so they are not part of the grade.",
       secrets: "Secret scanning alerts could not be read, so exposed secrets are not part of the grade.",
       supplyChain: "Workflow and dependency files have not been read, so the supply chain checks are not part of the grade.",
-      changeControl:
-        "There were too few merged pull requests, or the branch settings could not be read, so change control is not part of the grade.",
+      changeControl: "The branch settings could not be read, so branch protection is not part of the grade.",
     },
 
     list: {
       title: "Security",
-      lede: "A grade and a short list of things to fix for every repository, worst first, from GitHub's own alerts, the workflow files in each repository and how changes are reviewed. Choose a repository to see what is wrong, why it matters and how to fix it.",
+      lede: "A grade and a short list of things to fix for every repository, worst first, from GitHub's own alerts, the workflow files in each repository and how the deploy branch is protected. Choose a repository to see what is wrong, why it matters and how to fix it.",
       reportLabel: "security summary",
       reportSubject: "all repositories",
       loading: "Loading security summaries",
@@ -2595,7 +2572,7 @@ export const copy = {
 
     page: {
       title: "Security",
-      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix and the review figures. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
+      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix and the dependency update counts. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
       backToRepo: "Back to the repository",
       reportLabel: "security report",
       loading: "Loading the security report",
@@ -2727,11 +2704,6 @@ export const copy = {
         bad: (count: number) =>
           `${count} ${count === 1 ? "file that looks like a private key or an environment file is" : "files that look like private keys or environment files are"} stored in the repository.`,
       },
-      unapprovedMerges: {
-        good: (share: string) => `Only ${share} of recent merges went in without another person's approval.`,
-        bad: (share: string, count: number, total: number) =>
-          `${share} of recent merges, ${count} of ${total}, went in without another person's approval.`,
-      },
       branchUnprotected: {
         good: "The deploy branch is protected by rules.",
         bad: "The deploy branch has no protection rules.",
@@ -2802,7 +2774,6 @@ export const copy = {
       pullRequestTarget: "If you really need pull_request_target, never run the pull request's code in it",
       dependabot: "Dependabot configuration for this repository",
       securityPolicy: "A starting SECURITY.md",
-      codeowners: "An example CODEOWNERS file",
       gitignore: "Lines for .gitignore",
       untrack: "Stop tracking the file, which stays in the history",
       persistCredentials: "Do not keep the token on disk",
@@ -3401,11 +3372,6 @@ export const copy = {
         ok: "A security policy is in place.",
         found: () => "No security policy was found.",
       },
-      codeowners: {
-        title: "A code owners file",
-        ok: "A CODEOWNERS file is in place.",
-        found: () => "No CODEOWNERS file was found.",
-      },
       dependencyReview: {
         title: "Dependency review on pull requests",
         ok: "A dependency review runs in your pipeline.",
@@ -3448,7 +3414,7 @@ export const copy = {
 
     branch: {
       title: "Branch protection and settings",
-      lede: "Rules on your deploy branch decide whether a mistake or a stolen account can reach production unreviewed, and a few repository settings decide whether GitHub helps you.",
+      lede: "Rules on your deploy branch decide whether a mistake or a stolen account can push straight to production, and a few repository settings decide whether GitHub helps you.",
       notRead: "Branch rules and settings have not been read yet. They are read during the next crawl.",
       readOn: (when: string) => `Read on ${when}`,
       postureError:
@@ -3478,26 +3444,17 @@ export const copy = {
       },
       rules: {
         requirePullRequest: "Changes need a pull request",
-        requiredApprovals: "Pull requests need an approving review",
-        dismissStaleReviews: "New commits dismiss earlier approvals",
-        requireCodeOwnerReview: "Code owners must approve",
         requireStatusChecks: "Checks must pass before merging",
         blockForcePushes: "Force pushes are blocked",
         blockDeletion: "The branch cannot be deleted",
         requireSignedCommits: "Commits must be signed",
-        requireLinearHistory: "History must stay linear",
       },
-      approvals: (count: number) => `${count} ${count === 1 ? "approval is" : "approvals are"} required.`,
       ruleHints: {
         requirePullRequest: "Nobody can push straight to the branch.",
-        requiredApprovals: "Another person has to look at each change.",
-        dismissStaleReviews: "An approval cannot be reused for code that was added later.",
-        requireCodeOwnerReview: "The people who know the code best have to agree.",
         requireStatusChecks: "A red build blocks the merge.",
         blockForcePushes: "History cannot be rewritten.",
         blockDeletion: "The branch cannot be removed by accident.",
         requireSignedCommits: "Each commit is proved to come from its author. This is advice only.",
-        requireLinearHistory: "No merge commits. This is advice only.",
       },
       settings: {
         dependabotSecurityUpdates: "Dependabot security updates",
@@ -3513,36 +3470,6 @@ export const copy = {
         validityChecks: "GitHub tells you whether a leaked secret is still active.",
         privateVulnerabilityReporting: "People can tell you about a flaw in private.",
       },
-    },
-
-    control: {
-      title: "Change control",
-      lede: "Whether the changes that reach the deploy branch have been looked at by someone other than their author.",
-      merged: "Merged pull requests",
-      mergedHint: (days: number) => `In the last ${days} days, which is the window the grade uses.`,
-      unapproved: "Without another person's approval",
-      unapprovedHint: (share: string) => `${share} of the merged pull requests.`,
-      selfMerged: "Merged by their own author",
-      selfMergedHint: "Without any approval, by the person who wrote them.",
-      inRange: (merged: number, unapproved: number) =>
-        `In the date range you chose, ${unapproved} of ${merged} merged pull requests went in without another person's approval.`,
-      notGraded: {
-        too_few: (min: number, days: number) =>
-          `There are too few merged pull requests to judge, because at least ${min} in the last ${days} days are needed. Review is not part of the grade.`,
-        single_author: (days: number) =>
-          `Only one person merged pull requests in the last ${days} days, so there is nobody else to review them. Review is not part of the grade.`,
-      },
-      noneYet: (days: number) => `No pull requests were merged in the last ${days} days.`,
-      limits: (elite: string, high: string) =>
-        `Change control is elite when no more than ${elite} of merges lack another person's approval, and high up to ${high}.`,
-      listTitle: "Merged without another person's approval",
-      listSubtitle: "Newest first, and with no names, because this page is about habits and not about people.",
-      none: "Every merged pull request in this window had another person's approval.",
-      number: "Pull request",
-      titleColumn: "Title",
-      mergedAt: "Merged on",
-      cappedNote: (shown: number) => `Showing the newest ${shown}.`,
-      pullRequest: (number: number) => `#${number}`,
     },
 
     issues: {
@@ -3697,7 +3624,7 @@ export const copy = {
         },
         {
           term: "Branch protection",
-          meaning: "Rules on a branch, such as requiring review and passing checks, that nobody can skip.",
+          meaning: "Rules on a branch, such as requiring a pull request and passing checks, that nobody can skip.",
         },
         {
           term: "Push protection",

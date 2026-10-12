@@ -1,10 +1,13 @@
 import {
   DEFAULT_ISSUE_LABELS,
+  REVIEW_EXEMPTION_DEFAULTS,
   ISSUE_LABEL_LIMITS,
   type IssueLabelDefaults,
   type IssueLabelRules,
   type Repo,
   type RepoListing,
+  type ReviewExemptionDefaults,
+  type ReviewExemptionRules,
 } from "@dora-dashboard/core";
 import { ConflictError, NotFoundError, ValidationError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
@@ -32,6 +35,7 @@ export class RepoService {
 
   private listing(repo: Repo): RepoListing {
     const { enabled, labels, labelsUnreadable, error } = this.store.issueState(repo.id);
+    const exemptions = this.store.reviewExemptionState(repo.id);
     return {
       ...repo,
       ...this.store.counts(repo.id),
@@ -39,6 +43,8 @@ export class RepoService {
       issueLabels: labels,
       issueLabelsUnreadable: labelsUnreadable,
       issueError: error,
+      reviewExemptions: exemptions.rules,
+      reviewExemptionsUnreadable: exemptions.unreadable,
     };
   }
 
@@ -55,6 +61,29 @@ export class RepoService {
   setIssueLabels(id: number, rules: IssueLabelRules | null): RepoListing {
     const repo = this.get(id);
     this.store.setIssueLabels(id, cleanRules(rules));
+    return this.listing(repo);
+  }
+
+  /** The title words and labels every repository starts with, and the limits a saved override must keep to. */
+  reviewExemptionDefaults(): ReviewExemptionDefaults {
+    return {
+      titleWords: [...REVIEW_EXEMPTION_DEFAULTS.titleWords],
+      labels: [...REVIEW_EXEMPTION_DEFAULTS.labels],
+      limits: { ...REVIEW_EXEMPTION_DEFAULTS.limits },
+    };
+  }
+
+  /**
+   * Saves the repository's review exemptions and returns its listing row. Entries are trimmed, and blanks and repeats
+   * (without case) dropped. A list left empty stays empty, which exempts nothing of that kind, and `null` puts the
+   * defaults back (ADR 0036). The rules are read when a report is built, so this starts no crawl.
+   */
+  setReviewExemptions(id: number, rules: ReviewExemptionRules | null): RepoListing {
+    const repo = this.get(id);
+    this.store.setReviewExemptions(
+      id,
+      rules === null ? null : { titleWords: cleanNames(rules.titleWords), labels: cleanNames(rules.labels) },
+    );
     return this.listing(repo);
   }
 

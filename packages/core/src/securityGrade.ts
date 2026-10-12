@@ -2,7 +2,7 @@ import type { GradePart } from "./codeGrade.js";
 import { instant } from "./delivery.js";
 import { BAND_RANK, type Band } from "./dora.js";
 import { isUsable, severityOf } from "./securityAlerts.js";
-import { DAY_MS, HOUR_MS, percentText } from "./stats.js";
+import { DAY_MS, HOUR_MS } from "./stats.js";
 import {
   FIX_WITHIN_DAYS,
   SECURITY_PARTS,
@@ -10,7 +10,6 @@ import {
   type AlertSource,
   type KeyFile,
   type RepoPosture,
-  type ReviewControls,
   type SecurityAlert,
   type SecurityCheck,
   type SecurityCheckName,
@@ -31,11 +30,8 @@ import {
  * not be measured is left out and named in `unmeasured`, so an elite band reads as "nothing found in what was measured".
  */
 
-/** Merged pull requests without approval: up to this share is elite, up to the next is high, above it is medium. */
-export const UNAPPROVED_LIMITS = { elite: 0.05, high: 0.2 } as const;
-
-/** The highest band each check allows while it finds something. `unapprovedMerges` depends on the share, so it is not here. */
-export const CHECK_BAND: Record<Exclude<SecurityCheckName, "unapprovedMerges">, Band> = {
+/** The highest band each check allows while it finds something. */
+export const CHECK_BAND: Record<SecurityCheckName, Band> = {
   secretExposed: "low",
   criticalPastFix: "low",
   criticalOpen: "medium",
@@ -65,8 +61,6 @@ export interface SecurityFacts {
   sources: Record<AlertSource, SourceState>;
   supplyChain: SupplyChainRecord | null;
   supplyChainMissing: "analysis_off" | "not_read" | null;
-  /** The 90 day window ending now. */
-  review: ReviewControls;
   posture: RepoPosture | null;
 }
 
@@ -273,8 +267,7 @@ function vulnerabilityChecks(facts: SecurityFacts, cleared: ReadonlySet<Security
     ? Object.values(facts.supplyChain.facts.manifestsByEcosystem).reduce((total, n) => total + n, 0)
     : 0;
   const unwatched = dependabotDisabled && !isUsable(sources.osv) && (facts.supplyChain === null || manifests > 0);
-  const make = (name: Exclude<SecurityCheckName, "unapprovedMerges">, found: Found) =>
-    check("vulnerabilities", name, CHECK_BAND[name], found, cleared);
+  const make = (name: SecurityCheckName, found: Found) => check("vulnerabilities", name, CHECK_BAND[name], found, cleared);
   const secrets = make("secretExposed", named("secretExposed"));
   return [
     isUsable(sources.secret_scanning) ? secrets : { part: "vulnerabilities", check: "secretExposed", value: null, limits: false },
@@ -290,7 +283,7 @@ function vulnerabilityChecks(facts: SecurityFacts, cleared: ReadonlySet<Security
 function supplyChainChecks(facts: SecurityFacts, cleared: ReadonlySet<SecurityCheckName>): SecurityCheck[] | null {
   if (facts.supplyChain === null) return null;
   const found = supplyChainFound(facts.supplyChain, facts.owner, facts.posture);
-  const make = (name: Exclude<SecurityCheckName, "unapprovedMerges">, count: number, detail: string[], total?: number) =>
+  const make = (name: SecurityCheckName, count: number, detail: string[], total?: number) =>
     check("supplyChain", name, CHECK_BAND[name], { count, detail, ...(total === undefined ? {} : { total }) }, cleared);
   return [
     make("prHeadCheckout", found.prHeadCheckout.length, files(found.prHeadCheckout)),
@@ -310,32 +303,15 @@ function supplyChainChecks(facts: SecurityFacts, cleared: ReadonlySet<SecurityCh
   ];
 }
 
+/** Change control is measured when the branch was read (ADR 0033); review habits are a delivery figure (ADR 0036). */
 function changeControlChecks(facts: SecurityFacts, cleared: ReadonlySet<SecurityCheckName>): SecurityCheck[] | null {
-  const { review } = facts;
   const branch = branchState(facts.posture);
-  if (!review.graded && !branch.read) return null;
-  const unapproved: SecurityCheck = review.graded
-    ? (() => {
-        const share = review.share ?? 0;
-        const band: Band = share <= UNAPPROVED_LIMITS.elite ? "elite" : share <= UNAPPROVED_LIMITS.high ? "high" : "medium";
-        const clear = cleared.has("unapprovedMerges");
-        return {
-          part: "changeControl",
-          check: "unapprovedMerges",
-          value: clear ? 0 : share,
-          band: clear ? "elite" : band,
-          met: clear || band === "elite",
-          count: clear ? 0 : review.unapproved,
-          total: review.merged,
-          limits: false,
-        };
-      })()
-    : { part: "changeControl", check: "unapprovedMerges", value: review.share, limits: false };
-  const flag = (name: "branchUnprotected" | "forcePushAllowed", on: boolean): SecurityCheck =>
-    branch.read
-      ? { ...check("changeControl", name, CHECK_BAND[name], { count: on ? 1 : 0 }, cleared), value: on && !cleared.has(name) }
-      : { part: "changeControl", check: name, value: null, limits: false };
-  return [unapproved, flag("branchUnprotected", branch.unprotected), flag("forcePushAllowed", branch.forcePushAllowed)];
+  if (!branch.read) return null;
+  const flag = (name: "branchUnprotected" | "forcePushAllowed", on: boolean): SecurityCheck => ({
+    ...check("changeControl", name, CHECK_BAND[name], { count: on ? 1 : 0 }, cleared),
+    value: on && !cleared.has(name),
+  });
+  return [flag("branchUnprotected", branch.unprotected), flag("forcePushAllowed", branch.forcePushAllowed)];
 }
 
 // ---- reasons --------------------------------------------------------------------------------------------------
@@ -363,8 +339,6 @@ const REASON: Record<SecurityCheckName, (c: SecurityCheck) => string> = {
   unsecureCommands: () => "A workflow switches on the deprecated unsecure commands",
   keyFiles: (c) =>
     `${plural(c.count ?? 0, "file")} that look${c.count === 1 ? "s" : ""} like keys or secrets ${c.count === 1 ? "is" : "are"} committed`,
-  unapprovedMerges: (c) =>
-    `${percentText(c.value as number)} of merged pull requests (${c.count} of ${c.total}) had no approval before the merge, and the elite band allows at most ${percentText(UNAPPROVED_LIMITS.elite)}`,
   branchUnprotected: () => "The deploy branch has no protection and no rules",
   forcePushAllowed: () => "Force pushes are allowed on the deploy branch",
 };
@@ -378,7 +352,7 @@ const PART_LABEL: Record<SecurityPartName, string> = {
 const ALL_TEXT: Record<SecurityPartName, string> = {
   vulnerabilities: "No alert holds the repository back",
   supplyChain: "No workflow or file holds the repository back",
-  changeControl: "Merges are reviewed and the deploy branch is protected",
+  changeControl: "The deploy branch is protected",
 };
 
 /** The lowest band among the checks that have one, naming the first check at it; `all` when that band is elite. */
@@ -393,7 +367,6 @@ function partGrade(part: SecurityPartName, checks: SecurityCheck[]): GradePart<S
 export function unmeasuredOf(input: {
   sources: Record<AlertSource, SourceState>;
   hasSupplyChain: boolean;
-  review: Pick<ReviewControls, "graded">;
   posture: RepoPosture | null;
 }): SecurityMeasure[] {
   const { sources } = input;
@@ -402,7 +375,7 @@ export function unmeasuredOf(input: {
   if (!isUsable(sources.code_scanning)) unmeasured.push("code");
   if (!isUsable(sources.secret_scanning)) unmeasured.push("secrets");
   if (!input.hasSupplyChain) unmeasured.push("supplyChain");
-  if (!input.review.graded && !branchState(input.posture).read) unmeasured.push("changeControl");
+  if (!branchState(input.posture).read) unmeasured.push("changeControl");
   return unmeasured;
 }
 
@@ -434,7 +407,6 @@ export function gradeSecurity(facts: SecurityFacts, cleared: ReadonlySet<Securit
   const unmeasured = unmeasuredOf({
     sources: facts.sources,
     hasSupplyChain: facts.supplyChain !== null,
-    review: facts.review,
     posture: facts.posture,
   });
 

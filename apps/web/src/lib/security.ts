@@ -4,7 +4,6 @@ import type {
   Band,
   BranchRules,
   RepoPosture,
-  ReviewControls,
   SecurityAction,
   SecurityActionKind,
   SecurityAlertRef,
@@ -171,12 +170,6 @@ export const checkSentence: Record<SecurityCheckName, (ctx: CheckContext) => str
   unsecureCommands: (c) =>
     c.good ? copy.security.checks.unsecureCommands.good : copy.security.checks.unsecureCommands.bad(countOf(c)),
   keyFiles: (c) => (c.good ? copy.security.checks.keyFiles.good : copy.security.checks.keyFiles.bad(countOf(c))),
-  unapprovedMerges: (c) => {
-    const share = formatPercent(typeof c.check.value === "number" ? c.check.value : 0);
-    return c.good
-      ? copy.security.checks.unapprovedMerges.good(share)
-      : copy.security.checks.unapprovedMerges.bad(share, countOf(c), c.check.total ?? 0);
-  },
   branchUnprotected: (c) => (c.good ? copy.security.checks.branchUnprotected.good : copy.security.checks.branchUnprotected.bad),
   forcePushAllowed: (c) => (c.good ? copy.security.checks.forcePushAllowed.good : copy.security.checks.forcePushAllowed.bad),
 };
@@ -304,7 +297,6 @@ export const ACTION_EFFORT: Record<SecurityActionKind, Effort> = {
   restrict_permissions: "minutes",
   remove_unsecure_commands: "minutes",
   remove_key_files: "hour",
-  require_review: "minutes",
   protect_branch: "minutes",
   block_force_push: "minutes",
   enable_dependabot: "minutes",
@@ -312,17 +304,13 @@ export const ACTION_EFFORT: Record<SecurityActionKind, Effort> = {
   add_update_config: "minutes",
   add_lockfile: "hour",
   add_security_policy: "minutes",
-  add_codeowners: "minutes",
   review_weak_key_files: "hour",
   enable_code_scanning: "minutes",
   check_secret_scanning: "minutes",
   grant_alert_access: "minutes",
   turn_on_code_analysis: "minutes",
   fix_low_alerts: "hour",
-  require_approvals: "minutes",
   require_status_checks: "minutes",
-  dismiss_stale_reviews: "minutes",
-  require_code_owner_review: "minutes",
   require_signed_commits: "hour",
   enable_security_updates: "minutes",
   enable_push_protection: "minutes",
@@ -707,7 +695,7 @@ export const SUPPLY_CHAIN_GROUPS: Record<SupplyChainGroup, readonly SupplyChainC
   ],
   tools: ["staticAnalysis", "secretScanInCi", "dependencyReview"],
   images: ["baseImagesPinned", "latestImages", "nonRootImages", "remoteAdd"],
-  files: ["securityPolicy", "codeowners"],
+  files: ["securityPolicy"],
   updates: ["updateConfig", "lockfiles"],
 };
 
@@ -727,7 +715,6 @@ const CHECK_IDS = keysOf<SupplyChainCheckId>({
   updateConfig: true,
   lockfiles: true,
   securityPolicy: true,
-  codeowners: true,
   dependencyReview: true,
   secretScanInCi: true,
   staticAnalysis: true,
@@ -778,37 +765,30 @@ export interface RuleRow {
   stateLabel?: string;
 }
 
-const RULE_KEYS = keysOf<keyof BranchRules>({
+/** The branch rules the page shows. The approval, stale approval, code owner and linear history rules stay unseen on purpose. */
+type ShownRule = Exclude<
+  keyof BranchRules,
+  "requiredApprovals" | "dismissStaleReviews" | "requireCodeOwnerReview" | "requireLinearHistory"
+>;
+
+const RULE_KEYS = keysOf<ShownRule>({
   requirePullRequest: true,
-  requiredApprovals: true,
-  dismissStaleReviews: true,
-  requireCodeOwnerReview: true,
   requireStatusChecks: true,
   blockForcePushes: true,
   blockDeletion: true,
   requireSignedCommits: true,
-  requireLinearHistory: true,
 });
 
-/** Each rule on the deploy branch as met, not met or not visible, with the number of approvals where it is known. */
+/** Each rule on the deploy branch as met, not met or not visible. Approval rules are not shown (ADR 0033). */
 export function ruleRows(posture: RepoPosture): RuleRow[] {
   const text = copy.security.branch;
   return RULE_KEYS.map((key) => {
-    const value = posture.branch.rules[key];
-    const approvals = key === "requiredApprovals";
-    const state = approvals
-      ? value === null
-        ? "unseen"
-        : (value as number) >= 1
-          ? "met"
-          : "unmet"
-      : stateOf(value as boolean | null);
     return {
       key,
       label: text.rules[key],
       hint: text.ruleHints[key],
-      state,
-      detail: approvals && typeof value === "number" && value >= 1 ? text.approvals(value) : null,
+      state: stateOf(posture.branch.rules[key]),
+      detail: null,
     };
   });
 }
@@ -876,19 +856,6 @@ export function postureAbout(posture: RepoPosture): string {
 
 export function advisorySentence(advisories: NonNullable<RepoPosture["advisories"]>): string {
   return copy.security.branch.advisories(advisories.draft, advisories.triage, advisories.published, advisories.closed);
-}
-
-// --- Change control --------------------------------------------------------------------------------------------
-
-/** Why review is not part of the grade, or null when it is. */
-export function reviewNotGraded(
-  review: ReviewControls,
-  thresholds: Pick<SecurityThresholds, "reviewMinMerged" | "reviewWindowDays">,
-): string | null {
-  if (review.graded || review.notGradedBecause === null) return null;
-  return review.notGradedBecause === "too_few"
-    ? copy.security.control.notGraded.too_few(thresholds.reviewMinMerged, thresholds.reviewWindowDays)
-    : copy.security.control.notGraded.single_author(thresholds.reviewWindowDays);
 }
 
 // --- Scorecard -------------------------------------------------------------------------------------------------

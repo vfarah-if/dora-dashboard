@@ -211,7 +211,7 @@ describe("SecurityGrade", () => {
     expect(screen.getByRole("heading", { level: 3, name: "Workflows and supply chain" }).closest("article")).toHaveTextContent(
       "High",
     );
-    const change = screen.getByRole("heading", { level: 3, name: "Change control" }).closest("article")!;
+    const change = screen.getByRole("heading", { level: 3, name: "Branch protection" }).closest("article")!;
     expect(change).toHaveTextContent(copy.security.notMeasured);
     expect(change).not.toHaveTextContent(/Elite|High|Medium|Low/);
   });
@@ -486,14 +486,14 @@ describe("ActionItem", () => {
 
   it("writes the limits it names from the report's thresholds", () => {
     const base = securityReport();
-    const context = fixContext({ ...base, thresholds: { ...base.thresholds, reviewWindowDays: 45 } });
+    const context = fixContext({ ...base, thresholds: { ...base.thresholds, lowAlertAdviceDays: 365 } });
     render(
       <ol>
-        <ActionItem action={securityAction({ kind: "require_review", count: 3, band: "high", refs: [] })} context={context} />
+        <ActionItem action={securityAction({ kind: "fix_low_alerts", count: 3, band: null, refs: [] })} context={context} />
       </ol>,
     );
     expect(
-      screen.getByText("3 merged pull requests in the last 45 days had no approval from another person.", { selector: "p" }),
+      screen.getByText("3 low severity alerts have been open for more than 365 days.", { selector: "p" }),
     ).toBeInTheDocument();
   });
 
@@ -511,7 +511,7 @@ describe("ActionItem", () => {
   it("leaves no empty Where to look heading when the action has nothing to point at", () => {
     const { rerender } = render(
       <ol>
-        <ActionItem action={securityAction({ kind: "require_review", count: 3, band: "high", refs: [] })} context={context} />
+        <ActionItem action={securityAction({ kind: "protect_branch", count: 3, band: "high", refs: [] })} context={context} />
       </ol>,
     );
     expect(screen.queryByRole("heading", { name: copy.security.affected })).not.toBeInTheDocument();
@@ -519,7 +519,7 @@ describe("ActionItem", () => {
       <ol>
         <ActionItem
           action={securityAction({
-            kind: "require_review",
+            kind: "protect_branch",
             count: 3,
             band: "high",
             refs: [{ label: ".github/workflows/ci.yml", url: null }],

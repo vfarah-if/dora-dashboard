@@ -41,7 +41,6 @@ import {
   pastFixTotal,
   postureAbout,
   reportCoverage,
-  reviewNotGraded,
   ruleRows,
   safeHttpUrl,
   scannedOn,
@@ -182,8 +181,8 @@ describe("check sentences", () => {
   const names = Object.keys(checkSentence) as SecurityCheckName[];
   const fix = { critical: 7, high: 30, medium: 90, low: 180 } as const;
 
-  it("has wording for all seventeen checks core can send", () => {
-    expect(names).toHaveLength(17);
+  it("has wording for all sixteen checks core can send", () => {
+    expect(names).toHaveLength(16);
   });
 
   it.each(names)("writes a good and a bad sentence for %s without a dash or a missing value", (name) => {
@@ -221,24 +220,6 @@ describe("check sentences", () => {
     const two: SecurityCheck = { ...check, check: "criticalOpen", count: 2 };
     expect(checkSentence.criticalOpen({ check: two, good: false, fix })).toBe(
       "2 critical alerts are open, still inside the 7 day fix-by date.",
-    );
-  });
-
-  it("writes the share of unapproved merges from the check's own figures", () => {
-    const check: SecurityCheck = {
-      part: "changeControl",
-      check: "unapprovedMerges",
-      value: 0.15,
-      band: "high",
-      count: 3,
-      total: 20,
-      limits: true,
-    };
-    expect(checkSentence.unapprovedMerges({ check, good: false, fix })).toBe(
-      "15% of recent merges, 3 of 20, went in without another person's approval.",
-    );
-    expect(checkSentence.unapprovedMerges({ check: { ...check, value: 0.04, band: "elite" }, good: true, fix })).toBe(
-      "Only 4% of recent merges went in without another person's approval.",
     );
   });
 });
@@ -320,7 +301,7 @@ describe("check lines and the grade", () => {
         "high",
         "Held back because 1 action from another organisation is not pinned to a commit.",
       ],
-      ["changeControl", "Change control", null, "Not measured"],
+      ["changeControl", "Branch protection", null, "Not measured"],
     ]);
   });
 
@@ -339,7 +320,7 @@ describe("check lines and the grade", () => {
 
 describe("actions", () => {
   it("rates the effort of every kind as minutes, an hour or a code change", () => {
-    expect(KINDS).toHaveLength(46);
+    expect(KINDS).toHaveLength(41);
     for (const kind of KINDS) expect(["minutes", "hour", "code"]).toContain(ACTION_EFFORT[kind]);
   });
 
@@ -811,7 +792,7 @@ describe("supply chain lines", () => {
     ]);
     expect(groupLines(report, "tools").map((l) => l.check)).toEqual(["staticAnalysis"]);
     expect(groupLines(report, "images").map((l) => l.check)).toEqual(["baseImagesPinned"]);
-    expect(groupLines(report, "files").map((l) => l.check)).toEqual(["securityPolicy", "codeowners"]);
+    expect(groupLines(report, "files").map((l) => l.check)).toEqual(["securityPolicy"]);
     expect(groupLines(report, "updates").map((l) => l.check)).toEqual(["updateConfig", "lockfiles"]);
     expect(groupLines(noSecurity(), "workflows")).toEqual([]);
   });
@@ -825,31 +806,34 @@ describe("supply chain lines", () => {
 describe("branch rules and settings", () => {
   const posture = securityReport().posture!;
 
-  it("shows each rule as met, not met or not visible, with the approvals where known", () => {
+  it("shows each rule as met, not met or not visible, and never an approval rule", () => {
     expect(ruleRows(posture).map((r) => [r.key, r.state, r.detail])).toEqual([
       ["requirePullRequest", "met", null],
-      ["requiredApprovals", "met", "1 approval is required."],
-      ["dismissStaleReviews", "unseen", null],
-      ["requireCodeOwnerReview", "unseen", null],
       ["requireStatusChecks", "unseen", null],
       ["blockForcePushes", "unmet", null],
       ["blockDeletion", "unseen", null],
       ["requireSignedCommits", "unseen", null],
-      ["requireLinearHistory", "unseen", null],
     ]);
   });
 
-  it("counts zero required approvals as not met and several as met", () => {
-    const withApprovals = (n: number | null) => ({
+  it("leaves out the approval, stale approval, code owner and linear history rules whatever their state", () => {
+    const strict = {
       ...posture,
-      branch: { ...posture.branch, rules: { ...posture.branch.rules, requiredApprovals: n } },
-    });
-    expect(ruleRows(withApprovals(0)).find((r) => r.key === "requiredApprovals")).toMatchObject({ state: "unmet", detail: null });
-    expect(ruleRows(withApprovals(2)).find((r) => r.key === "requiredApprovals")).toMatchObject({
-      state: "met",
-      detail: "2 approvals are required.",
-    });
-    expect(ruleRows(withApprovals(null)).find((r) => r.key === "requiredApprovals")?.state).toBe("unseen");
+      branch: {
+        ...posture.branch,
+        rules: {
+          ...posture.branch.rules,
+          requiredApprovals: 0,
+          dismissStaleReviews: false,
+          requireCodeOwnerReview: false,
+          requireLinearHistory: false,
+        },
+      },
+    };
+    const keys = ruleRows(strict).map((r) => r.key);
+    for (const left of ["requiredApprovals", "dismissStaleReviews", "requireCodeOwnerReview", "requireLinearHistory"]) {
+      expect(keys).not.toContain(left);
+    }
   });
 
   it("shows each repository setting as met, not met or not visible", () => {
@@ -912,36 +896,7 @@ describe("branch rules and settings", () => {
   });
 });
 
-describe("change control and Scorecard", () => {
-  const review = securityReport().review;
-
-  it("says why review is not graded, or nothing when it is", () => {
-    const limits = { reviewMinMerged: 10, reviewWindowDays: 90 };
-    expect(reviewNotGraded(review, limits)).toBeNull();
-    expect(reviewNotGraded({ ...review, graded: false, notGradedBecause: "too_few" }, limits)).toBe(
-      "There are too few merged pull requests to judge, because at least 10 in the last 90 days are needed. Review is not part of the grade.",
-    );
-    expect(reviewNotGraded({ ...review, graded: false, notGradedBecause: "single_author" }, limits)).toMatch(
-      /Only one person merged/,
-    );
-    expect(reviewNotGraded({ ...review, graded: false, notGradedBecause: null }, limits)).toBeNull();
-  });
-
-  it("takes the minimum and the window from the report's thresholds, so a change shows in the words", () => {
-    const text = reviewNotGraded(
-      { ...review, graded: false, notGradedBecause: "too_few" },
-      { reviewMinMerged: 25, reviewWindowDays: 60 },
-    );
-    expect(text).toContain("at least 25 in the last 60 days");
-    expect(text).not.toContain("90");
-    expect(
-      reviewNotGraded(
-        { ...review, graded: false, notGradedBecause: "single_author" },
-        { reviewMinMerged: 25, reviewWindowDays: 60 },
-      ),
-    ).toContain("in the last 60 days");
-  });
-
+describe("Scorecard", () => {
   it("words a Scorecard check, with -1 as not applicable", () => {
     expect(scorecardCheckValue(3)).toBe("3 out of 10");
     expect(scorecardCheckValue(-1)).toBe("Not applicable");
@@ -1004,10 +959,9 @@ describe("notReadYet", () => {
 });
 
 describe("limits written from the report's thresholds", () => {
-  const thresholds = { ...securityReport().thresholds, reviewWindowDays: 45, lowAlertAdviceDays: 365, staleUpdateDays: 14 };
+  const thresholds = { ...securityReport().thresholds, lowAlertAdviceDays: 365, staleUpdateDays: 14 };
 
   it.each([
-    ["require_review", "in the last 45 days had no approval", "in the last 90 days"],
     ["fix_low_alerts", "open for more than 365 days", "180 days"],
     ["merge_dependency_updates", "waiting for more than 14 days", "30 days"],
   ] as const)("writes the number of days for %s from the thresholds", (kind, expected, old) => {
@@ -1017,11 +971,10 @@ describe("limits written from the report's thresholds", () => {
   });
 
   it("names no number where the summary carries none, instead of repeating one that may have drifted", () => {
-    for (const kind of ["require_review", "fix_low_alerts", "merge_dependency_updates"] as const) {
+    for (const kind of ["fix_low_alerts", "merge_dependency_updates"] as const) {
       const sentence = actionSentence(securityAction({ kind, count: 2 }));
       expect(sentence).not.toMatch(/\d+ days/);
     }
-    expect(actionSentence(securityAction({ kind: "require_review", count: 1 }))).toContain("in the review window");
   });
 
   it("carries the thresholds in the facts an action's sentence is written from", () => {
@@ -1032,5 +985,36 @@ describe("limits written from the report's thresholds", () => {
   it("writes the exploit prediction share as a percentage", () => {
     expect(likelyShare({ likelyExploitedEpss: 0.1 })).toBe("10%");
     expect(likelyShare({ likelyExploitedEpss: 0.25 })).toBe("25%");
+  });
+});
+
+describe("advice that presupposes review recorded on GitHub", () => {
+  const everyWord = JSON.stringify(copy.security.fix);
+
+  it("is not written, because a review may happen outside GitHub or under the author's account", () => {
+    expect(everyWord).not.toMatch(/approving review|approval|code owner|CODEOWNERS|linear/i);
+    for (const kind of [
+      "require_review",
+      "require_approvals",
+      "dismiss_stale_reviews",
+      "require_code_owner_review",
+      "add_codeowners",
+    ]) {
+      expect(Object.keys(copy.security.fix)).not.toContain(kind);
+      expect(KINDS as readonly string[]).not.toContain(kind);
+    }
+  });
+
+  it("tells a team to protect the deploy branch with a pull request, checks, and no force push or deletion", () => {
+    const steps = copy.security.fix.protect_branch.steps.join(" ");
+    expect(steps).toContain("Require a pull request and passing status checks");
+    expect(steps).toContain("Block force pushes and deletion");
+  });
+
+  it("names the part Branch protection and describes branch rules only", () => {
+    expect(copy.security.parts.changeControl).toBe("Branch protection");
+    expect(copy.security.partDefinitions.changeControl).toBe(
+      "Whether the deploy branch is protected from direct pushes, history rewrites and deletion.",
+    );
   });
 });

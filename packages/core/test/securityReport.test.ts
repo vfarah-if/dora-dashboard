@@ -10,7 +10,6 @@ import {
 import {
   FIX_WITHIN_DAYS,
   LIKELY_EXPLOITED_EPSS,
-  REVIEW_MIN_MERGED,
   SEVERITIES,
   type SecurityReport,
   type SupplyChainCheckId,
@@ -49,22 +48,17 @@ describe("a repository with nothing in it", () => {
 
   it("carries the published limits and links", () => {
     expect(report.fixWithinDays).toBe(FIX_WITHIN_DAYS);
-    expect(report.reviewMinMerged).toBe(REVIEW_MIN_MERGED);
     expect(report.likelyExploitedEpss).toBe(LIKELY_EXPLOITED_EPSS);
     expect(report.settingsUrl).toBe("https://github.com/acme/widgets/settings/security_analysis");
   });
 
   it("carries every limit the page quotes, so no copy repeats a number", () => {
     expect(report.thresholds).toEqual({
-      reviewWindowDays: 90,
-      reviewMinMerged: 10,
       staleUpdateDays: 30,
       likelyExploitedEpss: 0.1,
-      unapprovedLimits: { elite: 0.05, high: 0.2 },
       lowAlertAdviceDays: 180,
     });
     expect(report.thresholds).toBe(SECURITY_THRESHOLDS);
-    expect(report.thresholds.reviewMinMerged).toBe(report.reviewMinMerged);
     expect(report.thresholds.likelyExploitedEpss).toBe(report.likelyExploitedEpss);
     expect(report.thresholds.lowAlertAdviceDays).toBe(report.fixWithinDays.low);
   });
@@ -138,9 +132,9 @@ describe("a repository with nothing in it", () => {
     expect(report.ecosystems).toEqual(["npm"]);
   });
 
-  it("has no review figures worth grading", () => {
-    expect(report.review).toMatchObject({ merged: 0, share: null, graded: false });
-    expect(report.reviewInRange).toMatchObject({ merged: 0, share: null });
+  it("carries no review figure, because review habits are a delivery figure (ADR 0036)", () => {
+    for (const key of ["review", "reviewInRange", "reviewMinMerged"]) expect(key in report).toBe(false);
+    for (const key of ["reviewWindowDays", "reviewMinMerged", "unapprovedLimits"]) expect(key in report.thresholds).toBe(false);
   });
 });
 
@@ -543,7 +537,6 @@ describe("the supply chain lines", () => {
     "updateConfig",
     "lockfiles",
     "securityPolicy",
-    "codeowners",
     "dependencyReview",
     "secretScanInCi",
     "staticAnalysis",
@@ -564,7 +557,7 @@ describe("the supply chain lines", () => {
   ) => lines(overrides, extra).find((l) => l.check === check)!;
 
   it("covers every check in a fixed order, graded only for those the grade counts", () => {
-    const all = lines();
+    const all = lines({}, { posture: posture({ visibility: "public" }) });
     expect(all.map((l) => l.check)).toEqual(ORDER);
     expect(all.filter((l) => l.graded).map((l) => l.check)).toEqual([
       "prHeadCheckout",
@@ -579,13 +572,11 @@ describe("the supply chain lines", () => {
 
   it("is met on every line for a clean repository", () => {
     expect(
-      lines().every(
+      lines({}, { posture: posture({ visibility: "public" }) }).every(
         (l) =>
           l.met &&
           l.items.length ===
-            (["updateConfig", "securityPolicy", "codeowners", "dependencyReview", "secretScanInCi", "staticAnalysis"].includes(
-              l.check,
-            )
+            (["updateConfig", "securityPolicy", "dependencyReview", "secretScanInCi", "staticAnalysis"].includes(l.check)
               ? l.total
               : 0),
       ),
@@ -660,19 +651,25 @@ describe("the supply chain lines", () => {
       graded: false,
       items: [{ path: ".github/dependabot.yml", line: null, detail: null }],
     });
-    expect(line("securityPolicy")).toMatchObject({ met: true, total: 1 });
-    expect(line("codeowners")).toMatchObject({ met: true, total: 1 });
-    const missing = { updateConfig: null, securityPolicy: null, codeowners: null, securityTools: [] };
-    for (const check of [
-      "updateConfig",
-      "securityPolicy",
-      "codeowners",
-      "dependencyReview",
-      "secretScanInCi",
-      "staticAnalysis",
-    ] as const) {
-      expect(line(check, missing)).toMatchObject({ met: false, items: [], total: 0 });
+    const open = { posture: posture({ visibility: "public" }) };
+    expect(line("securityPolicy", {}, open)).toMatchObject({ met: true, total: 1 });
+    const missing = { updateConfig: null, securityPolicy: null, securityTools: [] };
+    for (const check of ["updateConfig", "securityPolicy", "dependencyReview", "secretScanInCi", "staticAnalysis"] as const) {
+      expect(line(check, missing, open)).toMatchObject({ met: false, items: [], total: 0 });
     }
+  });
+
+  it.each(["private", "internal", null] as const)(
+    "shows no security policy line when the repository is %s, because it has no outside reporters",
+    (visibility) => {
+      const shown = lines({ securityPolicy: null }, { posture: posture({ visibility }) });
+      expect(shown.map((l) => l.check)).not.toContain("securityPolicy");
+      expect(shown.map((l) => l.check)).not.toContain("codeowners");
+    },
+  );
+
+  it("shows no security policy line before the posture has been read", () => {
+    expect(lines({}, { posture: null }).map((l) => l.check)).not.toContain("securityPolicy");
   });
 
   it("lists each tool with the file that runs it", () => {
@@ -752,48 +749,25 @@ describe("the supply chain lines", () => {
   });
 });
 
-describe("review controls", () => {
-  const merged = (n: number, at: string, overrides: Partial<PullRequest> = {}) =>
-    pr({ number: n, mergedAt: at, author: `dev${n % 3}`, reviews: [], ...overrides });
-  const pullRequests = [
-    merged(1, "2026-10-05T10:00:00Z"),
-    merged(2, "2026-09-20T10:00:00Z"),
-    merged(3, "2026-08-20T10:00:00Z", { reviews: [{ author: "rev", state: "APPROVED", submittedAt: "2026-08-20T09:00:00Z" }] }),
-    merged(4, "2026-04-01T10:00:00Z"), // outside the 90 days
-    merged(5, "2026-10-05T11:00:00Z", { baseRef: "dev" }),
-  ];
+describe("change control", () => {
+  const merged = Array.from({ length: 12 }, (_, i) =>
+    pr({ number: 100 + i, mergedAt: "2026-10-01T10:00:00Z", author: `dev${i % 3}`, reviews: [] }),
+  );
 
-  it("takes the 90 days ending now for the grade and the requested range for display", () => {
-    const report = build({ pullRequests }, { from: "2026-10-01" });
-    expect(report.review).toMatchObject({ merged: 3, unapproved: 2, share: 2 / 3, graded: false, notGradedBecause: "too_few" });
-    expect(report.review.from).toBe("2026-07-09T12:00:00.000Z");
-    expect(report.review.to).toBe(NOW);
-    expect(report.reviewInRange).toMatchObject({
-      merged: 1,
-      unapproved: 1,
-      from: "2026-10-01T00:00:00.000Z",
-      to: "2026-10-07T12:00:00.000Z",
-    });
+  it("is not lowered by merges that have no approval, whoever merged them", () => {
+    const report = build({ pullRequests: merged });
+    expect(report.grade!.parts.changeControl).toMatchObject({ band: "elite", check: "all" });
+    expect(report.actions.map((a) => a.kind)).not.toContain("require_review");
   });
 
-  it("uses the repository's deploy branch", () => {
-    const report = securityReport(input({ pullRequests, repo: { ...input().repo, deployBranch: "dev" } }), { now: NOW });
-    expect(report.review.merged).toBe(1);
-  });
-
-  it("grades the merges once there are ten by two people, and lowers the grade", () => {
-    const many = Array.from({ length: 10 }, (_, i) =>
-      merged(
-        100 + i,
-        "2026-10-01T10:00:00Z",
-        i < 2 ? {} : { reviews: [{ author: "rev", state: "APPROVED", submittedAt: "2026-10-01T09:00:00Z" }] },
-      ),
-    );
-    const report = build({ pullRequests: many });
-    expect(report.review).toMatchObject({ merged: 10, unapproved: 2, graded: true });
-    // 2 of 10 is 20%, which is the edge of the high band.
-    expect(report.grade!.parts.changeControl).toMatchObject({ band: "high", check: "unapprovedMerges" });
-    expect(report.actions.find((a) => a.kind === "require_review")).toMatchObject({ band: "high", count: 2, onPath: true });
+  it("follows the branch rules alone", () => {
+    const open = posture({ branch: { protected: false, rules: { requirePullRequest: false, blockForcePushes: false } } });
+    const report = build({ pullRequests: merged, posture: open });
+    expect(report.grade!.parts.changeControl).toMatchObject({ band: "high" });
+    expect(report.checks.filter((c) => c.part === "changeControl").map((c) => c.check)).toEqual([
+      "branchUnprotected",
+      "forcePushAllowed",
+    ]);
   });
 });
 
@@ -1043,13 +1017,14 @@ describe("the summary", () => {
 
   it("carries the thresholds so a row can name the real numbers", () => {
     expect(summary.thresholds).toEqual(report.thresholds);
-    expect(summary.thresholds).toMatchObject({ reviewWindowDays: 90, lowAlertAdviceDays: 180, staleUpdateDays: 30 });
+    expect(summary.thresholds).toMatchObject({ lowAlertAdviceDays: 180, staleUpdateDays: 30 });
+    expect(summary.thresholds).not.toHaveProperty("reviewWindowDays");
   });
 
   it("counts the actions that have a band and leaves the advice out", () => {
     expect(summary.actions).toBe(report.actions.filter((a) => a.band !== null).length);
     expect(summary.actions).toBeLessThan(report.actions.length + 1);
-    const withAdvice = securitySummary(build({ supplyChain: record({ securityPolicy: null, codeowners: null }) }), "idle");
+    const withAdvice = securitySummary(build({ supplyChain: record({ securityPolicy: null }) }), "idle");
     expect(withAdvice.actions).toBe(0);
   });
 
