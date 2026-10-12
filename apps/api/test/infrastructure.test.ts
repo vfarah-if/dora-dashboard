@@ -431,12 +431,16 @@ describe("GitHubProvider", () => {
     expect(retried).toHaveBeenCalledTimes(2);
   });
 
-  it("lets other network failures through unchanged", async () => {
+  it("maps other network failures to a bad gateway that says GitHub could not be reached", async () => {
     const down = vi.fn(async () => {
       throw new TypeError("fetch failed");
     });
 
-    await expect(new GitHubProvider(down).fetchViewer("t")).rejects.toBeInstanceOf(TypeError);
+    await expect(new GitHubProvider(down).fetchViewer("t")).rejects.toMatchObject({
+      name: "UpstreamError",
+      status: 502,
+      message: "GitHub could not be reached",
+    });
   });
 
   it("says when GitHub's rate limit lifts, from the reset header or the retry-after header", async () => {
@@ -471,10 +475,19 @@ describe("GitHubProvider", () => {
 
   it("keeps the ordinary message for a 403 that is not a rate limit", async () => {
     const forbidden = new GitHubProvider(
-      vi.fn(async () => new Response("no access", { status: 403, headers: { "x-ratelimit-remaining": "4999" } })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+            status: 403,
+            headers: { "x-ratelimit-remaining": "4999" },
+          }),
+      ),
     );
 
-    await expect(forbidden.fetchViewer("t")).rejects.toMatchObject({ status: 403, message: "GitHub answered 403: no access" });
+    await expect(forbidden.fetchViewer("t")).rejects.toMatchObject({
+      status: 403,
+      message: "GitHub answered 403: Resource not accessible by integration",
+    });
   });
 
   it("pages through workflow runs until a short page, within the cap", async () => {

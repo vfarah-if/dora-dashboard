@@ -232,9 +232,7 @@ function registerRoutes(
       {
         codeAnalysis: deps.config.codeAnalysis,
         scorecardLookup: scorecardOf(deps) !== null,
-        ...(deps.securityAlerts
-          ? { settingsUrl: (owner: string, name: string) => deps.securityAlerts!.settingsUrl(owner, name) }
-          : {}),
+        settingsUrl: (owner: string, name: string) => deps.securityAlerts?.settingsUrl(owner, name) ?? "",
       },
       deps.clock,
     ),

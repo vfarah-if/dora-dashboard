@@ -26,6 +26,29 @@ export type AlertState = "open" | "fixed" | "dismissed";
 /** An exploit prediction at or above this share marks an alert as likely to be exploited soon. */
 export const LIKELY_EXPLOITED_EPSS = 0.1;
 
+/**
+ * Every code an alert can be closed with, as the host publishes it, never free text: Dependabot's `fixed`,
+ * `auto_dismissed` and dismissal reasons, code scanning's and secret scanning's resolutions, and `not_found` for an OSV
+ * finding the crawl no longer found.
+ */
+export const CLOSE_REASONS = [
+  "fixed",
+  "auto_dismissed",
+  "fix_started",
+  "inaccurate",
+  "no_bandwidth",
+  "not_used",
+  "tolerable_risk",
+  "false_positive",
+  "wont_fix",
+  "used_in_tests",
+  "revoked",
+  "pattern_edited",
+  "pattern_deleted",
+  "not_found",
+] as const;
+export type CloseReason = (typeof CLOSE_REASONS)[number];
+
 interface AlertBase {
   /** GitHub's alert number as text, or `${osvId}|${ecosystem}|${name}|${lockfile}` for OSV. Unique per source. */
   key: string;
@@ -34,44 +57,81 @@ interface AlertBase {
   createdAt: string;
   /** When it was fixed or dismissed, or for OSV the crawl in which it was no longer found. */
   closedAt: string | null;
-  /** GitHub's own code for the close, never free text, such as `fixed`, `auto_dismissed`, `tolerable_risk` or `revoked`. */
-  closeReason: string | null;
+  /** Null while open, and for a close the host gave no known reason for. */
+  closeReason: CloseReason | null;
   /** The advisory summary, the rule description, or the secret type's display name. */
   title: string;
   /** GitHub's page for the alert, or the OSV advisory page. */
   url: string | null;
 }
 
-export interface DependencyAlert extends AlertBase {
-  source: "dependabot" | "osv";
-  /** As published: GitHub's advisory severity (moderate is medium), OSV's `database_specific.severity`, else unknown. */
-  severity: Severity;
-  dependency: {
-    ecosystem: string;
-    name: string;
-    /** The manifest or lockfile that names the package. */
-    manifestPath: string;
-    scope: "runtime" | "development" | null;
-    relationship: "direct" | "transitive" | null;
-    lockedVersion: string | null;
-    /** The first version that fixes it, or null when there is none yet. */
-    patchedVersion: string | null;
-    vulnerableRange: string | null;
-    advisoryId: string;
-    cveId: string | null;
-    /** The exploit prediction scoring system figures, as fractions from 0 to 1. */
-    epss: { percentage: number; percentile: number } | null;
-    /** CVSS v4 base score when published, else v3, from 0 to 10. */
-    cvssScore: number | null;
-    /** Weakness ids such as "CWE-79". */
-    cwes: string[];
-  };
+/** What a dependency alert says about the vulnerable package. */
+export interface DependencyFacts {
+  /** Null when the host named no package, so the alert is grouped on its own rather than with other unnamed ones. */
+  ecosystem: string | null;
+  name: string | null;
+  /** The manifest or lockfile that names the package, or null when the host named none. */
+  manifestPath: string | null;
+  scope: "runtime" | "development" | null;
+  relationship: "direct" | "transitive" | null;
+  lockedVersion: string | null;
+  /** The first version that fixes it, or null when there is none yet. */
+  patchedVersion: string | null;
+  vulnerableRange: string | null;
+  /** The GHSA id, else the CVE id, or null when the advisory carries neither. */
+  advisoryId: string | null;
+  cveId: string | null;
+  /** The exploit prediction scoring system figures, as fractions from 0 to 1. */
+  epss: { percentage: number; percentile: number } | null;
+  /**
+   * The CVSS v4 base score when published, else v3, else the advisory's overall `cvss.score`, from 0 to 10. A score of
+   * 0 is read as none, since GitHub sends 0 for a vector it has not scored.
+   */
+  cvssScore: number | null;
+  /** Weakness ids such as "CWE-79". */
+  cwes: string[];
 }
+
+export interface DependabotAlert extends AlertBase {
+  source: "dependabot";
+  /** As published: GitHub's advisory severity, with moderate read as medium, else unknown. */
+  severity: Severity;
+  dependency: DependencyFacts;
+}
+
+/**
+ * What OSV says about a locked package. The lockfile names the package, so it is always known, and OSV publishes no
+ * scope, relationship, range, exploit prediction, score or weakness for it.
+ */
+export interface OsvDependencyFacts extends DependencyFacts {
+  ecosystem: LockedEcosystem;
+  name: string;
+  /** The lockfile the package is locked in. */
+  manifestPath: string;
+  lockedVersion: string;
+  advisoryId: string;
+  scope: null;
+  relationship: null;
+  vulnerableRange: null;
+  epss: null;
+  cvssScore: null;
+}
+
+export interface OsvAlert extends AlertBase {
+  source: "osv";
+  /** As published: the worst `database_specific.severity` among the advisory's records, else unknown. */
+  severity: Severity;
+  dependency: OsvDependencyFacts;
+}
+
+/** An alert about a vulnerable dependency, from either source; both share `DependencyFacts`. */
+export type DependencyAlert = DependabotAlert | OsvAlert;
 
 export interface CodeAlert extends AlertBase {
   source: "code_scanning";
   code: {
-    ruleId: string;
+    /** Null when the host named no rule, so the alert gets an action of its own rather than one shared with others. */
+    ruleId: string | null;
     tool: string;
     ruleSeverity: "none" | "note" | "warning" | "error" | null;
     securitySeverity: "critical" | "high" | "medium" | "low" | null;
@@ -96,36 +156,88 @@ export interface SecretAlert extends AlertBase {
 
 export type SecurityAlert = DependencyAlert | CodeAlert | SecretAlert;
 
+/** The alerts one source yields, such as `AlertOf<"osv">` for `OsvAlert`. */
+export type AlertOf<S extends AlertSource> = Extract<SecurityAlert, { source: S }>;
+
 /** Whether a source was read, and why not when it was not. */
-export type SourceStatus = "ok" | "off" | "no_access" | "error" | "not_read";
+export const SOURCE_STATUSES = ["ok", "off", "no_access", "not_used", "error", "not_read"] as const;
+export type SourceStatus = (typeof SOURCE_STATUSES)[number];
 
-export type SourceReason =
-  // off
-  | "disabled"
-  | "not_set_up"
-  | "needs_advanced_security"
-  // no_access
-  | "forbidden"
-  | "admin_only_or_off"
-  // osv not used
-  | "lookup_off"
-  | "dependabot_ok"
-  | "no_inventory";
+/** Why the host says a source is switched off. */
+export const OFF_REASONS = ["disabled", "not_set_up", "needs_advanced_security"] as const;
+export type OffReason = (typeof OFF_REASONS)[number];
 
-export interface SourceState {
-  status: SourceStatus;
-  reason: SourceReason | null;
-  /** When the last successful read finished. */
-  readAt: string | null;
-  attemptedAt: string | null;
+/** Why the credential cannot read a source. */
+export const NO_ACCESS_REASONS = ["forbidden", "admin_only_or_off"] as const;
+export type NoAccessReason = (typeof NO_ACCESS_REASONS)[number];
+
+/**
+ * Why the OSV lookup was not used, each a reason for it never to be read rather than a failure: the lookup is switched
+ * off, Dependabot's alerts could be used instead, or no lockfile held a package to look up.
+ */
+export const NOT_USED_REASONS = ["lookup_off", "dependabot_ok", "no_inventory"] as const;
+export type NotUsedReason = (typeof NOT_USED_REASONS)[number];
+
+export type SourceReason = OffReason | NoAccessReason | NotUsedReason;
+
+/** A read of a source that finished, whose alerts the report can use. */
+export interface SourceRead {
+  readAt: string;
   /** True when the host held more alerts than were read. */
   truncated: boolean;
-  /**
-   * The failure's own message for the last failed attempt, or a neutral one when it was unexpected. It never carries the
-   * token or a query string. The alerts from the previous read are kept.
-   */
-  error: string | null;
+  /** Alerts the host listed that could not be mapped, so they were left out of the read. */
+  skipped: number;
 }
+
+export interface SourceOk extends SourceRead {
+  status: "ok";
+  attemptedAt: string;
+}
+
+export interface SourceOff {
+  status: "off";
+  reason: OffReason;
+  attemptedAt: string;
+}
+
+/**
+ * The credential cannot see the list. Alerts a more privileged credential stored are kept but not used, so no read time
+ * is carried and a later failure has no earlier read to fall back on.
+ */
+export interface SourceNoAccess {
+  status: "no_access";
+  reason: NoAccessReason;
+  attemptedAt: string;
+}
+
+/** The OSV lookup was not needed or not possible this time; this is never a failure. */
+export interface SourceNotUsed {
+  status: "not_used";
+  reason: NotUsedReason;
+  attemptedAt: string;
+}
+
+export interface SourceError {
+  status: "error";
+  /**
+   * The failure's own message, or a neutral one when it was unexpected. It never carries the token or a query string.
+   * The alerts from the previous read are kept.
+   */
+  error: string;
+  attemptedAt: string;
+  /**
+   * The last read that succeeded, carried over from an `ok` state or an earlier `error` state, so its alerts can still
+   * be used; null when the state before the failure had none, such as `no_access`.
+   */
+  lastGood: SourceRead | null;
+}
+
+export interface SourceNotRead {
+  status: "not_read";
+}
+
+/** What the last attempt at a source found, with each reason tied to its status. */
+export type SourceState = SourceOk | SourceOff | SourceNoAccess | SourceNotUsed | SourceError | SourceNotRead;
 
 // --- Locked dependencies and OSV ------------------------------------------------------------------------------------
 
@@ -147,6 +259,11 @@ export interface LockfileSummary {
   packages: number;
   /** Entries proved to come from the public registry. */
   publicPackages: number;
+  /**
+   * True when the lockfile held more public packages than `MAX_LOCKED_PACKAGES`, so only the first were kept. The rest
+   * are never looked up, so a capped lockfile says nothing about their alerts and cannot close them.
+   */
+  capped: boolean;
 }
 
 /** One OSV record that affects a package at its locked version. */
@@ -162,8 +279,11 @@ export interface Vulnerability {
 
 // --- Supply chain facts from the clone ------------------------------------------------------------------------------
 
-/** Raised when what the clone is read for changes, so every repository's facts are read again (ADR 0032). */
-export const SUPPLY_CHAIN_VERSION = 1;
+/**
+ * Raised when what the clone is read for changes, so every repository's facts are read again (ADR 0032). Version 2
+ * added `LockfileSummary.capped` and stores script injection evidence with its string literals blanked.
+ */
+export const SUPPLY_CHAIN_VERSION = 2;
 
 export interface ActionUse {
   file: string;
@@ -172,7 +292,10 @@ export interface ActionUse {
   action: string;
   ref: string | null;
   pinned: boolean;
-  /** `github` for actions owned by `actions` or `github`; `other` is split into own organisation and third party at report time. */
+  /**
+   * `github` for actions owned by `actions` or `github`; `other` is split into own organisation and third party at
+   * report time.
+   */
   kind: "github" | "local" | "docker" | "other";
 }
 
@@ -237,12 +360,22 @@ export interface SupplyChainFacts {
   updateConfig: string | null;
   securityPolicy: string | null;
   manifestsByEcosystem: Record<string, number>;
+  /**
+   * Manifests with no lockfile of their ecosystem in their directory or a parent, at most 200. Empty when the listing
+   * of the clone stopped short, since the lockfile may sit in a directory that was not listed.
+   */
   missingLockfiles: string[];
   lockfiles: LockfileSummary[];
   keyFiles: KeyFile[];
   dockerfiles: DockerfileFacts[];
   /** Dependabot `package-ecosystem` names the repository needs, for a ready `.github/dependabot.yml`. */
   ecosystems: string[];
+  /**
+   * False when the listing of the clone stopped short, so a lockfile missing from `lockfiles` may still exist and its
+   * OSV alerts must not be closed as deleted. A row stored before this field was added has none, which
+   * `presentLockfiles` reads as false.
+   */
+  listingComplete: boolean;
 }
 
 export interface SupplyChainRecord {
@@ -273,7 +406,11 @@ export interface RepoPosture {
     name: string;
     protected: boolean | null;
     rules: BranchRules;
-    /** `full` when classic protection was readable, `rulesets_only` when only rulesets were, `none` when neither. */
+    /**
+     * `full` when classic protection was read, or when the branch is known to have none and the rulesets were read.
+     * `rulesets_only` when the rulesets were read but classic protection could not be. `none` when the rulesets could
+     * not be read, so nothing shows whether a ruleset protects the branch, even one known to have no classic protection.
+     */
     detail: "full" | "rulesets_only" | "none";
   };
   /** Each is null when not visible; most need a repository administrator. */
@@ -296,7 +433,31 @@ export interface ScorecardResult {
   checks: { name: string; score: number; reason: string }[];
 }
 
-export type ScorecardStatus = "ok" | "off" | "not_public" | "not_scanned" | "error";
+/**
+ * What the OpenSSF Scorecard lookup holds. `off` is the lookup switched off, `not_public` a repository that is not
+ * public, `not_scanned` one the service has no result for, and `not_read` one that has not been asked yet, such as just
+ * after the lookup was switched on. A failed lookup keeps the last result that was read, if any.
+ */
+export type ScorecardState =
+  | { status: "ok"; result: ScorecardResult }
+  | { status: "error"; message: string; attemptedAt: string; lastGood: ScorecardResult | null }
+  | { status: "off" | "not_public" | "not_scanned" | "not_read" };
+
+export type ScorecardStatus = ScorecardState["status"];
+
+// --- Failed reads ---------------------------------------------------------------------------------------------------
+
+/** Why the last attempt at a read failed: its own scrubbed message or a neutral one, never a token or query string. */
+export interface ReadFailure {
+  message: string;
+  attemptedAt: string;
+}
+
+/** The posture last read successfully, with when. */
+export interface HeldPosture {
+  value: RepoPosture;
+  readAt: string;
+}
 
 // --- The grade ------------------------------------------------------------------------------------------------------
 
@@ -358,9 +519,17 @@ export interface SecurityGrade {
   unmeasured: SecurityMeasure[];
 }
 
+/** A grade, or why there is none: exactly one of the two is set. */
+export type SecurityGradeOutcome =
+  { grade: SecurityGrade; gradeMissing: null } | { grade: null; gradeMissing: SecurityGradeMissing };
+
 // --- What to fix ----------------------------------------------------------------------------------------------------
 
-/** In tie order. Kinds after `pin_own_actions` are advice and never move the grade. */
+/**
+ * In tie order. Whether an action moves the grade is set by its `band`, not its kind: the kinds from `pin_own_actions`
+ * on are always advice, and an earlier kind is advice when its band is null, such as `enable_dependabot` while OSV
+ * watches the dependencies, or `upgrade_dependency` for medium alerts that are not yet past their fix-by date.
+ */
 export const SECURITY_ACTION_KINDS = [
   "rotate_secret",
   "upgrade_dependency",
@@ -407,25 +576,44 @@ export const SECURITY_ACTION_KINDS = [
 ] as const;
 export type SecurityActionKind = (typeof SECURITY_ACTION_KINDS)[number];
 
-export interface SecurityAction {
-  kind: SecurityActionKind;
-  /** The band of the check this action clears, or null for advice that never moves the grade. */
-  band: Band | null;
-  /** True when this action's band is the overall band, so the grade cannot rise until it is done. */
-  onPath: boolean;
+/** The two kinds that are about one package, and so carry `package`. */
+export const DEPENDENCY_ACTION_KINDS = ["upgrade_dependency", "replace_dependency"] as const;
+export type DependencyActionKind = (typeof DEPENDENCY_ACTION_KINDS)[number];
+
+/** The package a dependency action is about, from its dependency group. */
+export interface ActionPackage {
+  /** Null when the host named no package; the action then covers that one alert. */
+  ecosystem: string | null;
+  name: string | null;
+  manifestPath: string | null;
+  /** How the package comes in: `mixed` when some alerts say direct and some transitive, null when none say. */
+  relationship: "direct" | "transitive" | "mixed" | null;
+  /** The version to upgrade to, or null when none is known or the fixes do not compare. */
+  upgradeTo: string | null;
+}
+
+interface SecurityActionFacts {
   severity: Severity | null;
   count: number;
-  /** What to act on: a package such as "npm:lodash", a rule id, a workflow path, a secret type or a source name. */
+  /**
+   * What to act on: `ecosystem:name` for a dependency, a rule id, a workflow path, a secret type, a branch or a source
+   * name. Null when there is no one thing, or when the host did not name the package or rule.
+   */
   target: string | null;
-  upgradeTo: string | null;
-  ecosystem: string | null;
-  manifestPath: string | null;
-  /** How the package comes in, from its dependency group; null for an action that is not about a dependency. */
-  relationship: "direct" | "transitive" | "mixed" | null;
   likelyExploited: boolean;
   /** At most 10, never a person: alert links, "path:line" labels with a null url, action references. */
   refs: { label: string; url: string | null }[];
 }
+
+/**
+ * An action the grade waits for carries the band of the check it clears, and `onPath` when that band is the overall
+ * band, so the grade cannot rise until it is done. Advice has no band and is never on the path.
+ */
+export type ActionWeight = { band: Band; onPath: boolean } | { band: null; onPath: false };
+
+export type SecurityAction = SecurityActionFacts &
+  ActionWeight &
+  ({ kind: DependencyActionKind; package: ActionPackage } | { kind: Exclude<SecurityActionKind, DependencyActionKind> });
 
 // --- The report -----------------------------------------------------------------------------------------------------
 
@@ -463,9 +651,10 @@ export interface SupplyChainLine {
   total: number;
 }
 
+/** Where an alert is. A package or rule the host did not name is null. */
 export type AlertWhere =
-  | { kind: "package"; ecosystem: string; name: string; version: string | null; manifestPath: string }
-  | { kind: "code"; path: string | null; line: number | null; ruleId: string }
+  | { kind: "package"; ecosystem: string | null; name: string | null; version: string | null; manifestPath: string | null }
+  | { kind: "code"; path: string | null; line: number | null; ruleId: string | null }
   | { kind: "secret"; type: string };
 
 export interface SecurityAlertRef {
@@ -484,11 +673,14 @@ export interface SecurityAlertRef {
   where: AlertWhere;
 }
 
-/** Open alerts for one package in one manifest; the same package in another manifest is another group. */
+/**
+ * Open alerts for one package in one manifest; the same package in another manifest is another group. An alert whose
+ * host named no ecosystem, package or manifest is a group of its own, with those fields null.
+ */
 export interface DependencyGroup {
-  ecosystem: string;
-  name: string;
-  manifestPath: string;
+  ecosystem: string | null;
+  name: string | null;
+  manifestPath: string | null;
   /** From the alerts' `dependency.relationship`: `mixed` when some are direct and some transitive, null when none say. */
   relationship: "direct" | "transitive" | "mixed" | null;
   /** The distinct versions the alerts name as locked, lowest first. */
@@ -523,6 +715,8 @@ export interface SecurityIssues {
 export type SecurityGradeMissing = "not_crawled" | "nothing_measured";
 
 export interface SecurityThresholds {
+  /** Days an open alert of each severity may stay open; an unknown severity is held to medium's. */
+  fixWithinDays: typeof FIX_WITHIN_DAYS;
   /** An open update pull request older than this many days is advice to merge or close it. */
   staleUpdateDays: number;
   /** The exploit prediction share, from 0 to 1, at or above which an alert is likely to be exploited. */
@@ -531,13 +725,10 @@ export interface SecurityThresholds {
   lowAlertAdviceDays: number;
 }
 
-export interface SecurityReport {
+interface SecurityReportFields {
   repo: Pick<Repo, "id" | "owner" | "name" | "lastCrawledAt">;
   range: { from: string; to: string };
   gradedAt: string;
-  /** Kept beside `thresholds`: the same constants, for readers of the older fields. */
-  fixWithinDays: typeof FIX_WITHIN_DAYS;
-  likelyExploitedEpss: number;
   /** The limits the grade and the advice use, so copy never repeats a number. */
   thresholds: SecurityThresholds;
   /** The host's page for the repository's security settings. */
@@ -555,24 +746,27 @@ export interface SecurityReport {
         lines: SupplyChainLine[];
       }
     | { status: "none"; reason: "analysis_off" | "not_read" };
+  /**
+   * Set when the latest inspection of the clone failed. The supply chain facts above, if any, are from an earlier
+   * inspection and are kept.
+   */
+  supplyChainFailure: ReadFailure | null;
   /** Dependabot ecosystems the repository needs, for a ready `.github/dependabot.yml`. Empty without supply chain facts. */
   ecosystems: string[];
-  posture: RepoPosture | null;
-  postureReadAt: string | null;
-  /** The failure's own message, or a neutral one, when the last posture read failed, else null; the earlier posture is kept. */
-  postureError: string | null;
+  /** The posture last read successfully, or null when none has been. */
+  posture: HeldPosture | null;
+  /** Set when the latest posture read failed; the posture above, if any, is from an earlier read and is kept. */
+  postureFailure: ReadFailure | null;
   /**
    * The update configuration path (Dependabot or Renovate) when Dependabot alerts are off and such a file exists, so
    * the page can say that version updates run although alerts do not. Null otherwise.
    */
   dependabotVersionUpdates: string | null;
-  grade: SecurityGrade | null;
-  gradeMissing: SecurityGradeMissing | null;
   checks: SecurityCheck[];
   /** The band reached if every action on the path were done, and how many actions that is (those with `onPath` set). */
   raiseGrade: { to: Band; actions: number } | null;
+  /** Open alerts that count now; `openAlertTotal` is their number. */
   open: {
-    total: number;
     bySeverity: Record<Severity, number>;
     bySource: Record<AlertSource, number>;
     pastFix: Record<Severity, number>;
@@ -591,28 +785,28 @@ export interface SecurityReport {
   /** Every severity, in `SEVERITIES` order. */
   timeToFixBySeverity: { severity: Severity; summary: Summary }[];
   fixedInRange: number;
-  dismissed: { total: number; byReason: { reason: string; count: number }[] };
+  /** `unspecified` counts dismissals the host gave no known reason for. */
+  dismissed: { total: number; byReason: { reason: CloseReason | "unspecified"; count: number }[] };
   pushProtectionBypassedInRange: number;
   /** Top 10 weakness ids by open alerts, then fixed in the range. */
   weaknesses: { cwe: string; open: number; fixedInRange: number }[];
   /** Worst first: severity, past fix-by, likely exploited, then age. At most 100. */
   openAlerts: SecurityAlertRef[];
+  /** Every open alert that counts, of which `openAlerts` lists the worst. */
   openAlertTotal: number;
   dependencyGroups: DependencyGroup[];
   dependencyUpdates: DependencyUpdates;
   /** Null when the repository has no stored issues. */
   securityIssues: SecurityIssues | null;
-  scorecard: ScorecardResult | null;
-  scorecardStatus: ScorecardStatus;
+  scorecard: ScorecardState;
   actions: SecurityAction[];
 }
 
-/** One row of the list page, projected from the full report so the two can never disagree. */
-export interface SecuritySummary {
+/** One repository's security report: its facts, and a grade or why there is none. */
+export type SecurityReport = SecurityReportFields & SecurityGradeOutcome;
+
+interface SecuritySummaryFields {
   repo: Pick<Repo, "id" | "owner" | "name" | "lastCrawledAt" | "crawlStatus">;
-  band: Band | null;
-  limitedBy: { part: SecurityPartName; check: SecurityCheckName | "all" } | null;
-  gradeMissing: SecurityGradeMissing | null;
   open: Record<Severity, number>;
   pastFix: number;
   likelyExploited: number;
@@ -620,19 +814,35 @@ export interface SecuritySummary {
   actions: number;
   /** The band reached by the actions on the path, and how many they are; null when elite or ungraded. */
   raiseGrade: { to: Band; actions: number } | null;
-  /** True when any alert source has been read, so a row of zeros is a finding and not an absence of data. */
+  /**
+   * True when the alerts of any source are in use, so a row of zeros is a finding and not an absence of data. A source
+   * that was attempted but cannot be used, such as one without access, does not count.
+   */
   read: boolean;
   /** As `SecurityReport.dependabotVersionUpdates`. */
   dependabotVersionUpdates: string | null;
   unmeasured: SecurityMeasure[];
   sources: Record<AlertSource, SourceStatus>;
+  /**
+   * Whether each source's alerts are in use, as the grade uses them: read now, or failed after an earlier read. OSV is
+   * in use only when Dependabot is not.
+   */
+  used: Record<AlertSource, boolean>;
   supplyChain: "ok" | "analysis_off" | "not_read";
-  /** The latest successful read across the sources. */
+  /** The latest successful read among the sources in use; null when none is. */
   readAt: string | null;
-  /** True when any source failed on its last attempt. */
+  /** True when any alert source, the posture read or the inspection of the clone failed on its last attempt. */
   failed: boolean;
+  /** The Scorecard score, or the last one read when the latest lookup failed. */
   scorecard: number | null;
   /** The limits the grade and the advice use, so a row's top action can name the real numbers. */
   thresholds: SecurityThresholds;
   topAction: SecurityAction | null;
 }
+
+/** One row of the list page, projected from the full report so the two can never disagree. */
+export type SecuritySummary = SecuritySummaryFields &
+  (
+    | { band: Band; limitedBy: { part: SecurityPartName; check: SecurityCheckName | "all" }; gradeMissing: null }
+    | { band: null; limitedBy: null; gradeMissing: SecurityGradeMissing }
+  );

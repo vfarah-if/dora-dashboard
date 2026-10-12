@@ -23,23 +23,27 @@ function Command({ group }: { group: DependencyGroup }) {
     version: group.upgradeTo,
     relationship: group.relationship,
   });
-  if (advice === null) return <span>{c.noCommand}</span>;
+  if (advice === null) return <span>{group.name === null ? c.noCommandUnnamed : c.noCommand}</span>;
   // A command is code to run. An instruction is words, so it is not drawn as code and has nothing to copy.
   return advice.kind === "command" ? <code className="inline-command">{advice.command}</code> : <span>{advice.text}</span>;
 }
+
+/** A key that never prints "null". Unnamed packages have nothing to tell them apart, so their place does. */
+const groupKey = (group: DependencyGroup, index: number): string =>
+  `${group.ecosystem ?? ""}:${group.name ?? `unnamed-${index}`}:${group.manifestPath ?? ""}`;
 
 function Row({ group }: { group: DependencyGroup }) {
   return (
     <tr>
       <th scope="row">
-        <span className="mono">{group.name}</span>
-        <span className="cell-note">{group.ecosystem}</span>
+        <span className="mono">{group.name ?? c.unnamed}</span>
+        {group.ecosystem && <span className="cell-note">{group.ecosystem}</span>}
         {group.relationship && <span className="cell-note">{c.relationship[group.relationship]}</span>}
         {group.likelyExploited && <LikelyExploitedTag />}
       </th>
       <td className="mono">
         <span className="block">
-          <PathText text={group.manifestPath} />
+          <PathText text={group.manifestPath ?? c.noManifest} />
         </span>
         {group.lockedVersions.length > 0 && (
           <span className="block cell-note">{c.lockedAt(joinWords(group.lockedVersions))}</span>
@@ -85,8 +89,8 @@ export function DependencyTable({ groups }: { groups: SecurityReport["dependency
                     </tr>
                   </thead>
                   <tbody>
-                    {groups.slice(0, limit).map((group) => (
-                      <Row key={`${group.ecosystem}:${group.name}:${group.manifestPath}`} group={group} />
+                    {groups.slice(0, limit).map((group, index) => (
+                      <Row key={groupKey(group, index)} group={group} />
                     ))}
                   </tbody>
                 </table>

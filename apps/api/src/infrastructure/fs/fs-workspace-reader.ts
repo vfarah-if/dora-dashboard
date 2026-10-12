@@ -3,7 +3,7 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
 import { ValidationError } from "../../core/errors.js";
 import { noopLogger, type Logger } from "../../interfaces/logger.js";
-import type { WorkspaceReader } from "../../interfaces/workspace-reader.js";
+import type { Listing, WorkspaceReader } from "../../interfaces/workspace-reader.js";
 
 /**
  * Directories skipped by name, at any depth: `.git` is the clone's own data, and the rest are dependencies and
@@ -30,24 +30,32 @@ export class FsWorkspaceReader implements WorkspaceReader {
   ) {}
 
   async list(dir: string): Promise<string[]> {
+    return (await this.listing(dir)).paths;
+  }
+
+  async listing(dir: string): Promise<Listing> {
     const root = resolve(dir);
+    let complete = true;
     const found: string[] = [];
     let visited = 0;
     let cutBy: string | null = null;
     const walk = async (relative: string, depth: number): Promise<void> => {
       if (depth > this.limits.maxDepth) {
         cutBy ??= `depth of ${this.limits.maxDepth} directories`;
+        complete = false;
         return;
       }
       let entries;
       try {
         entries = await readdir(relative ? resolve(root, relative) : root, { withFileTypes: true });
       } catch {
-        return; // An unreadable directory costs its own files, not the whole listing.
+        complete = false; // An unreadable directory costs its own files, not the whole listing, and says so.
+        return;
       }
       for (const entry of entries) {
         if (++visited > this.limits.maxEntries) {
           cutBy ??= `${this.limits.maxEntries} entries`;
+          complete = false;
           return;
         }
         const path = relative ? `${relative}/${entry.name}` : entry.name;
@@ -65,7 +73,7 @@ export class FsWorkspaceReader implements WorkspaceReader {
         "the file listing stopped at its limit, so some files were left out",
       );
     }
-    return found.sort();
+    return { paths: found.sort(), complete };
   }
 
   async read(dir: string, path: string, maxBytes: number): Promise<string | null> {

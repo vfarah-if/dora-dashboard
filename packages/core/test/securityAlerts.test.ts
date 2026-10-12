@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { SEVERITY_RANK, cwesOf, epssOf, isLikelyExploited, isUsable, severityOf, worseSeverity } from "../src/securityAlerts.js";
-import { codeAlert, depAlert, secretAlert, sourceState } from "./security.js";
+import {
+  SEVERITY_RANK,
+  cwesOf,
+  epssOf,
+  failedSource,
+  isLikelyExploited,
+  isUsable,
+  lastGoodRead,
+  severityOf,
+  usedSources,
+  worseSeverity,
+} from "../src/securityAlerts.js";
+import { CLOSE_REASONS, type SourceState } from "../src/securityTypes.js";
+import { codeAlert, depAlert, failed, noAccess, notRead, notUsed, off, ok, osvAlert, secretAlert } from "./security.js";
 
 describe("severityOf", () => {
   it.each(["critical", "high", "medium", "low", "unknown"] as const)(
@@ -11,7 +23,7 @@ describe("severityOf", () => {
   );
 
   it("takes an OSV alert's published severity", () => {
-    expect(severityOf(depAlert({ source: "osv", severity: "critical" }))).toBe("critical");
+    expect(severityOf(osvAlert({ severity: "critical" }))).toBe("critical");
   });
 
   it("prefers a code alert's security severity over its rule severity", () => {
@@ -46,21 +58,99 @@ describe("severityOf", () => {
   });
 });
 
-describe("isUsable", () => {
-  it("accepts a source that was read", () => {
-    expect(isUsable(sourceState({ status: "ok" }))).toBe(true);
+describe("isUsable and lastGoodRead", () => {
+  it("uses a source that was read, with that read", () => {
+    const state = ok("2026-10-07T08:00:00Z", { truncated: true, skipped: 2 });
+    expect(isUsable(state)).toBe(true);
+    expect(lastGoodRead(state)).toEqual({ readAt: "2026-10-07T08:00:00Z", truncated: true, skipped: 2 });
   });
 
-  it("accepts a source whose last attempt failed but which was read before", () => {
-    expect(isUsable(sourceState({ status: "error", readAt: "2026-01-01T00:00:00Z", error: "rate limited" }))).toBe(true);
+  it("uses a source whose last attempt failed, with the earlier read it carries", () => {
+    expect(isUsable(failed("2026-01-01T00:00:00Z"))).toBe(true);
+    expect(lastGoodRead(failed("2026-01-01T00:00:00Z"))).toEqual({
+      readAt: "2026-01-01T00:00:00Z",
+      truncated: false,
+      skipped: 0,
+    });
   });
 
-  it("rejects a source that failed and was never read", () => {
-    expect(isUsable(sourceState({ status: "error", readAt: null }))).toBe(false);
+  it("does not use a source that failed with no earlier read", () => {
+    expect(isUsable(failed(null))).toBe(false);
+    expect(lastGoodRead(failed(null))).toBeNull();
   });
 
-  it.each(["off", "no_access", "not_read"] as const)("rejects a %s source even with an old read time", (status) => {
-    expect(isUsable(sourceState({ status, readAt: "2026-01-01T00:00:00Z" }))).toBe(false);
+  it.each([
+    ["off", off()],
+    ["no_access", noAccess()],
+    ["not_used", notUsed("dependabot_ok")],
+    ["not_read", notRead()],
+  ] as const)("does not use a %s source", (_, state) => {
+    expect(isUsable(state)).toBe(false);
+    expect(lastGoodRead(state)).toBeNull();
+  });
+});
+
+describe("failedSource", () => {
+  const AT = "2026-10-08T09:00:00Z";
+
+  it("keeps the read of a source that was ok, so its alerts still count", () => {
+    const state = failedSource(ok("2026-10-07T08:00:00Z", { skipped: 1 }), "GitHub did not answer", AT);
+    expect(state).toEqual({
+      status: "error",
+      error: "GitHub did not answer",
+      attemptedAt: AT,
+      lastGood: { readAt: "2026-10-07T08:00:00Z", truncated: false, skipped: 1 },
+    });
+    expect(isUsable(state)).toBe(true);
+  });
+
+  it("keeps the read an earlier failure still carried, through any number of failures", () => {
+    const twice = failedSource(failedSource(ok("2026-10-01T00:00:00Z"), "first", "2026-10-02T00:00:00Z"), "second", AT);
+    expect(twice).toMatchObject({ error: "second", attemptedAt: AT, lastGood: { readAt: "2026-10-01T00:00:00Z" } });
+  });
+
+  // A read without access after a good read leaves its alerts stored but not used. A failure after that must not bring
+  // those months-old alerts back into the grade.
+  it("carries no read after no access, so a later failure grades nothing", () => {
+    const state = failedSource(noAccess("forbidden"), "GitHub did not answer", AT);
+    expect(state.lastGood).toBeNull();
+    expect(isUsable(state)).toBe(false);
+  });
+
+  it.each([
+    ["off", off()],
+    ["not_used", notUsed("lookup_off")],
+    ["not_read", notRead()],
+    ["error with no earlier read", failed(null)],
+  ] as const)("carries no read after a source that was %s", (_, previous: SourceState) => {
+    expect(failedSource(previous, "boom", AT).lastGood).toBeNull();
+  });
+});
+
+describe("usedSources", () => {
+  it("uses Dependabot and leaves OSV out while Dependabot can be used, even if OSV was read", () => {
+    expect(usedSources({ dependabot: ok(), code_scanning: off(), secret_scanning: noAccess(), osv: ok() })).toEqual({
+      dependabot: true,
+      code_scanning: false,
+      secret_scanning: false,
+      osv: false,
+    });
+  });
+
+  it("uses OSV when Dependabot cannot be used and OSV was read", () => {
+    expect(
+      usedSources({ dependabot: off(), code_scanning: ok(), secret_scanning: failed("2026-10-01T00:00:00Z"), osv: ok() }),
+    ).toEqual({ dependabot: false, code_scanning: true, secret_scanning: true, osv: true });
+  });
+
+  it("uses a Dependabot that failed after a good read, and not OSV", () => {
+    const used = usedSources({
+      dependabot: failed("2026-10-01T00:00:00Z"),
+      code_scanning: ok(),
+      secret_scanning: ok(),
+      osv: ok(),
+    });
+    expect(used).toMatchObject({ dependabot: true, osv: false });
   });
 });
 
@@ -128,5 +218,29 @@ describe("SEVERITY_RANK and worseSeverity", () => {
     ["critical", "low", "critical"],
   ] as const)("takes the worse of %s and %s, which is %s", (a, b, expected) => {
     expect(worseSeverity(a, b)).toBe(expected);
+  });
+});
+
+describe("CLOSE_REASONS", () => {
+  it("is the closed set of codes an alert can be closed with, so no free text can be stored as a reason", () => {
+    expect(CLOSE_REASONS).toEqual([
+      // Dependabot
+      "fixed",
+      "auto_dismissed",
+      "fix_started",
+      "inaccurate",
+      "no_bandwidth",
+      "not_used",
+      "tolerable_risk",
+      // code scanning and secret scanning
+      "false_positive",
+      "wont_fix",
+      "used_in_tests",
+      "revoked",
+      "pattern_edited",
+      "pattern_deleted",
+      // OSV
+      "not_found",
+    ]);
   });
 });

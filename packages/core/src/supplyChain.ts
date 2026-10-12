@@ -6,9 +6,10 @@
  * Workflows are read line by line with indentation, as `enforcingLines` in `codeTooling.ts` is, with no YAML parser.
  * That is a heuristic: it recognises the forms people write, not every legal YAML spelling. Every loop is bounded,
  * because the text is untrusted. Lines are cut at 2,000 characters and a file is read to 20,000 lines. At most 500
- * workflows and 50 Dockerfiles are read, and the rest are reported as unread. A file yields at most 2,000 findings and 10,000 actions, a `run:` block is
- * scanned once however deeply its keys nest, a step is looked at within 200 rows, and nothing pushes a large array
- * through a spread argument, which would overflow the call stack. A joined line is cut at 8,000 characters.
+ * workflows and 50 Dockerfiles are read, and the rest are reported as unread. A file yields at most 2,000 findings and
+ * 10,000 actions, a `run:` block is scanned once however deeply its keys nest, a step is looked at within 200 rows,
+ * and nothing pushes a large array through a spread argument, which would overflow the call stack. A joined line is
+ * cut at 8,000 characters.
  */
 import { baseName, commandsByFile, isActionPath, isTestPath, isWorkflowPath, type CandidateFile } from "./codeTooling.js";
 import { isLockfile, isReadableLockfile } from "./lockfiles.js";
@@ -120,7 +121,8 @@ function rowsOf(content: string): Row[] {
     if (trimmed.startsWith("#")) return;
     const dashes = /^(?:-(?:\s+|$))+/.exec(trimmed)?.[0].length ?? 0;
     const body = trimmed.slice(dashes);
-    const text = body.replace(/(^|\s)#.*$/, "").trimEnd();
+    // Most rows hold no `#`, and skipping the pattern for them saves a scan of every position on a long line.
+    const text = body.includes("#") ? body.replace(/(^|\s)#.*$/, "").trimEnd() : body;
     const keyIndent = indent + dashes;
     if (BLOCK_SCALAR_KEY.test(text)) scalarKeyIndent = keyIndent;
     rows.push({ no: i + 1, indent, keyIndent, dash: dashes > 0, body, text, scalar: false });
@@ -451,8 +453,13 @@ function runLines(rows: readonly Row[], k: number): { lines: TextLine[]; next: n
   return { lines: joinContinuations(lines, true), next };
 }
 
-/** Whether the step holding the `uses:` row at `k` says `persist-credentials: false`. A step is read within 200 rows. */
-function persistsCredentials(rows: readonly Row[], k: number): boolean {
+const PERSIST_FALSE = /^persist-credentials\s*:\s*["']?false\b/i;
+
+/**
+ * Whether the step holding the `uses:` row at `k` says `persist-credentials: false`, given which rows say it. A step is
+ * read within 200 rows.
+ */
+function persistsCredentials(rows: readonly Row[], k: number, saysFalse: readonly boolean[]): boolean {
   const row = rows[k]!;
   const keyIndent = row.keyIndent;
   let from = k;
@@ -469,7 +476,7 @@ function persistsCredentials(rows: readonly Row[], k: number): boolean {
   }
   let to = k + 1;
   while (to < rows.length && to <= k + MAX_STEP_ROWS && rows[to]!.indent >= keyIndent) to++;
-  for (let j = from; j < to; j++) if (/^persist-credentials\s*:\s*["']?false\b/i.test(rows[j]!.text)) return false;
+  for (let j = from; j < to; j++) if (saysFalse[j]) return false;
   return true;
 }
 
@@ -511,6 +518,8 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
 
   // The end of the `run:` block last scanned. A `run:` key nested inside it was already read with it.
   let scannedTo = 0;
+  // Which rows say `persist-credentials: false`, read at the first checkout, so many checkouts read each row once.
+  let saysFalse: boolean[] | undefined;
   rows.forEach((row, k) => {
     if (/ACTIONS_ALLOW_UNSECURE_COMMANDS\s*[:=]\s*["']?true\b/i.test(row.text)) {
       found("unsecureCommands", row.no, "ACTIONS_ALLOW_UNSECURE_COMMANDS");
@@ -523,7 +532,12 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
       if (actions.length < MAX_ACTIONS) actions.push({ file: file.path, line: row.no, ...parsed });
       const tool = toolOfAction(parsed.action);
       if (tool) addTool(tool.tool, tool.category);
-      if (privileged && !isAction && parsed.action.toLowerCase() === "actions/checkout" && persistsCredentials(rows, k)) {
+      if (
+        privileged &&
+        !isAction &&
+        parsed.action.toLowerCase() === "actions/checkout" &&
+        persistsCredentials(rows, k, (saysFalse ??= rows.map((r) => PERSIST_FALSE.test(r.text))))
+      ) {
         found("persistCredentials", row.no, `${parsed.action}${parsed.ref ? `@${parsed.ref}` : ""}`);
       }
       return;
@@ -536,10 +550,10 @@ function readWorkflow(file: CandidateFile, commands: readonly string[]): Workflo
       for (const { no, text } of block.lines) {
         if (privileged && !isAction) {
           for (const expression of text.matchAll(/\$\{\{(.{0,500}?)\}\}/g)) {
-            const inner = expression[1]!.trim();
-            // Strings are blanked so a name inside quotes is not read as a reference to the event.
-            const bare = inner.replace(/'[^']*'|"[^"]*"/g, "''");
-            if (UNTRUSTED.test(bare) && !isBoolean(bare)) found("scriptInjection", no, inner);
+            // Strings are blanked so a name inside quotes is not read as a reference to the event, and so a literal,
+            // which may be a hardcoded token, is never stored as evidence.
+            const bare = expression[1]!.trim().replace(/'[^']*'|"[^"]*"/g, "''");
+            if (UNTRUSTED.test(bare) && !isBoolean(bare)) found("scriptInjection", no, bare);
           }
         }
         if (headTrigger && CHECKOUT_COMMAND.test(text)) {
@@ -779,6 +793,11 @@ function coveredByParent(directories: ReadonlySet<string>, directory: string): b
 export interface SupplyChainInput {
   /** The full listing. A workflow, composite action or Dockerfile in it that was not given is reported as unread. */
   paths: readonly string[];
+  /**
+   * False when the listing stopped short of the whole clone, such as at a limit on entries or depth, or because a
+   * directory could not be read, so a file missing from `paths` may still exist.
+   */
+  listingComplete: boolean;
   workflows: readonly CandidateFile[];
   lockfiles: readonly LockfileSummary[];
   unread: readonly string[];
@@ -848,7 +867,8 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     if (name.endsWith(".tf")) needed.add("terraform");
     for (const rule of LOCKFILE_RULES) if (rule.lockfiles.has(name)) lockDirectories.get(rule.ecosystem)!.add(dirOf(path));
   }
-  for (const path of paths) {
+  // A listing that stopped short may have left out the lockfile that covers a manifest, so it reports none missing.
+  for (const path of input.listingComplete ? paths : []) {
     if (isTestPath(path) || path.split("/").includes("node_modules")) continue;
     const rule = LOCKFILE_RULES.find((r) => r.manifests.includes(baseName(path)));
     if (rule && !coveredByParent(lockDirectories.get(rule.ecosystem)!, dirOf(path))) missing.push(path);
@@ -858,7 +878,7 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
   const summaries = new Map<string, LockfileSummary>(input.lockfiles.map((summary) => [summary.path, summary]));
   for (const path of paths) {
     if (isLockfile(path) && !isReadableLockfile(path) && !summaries.has(path)) {
-      summaries.set(path, { path, read: "not_supported", packages: 0, publicPackages: 0 });
+      summaries.set(path, { path, read: "not_supported", packages: 0, publicPackages: 0, capped: false });
     }
   }
 
@@ -879,5 +899,6 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     keyFiles: keyFiles(paths),
     dockerfiles,
     ecosystems: ECOSYSTEM_ORDER.filter((ecosystem) => needed.has(ecosystem)),
+    listingComplete: input.listingComplete,
   };
 }

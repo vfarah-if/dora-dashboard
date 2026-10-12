@@ -21,24 +21,60 @@ function resetTime(response: Response): string | null {
   return null;
 }
 
+/**
+ * A rate limit the headers show: any 429, or a 403 with no requests left or a `retry-after`. A secondary limit can come
+ * as a 403 with neither header, so a refusal's message is checked as well (`saysRateLimited`).
+ */
 const isRateLimited = (response: Response): boolean =>
-  (response.status === 403 || response.status === 429) &&
-  (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after"));
+  response.status === 429 ||
+  (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")));
+
+/** Whether a 403 or 429 message is GitHub describing a rate limit, whatever headers came with it. */
+const saysRateLimited = (response: Response, message: string): boolean =>
+  (response.status === 403 || response.status === 429) && /rate limit/i.test(message);
 
 /** The start of the message for a rate limit, so a caller can tell it from another 403. */
 export const RATE_LIMIT_MESSAGE = "GitHub's rate limit for this token was reached";
+
+function rateLimitError(response: Response): UpstreamError {
+  const when = resetTime(response);
+  return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status);
+}
+
+/** The most of an error reply that is read. GitHub's reasons are a sentence; a page of markup is not wanted. */
+const MAX_ERROR_BYTES = 64 * 1024;
+
+/** The `message` GitHub gave for a refusal, cut short; empty when the body is not the usual JSON, too large or unreadable. */
+async function messageOf(response: Response): Promise<string> {
+  try {
+    const body = JSON.parse(await readCappedText(response, MAX_ERROR_BYTES, "GitHub")) as { message?: unknown } | null;
+    return typeof body?.message === "string" ? body.message.slice(0, 300) : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * What of GitHub's own text may be stored or shown: only a message that names a permission, a rate limit or a missing
+ * thing, in the words GitHub uses. The rest of what GitHub sends is free text from upstream (rule 9), so it is dropped
+ * and the error says only the status.
+ */
+const KNOWN_MESSAGE =
+  /rate limit|resource not accessible|must have admin rights|saml enforcement|bad credentials|requires authentication|not found/i;
+
+/** `message` when it is one of the known phrases, else an empty string. */
+export const knownMessage = (message: string): string => (KNOWN_MESSAGE.test(message) ? message : "");
 
 /** Raises the error for a response that is not a success, and returns for one that is. */
 export async function throwForStatus(response: Response): Promise<void> {
   if (response.status === 401) throw new UnauthorisedError("GitHub rejected the credential; sign in again");
   if (response.status === 404) throw new NotFoundError("GitHub could not find that, or the credential cannot see it");
-  if (isRateLimited(response)) {
-    const when = resetTime(response);
-    throw new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status);
-  }
+  if (isRateLimited(response)) throw rateLimitError(response);
   if (!response.ok) {
-    const body = await response.text();
-    throw new UpstreamError(`GitHub answered ${response.status}: ${body.slice(0, 300)}`, response.status);
+    const message = await messageOf(response);
+    if (saysRateLimited(response, message)) throw rateLimitError(response);
+    const shown = knownMessage(message);
+    throw new UpstreamError(`GitHub answered ${response.status}${shown ? `: ${shown}` : ""}`, response.status);
   }
 }
 
@@ -47,8 +83,9 @@ const MAX_REDIRECTS = 3;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
 /**
- * The address `target` names relative to `from`, when it is https on the same origin as `origin` (by default `from`), else null. This is the
- * one rule for any address GitHub hands back, so the token can never be sent to another host or over http.
+ * The address `target` names relative to `from`, when it is https on the same origin as `origin` (by default `from`),
+ * else null. This is the one rule for any address GitHub hands back, so the token can never be sent to another host or
+ * over http.
  */
 function sameOriginHttps(target: string, from: string, origin = from): string | null {
   try {
@@ -59,18 +96,23 @@ function sameOriginHttps(target: string, from: string, origin = from): string | 
   }
 }
 
-/** Maps a failure to reach GitHub or a timeout to an error that carries no address. */
+/**
+ * Maps a failure to reach GitHub, such as a timeout, a failed name lookup, a TLS error or a reset connection, to an
+ * error that carries no address. The cause is kept for the log.
+ */
 function fromTransport(error: unknown): unknown {
+  if (error instanceof AppError) return error;
   if (error instanceof Error && error.name === "TimeoutError") {
-    return new UpstreamError(`GitHub did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`, 504);
+    return new UpstreamError(`GitHub did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds`, 504, { cause: error });
   }
-  return error;
+  return new UpstreamError("GitHub could not be reached", 502, { cause: error });
 }
 
 /**
  * Sends one API request with the token. Redirects are followed here, by hand, at most three and only to https on the
  * origin of the original request, so the token never leaves GitHub's API host whatever the runtime does with
- * `Authorization` on a redirect. A timeout is mapped to a gateway timeout that carries no address.
+ * `Authorization` on a redirect. A timeout is mapped to a gateway timeout, and any other failure to reach GitHub to a
+ * bad gateway, neither carrying an address.
  */
 async function send(http: Fetch, token: string, url: string, init: RequestInit): Promise<Response> {
   const signal = init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -122,39 +164,40 @@ export async function request<T>(http: Fetch, token: string, url: string, init: 
   return (await readJson(response)) as T;
 }
 
-/** The longest `Link` header read; a longer one is treated as having no next page. */
+/** The longest `Link` header read; a longer one is refused. */
 const MAX_LINK_HEADER = 4096;
 
 /**
- * The address of the next page in a `Link` header, or null when there is none. Only an https address on the same
- * origin as `from` is accepted, so a header that points elsewhere can never receive the token.
+ * Where the next page of a list is. `none` means the list ended. `refused` means the header named a next page that may
+ * not be followed (another origin, http, unparseable, or a header too long to read), so the list did not end and the
+ * caller must treat what it holds as incomplete.
  */
-export function nextLink(header: string | null, from: string): string | null {
-  if (!header || header.length > MAX_LINK_HEADER) return null;
+export type NextPage = { kind: "none" } | { kind: "next"; url: string } | { kind: "refused" };
+
+/**
+ * The next page in a `Link` header. Only an https address on the same origin as `from` is accepted, so a header that
+ * points elsewhere can never receive the token.
+ */
+export function nextLink(header: string | null, from: string): NextPage {
+  if (!header) return { kind: "none" };
+  if (header.length > MAX_LINK_HEADER) return { kind: "refused" };
   for (const [, target = "", params = ""] of header.matchAll(/<([^>]*)>([^<]*)/g)) {
     if (!/;\s*rel\s*=\s*"?next"?\s*(?:[;,]|$)/i.test(params)) continue;
-    return sameOriginHttps(target, from);
+    const url = sameOriginHttps(target, from);
+    return url === null ? { kind: "refused" } : { kind: "next", url };
   }
-  return null;
+  return { kind: "none" };
 }
 
 /** One page of a list, with where the next is, or a refusal the caller expected and can classify. */
-export type PageResult<T> = { body: T; next: string | null } | { status: number; message: string };
-
-/** The text GitHub gives as the reason for a refusal, cut short; empty when the body is not the usual JSON. */
-async function messageOf(response: Response): Promise<string> {
-  try {
-    const body = (await readJson(response)) as { message?: unknown } | null;
-    return typeof body?.message === "string" ? body.message.slice(0, 300) : "";
-  } catch {
-    return "";
-  }
-}
+export type PageResult<T> = { body: T; next: NextPage } | { status: number; message: string };
 
 /**
  * Reads one page of a list. A 401 raises `UnauthorisedError` and a rate limit raises the rate limit error, both before
- * any refusal is looked at, so a rate-limited 403 is never read as "switched off". A 403 or 404 named in `refusals`
- * returns its status and GitHub's message for the caller to classify; any other failure is raised as `request` does.
+ * any refusal is looked at, so a rate-limited 403 is never read as "switched off". That includes a 403 or 429 whose
+ * message says rate limit, which GitHub sends for a secondary limit without the usual headers. A 403 or 404 named in
+ * `refusals` returns its status and GitHub's message for the caller to classify; any other failure is raised as
+ * `request` does.
  */
 export async function requestPage<T>(
   http: Fetch,
@@ -164,7 +207,11 @@ export async function requestPage<T>(
 ): Promise<PageResult<T>> {
   const response = await send(http, token, url, {});
   if (response.status === 401 || isRateLimited(response)) await throwForStatus(response);
-  if (refusals.includes(response.status)) return { status: response.status, message: await messageOf(response) };
+  if (refusals.includes(response.status)) {
+    const message = await messageOf(response);
+    if (saysRateLimited(response, message)) throw rateLimitError(response);
+    return { status: response.status, message };
+  }
   await throwForStatus(response);
   return { body: (await readJson(response)) as T, next: nextLink(response.headers.get("link"), url) };
 }
@@ -287,8 +334,9 @@ async function fetchOnce(http: Fetch, url: string, headers: Record<string, strin
 /**
  * Downloads a GitHub artefact archive. GitHub answers the API address with a redirect to a signed address on its
  * storage host, so the redirect is followed by hand: the token goes only to the API host, the second request carries
- * no `Authorization` header, and the signed address must be https and not name this machine or a private network. Nothing larger than `maxBytes` is read, whether
- * the size is declared or only discovered while streaming. No message carries the token or either address.
+ * no `Authorization` header, and the signed address must be https and not name this machine or a private network.
+ * Nothing larger than `maxBytes` is read, whether the size is declared or only discovered while streaming. No message
+ * carries the token or either address.
  */
 export async function download(http: Fetch, token: string, url: string, maxBytes: number): Promise<Uint8Array> {
   const first = await fetchOnce(http, url, {

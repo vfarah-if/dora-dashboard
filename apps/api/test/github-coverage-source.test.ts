@@ -597,8 +597,8 @@ describe("throwForStatus", () => {
     expect(await failure(throwForStatus(new Response(null, { status: 404 })))).toBeInstanceOf(NotFoundError);
     const limited = await failure(throwForStatus(new Response(null, { status: 429, headers: { "retry-after": "30" } })));
     expect(limited.message).toMatch(/^GitHub's rate limit for this token was reached; try again after /);
-    const other = await failure(throwForStatus(new Response("x".repeat(500), { status: 500 })));
-    expect(other.message).toBe(`GitHub answered 500: ${"x".repeat(300)}`);
+    const other = await failure(throwForStatus(new Response(JSON.stringify({ message: "x".repeat(500) }), { status: 500 })));
+    expect(other.message).toBe("GitHub answered 500");
   });
 });
 

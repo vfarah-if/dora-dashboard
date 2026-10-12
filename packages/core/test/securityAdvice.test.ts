@@ -20,6 +20,11 @@ const actions = (overrides: Parameters<typeof facts>[0] = {}, staleUpdates = 0):
   return securityActions({ facts: f, overall: gradeSecurity(f).grade?.overall.band ?? null, staleUpdates });
 };
 const of = (list: SecurityAction[], kind: SecurityActionKind) => list.filter((a) => a.kind === kind);
+/** The package of a dependency action; any other kind carries none. */
+const packageOf = (action: SecurityAction | undefined) => {
+  if (action?.kind !== "upgrade_dependency" && action?.kind !== "replace_dependency") throw new Error("not a dependency action");
+  return action.package;
+};
 const loose = (rules: Partial<NonNullable<ReturnType<typeof posture>>["branch"]["rules"]>) => posture({ branch: { rules } });
 
 /** One fixture per kind, each producing that kind. */
@@ -199,9 +204,13 @@ describe("what each action describes", () => {
     );
     expect(upgrade).toMatchObject({
       target: "npm:lodash",
-      ecosystem: "npm",
-      manifestPath: "api/package-lock.json",
-      upgradeTo: "4.17.21",
+      package: {
+        ecosystem: "npm",
+        name: "lodash",
+        manifestPath: "api/package-lock.json",
+        relationship: "direct",
+        upgradeTo: "4.17.21",
+      },
       severity: "critical",
       count: 2,
       band: "medium",
@@ -218,18 +227,25 @@ describe("what each action describes", () => {
     const alerts = relationships.map((relationship, i) =>
       depAlert({ key: `r${i}`, severity: "high", dependency: { relationship } }),
     );
-    expect(of(actions({ alerts }), "upgrade_dependency")[0]!.relationship).toBe(expected);
+    expect(packageOf(of(actions({ alerts }), "upgrade_dependency")[0]).relationship).toBe(expected);
   });
 
-  it("leaves the relationship null on an action that is not about a dependency", () => {
-    const list = actions({ alerts: [codeAlert(), secretAlert()] });
-    expect(list.length).toBeGreaterThan(0);
-    expect(list.every((a) => a.relationship === null)).toBe(true);
+  it("carries a package only on the two dependency kinds", () => {
+    const list = actions({
+      alerts: [codeAlert(), secretAlert(), depAlert({ severity: "high" })],
+      supplyChain: record({ missingLockfiles: ["web/package.json"] }),
+    });
+    expect(list.map((a) => [a.kind, "package" in a])).toEqual([
+      ["rotate_secret", false],
+      ["upgrade_dependency", true],
+      ["fix_code_alert", false],
+      ["add_lockfile", false],
+    ]);
   });
 
   it("compares versions numerically, not as text", () => {
     const alerts = ["1.2.9", "1.2.10"].map((patchedVersion, i) => depAlert({ key: `v${i}`, dependency: { patchedVersion } }));
-    expect(of(actions({ alerts }), "upgrade_dependency")[0]!.upgradeTo).toBe("1.2.10");
+    expect(packageOf(of(actions({ alerts }), "upgrade_dependency")[0]).upgradeTo).toBe("1.2.10");
   });
 
   it("still advises an upgrade when patched versions cannot be compared, without naming one", () => {
@@ -237,12 +253,15 @@ describe("what each action describes", () => {
       depAlert({ key: `v${i}`, severity: "high", dependency: { patchedVersion } }),
     );
     const [upgrade] = of(actions({ alerts }), "upgrade_dependency");
-    expect(upgrade).toMatchObject({ upgradeTo: null, count: 2 });
+    expect(upgrade).toMatchObject({ package: { upgradeTo: null }, count: 2 });
   });
 
   it("advises replacing a package no one has patched", () => {
     const list = actions({ alerts: [depAlert({ severity: "high", dependency: { patchedVersion: null, name: "left-pad" } })] });
-    expect(of(list, "replace_dependency")[0]).toMatchObject({ target: "npm:left-pad", upgradeTo: null });
+    expect(of(list, "replace_dependency")[0]).toMatchObject({
+      target: "npm:left-pad",
+      package: { name: "left-pad", upgradeTo: null },
+    });
     expect(of(list, "upgrade_dependency")).toEqual([]);
   });
 
@@ -268,6 +287,22 @@ describe("what each action describes", () => {
       ["js/xss", 1, "medium"],
     ]);
     expect(rules[0]!.refs.map((r) => r.label).sort()).toEqual(["js/sql-injection", "src/a.ts:3", "src/b.ts"]);
+  });
+
+  it("gives each code alert whose rule is not named an action of its own, labelled by its place or its title", () => {
+    const list = actions({
+      alerts: [
+        codeAlert({ key: "x1", title: "Unnamed rule one", code: { ruleId: null, path: null, line: null } }),
+        codeAlert({ key: "x2", code: { ruleId: null, path: "src/c.ts", line: 4 } }),
+        codeAlert({ key: "x3", code: { path: "src/a.ts", line: 3 } }),
+      ],
+    });
+    // All three are high and open for a day, so they tie up to the target, and a null target sorts as empty text.
+    expect(of(list, "fix_code_alert").map((a) => [a.target, a.count, a.refs.map((r) => r.label)])).toEqual([
+      [null, 1, ["Unnamed rule one"]],
+      [null, 1, ["src/c.ts:4"]],
+      ["js/sql-injection", 1, ["src/a.ts:3"]],
+    ]);
   });
 
   it("holds a low alert back until it is past 180 days, then offers one advice item for all of them", () => {
@@ -345,6 +380,12 @@ describe("what each action describes", () => {
   it("names the branch for branch actions", () => {
     expect(of(actions(FIXTURES.protect_branch.overrides), "protect_branch")[0]).toMatchObject({ target: "main", band: "high" });
     expect(of(actions(FIXTURES.block_force_push.overrides), "block_force_push")[0]!.target).toBe("main");
+  });
+
+  it("does not advise protecting a branch with no classic protection while its rulesets are unknown", () => {
+    const rules = Object.fromEntries(Object.keys(unprotectedRules()).map((rule) => [rule, null]));
+    const rulesetsUnread = posture({ branch: { protected: false, detail: "none", rules } });
+    expect(of(actions({ posture: rulesetsUnread }), "protect_branch")).toEqual([]);
   });
 
   it("gives branch rule advice only when the branch has protection, since an unprotected one needs protect_branch first", () => {
@@ -684,10 +725,39 @@ describe("dependency groups by manifest", () => {
       }),
       "upgrade_dependency",
     );
-    expect(list.map((a) => [a.manifestPath, a.upgradeTo, a.count])).toEqual([
+    expect(list.map((a) => [packageOf(a).manifestPath, packageOf(a).upgradeTo, a.count])).toEqual([
       ["a/package-lock.json", "1.2.9", 1],
       ["b/package-lock.json", "2.4.0", 1],
     ]);
+  });
+
+  const unnamed = (key: string, advisoryId: string | null = null) =>
+    depAlert({ key, severity: "high", dependency: { ecosystem: null, name: null, manifestPath: null, advisoryId } });
+
+  it("makes each alert whose package is not named a group of its own, never one shared with another", () => {
+    const groups = groupDependencies(used([unnamed("u1"), unnamed("u2"), depAlert({ key: "n1", severity: "high" })]));
+    // The three tie on severity, past fix and size; an unnamed package sorts as empty text, then by alert key.
+    expect(groups.map((g) => [g.ecosystem, g.name, g.manifestPath, g.members.map((m) => m.alert.key)])).toEqual([
+      [null, null, null, ["u1"]],
+      [null, null, null, ["u2"]],
+      ["npm", "lodash", "package-lock.json", ["n1"]],
+    ]);
+  });
+
+  it("advises on a package that is not named with no target, and labels it by advisory or title", () => {
+    const list = of(actions({ alerts: [unnamed("u1", "GHSA-u1"), unnamed("u2")] }), "upgrade_dependency");
+    expect(list.map((a) => [a.target, packageOf(a), a.refs.map((r) => r.label)])).toEqual([
+      [null, { ecosystem: null, name: null, manifestPath: null, relationship: "direct", upgradeTo: "4.17.21" }, ["GHSA-u1"]],
+      [null, { ecosystem: null, name: null, manifestPath: null, relationship: "direct", upgradeTo: "4.17.21" }, ["Advisory u2"]],
+    ]);
+  });
+
+  it("labels a named package with no advisory id without empty brackets", () => {
+    const [upgrade] = of(
+      actions({ alerts: [depAlert({ severity: "high", dependency: { advisoryId: null } })] }),
+      "upgrade_dependency",
+    );
+    expect(upgrade!.refs.map((r) => r.label)).toEqual(["lodash@4.17.0"]);
   });
 
   it("describes a group with its manifest, locked versions lowest first and relationship", () => {

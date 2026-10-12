@@ -37,16 +37,24 @@ function Rows({ rows }: { rows: RuleRow[] }) {
 
 /** Rules on the deploy branch, repository settings and advisories, each as met, not met or not visible. */
 export function BranchProtectionCard({ report }: { report: SecurityReport }) {
-  const posture = report.posture;
-  if (!posture) {
+  const held = report.posture;
+  const failure = report.postureFailure;
+  if (!held) {
     return (
       <SecurityBlock id="security-branch" title={c.title} lede={c.lede}>
-        <div className="notice notice-info">
-          <p>{c.notRead}</p>
-        </div>
+        {failure ? (
+          <div className="notice notice-warning">
+            <p>{c.failedNone(failure.message)}</p>
+          </div>
+        ) : (
+          <div className="notice notice-info">
+            <p>{c.notRead}</p>
+          </div>
+        )}
       </SecurityBlock>
     );
   }
+  const posture = held.value;
   const rules = ruleRows(posture);
   const settings = settingRows(posture);
   const hidden = hasNotVisible(posture, [...rules, ...settings]);
@@ -54,12 +62,12 @@ export function BranchProtectionCard({ report }: { report: SecurityReport }) {
   return (
     <SecurityBlock id="security-branch" title={c.title} lede={c.lede}>
       <div className="card">
-        {report.postureError && <p className="chart-subtitle">{c.postureError}</p>}
+        {failure && <p className="chart-subtitle">{c.failedKept(failure.message)}</p>}
         <p>{postureAbout(posture)}</p>
         <p className="chart-subtitle">
           {branchProtectedLine(posture)}
           {detail && ` ${detail}`}
-          {report.postureReadAt && ` ${c.readOn(formatDateTime(report.postureReadAt))}.`}
+          {` ${c.readOn(formatDateTime(held.readAt))}.`}
         </p>
         <h3 className="chart-title">{c.rulesTitle}</h3>
         <Rows rows={rules} />

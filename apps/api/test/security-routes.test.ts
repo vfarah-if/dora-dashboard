@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp, type AppDeps } from "../src/app.js";
@@ -21,6 +22,7 @@ import {
   repoPosture,
   scorecardResult,
   secretScanningAlert,
+  supplyChainRecord,
   vulnerability,
 } from "./fakes.js";
 
@@ -101,7 +103,7 @@ describe("security routes and wiring", () => {
   describe("the report", () => {
     it("works from stored data with nothing wired", async () => {
       const { app, store, id } = await setup();
-      store.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" })], true);
+      store.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" })], "replace");
 
       const res = await app.inject(`/api/repos/${id}/security?from=2026-01-01&to=2026-01-31`);
 
@@ -110,7 +112,7 @@ describe("security routes and wiring", () => {
         repo: { id, owner: "acme", name: "widgets" },
         range: { from: "2026-01-01", to: "2026-01-31" },
         supplyChain: { status: "none", reason: "not_read" },
-        scorecardStatus: "off",
+        scorecard: { status: "off" },
         sources: { dependabot: { status: "not_read" } },
       });
     });
@@ -129,14 +131,13 @@ describe("security routes and wiring", () => {
 
     it("never carries a secret value or a login, even for a secret alert and a pull request with people on it", async () => {
       const { app, store, id } = await setup();
-      store.saveSecurityAlerts(id, "secret_scanning", [secretScanningAlert()], true);
+      store.saveSecurityAlerts(id, "secret_scanning", [secretScanningAlert()], "replace");
       store.setSourceState(id, "secret_scanning", {
         status: "ok",
-        reason: null,
         readAt: "2026-09-29T09:00:00.000Z",
         attemptedAt: "2026-09-29T09:00:00.000Z",
         truncated: false,
-        error: null,
+        skipped: 0,
       });
       store.upsertPullRequests(id, [
         pr({
@@ -161,6 +162,53 @@ describe("security routes and wiring", () => {
     });
   });
 
+  describe("stored rows that cannot be read", () => {
+    it("keeps the failure to the one repository, so the list and the other report still answer", async () => {
+      const { app, store, id } = await setup();
+      const raw = (store as unknown as { db: DatabaseSync }).db;
+      const bad = store.addRepo("acme", "gadgets", [], "main").id;
+      for (const repoId of [id, bad]) {
+        store.finishCrawl(repoId, null);
+        store.saveSecurityAlerts(
+          repoId,
+          "dependabot",
+          [dependabotAlert({ key: "1", severity: "critical", createdAt: "2020-01-01T00:00:00Z" }), dependabotAlert({ key: "2" })],
+          "replace",
+        );
+        store.setSourceState(repoId, "dependabot", {
+          status: "ok",
+          readAt: "2026-09-29T09:00:00.000Z",
+          attemptedAt: "2026-09-29T09:00:00.000Z",
+          truncated: false,
+          skipped: 0,
+        });
+        store.saveSupplyChain(repoId, supplyChainRecord(), []);
+        store.savePosture(repoId, repoPosture({ visibility: "public" }), "2026-09-29T09:00:00.000Z");
+        store.saveScorecard(repoId, "2026-09-29T09:00:00.000Z", scorecardResult());
+      }
+      // Valid JSON in another shape, and text that is not JSON, in every kind of row that one repository holds.
+      raw.prepare("UPDATE security_alerts SET data = '{}' WHERE repo_id = ? AND key = '1'").run(bad);
+      raw.prepare("UPDATE supply_chain SET facts = '{}' WHERE repo_id = ?").run(bad);
+      raw.prepare("UPDATE security_posture SET data = '[]' WHERE repo_id = ?").run(bad);
+      raw.prepare("UPDATE security_scorecard SET data = 'x' WHERE repo_id = ?").run(bad);
+
+      const list = await app.inject("/api/security");
+      const report = await app.inject(`/api/repos/${bad}/security`);
+      const healthy = await app.inject(`/api/repos/${id}/security`);
+
+      expect(list.statusCode).toBe(200);
+      const rows = list.json<{ repo: { id: number }; open: { critical: number } }[]>();
+      expect(rows.map((r) => r.repo.id).sort()).toEqual([id, bad].sort());
+      // The healthy repository still counts its critical alert; the other lost the one that could not be read.
+      expect(rows.find((r) => r.repo.id === id)!.open.critical).toBe(1);
+      expect(rows.find((r) => r.repo.id === bad)!.open.critical).toBe(0);
+      expect(report.statusCode).toBe(200);
+      expect(report.json()).toMatchObject({ supplyChain: { status: "none", reason: "not_read" }, posture: null });
+      expect(healthy.statusCode).toBe(200);
+      expect(healthy.json()).toMatchObject({ open: { bySeverity: { critical: 1 } }, supplyChain: { status: "ok" } });
+    });
+  });
+
   describe("the list", () => {
     it("answers one summary per repository, worst first", async () => {
       const { app, store, id } = await setup();
@@ -169,18 +217,17 @@ describe("security routes and wiring", () => {
         store.finishCrawl(repoId, null);
         store.setSourceState(repoId, "dependabot", {
           status: "ok",
-          reason: null,
           readAt: "2026-09-29T09:00:00.000Z",
           attemptedAt: "2026-09-29T09:00:00.000Z",
           truncated: false,
-          error: null,
+          skipped: 0,
         });
       }
       store.saveSecurityAlerts(
         second,
         "dependabot",
         [dependabotAlert({ severity: "critical", createdAt: "2020-01-01T00:00:00Z" })],
-        true,
+        "replace",
       );
 
       const rows = (await app.inject("/api/security")).json<{ repo: { id: number }; band: string | null }[]>();
@@ -198,6 +245,16 @@ describe("security routes and wiring", () => {
       for (const query of ["ids=", "ids=abc", "ids=1;2", `ids=${Array(51).fill(1).join(",")}`, "refresh=1"]) {
         expect((await app.inject(`/api/security?${query}`)).statusCode).toBe(400);
       }
+    });
+
+    it("refuses an id of more than nine digits as a bad request, not an unknown repository", async () => {
+      const { app } = await setup();
+
+      for (const ids of ["1234567890", "9".repeat(400), `1,${"9".repeat(40)}`]) {
+        expect((await app.inject(`/api/security?ids=${ids}`)).statusCode).toBe(400);
+      }
+      // Nine digits is a well formed id for a repository that is not there.
+      expect((await app.inject("/api/security?ids=999999999")).statusCode).toBe(404);
     });
   });
 
@@ -253,17 +310,32 @@ describe("security routes and wiring", () => {
 
       await crawler.crawl("tok", id);
       const report = (await app.inject(`/api/repos/${id}/security`)).json<{
-        open: { total: number };
+        openAlertTotal: number;
         sources: { dependabot: { status: string } };
         supplyChain: { status: string; workflowsRead: number };
         posture: unknown;
       }>();
 
       expect(report.sources.dependabot.status).toBe("ok");
-      expect(report.open.total).toBe(1);
+      expect(report.openAlertTotal).toBe(1);
       expect(report.supplyChain).toMatchObject({ status: "ok", workflowsRead: 1 });
       expect(report.posture).not.toBeNull();
       expect(checkout.requests).toHaveLength(1);
+    });
+
+    it("says in the report that the supply chain could not be read, when the clone cannot be listed", async () => {
+      const { app, crawler, id, reader } = await wired();
+      reader.listFailWith = new Error("too deep: /srv/secret-path");
+
+      await crawler.crawl("tok", id);
+      const report = (await app.inject(`/api/repos/${id}/security`)).json<{
+        supplyChainFailure: { message: string; attemptedAt: string } | null;
+        supplyChain: { status: string };
+      }>();
+
+      expect(report.supplyChain.status).toBe("none");
+      expect(report.supplyChainFailure?.message).toMatch(/could not be listed/);
+      expect(JSON.stringify(report)).not.toContain("secret-path");
     });
 
     it("does not clone again for the supply chain on the next crawl while the head has not moved", async () => {
@@ -303,7 +375,7 @@ describe("security routes and wiring", () => {
       off.osv.know(lockedPackage(), [vulnerability()]);
       await off.crawler.crawl("tok", off.id);
       expect(off.osv.asked).toEqual([]);
-      expect(off.store.sourceStates(off.id).osv).toMatchObject({ status: "off", reason: "lookup_off" });
+      expect(off.store.sourceStates(off.id).osv).toMatchObject({ status: "not_used", reason: "lookup_off" });
 
       const on = await wired({ config: config({ osvLookup: true }) });
       on.source.set("dependabot", { status: "off", reason: "disabled" });
@@ -311,7 +383,8 @@ describe("security routes and wiring", () => {
       await on.crawler.crawl("tok", on.id);
       expect(on.osv.asked).toEqual([[lockedPackage()]]);
       expect((await on.app.inject(`/api/repos/${on.id}/security`)).json()).toMatchObject({
-        open: { total: 1, bySource: { osv: 1 } },
+        openAlertTotal: 1,
+        open: { bySource: { osv: 1 } },
       });
     });
 
@@ -344,6 +417,23 @@ describe("security routes and wiring", () => {
 
       expect(store.getRepo(id)).toMatchObject({ crawlStatus: "failed" });
       expect(store.sourceStates(id)).toEqual(before);
+    });
+
+    it("never asks a Scorecard adapter that is wired but switched off, even for a public repository", async () => {
+      const { crawler, id, order, source, scorecard, store } = await wired({ config: config({ scorecardLookup: false }) });
+      source.postureIs = repoPosture({ visibility: "public" });
+      scorecard.set("acme/widgets", scorecardResult());
+
+      await crawler.crawl("tok", id, true);
+
+      expect(scorecard.asked).toEqual([]);
+      expect(order).not.toContain("scorecard");
+      expect(store.scorecard(id)).toBeNull();
+    });
+
+    it("names no settings page when no alert source is wired", async () => {
+      const { app, id } = await wired({ securityAlerts: undefined });
+      expect((await app.inject(`/api/repos/${id}/security`)).json()).toMatchObject({ settingsUrl: "" });
     });
 
     it("uses the alert source's settings page in the report", async () => {

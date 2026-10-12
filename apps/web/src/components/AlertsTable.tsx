@@ -8,9 +8,9 @@ import {
   filterAlerts,
   parseAlertSource,
   sourceName,
+  safeHttpUrl,
   weaknessName,
 } from "../lib/security";
-import { safeHttpUrl } from "../lib/security";
 import { useTextParam } from "../lib/urlState";
 import { ExternalLink } from "./ExternalLink";
 import { PathText } from "./PathText";
@@ -52,6 +52,7 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
   const [raw, setSource] = useTextParam("source");
   const source = parseAlertSource(raw);
   const alerts = filterAlerts(report.openAlerts, source);
+  const capped = report.openAlertTotal > report.openAlerts.length;
   return (
     <SecurityBlock id="security-alerts" title={c.title} lede={c.subtitle}>
       <div className="card">
@@ -72,11 +73,13 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
           </select>
         </div>
         {source && <p className="print-only">{c.filterNote(sourceName(source))}</p>}
-        {report.openAlertTotal > report.openAlerts.length && (
-          <p className="chart-subtitle">{c.capped(report.openAlerts.length, report.openAlertTotal)}</p>
-        )}
+        {capped && <p className="chart-subtitle">{c.capped(report.openAlerts.length, report.openAlertTotal)}</p>}
         {alerts.length === 0 ? (
-          <p className="chart-empty">{c.none}</p>
+          <p className="chart-empty">
+            {capped && source && report.open.bySource[source] > 0
+              ? c.noneInWorst(sourceName(source), report.openAlerts.length)
+              : c.none}
+          </p>
         ) : (
           <SecurityList total={alerts.length}>
             {(limit) => (

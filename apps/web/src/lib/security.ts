@@ -1,8 +1,11 @@
+import { lastGoodRead, usedSources } from "@dora-dashboard/core";
 import type {
   AlertSource,
   AlertWhere,
   Band,
   BranchRules,
+  CloseReason,
+  DependencyActionKind,
   RepoPosture,
   SecurityAction,
   SecurityActionKind,
@@ -62,10 +65,10 @@ export const severityLabel = (severity: Severity): string => copy.security.sever
 export const severityTileLabel = (severity: Severity): string => copy.security.severityTile[severity];
 
 /** Days an open alert of this severity may wait. An alert without a rating waits as long as a medium one. */
-export const fixDays = (severity: Severity, fix: SecurityReport["fixWithinDays"]): number =>
+export const fixDays = (severity: Severity, fix: SecurityThresholds["fixWithinDays"]): number =>
   fix[severity === "unknown" ? "medium" : severity];
 
-export const severityExplanation = (severity: Severity, fix: SecurityReport["fixWithinDays"]): string =>
+export const severityExplanation = (severity: Severity, fix: SecurityThresholds["fixWithinDays"]): string =>
   copy.security.severityExplain[severity](fixDays(severity, fix));
 
 /** "2 critical, 3 high and 1 not rated", or a sentence saying there is nothing open. */
@@ -131,7 +134,7 @@ const PARTS = keysOf<SecurityPartName>({ vulnerabilities: true, supplyChain: tru
 interface CheckContext {
   check: SecurityCheck;
   good: boolean;
-  fix: SecurityReport["fixWithinDays"];
+  fix: SecurityThresholds["fixWithinDays"];
 }
 
 const countOf = (c: CheckContext) => c.check.count ?? 0;
@@ -204,7 +207,7 @@ export function checkLines(report: SecurityReport): CheckLine[] {
         band: c.band,
         limits: c.limits,
         sets: setsGrade ? "grade" : c.limits ? "part" : null,
-        text: checkSentence[c.check]({ check: c, good, fix: report.fixWithinDays }),
+        text: checkSentence[c.check]({ check: c, good, fix: report.thresholds.fixWithinDays }),
       };
     });
 }
@@ -331,12 +334,21 @@ export const ACTION_EFFORT: Record<SecurityActionKind, Effort> = {
 
 export const effortLabel = (effort: Effort): string => copy.security.effort[effort];
 
-/** The thing an action is about in words: a package without its ecosystem prefix, or the path, rule or secret type as given. */
-export function targetName(action: Pick<SecurityAction, "target" | "ecosystem">): string {
-  const target = action.target ?? "";
-  const prefix = action.ecosystem ? `${action.ecosystem}:` : null;
-  if (prefix && target.toLowerCase().startsWith(prefix.toLowerCase())) return target.slice(prefix.length);
-  return target;
+/** An action about a dependency package, which carries the package itself and not a name to be picked out of `target`. */
+export type DependencyAction = Extract<SecurityAction, { kind: DependencyActionKind }>;
+
+export const isDependencyAction = (action: SecurityAction): action is DependencyAction =>
+  action.kind === "upgrade_dependency" || action.kind === "replace_dependency";
+
+/** A key for an action in a list. An action about an unnamed package or rule has no target, so its place stands in. */
+export function actionKey(action: SecurityAction, index: number): string {
+  const manifest = isDependencyAction(action) ? (action.package.manifestPath ?? "") : "";
+  return `${action.kind}-${action.target ?? `unnamed-${index}`}-${manifest}`;
+}
+
+/** The thing an action is about in words: the package's name, or the path, rule or secret type as given. Empty when unnamed. */
+export function targetName(action: SecurityAction): string {
+  return isDependencyAction(action) ? (action.package.name ?? "") : (action.target ?? "");
 }
 
 export function actionFacts(action: SecurityAction, thresholds: SecurityThresholds | null = null): ActionFacts {
@@ -344,7 +356,7 @@ export function actionFacts(action: SecurityAction, thresholds: SecurityThreshol
     thresholds,
     count: action.count,
     name: targetName(action),
-    upgradeTo: action.upgradeTo,
+    upgradeTo: isDependencyAction(action) ? action.package.upgradeTo : null,
     severity: action.severity ? severityLabel(action.severity).toLowerCase() : null,
   };
 }
@@ -379,12 +391,11 @@ export function actionSentence(
   return copy.security.fix[action.kind].what(actionFacts(action, thresholds));
 }
 
-/** True when no alert source has been read yet, as core's `read` says it, so every figure would be a zero that means nothing. */
-export const notReadYet = (sources: Record<AlertSource, SourceStatus | SourceState>): boolean =>
-  ALERT_SOURCES.every((source) => {
-    const value = sources[source];
-    return (typeof value === "string" ? value : value.status) === "not_read";
-  });
+/**
+ * True when no source's alerts are in use, as core's `read` says it, so every figure would be a zero that means nothing.
+ * A source that answered `no_access` is attempted but not in use, so it does not count as read.
+ */
+export const notReadYet = (sources: SecurityReport["sources"]): boolean => !Object.values(usedSources(sources)).some(Boolean);
 
 /** An exploit prediction share such as 0.1 as "10%". */
 export const likelyShare = (thresholds: Pick<SecurityThresholds, "likelyExploitedEpss">): string =>
@@ -509,14 +520,11 @@ export function timeToFixRows(report: SecurityReport): TimeToFixRow[] {
     median: summary.median,
     p75: summary.p75,
     mean: summary.mean,
-    allowedDays: fixDays(severity, report.fixWithinDays),
+    allowedDays: fixDays(severity, report.thresholds.fixWithinDays),
   }));
 }
 
-export const dismissReasonLabel = (reason: string): string => {
-  const reasons: Record<string, string> = copy.security.fixTime.reasons;
-  return reasons[reason] ?? copy.security.fixTime.reasonFallback(reason);
-};
+export const dismissReasonLabel = (reason: CloseReason | "unspecified"): string => copy.security.fixTime.reasons[reason];
 
 /** "3 risk accepted and 1 a false alarm", or an empty text when nothing was dismissed. */
 export function dismissedSummary(dismissed: SecurityReport["dismissed"]): string {
@@ -525,22 +533,18 @@ export function dismissedSummary(dismissed: SecurityReport["dismissed"]): string
 
 // --- Sources ---------------------------------------------------------------------------------------------------
 
-/** A source is usable when it was read, or it failed this time but was read successfully before. */
-export const sourceUsable = (state: SourceState): boolean =>
-  state.status === "ok" || (state.status === "error" && state.readAt !== null);
-
 const coverageName = (source: AlertSource) => copy.security.list.coverage.sources[source];
 
 /**
  * The parts of the page that could not be read, in words. The OSV lookup is optional and stands in for Dependabot,
  * so it is only named when it was read, and Dependabot only counts as missing when OSV did not cover for it.
  */
-export function unreadParts(report: SecurityReport): string[] {
-  const { sources } = report;
+export function unreadParts(report: Pick<SecurityReport, "sources" | "supplyChain">): string[] {
+  const used = usedSources(report.sources);
   const missing: string[] = [];
-  if (!sourceUsable(sources.dependabot) && !sourceUsable(sources.osv)) missing.push(coverageName("dependabot"));
-  if (!sourceUsable(sources.code_scanning)) missing.push(coverageName("code_scanning"));
-  if (!sourceUsable(sources.secret_scanning)) missing.push(coverageName("secret_scanning"));
+  if (!used.dependabot && !used.osv) missing.push(coverageName("dependabot"));
+  if (!used.code_scanning) missing.push(coverageName("code_scanning"));
+  if (!used.secret_scanning) missing.push(coverageName("secret_scanning"));
   if (report.supplyChain.status === "none") missing.push(copy.security.list.coverage.supplyChain);
   return missing;
 }
@@ -564,88 +568,209 @@ export interface SourceLine {
   readNote: string | null;
 }
 
-/** Why the OSV lookup is not used, which are reasons for it never to be read, so "not read yet" would mislead. */
-const NOT_USED_REASONS: ReadonlySet<string> = new Set(["lookup_off", "dependabot_ok", "no_inventory"]);
-
 const readNoteFor = (readAt: string | null): string =>
   readAt ? copy.security.sources.readOn(formatDateTime(readAt)) : copy.security.sources.notYet;
 
-function alertSourceLine(source: AlertSource, state: SourceState): SourceLine {
+function alertSourceLine(source: AlertSource, state: SourceState, dependabotFailed: boolean): SourceLine {
   const text = copy.security.sources;
-  let detail: string | null = null;
-  if (state.status === "error") detail = state.error ? text.failed(state.error) : text.failedNoMessage;
-  else if ((state.status === "off" || state.status === "no_access") && state.reason) detail = text.reasons[state.reason];
-  else if (state.status === "ok" && state.truncated) detail = text.truncated;
-  const notNeeded = state.reason === "dependabot_ok";
-  const needsNothing = state.status === "ok" || notNeeded;
+  const base = { id: source, name: sourceName(source), enable: text.enable[source] };
+  switch (state.status) {
+    case "ok": {
+      const notes = [state.truncated ? text.truncated : null, state.skipped > 0 ? text.skipped(state.skipped) : null];
+      return {
+        ...base,
+        status: "ok",
+        tone: "met",
+        stateLabel: text.status.ok,
+        detail: notes.filter((note) => note !== null).join(" ") || null,
+        enable: null,
+        readAt: state.readAt,
+        readNote: readNoteFor(state.readAt),
+      };
+    }
+    case "error": {
+      const good = state.lastGood;
+      const notes = [good && good.skipped > 0 ? text.skipped(good.skipped) : null, good?.truncated ? text.truncated : null];
+      return {
+        ...base,
+        status: "error",
+        tone: "unmet",
+        stateLabel: text.status.error,
+        // The feature is not the trouble, so it is not told to switch it on. The retry line says what helps.
+        enable: null,
+        detail: [good ? text.failed(state.error) : text.failedNoEarlier(state.error), ...notes]
+          .filter((note) => note !== null)
+          .join(" "),
+        readAt: good?.readAt ?? null,
+        readNote: good ? text.lastGoodOn(formatDateTime(good.readAt)) : text.notYet,
+      };
+    }
+    case "off":
+    case "no_access":
+      return {
+        ...base,
+        status: state.status,
+        tone: "unmet",
+        stateLabel: text.status[state.status],
+        detail: text.reasons[state.reason],
+        readAt: null,
+        readNote: readNoteFor(null),
+      };
+    case "not_used": {
+      const needsNothing = state.reason !== "lookup_off";
+      return {
+        ...base,
+        status: "not_used",
+        tone: needsNothing ? "unseen" : "unmet",
+        stateLabel: text.notUsedLabel[state.reason],
+        detail: text.reasons[state.reason === "dependabot_ok" && dependabotFailed ? "dependabot_failed" : state.reason],
+        enable: needsNothing ? null : text.enable[source],
+        readAt: null,
+        // These are reasons for the lookup never to be read, so "not read yet" would mislead.
+        readNote: null,
+      };
+    }
+    case "not_read":
+      return {
+        ...base,
+        status: "not_read",
+        tone: "unseen",
+        stateLabel: text.status.not_read,
+        detail: null,
+        readAt: null,
+        readNote: readNoteFor(null),
+      };
+  }
+}
+
+/** One of the held facts that are not alerts, with a failure of the latest attempt laid over what is held. */
+function heldLine(
+  id: "supplyChain" | "posture",
+  held: { readAt: string; detail: string } | null,
+  failure: { message: string } | null,
+  words: { notRead: string; failed: (message: string) => string; failedNoEarlier: (message: string) => string; enable: string },
+  off: boolean,
+): SourceLine {
+  const text = copy.security.sources;
+  const status: SourceStatus = failure ? "error" : held ? "ok" : off ? "off" : "not_read";
   return {
-    id: source,
-    name: sourceName(source),
-    status: state.status,
-    tone: state.status === "ok" ? "met" : state.status === "not_read" || notNeeded ? "unseen" : "unmet",
-    stateLabel: notNeeded ? text.notNeeded : text.status[state.status],
-    detail,
-    enable: needsNothing ? null : text.enable[source],
-    readAt: state.readAt,
-    readNote: state.reason !== null && NOT_USED_REASONS.has(state.reason) ? null : readNoteFor(state.readAt),
+    id,
+    name: text.names[id],
+    status,
+    tone: status === "ok" ? "met" : status === "not_read" ? "unseen" : "unmet",
+    stateLabel: text.status[status],
+    detail: failure
+      ? held
+        ? words.failed(failure.message)
+        : words.failedNoEarlier(failure.message)
+      : (held?.detail ?? words.notRead),
+    enable: held && !failure ? null : words.enable,
+    readAt: held?.readAt ?? null,
+    // The detail of a file set or settings that were read already gives the time.
+    readNote: failure && held ? text.lastGoodOn(formatDateTime(held.readAt)) : held ? null : readNoteFor(null),
   };
+}
+
+export interface UnusedSource {
+  id: AlertSource;
+  name: string;
+  status: SourceStatus;
+  /** What happened to it and what to do about it, or "not read yet" for one that really has not been. */
+  detail: string;
+  enable: string | null;
+}
+
+/** Why no alert source is in use: never crawled, or every source answered but none could be used. */
+export type NotReadKind = "never" | "refused";
+
+export function notReadKind(sources: SecurityReport["sources"]): NotReadKind {
+  return neverCrawled({
+    dependabot: sources.dependabot.status,
+    code_scanning: sources.code_scanning.status,
+    secret_scanning: sources.secret_scanning.status,
+    osv: sources.osv.status,
+  })
+    ? "never"
+    : "refused";
+}
+
+/** The sources that could not be used, with what happened to each. One that needs nothing, like OSV, is left out. */
+export function unusedSources(sources: SecurityReport["sources"]): UnusedSource[] {
+  return ALERT_SOURCES.filter((source) => sources[source].status !== "not_used")
+    .filter((source) => source !== "osv" || sources.osv.status === "error")
+    .map((source) => {
+      const line = alertSourceLine(source, sources[source], false);
+      return {
+        id: source,
+        name: line.name,
+        status: line.status,
+        detail: line.detail ?? line.readNote ?? copy.security.sources.notYet,
+        enable: line.enable,
+      };
+    });
 }
 
 /** Every alert source, then the workflow and dependency files and the branch settings, each with how to switch it on. */
 export function sourceLines(report: SecurityReport): SourceLine[] {
   const text = copy.security.sources;
   const chain = report.supplyChain;
-  const lines = ALERT_SOURCES.map((source) => alertSourceLine(source, report.sources[source]));
+  const dependabot = report.sources.dependabot;
+  // Only a failure with an earlier read leaves earlier alerts graded, so only then may the OSV line say so.
+  const dependabotFailed = dependabot.status === "error" && dependabot.lastGood !== null;
+  const lines = ALERT_SOURCES.map((source) => alertSourceLine(source, report.sources[source], dependabotFailed));
   if (report.dependabotVersionUpdates !== null) {
     lines[0]!.detail = copy.security.dependabotAlerts.source(report.dependabotVersionUpdates);
   }
-  const chainStatus: SourceStatus = chain.status === "ok" ? "ok" : chain.reason === "analysis_off" ? "off" : "not_read";
-  lines.push({
-    id: "supplyChain",
-    name: text.names.supplyChain,
-    status: chainStatus,
-    tone: chainStatus === "ok" ? "met" : chainStatus === "not_read" ? "unseen" : "unmet",
-    stateLabel: text.status[chainStatus],
-    detail:
+  lines.push(
+    heldLine(
+      "supplyChain",
       chain.status === "ok"
-        ? text.supplyChain.ok(shortSha(chain.commitSha), formatDateTime(chain.readAt))
-        : text.supplyChain[chain.reason],
-    enable: chain.status === "ok" ? null : text.supplyChain.enable,
-    readAt: chain.status === "ok" ? chain.readAt : null,
-    // The detail of a file set that was read already gives the time.
-    readNote: chain.status === "ok" ? null : readNoteFor(null),
-  });
-  const postureStatus: SourceStatus = report.posture ? "ok" : "not_read";
-  lines.push({
-    id: "posture",
-    name: text.names.posture,
-    status: postureStatus,
-    tone: postureStatus === "ok" ? "met" : "unseen",
-    stateLabel: text.status[postureStatus],
-    detail: report.postureReadAt ? text.posture.ok(formatDateTime(report.postureReadAt)) : text.posture.notRead,
-    enable: report.posture ? null : text.posture.enable,
-    readAt: report.postureReadAt,
-    // The detail of settings that were read already gives the time.
-    readNote: report.postureReadAt ? null : readNoteFor(null),
-  });
+        ? { readAt: chain.readAt, detail: text.supplyChain.ok(shortSha(chain.commitSha), formatDateTime(chain.readAt)) }
+        : null,
+      report.supplyChainFailure,
+      {
+        notRead: chain.status === "none" ? text.supplyChain[chain.reason] : text.supplyChain.not_read,
+        failed: text.supplyChain.failed,
+        failedNoEarlier: text.supplyChain.failedNoEarlier,
+        enable: text.supplyChain.enable,
+      },
+      chain.status === "none" && chain.reason === "analysis_off",
+    ),
+    heldLine(
+      "posture",
+      report.posture ? { readAt: report.posture.readAt, detail: text.posture.ok(formatDateTime(report.posture.readAt)) } : null,
+      report.postureFailure,
+      {
+        notRead: text.posture.notRead,
+        failed: text.posture.failed,
+        failedNoEarlier: text.posture.failedNoEarlier,
+        enable: text.posture.enable,
+      },
+      false,
+    ),
+  );
   return lines;
 }
 
-/** A sentence for a list row saying which sources were read and which were not. */
-export function sourceCoverage(summary: Pick<SecuritySummary, "sources" | "supplyChain">): string {
+/** True when none of the three GitHub alert sources has ever been attempted, so nothing was refused or failed. */
+export const neverCrawled = (sources: Record<AlertSource, SourceStatus>): boolean =>
+  (["dependabot", "code_scanning", "secret_scanning"] as const).every((s) => sources[s] === "not_read");
+
+/**
+ * A sentence for a list row saying which sources were read and which were not. A source counts as read when its alerts
+ * are in use, which includes one that failed after a good read, so the sentence agrees with the grade.
+ */
+export function sourceCoverage(summary: Pick<SecuritySummary, "used" | "supplyChain" | "sources">): string {
   const text = copy.security.list.coverage;
   const read: string[] = [];
   const missing: string[] = [];
   for (const source of ALERT_SOURCES) {
-    const status = summary.sources[source];
-    if (status === "ok") read.push(text.sources[source]);
+    if (summary.used[source]) read.push(text.sources[source]);
     // The OSV lookup stands in for Dependabot, so Dependabot is only missing when OSV did not cover for it.
-    else if (source !== "osv" && !(source === "dependabot" && summary.sources.osv === "ok")) {
-      missing.push(text.sources[source]);
-    }
+    else if (source !== "osv" && !(source === "dependabot" && summary.used.osv)) missing.push(text.sources[source]);
   }
   (summary.supplyChain === "ok" ? read : missing).push(text.supplyChain);
-  if (read.length === 0) return text.none;
+  if (read.length === 0) return neverCrawled(summary.sources) ? text.none : text.noneUsable;
   return missing.length === 0 ? text.read(joinWords(read)) : text.readAndMissing(joinWords(read), joinWords(missing));
 }
 
@@ -781,7 +906,10 @@ export interface RuleRow {
   stateLabel?: string;
 }
 
-/** The branch rules the page shows. The approval, stale approval, code owner and linear history rules stay unseen on purpose. */
+/**
+ * The branch rules the page shows. The approval, stale approval, code owner and linear history rules are never shown
+ * (ADR 0036).
+ */
 type ShownRule = Exclude<
   keyof BranchRules,
   "requiredApprovals" | "dismissStaleReviews" | "requireCodeOwnerReview" | "requireLinearHistory"
@@ -795,7 +923,7 @@ const RULE_KEYS = keysOf<ShownRule>({
   requireSignedCommits: true,
 });
 
-/** Each rule on the deploy branch as met, not met or not visible. Approval rules are not shown (ADR 0033). */
+/** Each rule on the deploy branch as met, not met or not visible. Approval rules are not shown (ADR 0036). */
 export function ruleRows(posture: RepoPosture): RuleRow[] {
   const text = copy.security.branch;
   return RULE_KEYS.map((key) => {
@@ -900,25 +1028,67 @@ export function safeHttpUrl(url: string | null): string | null {
 /** Open alerts past their fix-by date, over every severity. */
 export const pastFixTotal = (pastFix: Record<Severity, number>): number => SEVERITIES.reduce((sum, s) => sum + pastFix[s], 0);
 
-/** The latest time any alert source was read, or null when none has been. */
-export function alertsReadAt(report: Pick<SecurityReport, "sources">): string | null {
-  const times = ALERT_SOURCES.map((source) => report.sources[source].readAt).filter((t): t is string => t !== null);
-  return times.length === 0 ? null : times.reduce((latest, t) => (t > latest ? t : latest));
+export interface AlertsRead {
+  /** The latest fresh read when every source in use is fresh; else the oldest read that the page still stands on. */
+  at: string | null;
+  /** True when a source in use failed its last attempt, so some of the alerts are older than `at` suggests. */
+  stale: boolean;
+}
+
+/** When the alerts were read. A source in error is graded on its last good read, which is never passed off as fresh. */
+export function alertsReadAt(report: Pick<SecurityReport, "sources">): AlertsRead {
+  const used = usedSources(report.sources);
+  const reads = ALERT_SOURCES.filter((source) => used[source]).map((source) => ({
+    at: lastGoodRead(report.sources[source])?.readAt ?? null,
+    failed: report.sources[source].status === "error",
+  }));
+  const stale = reads.some((r) => r.failed);
+  const times = reads.filter((r) => (stale ? r.failed : true)).flatMap((r) => (r.at ? [r.at] : []));
+  if (times.length === 0) return { at: null, stale: false };
+  return { at: times.reduce((x, t) => (stale ? (t < x ? t : x) : t > x ? t : x)), stale };
 }
 
 /** The coverage sentence for a full report, worded as the list page words it for a summary. */
 export function reportCoverage(report: Pick<SecurityReport, "sources" | "supplyChain">): string {
   const chain = report.supplyChain;
-  // A source that failed this time but was read before still counts as read, as `unreadParts` counts it.
-  const status = (source: AlertSource): SourceStatus =>
-    sourceUsable(report.sources[source]) ? "ok" : report.sources[source].status;
+  const statuses = Object.fromEntries(ALERT_SOURCES.map((s) => [s, report.sources[s].status])) as Record<
+    AlertSource,
+    SourceStatus
+  >;
   return sourceCoverage({
-    sources: {
-      dependabot: status("dependabot"),
-      code_scanning: status("code_scanning"),
-      secret_scanning: status("secret_scanning"),
-      osv: status("osv"),
-    },
+    used: usedSources(report.sources),
+    sources: statuses,
     supplyChain: chain.status === "ok" ? "ok" : chain.reason,
   });
+}
+
+export interface FailedSource {
+  name: string;
+  /** When it last read successfully, or null when it never has. */
+  lastGoodAt: string | null;
+}
+
+/** Every source whose last attempt failed, with when it last worked, for the warning near the top of a page. */
+export function failedSources(
+  report: Pick<SecurityReport, "sources" | "posture" | "postureFailure" | "supplyChain" | "supplyChainFailure">,
+  /** True where the page already names the sources that could not be read, so none is named twice. */
+  leaveOutUnreadNamed = false,
+): FailedSource[] {
+  const failed: FailedSource[] = [];
+  const named = leaveOutUnreadNamed ? unreadParts(report) : [];
+  for (const source of ALERT_SOURCES) {
+    const state = report.sources[source];
+    if (state.status === "error" && !named.includes(coverageName(source)))
+      failed.push({ name: coverageName(source), lastGoodAt: state.lastGood?.readAt ?? null });
+  }
+  if (report.supplyChainFailure) {
+    failed.push({
+      name: copy.security.list.coverage.supplyChain,
+      lastGoodAt: report.supplyChain.status === "ok" ? report.supplyChain.readAt : null,
+    });
+  }
+  if (report.postureFailure) {
+    failed.push({ name: copy.security.sources.names.posture, lastGoodAt: report.posture?.readAt ?? null });
+  }
+  return failed;
 }

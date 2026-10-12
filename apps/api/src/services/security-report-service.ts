@@ -4,22 +4,21 @@ import {
   securityReport,
   securitySummary,
   type Repo,
-  type ScorecardResult,
-  type ScorecardStatus,
+  type ScorecardState,
   type SecurityReport,
   type SecuritySummary,
 } from "@dora-dashboard/core";
 import { NotFoundError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import type { SecurityStore, StoredScorecard } from "../interfaces/security-store.js";
+import { rulesOf } from "./saved-override.js";
 import { dayOf, validateDateRange } from "./date-range.js";
 
-/** The list page's window: this many days back from today. */
+/**
+ * The days back from today of the range each summary's report is built for. No field of a summary follows a range, so
+ * this is not a window the list page shows and changing it changes none of its figures.
+ */
 export const SUMMARY_WINDOW_DAYS = 90;
-
-/** The page where GitHub lets an administrator switch its security features on; used when no alert source is wired. */
-export const githubSettingsUrl = (owner: string, name: string): string =>
-  `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/settings/security_analysis`;
 
 export interface SecurityReportQuery {
   from?: string | undefined;
@@ -32,7 +31,11 @@ export interface SecurityReportOptions {
   codeAnalysis: boolean;
   /** Whether a Scorecard source is wired. Without one the report says Scorecard is off. */
   scorecardLookup: boolean;
-  settingsUrl?: (owner: string, name: string) => string;
+  /**
+   * The host's page where an administrator switches security features on, from the alert source's own port. Empty
+   * when no source is wired, so the report names no host it knows nothing about and the page shows no link.
+   */
+  settingsUrl: (owner: string, name: string) => string;
 }
 
 /**
@@ -94,7 +97,7 @@ export class SecurityReportService {
     const supplyChain = securityStore.supplyChain(repo.id);
     const posture = securityStore.posture(repo.id);
     const scorecard = securityStore.scorecard(repo.id);
-    const shown = this.scorecardOf(posture?.posture.visibility ?? null, scorecard);
+    const shown = this.scorecardOf(posture?.value.visibility ?? null, scorecard);
     return securityReport(
       {
         repo,
@@ -103,14 +106,13 @@ export class SecurityReportService {
         supplyChain,
         supplyChainMissing: supplyChain ? null : options.codeAnalysis ? "not_read" : "analysis_off",
         pullRequests: this.store.pullRequests(repo.id),
-        settingsUrl: (options.settingsUrl ?? githubSettingsUrl)(repo.owner, repo.name),
-        posture: posture?.posture ?? null,
-        postureReadAt: posture?.readAt ?? null,
-        postureError: securityStore.postureFailure(repo.id)?.error ?? null,
-        scorecard: shown.result,
-        scorecardStatus: shown.status,
+        settingsUrl: options.settingsUrl(repo.owner, repo.name),
+        posture,
+        postureFailure: securityStore.postureFailure(repo.id),
+        supplyChainFailure: securityStore.supplyChainFailure(repo.id),
+        scorecard: shown,
         issues: this.store.issues(repo.id),
-        issueLabels: this.store.issueState(repo.id).labels,
+        issueLabels: rulesOf(this.store.issueState(repo.id).labels),
       },
       {
         ...(query.from === undefined ? {} : { from: query.from }),
@@ -123,17 +125,16 @@ export class SecurityReportService {
   /**
    * What the Scorecard panel shows. A repository that is not known to be public is never looked up, and one whose
    * visibility is unread counts as not public (ADR 0035), so any stored result is not shown unless the current posture
-   * says `public`. A failed read shows `error` until the next good one, with the last good result beside it.
+   * says `public`. A failed read shows `error`, with its message and the last good result beside it, until the next
+   * good read. Nothing held yet is `not_read`, and a lookup that found the project absent from the scan is `not_scanned`.
    */
-  private scorecardOf(
-    visibility: "public" | "private" | "internal" | null,
-    held: StoredScorecard | null,
-  ): { status: ScorecardStatus; result: ScorecardResult | null } {
-    if (!this.options.scorecardLookup) return { status: "off", result: null };
-    if (visibility !== "public") return { status: "not_public", result: null };
-    if (held?.error) return { status: "error", result: held.result };
-    if (held?.result) return { status: "ok", result: held.result };
-    return { status: "not_scanned", result: null };
+  private scorecardOf(visibility: "public" | "private" | "internal" | null, held: StoredScorecard | null): ScorecardState {
+    if (!this.options.scorecardLookup) return { status: "off" };
+    if (visibility !== "public") return { status: "not_public" };
+    if (held === null) return { status: "not_read" };
+    if (held.failure) return { status: "error", ...held.failure, lastGood: held.result };
+    if (held.result) return { status: "ok", result: held.result };
+    return { status: "not_scanned" };
   }
 }
 

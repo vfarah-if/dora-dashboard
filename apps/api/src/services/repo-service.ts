@@ -34,17 +34,14 @@ export class RepoService {
   }
 
   private listing(repo: Repo): RepoListing {
-    const { enabled, labels, labelsUnreadable, error } = this.store.issueState(repo.id);
-    const exemptions = this.store.reviewExemptionState(repo.id);
+    const { enabled, labels, error } = this.store.issueState(repo.id);
     return {
       ...repo,
       ...this.store.counts(repo.id),
       issuesEnabled: enabled,
       issueLabels: labels,
-      issueLabelsUnreadable: labelsUnreadable,
       issueError: error,
-      reviewExemptions: exemptions.rules,
-      reviewExemptionsUnreadable: exemptions.unreadable,
+      reviewExemptions: this.store.reviewExemptionState(repo.id),
     };
   }
 

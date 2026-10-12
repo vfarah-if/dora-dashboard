@@ -152,8 +152,7 @@ describe("IssueCrawlService", () => {
     expect(store.issueState(repoId)).toEqual({
       enabled: false,
       cursor: null,
-      labels: null,
-      labelsUnreadable: false,
+      labels: { kind: "defaults" },
       error: null,
     });
   });
@@ -329,7 +328,7 @@ describe("the repository crawl with issues", () => {
     await plain.crawl("token", repoId);
 
     expect(store.counts(repoId)).toEqual({ pullRequests: 1, deployRuns: 0, issues: 0 });
-    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
+    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: { kind: "defaults" }, error: null });
     expect(issues.calls).toHaveLength(0);
   });
 });

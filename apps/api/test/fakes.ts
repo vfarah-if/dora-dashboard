@@ -2,12 +2,15 @@ import { COVERAGE_SNAPSHOT_VERSION, SUPPLY_CHAIN_VERSION } from "@dora-dashboard
 import type {
   BoardAccess,
   CodeAlert,
-  DependencyAlert,
+  DependabotAlert,
+  DependencyFacts,
+  OsvAlert,
+  OsvDependencyFacts,
+  AlertOf,
   LockedPackage,
   RepoPosture,
   ScorecardResult,
   SecretAlert,
-  SecurityAlert,
   SupplyChainFacts,
   SupplyChainRecord,
   Vulnerability,
@@ -30,7 +33,7 @@ import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../src/interfaces/coverage-source.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../src/interfaces/issue-provider.js";
-import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
+import type { Listing, WorkspaceReader } from "../src/interfaces/workspace-reader.js";
 import type { AlertRead, SecurityAlertSource } from "../src/interfaces/security-alert-source.js";
 import type { ScorecardSource } from "../src/interfaces/scorecard-source.js";
 import type { VulnerabilityDatabase } from "../src/interfaces/vulnerability-database.js";
@@ -644,7 +647,14 @@ export class FakeWorkspaceReader implements WorkspaceReader {
   lists = 0;
   readonly reads: string[] = [];
 
-  async list(): Promise<string[]> {
+  /** What `listing` says about the walk, so a test can say it was cut. */
+  listingComplete = true;
+
+  async listing(dir: string): Promise<Listing> {
+    return { paths: await this.list(dir), complete: this.listingComplete };
+  }
+
+  async list(_dir?: string): Promise<string[]> {
     this.lists++;
     if (this.listFailWith) throw this.listFailWith;
     return [...this.files.keys()];
@@ -659,10 +669,10 @@ export class FakeWorkspaceReader implements WorkspaceReader {
 
 // --- Security ---------------------------------------------------------------------------------------------------
 
-type DependencyOverrides = Partial<Omit<DependencyAlert, "dependency">> & { dependency?: Partial<DependencyAlert["dependency"]> };
+type DependabotOverrides = Partial<Omit<DependabotAlert, "dependency">> & { dependency?: Partial<DependencyFacts> };
 
-/** An open Dependabot alert for a public package in `acme/widgets`; `source: "osv"` makes it an OSV finding. */
-export function dependabotAlert(overrides: DependencyOverrides = {}): DependencyAlert {
+/** An open Dependabot alert for a public package in `acme/widgets`. */
+export function dependabotAlert(overrides: DependabotOverrides = {}): DependabotAlert {
   const { dependency, ...rest } = overrides;
   return {
     source: "dependabot",
@@ -694,15 +704,39 @@ export function dependabotAlert(overrides: DependencyOverrides = {}): Dependency
   };
 }
 
-export function osvAlert(overrides: DependencyOverrides = {}): DependencyAlert {
+type OsvOverrides = Partial<Omit<OsvAlert, "dependency">> & { dependency?: Partial<OsvDependencyFacts> };
+
+/** An open OSV finding for the same package, as the lookup stores it: no scope, relationship, range, score or EPSS. */
+export function osvAlert(overrides: OsvOverrides = {}): OsvAlert {
   const { dependency, ...rest } = overrides;
-  return dependabotAlert({
+  return {
     source: "osv",
     key: "GHSA-aaaa-bbbb-cccc|npm|lodash|package-lock.json",
+    state: "open",
+    createdAt: "2026-09-01T10:00:00Z",
+    closedAt: null,
+    closeReason: null,
+    title: "Prototype pollution in lodash",
     url: "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
-    dependency: { lockedVersion: "4.17.20", ...dependency },
+    severity: "high",
+    dependency: {
+      ecosystem: "npm",
+      name: "lodash",
+      manifestPath: "package-lock.json",
+      scope: null,
+      relationship: null,
+      lockedVersion: "4.17.20",
+      patchedVersion: "4.17.21",
+      vulnerableRange: null,
+      advisoryId: "GHSA-aaaa-bbbb-cccc",
+      cveId: "CVE-2021-23337",
+      epss: null,
+      cvssScore: null,
+      cwes: [],
+      ...dependency,
+    },
     ...rest,
-  });
+  };
 }
 
 type CodeOverrides = Partial<Omit<CodeAlert, "code">> & { code?: Partial<CodeAlert["code"]> };
@@ -794,6 +828,7 @@ export function repoPosture(overrides: Partial<RepoPosture> = {}): RepoPosture {
 export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyChainFacts {
   return {
     version: SUPPLY_CHAIN_VERSION,
+    listingComplete: true,
     workflowsRead: 0,
     workflowsUnread: [],
     dockerfilesUnread: [],
@@ -858,35 +893,47 @@ export class FakeSecurityAlertSource implements SecurityAlertSource {
     return this.calls.filter((call) => call.method === method).length;
   }
 
-  set(source: AlertKind, read: AlertRead): void {
+  set<S extends AlertKind>(source: S, read: AlertRead<S>): void {
     this.answers.set(source, read);
   }
 
   /** Serves these alerts as an `ok` read for the source. */
-  seed(source: AlertKind, alerts: SecurityAlert[], extra: { truncated?: boolean; skipped?: number } = {}): void {
-    this.answers.set(source, { status: "ok", alerts, truncated: extra.truncated ?? false, skipped: extra.skipped ?? 0 });
+  seed<S extends AlertKind>(
+    source: S,
+    alerts: AlertOf<S>[],
+    extra: { truncated?: boolean; skipped?: number; skippedKeys?: string[] } = {},
+  ): void {
+    this.answers.set(source, {
+      status: "ok",
+      alerts,
+      truncated: extra.truncated ?? false,
+      skipped: extra.skipped ?? extra.skippedKeys?.length ?? 0,
+      skippedKeys: extra.skippedKeys ?? [],
+    });
   }
 
   fail(source: AlertKind, error: Error): void {
     this.failures.set(source, error);
   }
 
-  private read(method: AlertKind, token: string, owner: string, name: string): Promise<AlertRead> {
+  private read<S extends AlertKind>(method: S, token: string, owner: string, name: string): Promise<AlertRead<S>> {
     this.calls.push({ method, token, owner, name });
     const failure = this.failures.get(method);
     if (failure) return Promise.reject(failure);
-    return Promise.resolve(this.answers.get(method) ?? { status: "ok", alerts: [], truncated: false, skipped: 0 });
+    return Promise.resolve(
+      (this.answers.get(method) ?? { status: "ok", alerts: [], truncated: false, skipped: 0, skippedKeys: [] }) as AlertRead<S>,
+    );
   }
 
-  dependencyAlerts(token: string, owner: string, name: string): Promise<AlertRead> {
+  dependencyAlerts(token: string, owner: string, name: string): Promise<AlertRead<"dependabot">> {
     return this.read("dependabot", token, owner, name);
   }
 
-  codeAlerts(token: string, owner: string, name: string): Promise<AlertRead> {
+  codeAlerts(token: string, owner: string, name: string): Promise<AlertRead<"code_scanning">> {
     return this.read("code_scanning", token, owner, name);
   }
 
-  secretAlerts(token: string, owner: string, name: string): Promise<AlertRead> {
+  secretAlerts(token: string, owner: string, name: string): Promise<AlertRead<"secret_scanning">> {
     return this.read("secret_scanning", token, owner, name);
   }
 
@@ -906,20 +953,27 @@ export class FakeVulnerabilityDatabase implements VulnerabilityDatabase {
   readonly kind = "fake";
   readonly asked: LockedPackage[][] = [];
   failWith: Error | null = null;
-  truncated = false;
   private readonly known = new Map<string, Vulnerability[]>();
+  private readonly incomplete = new Set<string>();
 
   /** Makes `pkg` vulnerable to `vulnerabilities`. */
   know(pkg: Pick<LockedPackage, "ecosystem" | "name" | "version">, vulnerabilities: Vulnerability[]): void {
     this.known.set(`${pkg.ecosystem}:${pkg.name}@${pkg.version}`, vulnerabilities);
   }
 
-  async lookup(packages: readonly LockedPackage[]): Promise<{ results: Vulnerability[][]; truncated: boolean }> {
+  /** Makes the answer for `pkg` incomplete (null), as when a cap stopped the lookup before it was fully answered. */
+  leaveIncomplete(pkg: Pick<LockedPackage, "ecosystem" | "name" | "version">): void {
+    this.incomplete.add(`${pkg.ecosystem}:${pkg.name}@${pkg.version}`);
+  }
+
+  async lookup(packages: readonly LockedPackage[]): Promise<{ results: (Vulnerability[] | null)[] }> {
     this.asked.push([...packages]);
     if (this.failWith) throw this.failWith;
     return {
-      results: packages.map((pkg) => this.known.get(`${pkg.ecosystem}:${pkg.name}@${pkg.version}`) ?? []),
-      truncated: this.truncated,
+      results: packages.map((pkg) => {
+        const key = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+        return this.incomplete.has(key) ? null : (this.known.get(key) ?? []);
+      }),
     };
   }
 }

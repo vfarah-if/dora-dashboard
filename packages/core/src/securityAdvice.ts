@@ -13,9 +13,12 @@ import {
 import { compareVersions, highestVersion } from "./versions.js";
 import {
   ALERT_SOURCES,
+  DEPENDENCY_ACTION_KINDS,
   SECURITY_ACTION_KINDS,
+  type ActionPackage,
   type ActionUse,
-  type DependencyAlert,
+  type DependencyActionKind,
+  type DependencyFacts,
   type DependencyGroup,
   type SecurityAction,
   type SecurityAlert,
@@ -65,14 +68,19 @@ const byVersion = (a: string, b: string) => compareVersions(a, b) ?? compareText
 
 /**
  * Open dependency alerts grouped by package and manifest, worst first. One package locked at two versions in two
- * manifests is two groups, because a fix that suits `1.x` is not the fix for `2.x`.
+ * manifests is two groups, because a fix that suits `1.x` is not the fix for `2.x`. An alert whose host named no
+ * ecosystem, package or manifest is a group of its own, so unrelated unnamed packages never share one upgrade.
  */
 export function groupDependencies(usedList: readonly UsedAlert[]): DependencyGroupDetail[] {
-  const groups = new Map<string, { used: UsedAlert; dependency: DependencyAlert["dependency"] }[]>();
+  const groups = new Map<string, { used: UsedAlert; dependency: DependencyFacts }[]>();
   for (const used of usedList) {
     if (used.alert.source !== "dependabot" && used.alert.source !== "osv") continue;
     const { dependency } = used.alert;
-    const key = `${dependency.ecosystem}\u0000${dependency.name}\u0000${dependency.manifestPath}`;
+    const { ecosystem, name, manifestPath } = dependency;
+    const key =
+      ecosystem === null || name === null || manifestPath === null
+        ? JSON.stringify(["alert", used.alert.source, used.alert.key])
+        : JSON.stringify(["package", ecosystem, name, manifestPath]);
     const entries = groups.get(key) ?? [];
     entries.push({ used, dependency });
     groups.set(key, entries);
@@ -107,22 +115,29 @@ export function groupDependencies(usedList: readonly UsedAlert[]): DependencyGro
         SEVERITY_RANK[a.worstSeverity] - SEVERITY_RANK[b.worstSeverity] ||
         b.pastFix - a.pastFix ||
         b.alerts - a.alerts ||
-        compareText(a.name, b.name) ||
-        compareText(a.ecosystem, b.ecosystem) ||
-        compareText(a.manifestPath, b.manifestPath),
+        compareText(a.name ?? "", b.name ?? "") ||
+        compareText(a.ecosystem ?? "", b.ecosystem ?? "") ||
+        compareText(a.manifestPath ?? "", b.manifestPath ?? "") ||
+        compareText(a.members[0]!.alert.key, b.members[0]!.alert.key),
     );
 }
 
 type Ref = SecurityAction["refs"][number];
 
+/**
+ * A reference to one alert. A code alert reads as its place, else its rule, else its title; a dependency alert as its
+ * package and version with the advisory, or as the advisory, else its title, when the package is not named.
+ */
 const refOfAlert = ({ alert }: UsedAlert): Ref => {
   if (alert.source === "code_scanning") {
     const { path, line, ruleId } = alert.code;
-    return { label: path === null ? ruleId : line === null ? path : `${path}:${line}`, url: alert.url };
+    return { label: path === null ? (ruleId ?? alert.title) : line === null ? path : `${path}:${line}`, url: alert.url };
   }
   if (alert.source === "secret_scanning") return { label: alert.title, url: alert.url };
   const { name, lockedVersion, advisoryId } = alert.dependency;
-  return { label: `${name}${lockedVersion === null ? "" : `@${lockedVersion}`} (${advisoryId})`, url: alert.url };
+  if (name === null) return { label: advisoryId ?? alert.title, url: alert.url };
+  const advisory = advisoryId === null ? "" : ` (${advisoryId})`;
+  return { label: `${name}${lockedVersion === null ? "" : `@${lockedVersion}`}${advisory}`, url: alert.url };
 };
 
 const alertRefs = (members: readonly UsedAlert[]): Ref[] => [...members].sort(compareAlerts).slice(0, MAX_REFS).map(refOfAlert);
@@ -141,20 +156,38 @@ function byFile<T extends { file: string }>(list: readonly T[]): [string, T[]][]
   return [...files].sort(([a], [b]) => compareText(a, b));
 }
 
-const blank = (kind: SecurityActionKind): SecurityAction => ({
+/** An action before it is ranked: its band is known, whether it is on the path is not yet. */
+interface Draft {
+  kind: SecurityActionKind;
+  band: Band | null;
+  severity: SecurityAction["severity"];
+  count: number;
+  target: string | null;
+  likelyExploited: boolean;
+  refs: Ref[];
+  package: ActionPackage | null;
+}
+
+const blank = (kind: SecurityActionKind): Draft => ({
   kind,
   band: null,
-  onPath: false,
   severity: null,
   count: 0,
   target: null,
-  upgradeTo: null,
-  ecosystem: null,
-  manifestPath: null,
-  relationship: null,
   likelyExploited: false,
   refs: [],
+  package: null,
 });
+
+const isDependencyKind = (kind: SecurityActionKind): kind is DependencyActionKind =>
+  (DEPENDENCY_ACTION_KINDS as readonly string[]).includes(kind);
+
+/** The finished action: on the path when its band is the overall band, and `package` only on a dependency kind. */
+function finish({ kind, band, package: pkg, ...facts }: Draft, overall: Band | null): SecurityAction {
+  const weight = band === null ? { band, onPath: false as const } : { band, onPath: band === overall };
+  if (isDependencyKind(kind)) return { ...facts, ...weight, kind, package: pkg! };
+  return { ...facts, ...weight, kind };
+}
 
 /**
  * Every action for the facts, ranked: those on the path first, then the worst band, the worst severity, likely to be
@@ -173,8 +206,8 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   actions: SecurityAction[];
   onPathAlerts: SecurityAlert[];
 } {
-  const entries: { action: SecurityAction; members: readonly UsedAlert[] }[] = [];
-  const add = (kind: SecurityActionKind, fields: Partial<SecurityAction>, members: readonly UsedAlert[] = []) => {
+  const entries: { action: Draft; members: readonly UsedAlert[] }[] = [];
+  const add = (kind: SecurityActionKind, fields: Partial<Omit<Draft, "kind">>, members: readonly UsedAlert[] = []) => {
     entries.push({ action: { ...blank(kind), ...fields }, members });
   };
   const { sources, posture, supplyChain } = facts;
@@ -203,29 +236,32 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
     );
   }
   for (const group of groupDependencies(open)) {
+    const { ecosystem, name, manifestPath, relationship, upgradeTo } = group;
     add(
       group.patchedVersions.length > 0 ? "upgrade_dependency" : "replace_dependency",
       {
         band: lowest(group.members.map(bandOfAlert)),
         severity: group.worstSeverity,
         count: group.alerts,
-        target: `${group.ecosystem}:${group.name}`,
-        upgradeTo: group.upgradeTo,
-        ecosystem: group.ecosystem,
-        manifestPath: group.manifestPath,
-        relationship: group.relationship,
+        target: ecosystem === null || name === null ? null : `${ecosystem}:${name}`,
+        package: { ecosystem, name, manifestPath, relationship, upgradeTo },
         likelyExploited: group.likelyExploited,
         refs: alertRefs(group.members),
       },
       group.members,
     );
   }
-  const rules = new Map<string, UsedAlert[]>();
+  // One action per rule; an alert whose host named no rule is an action of its own.
+  const rules = new Map<string, { ruleId: string | null; members: UsedAlert[] }>();
   for (const u of open) {
     if (u.alert.source !== "code_scanning") continue;
-    rules.set(u.alert.code.ruleId, [...(rules.get(u.alert.code.ruleId) ?? []), u]);
+    const { ruleId } = u.alert.code;
+    const key = ruleId === null ? JSON.stringify(["alert", u.alert.key]) : JSON.stringify(["rule", ruleId]);
+    const rule = rules.get(key) ?? { ruleId, members: [] };
+    rule.members.push(u);
+    rules.set(key, rule);
   }
-  for (const [ruleId, members] of rules) {
+  for (const { ruleId, members } of rules.values()) {
     add(
       "fix_code_alert",
       {
@@ -256,8 +292,8 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
     add("check_secret_scanning", { count: 1, target: "secret_scanning" });
   }
   for (const source of ALERT_SOURCES) {
-    if (sources[source].status === "no_access" && sources[source].reason === "forbidden")
-      add("grant_alert_access", { count: 1, target: source });
+    const state = sources[source];
+    if (state.status === "no_access" && state.reason === "forbidden") add("grant_alert_access", { count: 1, target: source });
   }
 
   // Workflows and files from the clone.
@@ -351,7 +387,7 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   if (staleUpdates > 0) add("merge_dependency_updates", { count: staleUpdates });
 
   const ranked = entries
-    .map(({ action, members }) => ({ action: { ...action, onPath: overall !== null && action.band === overall }, members }))
+    .map(({ action, members }) => ({ action: finish(action, overall), members }))
     .sort(
       (x, y) =>
         Number(y.action.onPath) - Number(x.action.onPath) ||

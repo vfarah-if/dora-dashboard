@@ -25,34 +25,34 @@ describe("review exemptions in the store", () => {
   });
 
   it("starts with no override, read as the defaults", () => {
-    expect(store.reviewExemptionState(repoId)).toEqual({ rules: null, unreadable: false });
+    expect(store.reviewExemptionState(repoId)).toEqual({ kind: "defaults" });
   });
 
   it("saves an override, and clears it with null", () => {
     const rules = { titleWords: ["mirror"], labels: ["vendored"] };
 
     store.setReviewExemptions(repoId, rules);
-    expect(store.reviewExemptionState(repoId)).toEqual({ rules, unreadable: false });
+    expect(store.reviewExemptionState(repoId)).toEqual({ kind: "override", rules });
 
     store.setReviewExemptions(repoId, null);
-    expect(store.reviewExemptionState(repoId)).toEqual({ rules: null, unreadable: false });
+    expect(store.reviewExemptionState(repoId)).toEqual({ kind: "defaults" });
   });
 
   it("keeps an override whose lists are empty, which is not the defaults", () => {
     store.setReviewExemptions(repoId, { titleWords: [], labels: [] });
 
-    expect(store.reviewExemptionState(repoId).rules).toEqual({ titleWords: [], labels: [] });
+    expect(store.reviewExemptionState(repoId)).toEqual({ kind: "override", rules: { titleWords: [], labels: [] } });
   });
 
   it("keeps one repository's override from another's", () => {
     const other = store.addRepo("acme", "gadgets", [], "main").id;
     store.setReviewExemptions(repoId, { titleWords: ["mirror"], labels: [] });
 
-    expect(store.reviewExemptionState(other).rules).toBeNull();
+    expect(store.reviewExemptionState(other)).toEqual({ kind: "defaults" });
   });
 
   it("reads a repository that does not exist as no override", () => {
-    expect(store.reviewExemptionState(999)).toEqual({ rules: null, unreadable: false });
+    expect(store.reviewExemptionState(999)).toEqual({ kind: "defaults" });
   });
 
   it.each([
@@ -68,10 +68,10 @@ describe("review exemptions in the store", () => {
   ])("reads %s as unreadable, and as the defaults, so a report cannot throw on it", (bad) => {
     dbOf(store).prepare("UPDATE repos SET review_exemptions = ? WHERE id = ?").run(bad, repoId);
 
-    expect(store.reviewExemptionState(repoId)).toEqual({ rules: null, unreadable: true });
+    expect(store.reviewExemptionState(repoId)).toEqual({ kind: "unreadable" });
 
     store.setReviewExemptions(repoId, { titleWords: ["mirror"], labels: [] });
-    expect(store.reviewExemptionState(repoId).unreadable).toBe(false);
+    expect(store.reviewExemptionState(repoId).kind).toBe("override");
   });
 
   it("logs an unreadable override once per repository, naming it", () => {
@@ -140,7 +140,7 @@ describe("migrating a database made before review exemptions", () => {
 
     expect(exemptionColumns(path)).toEqual(["review_exemptions"]);
     const repo = store.findRepo("acme", "widgets")!;
-    expect(store.reviewExemptionState(repo.id)).toEqual({ rules: null, unreadable: false });
+    expect(store.reviewExemptionState(repo.id)).toEqual({ kind: "defaults" });
   });
 
   it("changes nothing when opened a second time", () => {
@@ -153,7 +153,7 @@ describe("migrating a database made before review exemptions", () => {
     const again = new SqliteRepoStore(path);
 
     expect(exemptionColumns(path)).toHaveLength(1);
-    expect(again.reviewExemptionState(id).rules).toEqual({ titleWords: ["mirror"], labels: ["vendored"] });
+    expect(again.reviewExemptionState(id)).toEqual({ kind: "override", rules: { titleWords: ["mirror"], labels: ["vendored"] } });
   });
 });
 
@@ -185,20 +185,19 @@ describe("review exemptions through the routes", () => {
 
   const put = (payload: unknown, url = `/api/repos/${id}/review-exemptions`, headers: Record<string, string> = {}) =>
     app.inject({ method: "PUT", url, payload: payload as object, headers });
-  const listing = async () =>
-    (await app.inject("/api/repos")).json<{ reviewExemptions: unknown; reviewExemptionsUnreadable: boolean }[]>()[0]!;
+  const listing = async () => (await app.inject("/api/repos")).json<{ reviewExemptions: { kind: string } }[]>()[0]!;
 
   describe("GET /api/repos", () => {
     it("carries no override at first, and says it can be read", async () => {
-      expect(await listing()).toMatchObject({ reviewExemptions: null, reviewExemptionsUnreadable: false });
+      expect(await listing()).toMatchObject({ reviewExemptions: { kind: "defaults" } });
     });
 
     it("says when a saved override cannot be read, until a good one is saved", async () => {
       dbOf(store).prepare("UPDATE repos SET review_exemptions = '{not json' WHERE id = ?").run(id);
-      expect(await listing()).toMatchObject({ reviewExemptions: null, reviewExemptionsUnreadable: true });
+      expect(await listing()).toMatchObject({ reviewExemptions: { kind: "unreadable" } });
 
       await put({ exemptions: { titleWords: ["mirror"], labels: [] } });
-      expect(await listing()).toMatchObject({ reviewExemptionsUnreadable: false });
+      expect(await listing()).toMatchObject({ reviewExemptions: { kind: "override" } });
     });
   });
 
@@ -211,9 +210,12 @@ describe("review exemptions through the routes", () => {
         id,
         owner: "acme",
         name: "widgets",
-        reviewExemptions: { titleWords: ["mirror"], labels: ["vendored"] },
+        reviewExemptions: { kind: "override", rules: { titleWords: ["mirror"], labels: ["vendored"] } },
       });
-      expect((await listing()).reviewExemptions).toEqual({ titleWords: ["mirror"], labels: ["vendored"] });
+      expect((await listing()).reviewExemptions).toEqual({
+        kind: "override",
+        rules: { titleWords: ["mirror"], labels: ["vendored"] },
+      });
     });
 
     it("tidies the entries before saving them", async () => {
@@ -222,22 +224,43 @@ describe("review exemptions through the routes", () => {
       });
 
       expect(res.json<{ reviewExemptions: unknown }>().reviewExemptions).toEqual({
-        titleWords: ["Mirror", "Vendor"],
-        labels: ["Vendored"],
+        kind: "override",
+        rules: { titleWords: ["Mirror", "Vendor"], labels: ["Vendored"] },
       });
+    });
+
+    it.each(["---", "!!!", "...", "\u2014", "- -"])(
+      "refuses the title word %j, which holds no letter or digit and would never match",
+      async (word) => {
+        const res = await put({ exemptions: { titleWords: ["mirror", word], labels: [] } });
+
+        expect(res.statusCode).toBe(400);
+        expect((await listing()).reviewExemptions).toEqual({ kind: "defaults" });
+      },
+    );
+
+    it("accepts a title word with a digit or a non-Latin letter, and a label of any characters", async () => {
+      const res = await put({ exemptions: { titleWords: ["v2", "\u540c\u671f", "release-1"], labels: ["---"] } });
+
+      expect(res.statusCode).toBe(200);
     });
 
     it("keeps lists that are empty, so a repository can switch exemptions off", async () => {
       const res = await put({ exemptions: { titleWords: [], labels: [] } });
 
-      expect(res.json<{ reviewExemptions: unknown }>().reviewExemptions).toEqual({ titleWords: [], labels: [] });
+      expect(res.json<{ reviewExemptions: unknown }>().reviewExemptions).toEqual({
+        kind: "override",
+        rules: { titleWords: [], labels: [] },
+      });
     });
 
     it("returns to the defaults when the exemptions are null", async () => {
       await put({ exemptions: { titleWords: ["mirror"], labels: [] } });
 
-      expect((await put({ exemptions: null })).json<{ reviewExemptions: unknown }>().reviewExemptions).toBeNull();
-      expect(store.reviewExemptionState(id).rules).toBeNull();
+      expect((await put({ exemptions: null })).json<{ reviewExemptions: unknown }>().reviewExemptions).toEqual({
+        kind: "defaults",
+      });
+      expect(store.reviewExemptionState(id)).toEqual({ kind: "defaults" });
     });
 
     it("starts no crawl", async () => {
@@ -268,7 +291,7 @@ describe("review exemptions through the routes", () => {
       const res = await put(payload);
 
       expect(res.statusCode).toBe(400);
-      expect(store.reviewExemptionState(id).rules).toBeNull();
+      expect(store.reviewExemptionState(id)).toEqual({ kind: "defaults" });
     });
 
     it("accepts an entry of exactly 100 characters and 30 of each", async () => {
@@ -283,7 +306,7 @@ describe("review exemptions through the routes", () => {
       });
 
       expect(res.statusCode).toBe(403);
-      expect(store.reviewExemptionState(id).rules).toBeNull();
+      expect(store.reviewExemptionState(id)).toEqual({ kind: "defaults" });
     });
 
     it("accepts the dashboard's own origin", async () => {
@@ -349,6 +372,36 @@ describe("review exemptions through the routes", () => {
 
       // Mirror and the Vendored label are exempt now, and Sync no longer is: counted 2 (pull requests 1 and 2).
       expect(await totals()).toEqual({ unreviewedCount: 2, unreviewedShare: 1, exemptCount: 2 });
+    });
+
+    it("falls back to the default exemptions for an override that cannot be read, and the report still answers", async () => {
+      dbOf(store).prepare("UPDATE repos SET review_exemptions = ? WHERE id = ?").run('{"titleWords":"sync"}', id);
+
+      // As with no override at all: the sync title is exempt, so 3 of the 4 are counted.
+      expect(await totals()).toEqual({ unreviewedCount: 3, unreviewedShare: 1, exemptCount: 1 });
+      expect((await listing()).reviewExemptions.kind).toBe("unreadable");
+    });
+
+    it("applies each repository's own rules when repositories are compared", async () => {
+      const other = store.addRepo("acme", "gadgets", [], "main").id;
+      store.upsertPullRequests(other, [
+        pr({ number: 1, title: "Add gadget" }),
+        pr({ number: 2, title: "Sync shared library 23 September" }),
+        pr({ number: 3, title: "Mirror upstream" }),
+      ]);
+      // Widgets keeps the defaults. Gadgets exempts mirrors instead, so its sync title is counted.
+      await put({ exemptions: { titleWords: ["mirror"], labels: [] } }, `/api/repos/${other}/review-exemptions`);
+
+      const compared = (await app.inject(`/api/compare?ids=${id},${other}&to=2026-09-13`)).json<
+        { repo: { name: string }; totals: { unreviewedCount: number; exemptCount: number } }[]
+      >();
+
+      expect(compared.map((r) => [r.repo.name, r.totals.unreviewedCount, r.totals.exemptCount])).toEqual([
+        // Widgets: 4 merged, the sync title exempt, so 3 counted.
+        ["widgets", 3, 1],
+        // Gadgets: 3 merged, the mirror exempt, so 2 counted.
+        ["gadgets", 2, 1],
+      ]);
     });
 
     it("returns to the defaults when the override is cleared", async () => {

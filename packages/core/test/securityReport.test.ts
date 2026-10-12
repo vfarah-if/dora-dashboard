@@ -9,9 +9,11 @@ import {
 } from "../src/securityReport.js";
 import {
   FIX_WITHIN_DAYS,
-  LIKELY_EXPLOITED_EPSS,
   SEVERITIES,
+  type AlertSource,
+  type CloseReason,
   type SecurityReport,
+  type SourceState,
   type SupplyChainCheckId,
 } from "../src/securityTypes.js";
 import type { PullRequest } from "../src/types.js";
@@ -23,11 +25,14 @@ import {
   daysAgo,
   depAlert,
   failed,
+  held,
   input,
   noAccess,
   notRead,
+  notUsed,
   ok,
   off,
+  osvAlert,
   posture,
   record,
   secretAlert,
@@ -46,26 +51,43 @@ describe("a repository with nothing in it", () => {
     expect(report.gradedAt).toBe(NOW);
   });
 
-  it("carries the published limits and links", () => {
-    expect(report.fixWithinDays).toBe(FIX_WITHIN_DAYS);
-    expect(report.likelyExploitedEpss).toBe(LIKELY_EXPLOITED_EPSS);
+  it("carries the settings link", () => {
     expect(report.settingsUrl).toBe("https://github.com/acme/widgets/settings/security_analysis");
   });
 
-  it("carries every limit the page quotes, so no copy repeats a number", () => {
+  it("carries every limit the page quotes in one place, so no copy repeats a number", () => {
     expect(report.thresholds).toEqual({
+      fixWithinDays: { critical: 7, high: 30, medium: 90, low: 180 },
       staleUpdateDays: 30,
       likelyExploitedEpss: 0.1,
       lowAlertAdviceDays: 180,
     });
     expect(report.thresholds).toBe(SECURITY_THRESHOLDS);
-    expect(report.thresholds.likelyExploitedEpss).toBe(report.likelyExploitedEpss);
-    expect(report.thresholds.lowAlertAdviceDays).toBe(report.fixWithinDays.low);
+    expect(report.thresholds.fixWithinDays).toBe(FIX_WITHIN_DAYS);
   });
 
-  it("passes a failed posture read through, and says nothing when it did not fail", () => {
-    expect(report.postureError).toBeNull();
-    expect(build({ postureError: "GitHub did not answer" }).postureError).toBe("GitHub did not answer");
+  it("keeps no copy of a limit beside the thresholds", () => {
+    for (const key of ["fixWithinDays", "likelyExploitedEpss"]) expect(key in report).toBe(false);
+    expect("total" in report.open).toBe(false);
+  });
+
+  it("passes a failed posture read through beside the posture it keeps, and says nothing when it did not fail", () => {
+    expect(report.postureFailure).toBeNull();
+    const failure = { message: "GitHub did not answer", attemptedAt: "2026-10-07T09:00:00Z" };
+    expect(build({ postureFailure: failure })).toMatchObject({
+      postureFailure: failure,
+      posture: { value: posture(), readAt: "2026-10-07T08:00:00Z" },
+    });
+  });
+
+  it("passes a failed inspection of the clone through beside the facts it keeps, and says nothing when it did not fail", () => {
+    expect(report.supplyChainFailure).toBeNull();
+    const failure = { message: "The clone could not be inspected. See the API log.", attemptedAt: "2026-10-07T09:00:00Z" };
+    const failedAgain = build({ supplyChainFailure: failure });
+    expect(failedAgain.supplyChainFailure).toEqual(failure);
+    expect(failedAgain.supplyChain).toMatchObject({ status: "ok", commitSha: "a".repeat(40) });
+    const neverRead = build({ supplyChain: null, supplyChainMissing: "not_read", supplyChainFailure: failure });
+    expect(neverRead).toMatchObject({ supplyChain: { status: "none", reason: "not_read" }, supplyChainFailure: failure });
   });
 
   it("is elite with nothing to fix", () => {
@@ -77,7 +99,6 @@ describe("a repository with nothing in it", () => {
 
   it("counts zero of everything, with every key present", () => {
     expect(report.open).toEqual({
-      total: 0,
       bySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
       bySource: { dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 },
       pastFix: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
@@ -125,11 +146,25 @@ describe("a repository with nothing in it", () => {
   });
 
   it("passes the posture, the scorecard and the ecosystems through", () => {
-    expect(report.posture).toEqual(posture());
-    expect(report.postureReadAt).toBe("2026-10-07T08:00:00Z");
-    expect(report.scorecard).toBeNull();
-    expect(report.scorecardStatus).toBe("off");
+    expect(report.posture).toEqual({ value: posture(), readAt: "2026-10-07T08:00:00Z" });
+    expect(report.scorecard).toEqual({ status: "off" });
     expect(report.ecosystems).toEqual(["npm"]);
+  });
+
+  it.each([
+    ["a result", { status: "ok" as const, result: { score: 7.4, date: "2026-10-01", checks: [] } }],
+    [
+      "a failure with the last result kept",
+      {
+        status: "error" as const,
+        message: "The OpenSSF Scorecard could not be read. See the API log.",
+        attemptedAt: "2026-10-07T09:00:00Z",
+        lastGood: { score: 6.1, date: "2026-09-01", checks: [] },
+      },
+    ],
+    ["nothing read yet", { status: "not_read" as const }],
+  ])("passes a Scorecard state holding %s through as it is", (_, scorecard) => {
+    expect(build({ scorecard }).scorecard).toEqual(scorecard);
   });
 
   it("carries no review figure, because review habits are a delivery figure (ADR 0036)", () => {
@@ -197,7 +232,6 @@ describe("the open alerts", () => {
   const report = build({ alerts });
 
   it("counts open alerts by severity and source, leaving out closed and quality alerts", () => {
-    expect(report.open.total).toBe(6);
     expect(report.openAlertTotal).toBe(6);
     expect(report.open.bySeverity).toEqual({ critical: 2, high: 2, medium: 0, low: 1, unknown: 1 });
     expect(report.open.bySource).toEqual({ dependabot: 4, code_scanning: 1, secret_scanning: 1, osv: 0 });
@@ -256,11 +290,10 @@ describe("the open alerts", () => {
     const capped = build({ alerts: many });
     expect(capped.openAlerts).toHaveLength(OPEN_ALERT_LIMIT);
     expect(capped.openAlertTotal).toBe(130);
-    expect(capped.open.total).toBe(130);
   });
 
   it("uses OSV's alerts only when Dependabot cannot be read", () => {
-    const osv = depAlert({ source: "osv", key: "o1", severity: "high" });
+    const osv = osvAlert({ key: "o1", severity: "high" });
     const dep = depAlert({ key: "d9", severity: "high" });
     expect(build({ alerts: [osv, dep], sources: { ...allOk(), osv: ok() } }).openAlerts.map((a) => a.key)).toEqual(["d9"]);
     const fallback = build({ alerts: [osv, dep], sources: { ...allOk(), dependabot: noAccess(), osv: ok() } });
@@ -387,7 +420,7 @@ describe("time to fix", () => {
 });
 
 describe("dismissals", () => {
-  const dismissed = (key: string, closeReason: string | null) =>
+  const dismissed = (key: string, closeReason: CloseReason | null) =>
     depAlert({ key, state: "dismissed", closedAt: "2026-10-01T00:00:00Z", closeReason, createdAt: "2026-09-25T00:00:00Z" });
 
   it("groups by GitHub's reason, most common first then by name, with a word for none", () => {
@@ -557,7 +590,7 @@ describe("the supply chain lines", () => {
   ) => lines(overrides, extra).find((l) => l.check === check)!;
 
   it("covers every check in a fixed order, graded only for those the grade counts", () => {
-    const all = lines({}, { posture: posture({ visibility: "public" }) });
+    const all = lines({}, { posture: held(posture({ visibility: "public" })) });
     expect(all.map((l) => l.check)).toEqual(ORDER);
     expect(all.filter((l) => l.graded).map((l) => l.check)).toEqual([
       "prHeadCheckout",
@@ -572,7 +605,7 @@ describe("the supply chain lines", () => {
 
   it("is met on every line for a clean repository", () => {
     expect(
-      lines({}, { posture: posture({ visibility: "public" }) }).every(
+      lines({}, { posture: held(posture({ visibility: "public" })) }).every(
         (l) =>
           l.met &&
           l.items.length ===
@@ -623,10 +656,10 @@ describe("the supply chain lines", () => {
   it("counts a self-hosted runner only in a public repository whose pull requests run on it", () => {
     const runner = { file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted" };
     const findings = [{ ...runner, onPullRequest: true }];
-    expect(line("selfHostedPublic", { findings }, { posture: posture({ visibility: "public" }) }).met).toBe(false);
-    expect(line("selfHostedPublic", { findings }, { posture: posture({ visibility: "private" }) }).met).toBe(true);
+    expect(line("selfHostedPublic", { findings }, { posture: held(posture({ visibility: "public" })) }).met).toBe(false);
+    expect(line("selfHostedPublic", { findings }, { posture: held(posture({ visibility: "private" })) }).met).toBe(true);
     const pushOnly = [{ ...runner, onPullRequest: false }];
-    expect(line("selfHostedPublic", { findings: pushOnly }, { posture: posture({ visibility: "public" }) }).met).toBe(true);
+    expect(line("selfHostedPublic", { findings: pushOnly }, { posture: held(posture({ visibility: "public" })) }).met).toBe(true);
   });
 
   it("separates strong and weak key files and write-all from no permissions", () => {
@@ -651,7 +684,7 @@ describe("the supply chain lines", () => {
       graded: false,
       items: [{ path: ".github/dependabot.yml", line: null, detail: null }],
     });
-    const open = { posture: posture({ visibility: "public" }) };
+    const open = { posture: held(posture({ visibility: "public" })) };
     expect(line("securityPolicy", {}, open)).toMatchObject({ met: true, total: 1 });
     const missing = { updateConfig: null, securityPolicy: null, securityTools: [] };
     for (const check of ["updateConfig", "securityPolicy", "dependencyReview", "secretScanInCi", "staticAnalysis"] as const) {
@@ -662,7 +695,7 @@ describe("the supply chain lines", () => {
   it.each(["private", "internal", null] as const)(
     "shows no security policy line when the repository is %s, because it has no outside reporters",
     (visibility) => {
-      const shown = lines({ securityPolicy: null }, { posture: posture({ visibility }) });
+      const shown = lines({ securityPolicy: null }, { posture: held(posture({ visibility })) });
       expect(shown.map((l) => l.check)).not.toContain("securityPolicy");
       expect(shown.map((l) => l.check)).not.toContain("codeowners");
     },
@@ -762,7 +795,7 @@ describe("change control", () => {
 
   it("follows the branch rules alone", () => {
     const open = posture({ branch: { protected: false, rules: { requirePullRequest: false, blockForcePushes: false } } });
-    const report = build({ pullRequests: merged, posture: open });
+    const report = build({ pullRequests: merged, posture: held(open) });
     expect(report.grade!.parts.changeControl).toMatchObject({ band: "high" });
     expect(report.checks.filter((c) => c.part === "changeControl").map((c) => c.check)).toEqual([
       "branchUnprotected",
@@ -894,7 +927,7 @@ describe("a grade that is missing", () => {
       dependabot: notRead(),
       code_scanning: noAccess(),
       secret_scanning: off("not_set_up"),
-      osv: off("lookup_off"),
+      osv: notUsed("lookup_off"),
     };
     const report = build({ sources, supplyChain: null, supplyChainMissing: "analysis_off" });
     expect(report).toMatchObject({ grade: null, gradeMissing: "nothing_measured", raiseGrade: null });
@@ -992,8 +1025,14 @@ describe("the summary", () => {
     code_scanning: failed("2026-10-06T00:00:00Z"),
     secret_scanning: ok("2026-10-07T09:00:00Z"),
   };
-  const report = build({ alerts, sources, scorecard: { score: 7.4, date: "2026-10-01", checks: [] }, scorecardStatus: "ok" });
+  const report = build({ alerts, sources, scorecard: { status: "ok", result: { score: 7.4, date: "2026-10-01", checks: [] } } });
   const summary = securitySummary(report, "crawling");
+  const none: Record<AlertSource, SourceState> = {
+    dependabot: notRead(),
+    code_scanning: notRead(),
+    secret_scanning: notRead(),
+    osv: notRead(),
+  };
 
   it("agrees with the report on the grade, the counts and the top action", () => {
     expect(summary.repo).toEqual({
@@ -1022,28 +1061,50 @@ describe("the summary", () => {
   });
 
   it("counts the actions that have a band and leaves the advice out", () => {
-    expect(summary.actions).toBe(report.actions.filter((a) => a.band !== null).length);
-    expect(summary.actions).toBeLessThan(report.actions.length + 1);
-    const withAdvice = securitySummary(build({ supplyChain: record({ securityPolicy: null }) }), "idle");
-    expect(withAdvice.actions).toBe(0);
+    // Two actions, both with a band: upgrading lodash (the critical past fix, low) and the code rule (high past fix, medium).
+    expect(report.actions.map((a) => [a.kind, a.band])).toEqual([
+      ["upgrade_dependency", "low"],
+      ["fix_code_alert", "medium"],
+    ]);
+    expect(summary.actions).toBe(2);
+    // A public repository with no security policy and nothing else to fix has one action, and it is advice.
+    const withAdvice = build({ supplyChain: record({ securityPolicy: null }), posture: held(posture({ visibility: "public" })) });
+    expect(withAdvice.actions.map((a) => [a.kind, a.band])).toEqual([["add_security_policy", null]]);
+    expect(securitySummary(withAdvice, "idle").actions).toBe(0);
   });
 
-  it("says whether any alert source has been read, so zeros from an unread repository can be told apart", () => {
-    const none = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: notRead() };
-    expect(securitySummary(build({ sources: none }), "idle").read).toBe(false);
-    expect(securitySummary(build({ sources: { ...none, code_scanning: noAccess() } }), "idle").read).toBe(true);
-    expect(securitySummary(build({ sources: { ...none, osv: ok() } }), "idle").read).toBe(true);
+  it("says a repository is read only when some source's alerts are in use, so zeros can be told from no data", () => {
+    const read = (overrides: Partial<typeof none>) => securitySummary(build({ sources: { ...none, ...overrides } }), "idle").read;
+    expect(read({})).toBe(false);
+    // Every crawl writes a state for OSV, so a crawl in which every alert source had no access still uses nothing.
+    expect(
+      read({
+        dependabot: noAccess(),
+        code_scanning: noAccess(),
+        secret_scanning: noAccess("admin_only_or_off"),
+        osv: notUsed("no_inventory"),
+      }),
+    ).toBe(false);
+    expect(read({ code_scanning: off("not_set_up"), osv: notUsed("lookup_off") })).toBe(false);
+    expect(read({ code_scanning: failed(null) })).toBe(false);
+    expect(read({ code_scanning: failed("2026-10-01T00:00:00Z") })).toBe(true);
+    expect(read({ dependabot: noAccess(), osv: ok() })).toBe(true);
     expect(summary.read).toBe(true);
+  });
+
+  it("says whether each source's alerts are in use, as the grade uses them", () => {
+    expect(summary.used).toEqual({ dependabot: true, code_scanning: true, secret_scanning: true, osv: false });
+    const fallback = securitySummary(build({ sources: { ...allOk(), dependabot: failed(null), osv: ok() } }), "idle");
+    expect(fallback.used).toEqual({ dependabot: false, code_scanning: true, secret_scanning: true, osv: true });
   });
 
   it("carries the raise-the-grade step and the version updates note from the report", () => {
     expect(summary.raiseGrade).toEqual(report.raiseGrade);
-    expect(summary.raiseGrade).not.toBeNull();
+    // Upgrading lodash clears both its alerts; the code alert past its fix-by date then holds the grade at medium.
+    expect(summary.raiseGrade).toEqual({ to: "medium", actions: 1 });
     expect(securitySummary(build(), "idle").raiseGrade).toBeNull();
-    const off = build({
-      sources: { ...allOk(), dependabot: { ...allOk().dependabot, status: "off", reason: "disabled", readAt: null } },
-    });
-    expect(securitySummary(off, "idle").dependabotVersionUpdates).toBe(".github/dependabot.yml");
+    const dependabotOff = build({ sources: { ...allOk(), dependabot: off("disabled") } });
+    expect(securitySummary(dependabotOff, "idle").dependabotVersionUpdates).toBe(".github/dependabot.yml");
     expect(summary.dependabotVersionUpdates).toBeNull();
   });
 
@@ -1060,16 +1121,52 @@ describe("the summary", () => {
     expect(row.raiseGrade).toEqual({ to: "high", actions: 1 });
   });
 
-  it("gives each source's status, the latest read, and whether any failed", () => {
-    expect(summary.sources).toEqual({ dependabot: "ok", code_scanning: "error", secret_scanning: "ok", osv: "off" });
+  it("gives each source's status, the latest read among those in use, and whether any failed", () => {
+    expect(summary.sources).toEqual({ dependabot: "ok", code_scanning: "error", secret_scanning: "ok", osv: "not_used" });
     expect(summary.readAt).toBe("2026-10-07T09:00:00Z");
     expect(summary.failed).toBe(true);
     expect(securitySummary(build(), "idle").failed).toBe(false);
   });
 
-  it("gives no read time when nothing was read", () => {
-    const none = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: notRead() };
+  it("quotes no read time from a source whose alerts are not in use", () => {
+    // Dependabot failed after a read on 1 September, so its alerts count and OSV's do not, although OSV was read later.
+    const stale = {
+      dependabot: failed("2026-09-01T00:00:00Z"),
+      code_scanning: notRead(),
+      secret_scanning: noAccess(),
+      osv: ok("2026-10-07T09:30:00Z"),
+    };
+    expect(securitySummary(build({ sources: stale }), "idle").readAt).toBe("2026-09-01T00:00:00Z");
+  });
+
+  it("gives no read time when nothing is in use", () => {
     expect(securitySummary(build({ sources: none }), "idle").readAt).toBeNull();
+    expect(securitySummary(build({ sources: { ...none, dependabot: noAccess() } }), "idle").readAt).toBeNull();
+  });
+
+  it("counts a failed posture read or a failed inspection of the clone as a failure", () => {
+    const failure = { message: "GitHub did not answer", attemptedAt: "2026-10-07T09:00:00Z" };
+    expect(securitySummary(build({ postureFailure: failure }), "idle").failed).toBe(true);
+    expect(securitySummary(build({ supplyChainFailure: failure }), "idle").failed).toBe(true);
+    expect(securitySummary(build({ posture: null, postureFailure: failure }), "idle").failed).toBe(true);
+  });
+
+  it.each([
+    ["the score read", { status: "ok" as const, result: { score: 8.2, date: "2026-10-01", checks: [] } }, 8.2],
+    [
+      "the last score read when the lookup failed",
+      { status: "error" as const, message: "x", attemptedAt: NOW, lastGood: { score: 5.5, date: "2026-09-01", checks: [] } },
+      5.5,
+    ],
+    [
+      "no score when the lookup failed with none read before",
+      { status: "error" as const, message: "x", attemptedAt: NOW, lastGood: null },
+      null,
+    ],
+    ["no score when nothing has been asked yet", { status: "not_read" as const }, null],
+    ["no score when the lookup is off", { status: "off" as const }, null],
+  ])("gives %s", (_, scorecard, expected) => {
+    expect(securitySummary(build({ scorecard }), "idle").scorecard).toBe(expected);
   });
 
   it("says whether the clone was read", () => {
@@ -1082,7 +1179,7 @@ describe("the summary", () => {
 
   it("names what was unmeasured, with or without a grade", () => {
     expect(summary.unmeasured).toEqual(report.grade!.unmeasured);
-    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: off("lookup_off") };
+    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: notUsed("lookup_off") };
     const empty = securitySummary(
       build({ sources, supplyChain: null, supplyChainMissing: "analysis_off", posture: null }),
       "idle",

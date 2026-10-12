@@ -1,7 +1,7 @@
 import type { GradePart } from "./codeGrade.js";
 import { instant } from "./delivery.js";
 import { BAND_RANK, type Band } from "./dora.js";
-import { isUsable, severityOf } from "./securityAlerts.js";
+import { isUsable, severityOf, usedSources } from "./securityAlerts.js";
 import { DAY_MS, HOUR_MS } from "./stats.js";
 import {
   FIX_WITHIN_DAYS,
@@ -14,7 +14,7 @@ import {
   type SecurityCheck,
   type SecurityCheckName,
   type SecurityGrade,
-  type SecurityGradeMissing,
+  type SecurityGradeOutcome,
   type SecurityMeasure,
   type SecurityPartName,
   type Severity,
@@ -88,12 +88,8 @@ export const isPastFix = (severity: Severity, createdAt: string, now: string): b
  * is left out everywhere.
  */
 export function gradedAlerts(alerts: readonly SecurityAlert[], sources: Record<AlertSource, SourceState>): SecurityAlert[] {
-  const dependencySource: AlertSource | null = isUsable(sources.dependabot) ? "dependabot" : isUsable(sources.osv) ? "osv" : null;
-  return alerts.filter((alert) => {
-    if (severityOf(alert) === null) return false;
-    if (alert.source === "dependabot" || alert.source === "osv") return alert.source === dependencySource;
-    return isUsable(sources[alert.source]);
-  });
+  const used = usedSources(sources);
+  return alerts.filter((alert) => severityOf(alert) !== null && used[alert.source]);
 }
 
 /** The graded alerts that are open now. */
@@ -189,9 +185,11 @@ export function supplyChainFound(record: SupplyChainRecord, owner: string, postu
 
 export interface BranchState {
   /**
-   * True when the host answered whether the deploy branch is protected: classic protection was read, or a rule is in
-   * force. When the branch endpoint failed and rulesets answered with nothing, the branch is not read, since an empty
-   * answer from rulesets alone cannot show that nothing protects it.
+   * True when it is known whether anything protects the deploy branch: some protection or rule is in force, or the
+   * branch's own protected flag was read and so were the rulesets (`detail` is not `none`). A branch whose flag says
+   * unprotected is not read while the rulesets are unknown, since a ruleset could still protect it; nor is one whose
+   * flag could not be read and whose rulesets hold nothing, since an empty answer from rulesets alone cannot show that
+   * nothing protects it.
    */
   read: boolean;
   /** Read, and protected by neither classic protection nor a ruleset. */
@@ -207,7 +205,7 @@ export function branchState(posture: RepoPosture | null): BranchState {
   const { branch } = posture;
   const { requiredApprovals, ...flags } = branch.rules;
   const enforced = branch.protected === true || (requiredApprovals ?? 0) > 0 || Object.values(flags).some((v) => v === true);
-  const read = branch.protected !== null || enforced;
+  const read = enforced || (branch.protected !== null && branch.detail !== "none");
   return {
     read,
     unprotected: read && !enforced,
@@ -379,12 +377,8 @@ export function unmeasuredOf(input: {
   return unmeasured;
 }
 
-export interface GradedSecurity {
-  grade: SecurityGrade | null;
-  /** The evidence behind the grade, with `limits` set on the check behind each part. */
-  checks: SecurityCheck[];
-  gradeMissing: SecurityGradeMissing | null;
-}
+/** A grade or why there is none, and the evidence behind it, with `limits` set on the check behind each part. */
+export type GradedSecurity = SecurityGradeOutcome & { checks: SecurityCheck[] };
 
 /**
  * Grades the facts. `cleared` names checks to treat as found nothing, which is how `raisedBand` asks what the grade

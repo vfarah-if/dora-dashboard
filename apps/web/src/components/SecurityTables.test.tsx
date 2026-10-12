@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { copy } from "../copy";
@@ -181,8 +181,8 @@ describe("OpenAlertTiles", () => {
 
   it("congratulates when nothing is open, and says some sources could not be read when that is so", () => {
     const empty = securityReport({
+      openAlertTotal: 0,
       open: {
-        total: 0,
         bySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
         bySource: { dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 },
         pastFix: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
@@ -282,6 +282,13 @@ describe("AlertsTable", () => {
     expect(within(second).getByText("SQL injection")).toBeInTheDocument();
   });
 
+  it("says where an alert is without a package name or manifest, never printing null", () => {
+    const where = { kind: "package" as const, ecosystem: null, name: null, version: null, manifestPath: null };
+    show(securityReport({ openAlerts: [securityAlert({ where })] }));
+    expect(within(bodyRows()[0]!).getByText("A package GitHub did not name")).toBeInTheDocument();
+    expect(bodyRows()[0]).not.toHaveTextContent("null");
+  });
+
   it("shows a title as plain text when its link is not a web address", () => {
     show(securityReport({ openAlerts: [securityAlert({ url: "javascript:alert(1)", title: "Trap" })] }));
     expect(screen.getByText("Trap")).toBeInTheDocument();
@@ -323,6 +330,18 @@ describe("AlertsTable", () => {
     show(securityReport(), "?source=osv");
     expect(screen.getByText(copy.security.alerts.none)).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("says the chosen source is not among the worst alerts, rather than that it has none, when the list is cut", () => {
+    const base = securityReport();
+    show(
+      securityReport({ openAlertTotal: 140, open: { ...base.open, bySource: { ...base.open.bySource, secret_scanning: 12 } } }),
+      "?source=secret_scanning",
+    );
+    expect(screen.getByRole("option", { name: "Secret scanning (12)" })).toBeInTheDocument();
+    expect(screen.getByText("Showing the 2 worst of 140 open alerts.")).toBeInTheDocument();
+    expect(screen.getByText(copy.security.alerts.noneInWorst("Secret scanning", 2))).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.alerts.none)).not.toBeInTheDocument();
   });
 
   it("notes when the list is cut to the worst alerts", () => {
@@ -402,7 +421,7 @@ describe("DependencyTable", () => {
     const words = within(row!).getByText(/left-pad comes in through another package/);
     expect(words.tagName).toBe("SPAN");
     expect(words.closest("code")).toBeNull();
-    expect(row!.querySelector(".inline-command")).toBeNull();
+    expect(within(row!).queryByRole("code")).not.toBeInTheDocument();
     expect(within(row!.querySelector("th")!).getByText(copy.security.upgrades.relationship.transitive)).toBeInTheDocument();
   });
 
@@ -419,8 +438,29 @@ describe("DependencyTable", () => {
     const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("Set left-pad==1.3.1 in requirements.txt");
     expect(rows[1]).toHaveTextContent("Raise commons-io to 1.3.1 in your build file");
-    expect(rows[0]!.querySelector(".inline-command")).toBeNull();
-    expect(rows[1]!.querySelector(".inline-command")).toBeNull();
+    expect(within(rows[0]!).queryByRole("code")).not.toBeInTheDocument();
+    expect(within(rows[1]!).queryByRole("code")).not.toBeInTheDocument();
+  });
+
+  it("says a package the host did not name was not named, with no ecosystem or file, and offers no command", () => {
+    const [root] = dependencyGroups;
+    render(<DependencyTable groups={[{ ...root!, name: null, ecosystem: null, manifestPath: null }]} />);
+    const [row] = within(screen.getByRole("table")).getAllByRole("row").slice(1);
+    expect(within(row!).getByText(copy.security.upgrades.unnamed)).toBeInTheDocument();
+    expect(within(row!).getByText(copy.security.upgrades.noManifest)).toBeInTheDocument();
+    expect(within(row!).getByText(copy.security.upgrades.noCommandUnnamed)).toBeInTheDocument();
+    expect(within(row!).queryByRole("code")).not.toBeInTheDocument();
+    expect(row).not.toHaveTextContent("null");
+  });
+
+  it("draws two unnamed packages as two rows without a duplicate key", () => {
+    const [root] = dependencyGroups;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const unnamed = { ...root!, name: null, ecosystem: null, manifestPath: null };
+    render(<DependencyTable groups={[unnamed, unnamed]} />);
+    expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(3);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("lists the different fixes when no single upgrade covers every alert", () => {

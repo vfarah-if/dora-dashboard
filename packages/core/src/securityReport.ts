@@ -1,7 +1,7 @@
 import { instant, rangeOf, sinceCreated, type RangeOptions } from "./delivery.js";
 import { classifyIssue } from "./issueLabels.js";
 import { isUpdateBot } from "./pullRequests.js";
-import { cwesOf, epssOf, isLikelyExploited, severityOf } from "./securityAlerts.js";
+import { cwesOf, epssOf, isLikelyExploited, lastGoodRead, severityOf, usedSources } from "./securityAlerts.js";
 import { STALE_UPDATE_DAYS, compareAlerts, groupDependencies, securityPlan } from "./securityAdvice.js";
 import {
   fixWithinDays,
@@ -20,10 +20,12 @@ import {
   SEVERITIES,
   type AlertSource,
   type AlertWhere,
+  type CloseReason,
   type DependencyUpdates,
+  type HeldPosture,
+  type ReadFailure,
   type RepoPosture,
-  type ScorecardResult,
-  type ScorecardStatus,
+  type ScorecardState,
   type SecurityAlert,
   type SecurityAlertRef,
   type SecurityIssues,
@@ -54,6 +56,7 @@ export const WEAKNESS_LIMIT = 10;
 
 /** The limits the grade and the advice use, gathered so the page never repeats a number. */
 export const SECURITY_THRESHOLDS: SecurityThresholds = {
+  fixWithinDays: FIX_WITHIN_DAYS,
   staleUpdateDays: STALE_UPDATE_DAYS,
   likelyExploitedEpss: LIKELY_EXPLOITED_EPSS,
   lowAlertAdviceDays: FIX_WITHIN_DAYS.low,
@@ -66,15 +69,18 @@ export interface SecurityInput {
   supplyChain: SupplyChainRecord | null;
   /** Why there is no supply chain record: code analysis is off, or it has not been read yet. */
   supplyChainMissing: "analysis_off" | "not_read" | null;
+  /** Set when the latest inspection of the clone failed; `supplyChain`, if any, is from an earlier one. */
+  supplyChainFailure: ReadFailure | null;
   pullRequests: readonly PullRequest[];
   settingsUrl: string;
-  /** Null until the repository's posture has been read. */
-  posture: RepoPosture | null;
-  postureReadAt: string | null;
-  /** A neutral message when the last posture read failed, else null. */
-  postureError: string | null;
-  scorecard: ScorecardResult | null;
-  scorecardStatus: ScorecardStatus;
+  /** The posture last read successfully, with when; null until one has been. */
+  posture: HeldPosture | null;
+  /**
+   * Set when the latest posture read failed, with the failure's own scrubbed message or a neutral one; `posture`, if
+   * any, is from an earlier read.
+   */
+  postureFailure: ReadFailure | null;
+  scorecard: ScorecardState;
   /** The repository's stored issues, or null when it has none stored (the issue crawl is off or has not run). */
   issues: readonly RepoIssue[] | null;
   /** The repository's own label rules, which decide which issues are security issues. */
@@ -243,6 +249,7 @@ function securityIssues(
 
 export function securityReport(input: SecurityInput, options: RangeOptions): SecurityReport {
   const { repo, sources } = input;
+  const posture = input.posture?.value ?? null;
   const now = instant(options.now);
   const graded = gradedAlerts(input.alerts, sources);
   // All time starts at the earliest graded alert or pull request, because dependency updates read
@@ -258,7 +265,7 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     sources,
     supplyChain: input.supplyChain,
     supplyChainMissing: input.supplyChainMissing,
-    posture: input.posture,
+    posture,
   };
   const result = gradeSecurity(facts);
   const staleUpdates = input.pullRequests.filter(
@@ -326,9 +333,11 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     };
   });
   const hours = (alerts: readonly SecurityAlert[]) => alerts.map((a) => sinceCreated(a, a.closedAt!));
-  const reasons = new Map<string, number>();
-  for (const alert of dismissed)
-    reasons.set(alert.closeReason ?? "unspecified", (reasons.get(alert.closeReason ?? "unspecified") ?? 0) + 1);
+  const reasons = new Map<CloseReason | "unspecified", number>();
+  for (const alert of dismissed) {
+    const reason = alert.closeReason ?? "unspecified";
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+  }
 
   const weaknesses = new Map<string, { open: number; fixedInRange: number }>();
   for (const alert of graded) {
@@ -347,8 +356,6 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     repo: { id: repo.id, owner: repo.owner, name: repo.name, lastCrawledAt: repo.lastCrawledAt },
     range: { from: range.from, to: range.to },
     gradedAt: options.now,
-    fixWithinDays: FIX_WITHIN_DAYS,
-    likelyExploitedEpss: LIKELY_EXPLOITED_EPSS,
     thresholds: SECURITY_THRESHOLDS,
     settingsUrl: input.settingsUrl,
     sources,
@@ -361,19 +368,18 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
           workflowsUnread: record.facts.workflowsUnread,
           dockerfilesUnread: record.facts.dockerfilesUnread,
           dockerfilesUnreadTotal: record.facts.dockerfilesUnreadTotal,
-          lines: supplyChainLines(record, supplyChainFound(record, repo.owner, input.posture), input.posture),
+          lines: supplyChainLines(record, supplyChainFound(record, repo.owner, posture), posture),
         }
       : { status: "none", reason: input.supplyChainMissing ?? "not_read" },
+    supplyChainFailure: input.supplyChainFailure,
     ecosystems: record?.facts.ecosystems ?? [],
     posture: input.posture,
-    postureReadAt: input.postureReadAt,
-    postureError: input.postureError,
+    postureFailure: input.postureFailure,
     dependabotVersionUpdates: sources.dependabot.status === "off" ? (record?.facts.updateConfig ?? null) : null,
-    grade: result.grade,
-    gradeMissing: result.gradeMissing,
+    ...(result.grade === null ? { grade: null, gradeMissing: result.gradeMissing } : { grade: result.grade, gradeMissing: null }),
     checks: result.checks,
     raiseGrade: to === null ? null : { to, actions: onPath },
-    open: { total: used.length, bySeverity, bySource, pastFix },
+    open: { bySeverity, bySource, pastFix },
     likelyExploitedOpen: used.filter((u) => isLikelyExploited(u.alert)).length,
     weekly,
     timeToFix: summarise(hours(fixed)),
@@ -401,41 +407,53 @@ export function securityReport(input: SecurityInput, options: RangeOptions): Sec
     dependencyUpdates: dependencyUpdates(input.pullRequests, inRange, now),
     securityIssues: securityIssues(input.issues, input.issueLabels, inRange, now),
     scorecard: input.scorecard,
-    scorecardStatus: input.scorecardStatus,
     actions,
   };
 }
 
 /** The list page's row, projected from the report so the two can never disagree. */
 export function securitySummary(report: SecurityReport, crawlStatus: CrawlStatus): SecuritySummary {
-  const readAts = ALERT_SOURCES.flatMap((source) =>
-    report.sources[source].readAt === null ? [] : [report.sources[source].readAt],
-  );
-  return {
+  const used = usedSources(report.sources);
+  // Only a source whose alerts are in use can say when the figures were read.
+  const readAts = ALERT_SOURCES.flatMap((source) => {
+    const read = used[source] ? lastGoodRead(report.sources[source]) : null;
+    return read === null ? [] : [read.readAt];
+  });
+  const { scorecard } = report;
+  const fields: Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing"> = {
     repo: { ...report.repo, crawlStatus },
-    band: report.grade?.overall.band ?? null,
-    limitedBy: report.grade ? { part: report.grade.overall.part, check: report.grade.overall.check } : null,
-    gradeMissing: report.gradeMissing,
     open: report.open.bySeverity,
     pastFix: Object.values(report.open.pastFix).reduce((total, n) => total + n, 0),
     likelyExploited: report.likelyExploitedOpen,
     actions: report.actions.filter((a) => a.band !== null).length,
     raiseGrade: report.raiseGrade,
-    read: ALERT_SOURCES.some((source) => report.sources[source].status !== "not_read"),
+    read: ALERT_SOURCES.some((source) => used[source]),
     dependabotVersionUpdates: report.dependabotVersionUpdates,
     unmeasured: unmeasuredOf({
       sources: report.sources,
       hasSupplyChain: report.supplyChain.status === "ok",
-      posture: report.posture,
+      posture: report.posture?.value ?? null,
     }),
     sources: Object.fromEntries(
       ALERT_SOURCES.map((source) => [source, report.sources[source].status]),
     ) as SecuritySummary["sources"],
+    used,
     supplyChain: report.supplyChain.status === "ok" ? "ok" : report.supplyChain.reason,
     readAt: readAts.length === 0 ? null : readAts.reduce((latest, at) => (instant(at) > instant(latest) ? at : latest)),
-    failed: ALERT_SOURCES.some((source) => report.sources[source].status === "error"),
-    scorecard: report.scorecard?.score ?? null,
+    failed:
+      ALERT_SOURCES.some((source) => report.sources[source].status === "error") ||
+      report.postureFailure !== null ||
+      report.supplyChainFailure !== null,
+    scorecard:
+      scorecard.status === "ok"
+        ? scorecard.result.score
+        : scorecard.status === "error"
+          ? (scorecard.lastGood?.score ?? null)
+          : null,
     thresholds: report.thresholds,
     topAction: report.actions[0] ?? null,
   };
+  if (report.grade === null) return { ...fields, band: null, limitedBy: null, gradeMissing: report.gradeMissing };
+  const { overall } = report.grade;
+  return { ...fields, band: overall.band, limitedBy: { part: overall.part, check: overall.check }, gradeMissing: null };
 }

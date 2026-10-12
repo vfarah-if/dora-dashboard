@@ -1,14 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { SourceState } from "@dora-dashboard/core";
+import type { SourceOk } from "@dora-dashboard/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotFoundError, ValidationError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
-import {
-  SecurityReportService,
-  describeSecurity,
-  githubSettingsUrl,
-  type SecurityReportOptions,
-} from "../src/services/security-report-service.js";
+import { SecurityReportService, describeSecurity, type SecurityReportOptions } from "../src/services/security-report-service.js";
 import { noopLogger } from "../src/interfaces/logger.js";
 import { SecurityCrawlService } from "../src/services/security-crawl-service.js";
 import {
@@ -25,13 +20,12 @@ import {
 const NOW = new Date("2026-09-29T10:00:00.000Z");
 const HOUR = 3_600_000;
 
-const okState = (): SourceState => ({
+const okState = (): SourceOk => ({
   status: "ok",
-  reason: null,
   readAt: "2026-09-29T09:00:00.000Z",
   attemptedAt: "2026-09-29T09:00:00.000Z",
   truncated: false,
-  error: null,
+  skipped: 0,
 });
 const raw = (store: SqliteRepoStore) => (store as unknown as { db: DatabaseSync }).db;
 
@@ -45,7 +39,7 @@ describe("the security report service", () => {
   const repoWith = (name: string, alerts: ReturnType<typeof dependabotAlert>[] = []) => {
     const id = store.addRepo("acme", name, [], "main").id;
     raw(store).prepare("UPDATE repos SET last_crawled_at = '2026-09-29T09:00:00.000Z' WHERE id = ?").run(id);
-    store.saveSecurityAlerts(id, "dependabot", alerts, true);
+    store.saveSecurityAlerts(id, "dependabot", alerts, "replace");
     store.setSourceState(id, "dependabot", okState());
     return id;
   };
@@ -53,7 +47,11 @@ describe("the security report service", () => {
   beforeEach(() => {
     store = new SqliteRepoStore(":memory:");
     clock = NOW;
-    options = { codeAnalysis: true, scorecardLookup: false };
+    options = {
+      codeAnalysis: true,
+      scorecardLookup: false,
+      settingsUrl: (owner, name) => `https://host.example.test/${owner}/${name}/settings`,
+    };
   });
 
   describe("report", () => {
@@ -88,7 +86,7 @@ describe("the security report service", () => {
       expect(report.repo).toMatchObject({ id, owner: "acme", name: "widgets" });
       expect(report.range).toEqual({ from: "2026-09-01", to: "2026-09-28" });
       expect(report.gradedAt).toBe(NOW.toISOString());
-      expect(report.open.total).toBe(1);
+      expect(report.openAlertTotal).toBe(1);
       expect(report.open.bySeverity.high).toBe(1);
       expect(report.fixedInRange).toBe(1);
       // Nine days old and a high alert has 30 days, so the repository is graded high on the vulnerabilities.
@@ -104,7 +102,7 @@ describe("the security report service", () => {
       expect(report.gradeMissing).toBe("not_crawled");
       expect(report.sources.dependabot.status).toBe("not_read");
       expect(report.posture).toBeNull();
-      expect(report.scorecardStatus).toBe("off");
+      expect(report.scorecard).toEqual({ status: "off" });
     });
 
     it("says why there is no supply chain record, and shows a record whenever one is held", () => {
@@ -118,13 +116,12 @@ describe("the security report service", () => {
       expect(service().report(id).supplyChain).toMatchObject({ status: "ok", workflowsRead: 2 });
     });
 
-    it("uses the GitHub settings page by default and the alert source's when it gives one", () => {
+    it("takes the settings page from the function it is given, and names no host of its own", () => {
       const id = repoWith("widgets");
-      expect(service().report(id).settingsUrl).toBe("https://github.com/acme/widgets/settings/security_analysis");
-      expect(githubSettingsUrl("a b", "c")).toBe("https://github.com/a%20b/c/settings/security_analysis");
+      expect(service().report(id).settingsUrl).toBe("https://host.example.test/acme/widgets/settings");
 
-      options = { ...options, settingsUrl: (owner, name) => `https://example.test/${owner}/${name}` };
-      expect(service().report(id).settingsUrl).toBe("https://example.test/acme/widgets");
+      options = { ...options, settingsUrl: () => "" };
+      expect(service().report(id).settingsUrl).toBe("");
     });
 
     it("reads the posture and its time, the pull requests and the stored issues with the repository's label rules", () => {
@@ -144,34 +141,39 @@ describe("the security report service", () => {
       store.upsertIssues(id, [
         issue({ number: 1, state: "open", labels: ["security"] }),
         issue({ number: 2, state: "open", labels: ["vuln"] }),
+        issue({ number: 3, state: "open", labels: ["vuln"] }),
+        issue({ number: 4, state: "open", labels: ["bug"] }),
       ]);
 
       const report = service().report(id);
 
-      expect(report.posture?.visibility).toBe("public");
-      expect(report.postureReadAt).toBe("2026-09-29T08:00:00.000Z");
+      expect(report.posture).toEqual({ value: repoPosture({ visibility: "public" }), readAt: "2026-09-29T08:00:00.000Z" });
       expect(report.dependencyUpdates.openNow).toBe(1);
+      // By default only issue 1 carries a label that marks a security issue.
       expect(report.securityIssues?.open).toBe(1);
 
-      // The repository's own rules decide which issues are security issues.
+      // The repository's own rules decide which issues are security issues: now issues 2 and 3, and no longer issue 1.
       store.setIssueLabels(id, { kinds: { security: ["vuln"] } });
-      expect(service().report(id).securityIssues?.open).toBe(1);
-      expect(service().report(id).securityIssues?.open).toBe(1);
+      expect(service().report(id).securityIssues?.open).toBe(2);
+
+      // Rules held for another repository do not apply to this one.
+      const other = repoWith("gadgets");
+      store.upsertIssues(other, [issue({ number: 1, state: "open", labels: ["vuln"] })]);
+      expect(service().report(other).securityIssues?.open).toBe(0);
     });
 
-    it("carries the failure of the last posture read, and drops it after a good one", () => {
+    it("carries the failure of the last posture read with its time, and drops it after a good one", () => {
       const id = repoWith("widgets");
-      expect(service().report(id).postureError).toBeNull();
+      expect(service().report(id).postureFailure).toBeNull();
 
       store.savePosture(id, repoPosture({ visibility: "public" }), "2026-09-29T08:00:00.000Z");
       store.failPosture(id, "GitHub answered 500", "2026-09-29T09:00:00.000Z");
       const failed = service().report(id);
-      expect(failed.postureError).toBe("GitHub answered 500");
-      expect(failed.postureReadAt).toBe("2026-09-29T08:00:00.000Z");
-      expect(failed.posture?.visibility).toBe("public");
+      expect(failed.postureFailure).toEqual({ message: "GitHub answered 500", attemptedAt: "2026-09-29T09:00:00.000Z" });
+      expect(failed.posture).toEqual({ value: repoPosture({ visibility: "public" }), readAt: "2026-09-29T08:00:00.000Z" });
 
       store.savePosture(id, repoPosture(), "2026-09-29T09:30:00.000Z");
-      expect(service().report(id).postureError).toBeNull();
+      expect(service().report(id).postureFailure).toBeNull();
     });
 
     it("tells the person about a failed first posture read even though there is no posture", () => {
@@ -180,8 +182,25 @@ describe("the security report service", () => {
 
       const report = service().report(id);
 
-      expect(report.postureError).toBe("down");
+      expect(report.postureFailure).toEqual({ message: "down", attemptedAt: "2026-09-29T09:00:00.000Z" });
       expect(report.posture).toBeNull();
+    });
+
+    it("carries the failure of the last clone inspection beside the facts it leaves alone, and drops it after a good one", () => {
+      const id = repoWith("widgets");
+      store.saveSupplyChain(id, supplyChainRecord({ facts: supplyChainFacts({ workflowsRead: 3 }) }), []);
+      expect(service().report(id).supplyChainFailure).toBeNull();
+
+      store.failSupplyChain(id, "The repository could not be cloned", "2026-09-29T09:00:00.000Z");
+      const failed = service().report(id);
+      expect(failed.supplyChainFailure).toEqual({
+        message: "The repository could not be cloned",
+        attemptedAt: "2026-09-29T09:00:00.000Z",
+      });
+      expect(failed.supplyChain).toMatchObject({ status: "ok", workflowsRead: 3 });
+
+      store.saveSupplyChain(id, supplyChainRecord(), []);
+      expect(service().report(id).supplyChainFailure).toBeNull();
     });
 
     describe("a source this credential cannot see", () => {
@@ -212,71 +231,89 @@ describe("the security report service", () => {
     });
 
     describe("the Scorecard", () => {
-      const status = (id: number) => {
-        const { scorecardStatus, scorecard } = service().report(id);
-        return { scorecardStatus, score: scorecard?.score ?? null };
-      };
+      const state = (id: number) => service().report(id).scorecard;
+      const wired = () => (options = { ...options, scorecardLookup: true });
+      const isPublic = (id: number) => store.savePosture(id, repoPosture({ visibility: "public" }), "t");
 
       it("is off unless a source is wired, even when a score is stored", () => {
         const id = repoWith("widgets");
-        store.savePosture(id, repoPosture({ visibility: "public" }), "t");
+        isPublic(id);
         store.saveScorecard(id, "t", scorecardResult());
-        expect(status(id)).toEqual({ scorecardStatus: "off", score: null });
+        expect(state(id)).toEqual({ status: "off" });
       });
 
       it("shows a stored score for a public repository", () => {
-        options = { ...options, scorecardLookup: true };
+        wired();
         const id = repoWith("widgets");
-        store.savePosture(id, repoPosture({ visibility: "public" }), "t");
+        isPublic(id);
         store.saveScorecard(id, "t", scorecardResult({ score: 8.4 }));
-        expect(status(id)).toEqual({ scorecardStatus: "ok", score: 8.4 });
+        expect(state(id)).toEqual({ status: "ok", result: scorecardResult({ score: 8.4 }) });
       });
 
       it("is not public for a private or internal repository, and never shows a stored score", () => {
-        options = { ...options, scorecardLookup: true };
+        wired();
         const id = repoWith("widgets");
         store.saveScorecard(id, "t", scorecardResult());
         for (const visibility of ["private", "internal"] as const) {
           store.savePosture(id, repoPosture({ visibility }), "t");
-          expect(status(id)).toEqual({ scorecardStatus: "not_public", score: null });
+          expect(state(id)).toEqual({ status: "not_public" });
         }
       });
 
       it("is not public, and shows no stored score, while the visibility is unread", () => {
-        options = { ...options, scorecardLookup: true };
+        wired();
         const id = repoWith("widgets");
         store.saveScorecard(id, "t", scorecardResult({ score: 9 }));
 
         // No posture was ever read.
-        expect(status(id)).toEqual({ scorecardStatus: "not_public", score: null });
+        expect(state(id)).toEqual({ status: "not_public" });
 
         // A posture that was read but could not say (a null visibility) is treated the same way.
         store.savePosture(id, repoPosture({ visibility: null }), "t");
-        expect(status(id)).toEqual({ scorecardStatus: "not_public", score: null });
+        expect(state(id)).toEqual({ status: "not_public" });
 
-        store.savePosture(id, repoPosture({ visibility: "public" }), "t2");
-        expect(status(id)).toEqual({ scorecardStatus: "ok", score: 9 });
+        isPublic(id);
+        expect(state(id)).toEqual({ status: "ok", result: scorecardResult({ score: 9 }) });
       });
 
-      it("is not scanned when asked about and not found, or not yet read", () => {
-        options = { ...options, scorecardLookup: true };
+      it("is not read for a public repository nothing has been asked about yet, as when the lookup was just switched on", () => {
+        wired();
         const id = repoWith("widgets");
-        store.savePosture(id, repoPosture({ visibility: "public" }), "t");
-        expect(status(id)).toEqual({ scorecardStatus: "not_scanned", score: null });
+        isPublic(id);
+        expect(state(id)).toEqual({ status: "not_read" });
+      });
+
+      it("is not scanned only when it was asked about and the project was not found", () => {
+        wired();
+        const id = repoWith("widgets");
+        isPublic(id);
         store.saveScorecard(id, "t", null);
-        expect(status(id)).toEqual({ scorecardStatus: "not_scanned", score: null });
+        expect(state(id)).toEqual({ status: "not_scanned" });
       });
 
-      it("shows an error until the next good read, with the last good score beside it", () => {
-        options = { ...options, scorecardLookup: true };
+      it("shows an error with its message and time, and the last good score, until the next good read", () => {
+        wired();
         const id = repoWith("widgets");
-        store.savePosture(id, repoPosture({ visibility: "public" }), "t");
+        isPublic(id);
         store.saveScorecard(id, "t", scorecardResult({ score: 6 }));
-        store.failScorecard(id, "down");
-        expect(status(id)).toEqual({ scorecardStatus: "error", score: 6 });
+        store.failScorecard(id, "Scorecard answered 500", "2026-09-29T09:00:00.000Z");
+        expect(state(id)).toEqual({
+          status: "error",
+          message: "Scorecard answered 500",
+          attemptedAt: "2026-09-29T09:00:00.000Z",
+          lastGood: scorecardResult({ score: 6 }),
+        });
 
         store.saveScorecard(id, "t2", scorecardResult({ score: 7 }));
-        expect(status(id)).toEqual({ scorecardStatus: "ok", score: 7 });
+        expect(state(id)).toEqual({ status: "ok", result: scorecardResult({ score: 7 }) });
+      });
+
+      it("shows an error with no earlier score when the first read failed", () => {
+        wired();
+        const id = repoWith("widgets");
+        isPublic(id);
+        store.failScorecard(id, "down", "2026-09-29T09:00:00.000Z");
+        expect(state(id)).toEqual({ status: "error", message: "down", attemptedAt: "2026-09-29T09:00:00.000Z", lastGood: null });
       });
     });
   });
@@ -338,8 +375,11 @@ describe("the security report service", () => {
       const [summary] = svc.summaries();
       const report = svc.report(id);
 
+      // One high alert nine days old, against a 30 day limit: graded high, with one open alert to upgrade and nothing else.
+      expect(summary).toMatchObject({ band: "high", pastFix: 0, open: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0 } });
+      expect(report.actions.map((a) => [a.kind, a.band])).toEqual([["upgrade_dependency", "high"]]);
+      expect(summary!.actions).toBe(1);
       expect(summary).toMatchObject({ band: report.grade?.overall.band, open: report.open.bySeverity });
-      expect(summary!.actions).toBe(report.actions.filter((a) => a.band !== null).length);
     });
 
     describe("memoising", () => {
@@ -366,15 +406,17 @@ describe("the security report service", () => {
         expect(alertReads).toHaveBeenCalledTimes(2);
       });
 
-      it("rebuilds when a source is read again, and when a posture or a scorecard is stored", () => {
+      it("rebuilds when a source is read again, and when a posture, a scorecard or a failed inspection is stored", () => {
         svc.summaries();
         store.setSourceState(id, "dependabot", { ...okState(), attemptedAt: "2026-09-29T09:30:00.000Z" });
         svc.summaries();
         store.savePosture(id, repoPosture(), "2026-09-29T09:31:00.000Z");
         svc.summaries();
-        store.failScorecard(id, "down");
+        store.failScorecard(id, "down", "2026-09-29T09:32:00.000Z");
         svc.summaries();
-        expect(alertReads).toHaveBeenCalledTimes(4);
+        store.failSupplyChain(id, "down", "2026-09-29T09:33:00.000Z");
+        svc.summaries();
+        expect(alertReads).toHaveBeenCalledTimes(5);
       });
 
       it("rebuilds in a new UTC hour, so alerts age into being past their fix-by date", () => {

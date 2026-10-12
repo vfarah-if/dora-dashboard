@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  AlertOf,
   AlertSource,
   BoardAccess,
   BoardColumn,
@@ -10,9 +11,13 @@ import type {
   CoverageSnapshot,
   CrawlStatus,
   DeployRun,
+  HeldPosture,
   IssueLabelRules,
+  IssueLabelState,
+  ReviewExemptionState,
   LockedPackage,
   PullRequest,
+  ReadFailure,
   Repo,
   RepoIssue,
   RepoPosture,
@@ -28,8 +33,8 @@ import type {
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
-import type { IssueState, RepoCounts, ReviewExemptionState, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
-import type { SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
+import type { SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
 import { SECURITY_SCHEMA, SecurityTables, migrateSecurityTables } from "./security-tables.js";
 
 /** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
@@ -230,19 +235,14 @@ function isRuleGroup(value: unknown, known: ReadonlySet<string>): boolean {
  * with `unreadable` set, which lets the person be told. The repository id is logged so the row can be found, once per
  * repository in `warned`, because the list is polled.
  */
-function labelsOf(
-  saved: string | null,
-  repoId: number,
-  log: Logger,
-  warned: Set<number>,
-): { rules: IssueLabelRules | null; unreadable: boolean } {
-  if (saved === null) return { rules: null, unreadable: false };
+function labelsOf(saved: string | null, repoId: number, log: Logger, warned: Set<number>): IssueLabelState {
+  if (saved === null) return { kind: "defaults" };
   const refuse = (context: Record<string, unknown>, message: string) => {
     if (!warned.has(repoId)) {
       warned.add(repoId);
       log.warn({ ...context, repoId }, message);
     }
-    return { rules: null, unreadable: true };
+    return { kind: "unreadable" } as const;
   };
   let rules: unknown;
   try {
@@ -257,23 +257,23 @@ function labelsOf(
   if (Object.keys(rest).length > 0 || !isRuleGroup(kinds, LABEL_KINDS) || !isRuleGroup(priorities, LABEL_PRIORITIES)) {
     return refuse({}, "saved issue labels do not have the expected shape; using the defaults");
   }
-  return { rules: rules as IssueLabelRules, unreadable: false };
+  return { kind: "override", rules: rules as IssueLabelRules };
 }
 
 const isNames = (value: unknown): value is string[] => Array.isArray(value) && value.every((name) => typeof name === "string");
 
 /**
  * Saved review exemptions (ADR 0036), read as `labelsOf` reads a label override: a value that cannot be used reads back
- * as the defaults with `unreadable` set, and is logged once per repository in `warned`.
+ * as `unreadable`, which the defaults stand in for, and is logged once per repository in `warned`.
  */
 function exemptionsOf(saved: string | null, repoId: number, log: Logger, warned: Set<number>): ReviewExemptionState {
-  if (saved === null) return { rules: null, unreadable: false };
+  if (saved === null) return { kind: "defaults" };
   const refuse = (context: Record<string, unknown>, message: string): ReviewExemptionState => {
     if (!warned.has(repoId)) {
       warned.add(repoId);
       log.warn({ ...context, repoId }, message);
     }
-    return { rules: null, unreadable: true };
+    return { kind: "unreadable" };
   };
   let rules: unknown;
   try {
@@ -288,7 +288,7 @@ function exemptionsOf(saved: string | null, repoId: number, log: Logger, warned:
   if (Object.keys(rest).length > 0 || !isNames(titleWords) || !isNames(labels)) {
     return refuse({}, "saved review exemptions do not have the expected shape; using the defaults");
   }
-  return { rules: { titleWords, labels }, unreadable: false };
+  return { kind: "override", rules: { titleWords, labels } };
 }
 
 const toRepo = (row: RepoRow): Repo => ({
@@ -560,12 +560,10 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
     const row = this.db
       .prepare("SELECT issues_enabled, issue_cursor, issue_labels, issue_error FROM repos WHERE id = ?")
       .get(repoId) as unknown as Pick<RepoRow, "issues_enabled" | "issue_cursor" | "issue_labels" | "issue_error"> | undefined;
-    const { rules, unreadable } = labelsOf(row?.issue_labels ?? null, repoId, this.log, this.warnedLabels);
     return {
       enabled: row?.issues_enabled == null ? null : row.issues_enabled === 1,
       cursor: row?.issue_cursor ?? null,
-      labels: rules,
-      labelsUnreadable: unreadable,
+      labels: labelsOf(row?.issue_labels ?? null, repoId, this.log, this.warnedLabels),
       error: row?.issue_error ?? null,
     };
   }
@@ -826,8 +824,12 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
     return row.n;
   }
 
-  saveSecurityAlerts(repoId: number, source: AlertSource, alerts: readonly SecurityAlert[], complete: boolean): void {
-    this.security.saveSecurityAlerts(repoId, source, alerts, complete);
+  saveSecurityAlerts<S extends AlertSource>(repoId: number, source: S, alerts: readonly AlertOf<S>[], mode: SaveMode): void {
+    this.security.saveSecurityAlerts(repoId, source, alerts, mode);
+  }
+
+  securityAlertsOf<S extends AlertSource>(repoId: number, source: S): AlertOf<S>[] {
+    return this.security.securityAlertsOf(repoId, source);
   }
 
   clearSecurityAlerts(repoId: number, source: AlertSource): void {
@@ -854,6 +856,14 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
     return this.security.supplyChain(repoId);
   }
 
+  failSupplyChain(repoId: number, message: string, attemptedAt: string): void {
+    this.security.failSupplyChain(repoId, message, attemptedAt);
+  }
+
+  supplyChainFailure(repoId: number): ReadFailure | null {
+    return this.security.supplyChainFailure(repoId);
+  }
+
   lockedPackages(repoId: number): LockedPackage[] {
     return this.security.lockedPackages(repoId);
   }
@@ -862,15 +872,15 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
     this.security.savePosture(repoId, posture, readAt);
   }
 
-  failPosture(repoId: number, error: string, attemptedAt: string): void {
-    this.security.failPosture(repoId, error, attemptedAt);
+  failPosture(repoId: number, message: string, attemptedAt: string): void {
+    this.security.failPosture(repoId, message, attemptedAt);
   }
 
-  postureFailure(repoId: number): { error: string; attemptedAt: string | null } | null {
+  postureFailure(repoId: number): ReadFailure | null {
     return this.security.postureFailure(repoId);
   }
 
-  posture(repoId: number): { posture: RepoPosture; readAt: string } | null {
+  posture(repoId: number): HeldPosture | null {
     return this.security.posture(repoId);
   }
 
@@ -878,8 +888,8 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
     this.security.saveScorecard(repoId, readAt, result);
   }
 
-  failScorecard(repoId: number, error: string): void {
-    this.security.failScorecard(repoId, error);
+  failScorecard(repoId: number, message: string, attemptedAt: string): void {
+    this.security.failScorecard(repoId, message, attemptedAt);
   }
 
   scorecard(repoId: number): StoredScorecard | null {

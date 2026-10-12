@@ -6,7 +6,7 @@
 import { worseSeverity } from "./securityAlerts.js";
 import { compareText } from "./stats.js";
 import { compareVersions } from "./versions.js";
-import type { DependencyAlert, LockedPackage, Severity, Vulnerability } from "./securityTypes.js";
+import type { LockedPackage, LockfileSummary, OsvAlert, Severity, Vulnerability } from "./securityTypes.js";
 
 const lowest = (ids: readonly string[]): string => ids.reduce((a, b) => (b < a ? b : a));
 
@@ -34,38 +34,58 @@ const worst = (severities: readonly Severity[]): Severity => severities.reduce(w
 /** The numeric part of a pre-release such as `2.0.0-beta.1`, or null for anything else. */
 const releaseOf = (version: string): string | null => /^(v?\d+(?:\.\d+)*)[-+]/.exec(version.trim())?.[1] ?? null;
 
+/** The lowest of the versions: by their releases where those compare, then in text order. */
+const lowestVersion = (versions: readonly string[]): string | null =>
+  [...versions].sort(
+    (a, b) => (compareVersions(releaseOf(a) ?? a, releaseOf(b) ?? b) ?? 0) || (compareVersions(a, b) ?? compareText(a, b)),
+  )[0] ?? null;
+
 /**
- * The lowest fixed version above the locked one. A pre-release is below its own release, so for `2.0.0-beta.1` the
- * release `2.0.0` counts as a fix. When the locked version cannot be placed at all, or only pre-release fixes exist,
- * the fixed versions are still offered rather than dropped, which would advise replacing a package that can be
- * upgraded: the lowest that compare with each other, else the first in text order.
+ * The lowest fixed version above the locked one, never one below it. A pre-release is below its own release, so for
+ * `2.0.0-beta.1` the release `2.0.0` counts as a fix. When the locked version is a pre-release and no release fixes it,
+ * a pre-release fix whose release is at or above the locked one's is offered, such as `1.0.0-rc.1` for `1.0.0-beta`,
+ * since dropping it would advise replacing a package that can be upgraded. When the locked version is a plain release,
+ * a pre-release fix is not offered, because the two do not compare. When the locked version cannot be placed at all,
+ * the lowest fix is offered, by release and then in text order.
  */
 function patchedAbove(locked: string, fixed: readonly string[]): string | null {
   const exact = compareVersions(locked, locked) !== null;
   const base = exact ? locked : releaseOf(locked);
+  if (base === null) return lowestVersion(fixed);
   let best: string | null = null;
-  if (base !== null) {
-    for (const version of fixed) {
-      const order = compareVersions(version, base);
-      if (order === null || order < (exact ? 1 : 0)) continue;
-      if (best === null || (compareVersions(version, best) ?? 0) < 0) best = version;
-    }
+  for (const version of fixed) {
+    const order = compareVersions(version, base);
+    if (order === null || order < (exact ? 1 : 0)) continue;
+    if (best === null || (compareVersions(version, best) ?? 0) < 0) best = version;
   }
-  if (best !== null || exact || fixed.length === 0) return best;
-  return [...fixed].sort((a, b) => compareVersions(a, b) ?? compareText(a, b))[0] ?? null;
+  if (best !== null || exact) return best;
+  return lowestVersion(
+    fixed.filter((version) => {
+      const release = releaseOf(version);
+      return release !== null && (compareVersions(release, base) ?? -1) >= 0;
+    }),
+  );
 }
 
 /**
- * One alert per advisory per package. `results[i]` holds the vulnerabilities found for `packages[i]`. Each advisory and
- * its aliases form one finding, named by its GHSA id when there is one and otherwise by the lowest id. The same
- * advisory on two versions of one package in one lockfile is a single alert, since the key does not name the version.
+ * The identity of a locked package in one lockfile, as OSV alerts name it: the version is left out, because an alert's
+ * key does not name it either. Used to say which packages a lookup answered.
+ */
+export const osvPackageKey = (pkg: Pick<LockedPackage, "ecosystem" | "name" | "lockfile">): string =>
+  JSON.stringify([pkg.ecosystem, pkg.name, pkg.lockfile]);
+
+/**
+ * One alert per advisory per package. `results[i]` holds the vulnerabilities found for `packages[i]`, or null when the
+ * package was not answered in full, which yields nothing for it. Each advisory and its aliases form one finding, named
+ * by its GHSA id when there is one and otherwise by the lowest id. The same advisory on two versions of one package in
+ * one lockfile is a single alert, since the key does not name the version.
  */
 export function osvFindings(
   packages: readonly LockedPackage[],
-  results: readonly (readonly Vulnerability[])[],
+  results: readonly (readonly Vulnerability[] | null)[],
   now: string,
-): DependencyAlert[] {
-  const alerts = new Map<string, DependencyAlert>();
+): OsvAlert[] {
+  const alerts = new Map<string, OsvAlert>();
   packages.forEach((pkg, i) => {
     for (const group of groupByAlias(results[i] ?? [])) {
       const ids = [...group.ids];
@@ -109,23 +129,55 @@ export function osvFindings(
   return [...alerts.values()];
 }
 
+/** What one crawl's lookup covered, so `reconcileOsvAlerts` closes only what it could have found again. */
+export interface OsvCoverage {
+  now: string;
+  /** Lockfiles read in full this time: parsed, and not capped (see `isLockfileComplete`). */
+  lockfilesRead: ReadonlySet<string>;
+  /**
+   * Every lockfile in the latest supply chain record, read or not, or null when that record's listing of the clone
+   * stopped short, so no lockfile can be shown to be gone. `presentLockfiles` gives the right value for a record.
+   */
+  lockfilesPresent: ReadonlySet<string> | null;
+  /**
+   * Packages, by `osvPackageKey`, that a lockfile holds but that were not looked up or not answered in full this time:
+   * withheld because their scope may name a private registry, past the lookup's package cap, or cut short by the
+   * database. Their alerts are left as they were.
+   */
+  unanswered: ReadonlySet<string>;
+}
+
+/**
+ * The lockfiles a supply chain record shows to exist, or null when its listing of the clone stopped short. A record
+ * stored before `listingComplete` was added has no such field and is read as cut short, so it never closes an alert
+ * as deleted.
+ */
+export function presentLockfiles(facts: {
+  lockfiles: readonly Pick<LockfileSummary, "path">[];
+  listingComplete?: boolean;
+}): ReadonlySet<string> | null {
+  return facts.listingComplete === true ? new Set(facts.lockfiles.map((lockfile) => lockfile.path)) : null;
+}
+
 /**
  * The full set of OSV alerts after a crawl. A finding seen again keeps the `createdAt` of its first sighting while it
  * stays open. A fixed one that returns is open again with `createdAt` set to the reopen time: an alert has no field for
  * the gap, so keeping the first sighting would make the weekly replay show it open through the weeks it was fixed, and a
  * returning vulnerability starts its fix-by clock again. A stored open alert that is not found is closed as `not_found`
- * when its lockfile no longer exists (deleted or renamed, so nothing can find it again) or when its lockfile was read
- * this time and did not hold it. A lockfile that exists but was not read says nothing, so its alerts are kept.
+ * when its lockfile no longer exists (deleted or renamed, so nothing can find it again), or when its lockfile was read
+ * in full this time and its package was either answered or is no longer in it. A lockfile that exists but was not read
+ * in full says nothing, and nor does a package that was not answered, so their alerts are kept. When the listing of the
+ * clone stopped short, a lockfile it does not hold may still exist, so only a lockfile that was listed and read in full
+ * can close an alert.
  */
-export function reconcileOsvAlerts(
-  stored: readonly DependencyAlert[],
-  found: readonly DependencyAlert[],
-  at: { now: string; lockfilesRead: ReadonlySet<string>; lockfilesPresent: ReadonlySet<string> },
-): DependencyAlert[] {
-  const current = new Map<string, DependencyAlert>();
+export function reconcileOsvAlerts(stored: readonly OsvAlert[], found: readonly OsvAlert[], at: OsvCoverage): OsvAlert[] {
+  const current = new Map<string, OsvAlert>();
   for (const alert of found) if (!current.has(alert.key)) current.set(alert.key, alert);
   const kept = new Set<string>();
-  const result: DependencyAlert[] = [];
+  const result: OsvAlert[] = [];
+  const closes = ({ dependency: { ecosystem, name, manifestPath } }: OsvAlert) =>
+    (at.lockfilesPresent !== null && !at.lockfilesPresent.has(manifestPath)) ||
+    (at.lockfilesRead.has(manifestPath) && !at.unanswered.has(osvPackageKey({ ecosystem, name, lockfile: manifestPath })));
   for (const old of stored) {
     const again = current.get(old.key);
     if (again) {
@@ -138,10 +190,7 @@ export function reconcileOsvAlerts(
         closedAt: null,
         closeReason: null,
       });
-    } else if (
-      old.state === "open" &&
-      (!at.lockfilesPresent.has(old.dependency.manifestPath) || at.lockfilesRead.has(old.dependency.manifestPath))
-    ) {
+    } else if (old.state === "open" && closes(old)) {
       result.push({ ...old, state: "fixed", closedAt: at.now, closeReason: "not_found" });
     } else {
       result.push(old);

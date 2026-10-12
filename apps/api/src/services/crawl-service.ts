@@ -74,8 +74,9 @@ export class CrawlService {
   }
 
   /**
-   * Security is a bonus too. The step stores what it could not read against each source, so a failure that reaches
-   * here is unplanned: it is logged and the crawl finishes. A rejected credential fails the crawl, as for issues.
+   * Security is a bonus too. The step stores what it could not read against each stage, so a failure that reaches here
+   * is one the step could not even record: it is logged as an error and the crawl finishes. A rejected credential fails
+   * the crawl, as for issues.
    */
   private async readSecurity(token: string, repo: CrawledRepo, full: boolean): Promise<void> {
     if (!this.security) return;
@@ -84,7 +85,7 @@ export class CrawlService {
       await this.security.read(token, repo, full);
     } catch (err) {
       if (err instanceof UnauthorisedError) throw err;
-      this.log.warn({ err, repoId: repo.id }, "security step failed, and the crawl went on");
+      this.log.error({ err, repoId: repo.id }, "security step failed, and the crawl went on");
     }
   }
 

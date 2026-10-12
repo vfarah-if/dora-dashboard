@@ -89,7 +89,8 @@ export const securityReportQuery = {
 export const securityListQuery = {
   type: "object",
   additionalProperties: false,
-  properties: { ids: { type: "string", pattern: "^\\d+(,\\d+){0,49}$" } },
+  // Up to nine digits an id, so a longer run never turns into a number that is not finite.
+  properties: { ids: { type: "string", pattern: "^\\d{1,9}(,\\d{1,9}){0,49}$" } },
 } as const;
 
 /** `ids` is optional: leave it out for every repository. */
@@ -188,6 +189,16 @@ const exemptionEntry = {
 } as const;
 
 /**
+ * A title word or phrase is matched as whole words made of letters and digits, so one with neither, such as `---`, would
+ * be saved and listed as active and never match anything. It is refused. An entry of spaces only is dropped by the save.
+ */
+const exemptionTitleWord = {
+  ...exemptionEntry,
+  // Blank entries are still tidied away on save; any other entry must hold a letter or a digit.
+  pattern: "^(?: +|(?=.*[\\p{L}\\p{N}])[^\\u0000-\\u001f\\u007f]+)$",
+} as const;
+
+/**
  * `exemptions: null` returns the repository to the default title words and labels; otherwise both lists are given and
  * replace the defaults. Unknown fields are refused, and `anyOf` is used for the reason `issueLabelsBody` gives.
  */
@@ -204,7 +215,7 @@ export const reviewExemptionsBody = {
           required: ["titleWords", "labels"],
           additionalProperties: false,
           properties: {
-            titleWords: { type: "array", items: exemptionEntry, maxItems: REVIEW_EXEMPTION_LIMITS.titleWords },
+            titleWords: { type: "array", items: exemptionTitleWord, maxItems: REVIEW_EXEMPTION_LIMITS.titleWords },
             labels: { type: "array", items: exemptionEntry, maxItems: REVIEW_EXEMPTION_LIMITS.labels },
           },
         },

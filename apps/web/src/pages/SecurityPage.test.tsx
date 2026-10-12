@@ -1,12 +1,18 @@
+import type { SecurityReport } from "@dora-dashboard/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Link } from "react-router";
 import { SecurityPage } from "./SecurityPage";
-import { mockFetch, renderRoute } from "../test/render";
-import { noSecurity, repo, securityAction, securityReport } from "../test/fixtures";
+import { mockFetch, renderRoute, type MockResponse } from "../test/render";
+import { errorSource, noAccessSource, noSecurity, offSource, repo, securityAction, securityReport } from "../test/fixtures";
 import { copy } from "../copy";
 
-const show = (report: unknown = securityReport(), route = "/repos/1/security", extra: Parameters<typeof mockFetch>[0] = {}) => {
+const show = (
+  report: SecurityReport = securityReport(),
+  route = "/repos/1/security",
+  extra: Parameters<typeof mockFetch>[0] = {},
+) => {
   const fetchMock = mockFetch({
     "GET /api/repos/1/security": { body: report },
     "GET /api/repos": { body: [repo()] },
@@ -163,7 +169,7 @@ describe("SecurityPage", () => {
       ...base,
       sources: {
         ...base.sources,
-        secret_scanning: { ...base.sources.secret_scanning, status: "no_access", reason: "admin_only_or_off", readAt: null },
+        secret_scanning: noAccessSource("admin_only_or_off"),
       },
     });
     const notice = (await screen.findByText(copy.security.page.partlyRead.title)).closest("aside")!;
@@ -175,6 +181,103 @@ describe("SecurityPage", () => {
       "#security-sources",
     );
     expect(document.getElementById("security-sources")).not.toBeNull();
+  });
+
+  describe("a source whose last attempt failed", () => {
+    // Dependabot has failed since 10 February, while code scanning and secret scanning read on 1 March.
+    const stale = () => {
+      const base = securityReport();
+      return securityReport({
+        sources: {
+          ...base.sources,
+          dependabot: errorSource("GitHub answered 502", { readAt: "2026-02-10T08:00:00Z", truncated: false, skipped: 0 }),
+        },
+      });
+    };
+
+    it("warns near the top, naming the source and when it last worked, and links to how each source is read", async () => {
+      show(stale());
+      const notice = (await screen.findByText(copy.security.failedSources.title)).closest("aside")!;
+      expect(notice).toHaveClass("notice-warning");
+      expect(notice).toHaveTextContent("Dependabot alerts, last read on 10 Feb 2026, 08:00");
+      expect(within(notice).getByRole("link", { name: copy.security.failedSources.link })).toHaveAttribute(
+        "href",
+        "#security-sources",
+      );
+      // The grade still stands on the earlier alerts, so the page is not reduced to the part-read notice.
+      expect(screen.queryByText(copy.security.page.partlyRead.title)).not.toBeInTheDocument();
+    });
+
+    it("does not claim a fresh read in the header, giving the oldest read the grade stands on", async () => {
+      show(stale());
+      expect(
+        await screen.findByText(
+          "Showing 1 Jan 2026 to 1 Mar 2026 · Some alerts are older than this, and the oldest was read on 10 Feb 2026, 08:00",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Alerts read on/)).not.toBeInTheDocument();
+    });
+
+    it("names a source that has never read, and a failed branch read, with the stored messages in the sources panel", async () => {
+      show(
+        securityReport({
+          sources: { ...securityReport().sources, secret_scanning: errorSource("GitHub answered 403") },
+          postureFailure: { message: "GitHub answered 502", attemptedAt: "2026-03-02T10:00:00Z" },
+        }),
+      );
+      const notice = (await screen.findByText(copy.security.failedSources.title)).closest("aside")!;
+      // Secret scanning never read, so the unread notice names it and the failure notice does not say it twice.
+      expect(notice).not.toHaveTextContent("secret scanning");
+      expect(screen.getByText(copy.security.page.partlyRead.title).closest("aside")).toHaveTextContent("secret scanning");
+      expect(notice).toHaveTextContent("Branch rules and settings, last read on 1 Mar 2026, 10:03");
+      // The content is there from the first render, so it is not announced as a change.
+      expect(notice).not.toHaveAttribute("role");
+      expect(within(notice).getByRole("link", { name: copy.security.failedSources.link })).toHaveAttribute(
+        "href",
+        "#security-sources",
+      );
+      const panel = screen.getByRole("heading", { level: 2, name: copy.security.sources.title }).closest("section")!;
+      expect(panel).toHaveTextContent('"GitHub answered 502"');
+    });
+  });
+
+  it("shows the refusal notice alone, and not a failed sources warning as well, when every source failed or was refused", async () => {
+    const never = noSecurity().sources;
+    show(
+      noSecurity({
+        sources: {
+          ...never,
+          dependabot: errorSource("down"),
+          code_scanning: noAccessSource(),
+          secret_scanning: noAccessSource(),
+        },
+      }),
+    );
+    expect(await screen.findByText(copy.security.notRead.refused.title)).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.failedSources.title)).not.toBeInTheDocument();
+  });
+
+  it("does not warn about a failure when every source answered", async () => {
+    show();
+    await screen.findByRole("heading", { level: 2, name: copy.security.start.title });
+    expect(screen.queryByText(copy.security.failedSources.title)).not.toBeInTheDocument();
+  });
+
+  it("says what happened, not that nothing has been read yet, when every source was refused", async () => {
+    const refused = noSecurity().sources;
+    show(
+      noSecurity({
+        sources: {
+          dependabot: noAccessSource(),
+          code_scanning: noAccessSource(),
+          secret_scanning: noAccessSource(),
+          osv: refused.osv,
+        },
+      }),
+    );
+    expect(await screen.findByText(copy.security.notRead.refused.title)).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.notRead.title)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.security.upgrades.none)).not.toBeInTheDocument();
   });
 
   it("does not warn when every source that matters was read", async () => {
@@ -268,7 +371,7 @@ describe("SecurityPage", () => {
     const off = (config: boolean) => {
       const base = securityReport();
       return securityReport({
-        sources: { ...base.sources, dependabot: { ...base.sources.dependabot, status: "off", reason: "disabled", readAt: null } },
+        sources: { ...base.sources, dependabot: offSource("disabled") },
         dependabotVersionUpdates: config ? ".github/dependabot.yml" : null,
         actions: [
           securityAction({
@@ -277,9 +380,6 @@ describe("SecurityPage", () => {
             onPath: true,
             severity: null,
             target: null,
-            upgradeTo: null,
-            ecosystem: null,
-            manifestPath: null,
             refs: [],
           }),
         ],
@@ -333,7 +433,6 @@ describe("SecurityPage", () => {
         ...none,
         supplyChain: base.supplyChain,
         posture: base.posture,
-        postureReadAt: base.postureReadAt,
         ecosystems: base.ecosystems,
       };
     };
@@ -354,7 +453,7 @@ describe("SecurityPage", () => {
     });
 
     it("shows only the workflow facts when the branch settings were not read, and only the branch facts when the files were not", async () => {
-      const { unmount } = show({ ...factsOnly(), posture: null, postureReadAt: null });
+      const { unmount } = show({ ...factsOnly(), posture: null });
       await screen.findByText(copy.security.notRead.title);
       expect(headings()).not.toContain("Branch protection and settings");
       expect(headings()).toContain("Workflows and supply chain");
@@ -394,6 +493,34 @@ describe("SecurityPage", () => {
       unmount();
     }
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never shows another repository's report under the next repository's address while that one loads", async () => {
+    const user = userEvent.setup();
+    let release: (response: MockResponse) => void = () => undefined;
+    const gadgets = securityReport({ repo: { id: 2, owner: "acme", name: "gadgets", lastCrawledAt: "2026-03-01T10:00:00Z" } });
+    mockFetch({
+      "GET /api/repos": { body: [repo({ id: 1 }), repo({ id: 2, name: "gadgets" })] },
+      "GET /api/repos/1/security": { body: securityReport() },
+      "GET /api/repos/2/security": () => new Promise<MockResponse>((resolve) => (release = resolve)),
+    });
+    renderRoute(
+      <>
+        <SecurityPage />
+        <Link to="/repos/2/security">Next repository</Link>
+      </>,
+      { path: "/repos/:id/security", route: "/repos/1/security" },
+    );
+    expect(await screen.findByRole("heading", { level: 2, name: copy.security.start.title })).toBeInTheDocument();
+    expect(screen.getByText("acme/widgets", { selector: ".lede" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Next repository" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(copy.security.page.loading);
+    expect(screen.queryByRole("heading", { level: 2, name: copy.security.start.title })).not.toBeInTheDocument();
+    release({ body: gadgets });
+    expect(await screen.findByRole("heading", { level: 2, name: copy.security.start.title })).toBeInTheDocument();
+    expect(screen.getByText("acme/gadgets", { selector: ".lede" })).toBeInTheDocument();
   });
 
   it("reads the report again when a crawl of the repository finishes", async () => {

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { SourceState } from "@dora-dashboard/core";
+import type { SourceOk, SourceState } from "@dora-dashboard/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import {
@@ -19,13 +19,12 @@ import {
 
 const rawDb = (store: SqliteRepoStore) => (store as unknown as { db: DatabaseSync }).db;
 
-const okState = (overrides: Partial<SourceState> = {}): SourceState => ({
+const okState = (overrides: Partial<SourceOk> = {}): SourceState => ({
   status: "ok",
-  reason: null,
   readAt: "2026-09-29T10:00:00.000Z",
   attemptedAt: "2026-09-29T10:00:00.000Z",
   truncated: false,
-  error: null,
+  skipped: 0,
   ...overrides,
 });
 
@@ -40,22 +39,22 @@ describe("security alerts in the store", () => {
 
   it("reads each kind of alert back exactly as it was stored", () => {
     const all = [dependabotAlert({ key: "1" }), codeScanningAlert({ key: "2" }), secretScanningAlert({ key: "3" })];
-    store.saveSecurityAlerts(repoId, "dependabot", [all[0]!], true);
-    store.saveSecurityAlerts(repoId, "code_scanning", [all[1]!], true);
-    store.saveSecurityAlerts(repoId, "secret_scanning", [all[2]!], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [all[0]!], "replace");
+    store.saveSecurityAlerts(repoId, "code_scanning", [all[1]!], "replace");
+    store.saveSecurityAlerts(repoId, "secret_scanning", [all[2]!], "replace");
 
     // Ordered by source, then key.
     expect(store.securityAlerts(repoId)).toEqual([all[1], all[0], all[2]]);
   });
 
   it("replaces an alert by source and key, so the same number under two sources is two alerts", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "high" })], true);
-    store.saveSecurityAlerts(repoId, "osv", [osvAlert({ key: "1" })], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "high" })], "replace");
+    store.saveSecurityAlerts(repoId, "osv", [osvAlert({ key: "1" })], "replace");
     store.saveSecurityAlerts(
       repoId,
       "dependabot",
       [dependabotAlert({ key: "1", severity: "low", state: "fixed", closedAt: "2026-09-05T00:00:00Z" })],
-      true,
+      "replace",
     );
 
     const held = store.securityAlerts(repoId);
@@ -70,39 +69,39 @@ describe("security alerts in the store", () => {
       repoId,
       "dependabot",
       [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" }), dependabotAlert({ key: "3" })],
-      true,
+      "replace",
     );
-    store.saveSecurityAlerts(repoId, "code_scanning", [codeScanningAlert({ key: "1" })], true);
-    store.saveSecurityAlerts(other, "dependabot", [dependabotAlert({ key: "9" })], true);
+    store.saveSecurityAlerts(repoId, "code_scanning", [codeScanningAlert({ key: "1" })], "replace");
+    store.saveSecurityAlerts(other, "dependabot", [dependabotAlert({ key: "9" })], "replace");
 
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "2" })], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "2" })], "replace");
 
     expect(store.securityAlerts(repoId).map((a) => `${a.source}:${a.key}`)).toEqual(["code_scanning:1", "dependabot:2"]);
     expect(store.securityAlerts(other)).toHaveLength(1);
   });
 
   it("keeps the alerts a partial read did not see", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], "replace");
 
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "2", severity: "low" })], false);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "2", severity: "low" })], "merge");
 
     expect(store.securityAlerts(repoId).map((a) => a.key)).toEqual(["1", "2"]);
     expect(store.securityAlerts(repoId)[1]).toMatchObject({ severity: "low" });
   });
 
   it("empties a complete read that found nothing", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert()], true);
-    store.saveSecurityAlerts(repoId, "dependabot", [], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert()], "replace");
+    store.saveSecurityAlerts(repoId, "dependabot", [], "replace");
     expect(store.securityAlerts(repoId)).toEqual([]);
   });
 
   it("saves and prunes in one transaction, so an alert that cannot be saved leaves everything as it was", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], "replace");
     // The second alert is filed under the wrong source, which the store refuses after saving the first.
     const wrong = codeScanningAlert({ key: "5" });
 
     expect(() =>
-      store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "low" }), wrong as never], true),
+      store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "low" }), wrong as never], "replace"),
     ).toThrow("cannot be saved as dependabot");
 
     const held = store.securityAlerts(repoId);
@@ -111,14 +110,14 @@ describe("security alerts in the store", () => {
   });
 
   it("rolls back a prune that fails part way", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], "replace");
     rawDb(store).exec(
       "CREATE TRIGGER stop_deletes BEFORE DELETE ON security_alerts BEGIN SELECT RAISE(ABORT, 'no deleting'); END",
     );
 
-    expect(() => store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "low" })], true)).toThrow(
-      "no deleting",
-    );
+    expect(() =>
+      store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert({ key: "1", severity: "low" })], "replace"),
+    ).toThrow("no deleting");
 
     expect(store.securityAlerts(repoId).map((a) => `${a.key}:${a.source === "dependabot" ? a.severity : ""}`)).toEqual([
       "1:high",
@@ -127,8 +126,8 @@ describe("security alerts in the store", () => {
   });
 
   it("clears one source's alerts and no other's", () => {
-    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert()], true);
-    store.saveSecurityAlerts(repoId, "code_scanning", [codeScanningAlert()], true);
+    store.saveSecurityAlerts(repoId, "dependabot", [dependabotAlert()], "replace");
+    store.saveSecurityAlerts(repoId, "code_scanning", [codeScanningAlert()], "replace");
 
     store.clearSecurityAlerts(repoId, "dependabot");
 
@@ -144,7 +143,7 @@ describe("security alerts in the store", () => {
     };
     const logged = new SqliteRepoStore(":memory:", () => new Date(), log);
     const id = logged.addRepo("acme", "widgets", [], "main").id;
-    logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "41" }), dependabotAlert({ key: "42" })], true);
+    logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "41" }), dependabotAlert({ key: "42" })], "replace");
     rawDb(logged).exec("UPDATE security_alerts SET data = '{broken' WHERE key = '41'");
 
     expect(logged.securityAlerts(id).map((a) => a.key)).toEqual(["42"]);
@@ -156,7 +155,7 @@ describe("security alerts in the store", () => {
   });
 
   it("stores no field called secret and no login, whatever an alert carries", () => {
-    store.saveSecurityAlerts(repoId, "secret_scanning", [secretScanningAlert()], true);
+    store.saveSecurityAlerts(repoId, "secret_scanning", [secretScanningAlert()], "replace");
     const row = rawDb(store).prepare("SELECT data FROM security_alerts").get() as unknown as { data: string };
     expect(row.data).not.toMatch(/"secret"|login/);
   });
@@ -171,8 +170,8 @@ describe("source states in the store", () => {
     repoId = store.addRepo("acme", "widgets", [], "main").id;
   });
 
-  it("answers not_read for every source that was never read, with no times", () => {
-    const notRead = { status: "not_read", reason: null, readAt: null, attemptedAt: null, truncated: false, error: null };
+  it("answers not_read for every source that was never read", () => {
+    const notRead = { status: "not_read" };
     expect(store.sourceStates(repoId)).toEqual({
       dependabot: notRead,
       code_scanning: notRead,
@@ -186,29 +185,126 @@ describe("source states in the store", () => {
     store.setSourceState(repoId, "code_scanning", {
       status: "off",
       reason: "needs_advanced_security",
-      readAt: null,
       attemptedAt: "2026-09-29T10:00:00.000Z",
-      truncated: false,
-      error: null,
     });
-    store.setSourceState(
-      repoId,
-      "dependabot",
-      okState({ status: "error", error: "GitHub could not be reached", readAt: "2026-09-28T10:00:00.000Z" }),
-    );
+    store.setSourceState(repoId, "dependabot", {
+      status: "error",
+      error: "GitHub could not be reached",
+      attemptedAt: "2026-09-29T10:00:00.000Z",
+      lastGood: { readAt: "2026-09-28T10:00:00.000Z", truncated: true, skipped: 2 },
+    });
 
     const states = store.sourceStates(repoId);
 
     expect(states.dependabot).toEqual({
       status: "error",
-      reason: null,
-      readAt: "2026-09-28T10:00:00.000Z",
-      attemptedAt: "2026-09-29T10:00:00.000Z",
-      truncated: false,
       error: "GitHub could not be reached",
+      attemptedAt: "2026-09-29T10:00:00.000Z",
+      lastGood: { readAt: "2026-09-28T10:00:00.000Z", truncated: true, skipped: 2 },
     });
-    expect(states.code_scanning).toMatchObject({ status: "off", reason: "needs_advanced_security", readAt: null });
+    expect(states.code_scanning).toEqual({
+      status: "off",
+      reason: "needs_advanced_security",
+      attemptedAt: "2026-09-29T10:00:00.000Z",
+    });
     expect(states.secret_scanning.status).toBe("not_read");
+  });
+
+  it("round trips every status with only the fields that status has", () => {
+    const at = "2026-09-29T10:00:00.000Z";
+    const states: [Parameters<typeof store.setSourceState>[1], SourceState][] = [
+      ["dependabot", okState({ truncated: true, skipped: 4 })],
+      ["code_scanning", { status: "no_access", reason: "admin_only_or_off", attemptedAt: at }],
+      ["secret_scanning", { status: "error", error: "down", attemptedAt: at, lastGood: null }],
+      ["osv", { status: "not_used", reason: "dependabot_ok", attemptedAt: at }],
+    ];
+    for (const [source, state] of states) store.setSourceState(repoId, source, state);
+
+    expect(store.sourceStates(repoId)).toEqual(Object.fromEntries(states));
+  });
+
+  it("removes the row when a source is set back to not read", () => {
+    store.setSourceState(repoId, "dependabot", okState());
+    store.setSourceState(repoId, "dependabot", { status: "not_read" });
+    expect(store.sourceStates(repoId).dependabot).toEqual({ status: "not_read" });
+  });
+
+  describe("a row written by the earlier build", () => {
+    const warned: string[] = [];
+    let logged: SqliteRepoStore;
+    let id: number;
+
+    beforeEach(() => {
+      warned.length = 0;
+      const log = {
+        info: () => undefined,
+        error: () => undefined,
+        warn: (_: object, message: string) => void warned.push(message),
+      };
+      logged = new SqliteRepoStore(":memory:", () => new Date(), log);
+      id = logged.addRepo("acme", "widgets", [], "main").id;
+    });
+
+    const insert = (source: string, fields: Record<string, string | number | null>) =>
+      rawDb(logged)
+        .prepare(
+          `INSERT INTO security_sources (repo_id, source, status, reason, read_at, attempted_at, truncated, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          source,
+          fields.status!,
+          fields.reason ?? null,
+          fields.read_at ?? null,
+          fields.attempted_at ?? null,
+          0,
+          fields.error ?? null,
+        );
+
+    it("reads OSV's old off with a lookup reason as not read, and logs it once", () => {
+      insert("osv", { status: "off", reason: "lookup_off", attempted_at: "2026-09-29T10:00:00.000Z" });
+
+      expect(logged.sourceStates(id).osv).toEqual({ status: "not_read" });
+      logged.sourceStates(id);
+      expect(warned).toHaveLength(1);
+    });
+
+    it.each([
+      ["a status that is not known", { status: "mystery", attempted_at: "t" }],
+      ["an ok state with no read time", { status: "ok", attempted_at: "t" }],
+      ["an ok state with no attempt time", { status: "ok", read_at: "t" }],
+      ["an off state with a reason that belongs to another status", { status: "off", reason: "forbidden", attempted_at: "t" }],
+      [
+        "a not used state with a reason that belongs to another status",
+        { status: "not_used", reason: "disabled", attempted_at: "t" },
+      ],
+      ["a no access state with no reason", { status: "no_access", attempted_at: "t" }],
+      ["an error with no message", { status: "error", attempted_at: "t" }],
+    ])("reads %s as not read", (_label, fields) => {
+      insert("dependabot", fields);
+      expect(logged.sourceStates(id).dependabot).toEqual({ status: "not_read" });
+    });
+
+    it("keeps an old ok row, whose skipped count is 0", () => {
+      insert("dependabot", { status: "ok", read_at: "2026-09-28T10:00:00.000Z", attempted_at: "2026-09-29T10:00:00.000Z" });
+
+      const states = logged.sourceStates(id);
+
+      expect(states.dependabot).toEqual({
+        status: "ok",
+        readAt: "2026-09-28T10:00:00.000Z",
+        attemptedAt: "2026-09-29T10:00:00.000Z",
+        truncated: false,
+        skipped: 0,
+      });
+    });
+
+    it("rewrites such a row with the next save", () => {
+      insert("osv", { status: "off", reason: "lookup_off", attempted_at: "t" });
+      logged.setSourceState(id, "osv", { status: "not_used", reason: "lookup_off", attemptedAt: "t2" });
+      expect(logged.sourceStates(id).osv).toEqual({ status: "not_used", reason: "lookup_off", attemptedAt: "t2" });
+    });
   });
 
   it("keeps states apart per repository", () => {
@@ -265,10 +361,138 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     expect(() => store.lockedPackages(repoId)).toThrow("Stored locked packages of repository");
   });
 
-  it("names the repository when stored facts cannot be read", () => {
-    store.saveSupplyChain(repoId, supplyChainRecord(), []);
-    rawDb(store).exec("UPDATE supply_chain SET facts = 'nope'");
-    expect(() => store.supplyChain(repoId)).toThrow("Stored supply chain facts of repository");
+  describe("a stored row that cannot be read", () => {
+    const warnings: { context: Record<string, unknown>; message: string }[] = [];
+    let logged: SqliteRepoStore;
+    let id: number;
+
+    beforeEach(() => {
+      warnings.length = 0;
+      const log = {
+        info: () => undefined,
+        error: () => undefined,
+        warn: (context: object, message: string) => void warnings.push({ context: context as never, message }),
+      };
+      logged = new SqliteRepoStore(":memory:", () => new Date(), log);
+      id = logged.addRepo("acme", "widgets", [], "main").id;
+    });
+
+    it("answers no supply chain record for facts that are not JSON, and logs it once, naming the repository", () => {
+      logged.saveSupplyChain(id, supplyChainRecord(), []);
+      rawDb(logged).exec("UPDATE supply_chain SET facts = 'nope'");
+
+      expect(logged.supplyChain(id)).toBeNull();
+      expect(logged.supplyChain(id)).toBeNull();
+
+      expect(warnings).toHaveLength(1);
+      expect(String((warnings[0]!.context.err as Error).message)).toContain("Stored supply chain facts of repository");
+      expect(warnings[0]!.context.repoId).toBe(id);
+    });
+
+    it.each([
+      ["valid JSON of another shape", "{}"],
+      ["a list where an object is expected", "[]"],
+      ["facts of another version", JSON.stringify({ ...supplyChainFacts(), version: 0 })],
+      ["facts with a list missing", JSON.stringify({ ...supplyChainFacts(), lockfiles: undefined })],
+      ["facts with a table that is a list", JSON.stringify({ ...supplyChainFacts(), manifestsByEcosystem: [] })],
+    ])("answers no supply chain record for %s, so the next crawl reads it again", (_label, facts) => {
+      logged.saveSupplyChain(id, supplyChainRecord(), []);
+      rawDb(logged).prepare("UPDATE supply_chain SET facts = ?").run(facts);
+      expect(logged.supplyChain(id)).toBeNull();
+    });
+
+    it("answers no posture or scorecard for a row that is not readable, and keeps the other repository's", () => {
+      const other = logged.addRepo("acme", "gadgets", [], "main").id;
+      for (const repo of [id, other]) {
+        logged.savePosture(repo, repoPosture(), "t");
+        logged.saveScorecard(repo, "t", scorecardResult());
+      }
+      rawDb(logged).prepare("UPDATE security_posture SET data = 'x' WHERE repo_id = ?").run(id);
+      rawDb(logged).prepare("UPDATE security_scorecard SET data = 'x' WHERE repo_id = ?").run(id);
+
+      expect(logged.posture(id)).toBeNull();
+      expect(logged.scorecard(id)).toEqual({ readAt: "t", result: null, failure: null });
+      expect(logged.posture(other)).toEqual({ value: repoPosture(), readAt: "t" });
+      expect(logged.scorecard(other)!.result).toEqual(scorecardResult());
+      expect(warnings.map((w) => String((w.context.err as Error).message))).toEqual([
+        `Stored posture of repository ${id} is not readable`,
+        `Stored scorecard of repository ${id} is not readable`,
+      ]);
+    });
+
+    it.each([
+      ["a posture with no branch", JSON.stringify({ ...repoPosture(), branch: undefined })],
+      ["a posture with no rules", JSON.stringify({ ...repoPosture(), branch: { name: "main", protected: true } })],
+      ["a posture with no settings", JSON.stringify({ ...repoPosture(), settings: null })],
+    ])("answers no posture for %s", (_label, data) => {
+      logged.savePosture(id, repoPosture(), "t");
+      rawDb(logged).prepare("UPDATE security_posture SET data = ?").run(data);
+      expect(logged.posture(id)).toBeNull();
+    });
+
+    it.each([
+      ["no checks", JSON.stringify({ score: 7, date: "2026-09-28" })],
+      ["a score that is text", JSON.stringify({ score: "7", date: "2026-09-28", checks: [] })],
+      ["no date", JSON.stringify({ score: 7, checks: [] })],
+    ])("answers no scorecard result for %s", (_label, data) => {
+      logged.saveScorecard(id, "t", scorecardResult());
+      rawDb(logged).prepare("UPDATE security_scorecard SET data = ?").run(data);
+      expect(logged.scorecard(id)).toEqual({ readAt: "t", result: null, failure: null });
+    });
+
+    it("leaves out an alert of valid JSON in another shape, so the report is never given one", () => {
+      logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" }), dependabotAlert({ key: "2" })], "replace");
+      logged.saveSecurityAlerts(id, "code_scanning", [codeScanningAlert({ key: "3" })], "replace");
+      logged.saveSecurityAlerts(id, "secret_scanning", [secretScanningAlert({ key: "4" })], "replace");
+      rawDb(logged).exec("UPDATE security_alerts SET data = '{}' WHERE key = '1'");
+
+      expect(logged.securityAlerts(id).map((a) => `${a.source}:${a.key}`)).toEqual([
+        "code_scanning:3",
+        "dependabot:2",
+        "secret_scanning:4",
+      ]);
+      expect(warnings).toHaveLength(1);
+    });
+
+    it.each([
+      ["another source from the row's", (a: Record<string, unknown>) => ({ ...a, source: "osv" })],
+      ["a source that does not exist", (a: Record<string, unknown>) => ({ ...a, source: "gitlab" })],
+      ["another key from the row's", (a: Record<string, unknown>) => ({ ...a, key: "99" })],
+      ["a state that is not known", (a: Record<string, unknown>) => ({ ...a, state: "reopened" })],
+      ["no creation time", (a: Record<string, unknown>) => ({ ...a, createdAt: null })],
+      ["no dependency part", (a: Record<string, unknown>) => ({ ...a, dependency: undefined })],
+      [
+        "a close reason that is free text",
+        (a: Record<string, unknown>) => ({ ...a, closeReason: "we will not fix this, ask Alice" }),
+      ],
+    ])("leaves out a Dependabot alert stored with %s", (_label, damage) => {
+      logged.saveSecurityAlerts(id, "dependabot", [dependabotAlert({ key: "1" })], "replace");
+      rawDb(logged)
+        .prepare("UPDATE security_alerts SET data = ?")
+        .run(JSON.stringify(damage(JSON.parse(JSON.stringify(dependabotAlert({ key: "1" }))))));
+      expect(logged.securityAlerts(id)).toEqual([]);
+    });
+
+    it("leaves out a code scanning alert with no code part and a secret alert with no exposure part", () => {
+      logged.saveSecurityAlerts(id, "code_scanning", [codeScanningAlert({ key: "3" })], "replace");
+      logged.saveSecurityAlerts(id, "secret_scanning", [secretScanningAlert({ key: "4" })], "replace");
+      rawDb(logged).exec(
+        `UPDATE security_alerts SET data = json_remove(data, '$.code', '$.exposure') WHERE source IN ('code_scanning', 'secret_scanning')`,
+      );
+      expect(logged.securityAlerts(id)).toEqual([]);
+    });
+
+    it("ignores a source row with a status it does not know", () => {
+      logged.setSourceState(id, "dependabot", okState());
+      rawDb(logged).exec("UPDATE security_sources SET status = 'mystery'");
+      expect(logged.sourceStates(id).dependabot.status).toBe("not_read");
+    });
+
+    it("throws for packages that cannot be read, which only the OSV lookup wants and the crawl records", () => {
+      logged.saveSupplyChain(id, supplyChainRecord(), [lockedPackage()]);
+      rawDb(logged).exec("UPDATE supply_chain SET packages = '{'");
+      expect(() => logged.lockedPackages(id)).toThrow("Stored locked packages of repository");
+    });
   });
 
   it("round trips posture with its read time", () => {
@@ -276,37 +500,110 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     store.savePosture(repoId, posture, "2026-09-29T10:00:00.000Z");
     store.savePosture(repoId, { ...posture, isAdmin: true }, "2026-09-30T10:00:00.000Z");
 
-    expect(store.posture(repoId)).toEqual({ posture: { ...posture, isAdmin: true }, readAt: "2026-09-30T10:00:00.000Z" });
+    expect(store.posture(repoId)).toEqual({ value: { ...posture, isAdmin: true }, readAt: "2026-09-30T10:00:00.000Z" });
   });
 
   it("round trips a scorecard, and records that a project was asked about and not scanned", () => {
     store.saveScorecard(repoId, "2026-09-29T10:00:00.000Z", scorecardResult());
-    expect(store.scorecard(repoId)).toEqual({ readAt: "2026-09-29T10:00:00.000Z", result: scorecardResult(), error: null });
+    expect(store.scorecard(repoId)).toEqual({ readAt: "2026-09-29T10:00:00.000Z", result: scorecardResult(), failure: null });
 
     store.saveScorecard(repoId, "2026-09-30T10:00:00.000Z", null);
-    expect(store.scorecard(repoId)).toEqual({ readAt: "2026-09-30T10:00:00.000Z", result: null, error: null });
+    expect(store.scorecard(repoId)).toEqual({ readAt: "2026-09-30T10:00:00.000Z", result: null, failure: null });
   });
 
   it("records a failed scorecard read beside the last good one, until the next good read clears it", () => {
-    store.failScorecard(repoId, "Scorecard is not answering");
-    expect(store.scorecard(repoId)).toEqual({ readAt: null, result: null, error: "Scorecard is not answering" });
+    store.failScorecard(repoId, "Scorecard is not answering", "2026-09-30T08:00:00.000Z");
+    expect(store.scorecard(repoId)).toEqual({
+      readAt: null,
+      result: null,
+      failure: { message: "Scorecard is not answering", attemptedAt: "2026-09-30T08:00:00.000Z" },
+    });
 
     store.saveScorecard(repoId, "2026-09-29T10:00:00.000Z", scorecardResult());
-    store.failScorecard(repoId, "Scorecard is not answering");
+    store.failScorecard(repoId, "Scorecard is not answering", "2026-09-30T08:00:00.000Z");
     expect(store.scorecard(repoId)).toEqual({
       readAt: "2026-09-29T10:00:00.000Z",
       result: scorecardResult(),
-      error: "Scorecard is not answering",
+      failure: { message: "Scorecard is not answering", attemptedAt: "2026-09-30T08:00:00.000Z" },
     });
 
     store.saveScorecard(repoId, "2026-09-30T10:00:00.000Z", scorecardResult({ score: 8 }));
-    expect(store.scorecard(repoId)).toMatchObject({ readAt: "2026-09-30T10:00:00.000Z", error: null });
+    expect(store.scorecard(repoId)).toMatchObject({ readAt: "2026-09-30T10:00:00.000Z", failure: null });
+  });
+
+  describe("a failed clone inspection", () => {
+    const at = "2026-09-30T09:00:00.000Z";
+
+    it("is recorded with its time beside the held record, which it leaves alone, and is none before one", () => {
+      expect(store.supplyChainFailure(repoId)).toBeNull();
+      store.saveSupplyChain(repoId, supplyChainRecord({ commitSha: "abc1234" }), [lockedPackage()]);
+
+      store.failSupplyChain(repoId, "The clone could not be read", at);
+
+      expect(store.supplyChainFailure(repoId)).toEqual({ message: "The clone could not be read", attemptedAt: at });
+      expect(store.supplyChain(repoId)!.commitSha).toBe("abc1234");
+      expect(store.lockedPackages(repoId)).toEqual([lockedPackage()]);
+    });
+
+    it("can be recorded when no record was ever held, and the latest failure replaces the earlier one", () => {
+      store.failSupplyChain(repoId, "first", at);
+      store.failSupplyChain(repoId, "second", "2026-09-30T10:00:00.000Z");
+
+      expect(store.supplyChainFailure(repoId)).toEqual({ message: "second", attemptedAt: "2026-09-30T10:00:00.000Z" });
+      expect(store.supplyChain(repoId)).toBeNull();
+    });
+
+    it("is cleared by the next good inspection, and changes the memo key when recorded and cleared", () => {
+      const before = JSON.stringify(store.securityKeys(repoId));
+      store.failSupplyChain(repoId, "down", at);
+      expect(store.securityKeys(repoId).supplyChainFailure).toBe(at);
+      expect(JSON.stringify(store.securityKeys(repoId))).not.toBe(before);
+
+      store.saveSupplyChain(repoId, supplyChainRecord(), []);
+
+      expect(store.supplyChainFailure(repoId)).toBeNull();
+      expect(store.securityKeys(repoId).supplyChainFailure).toBeNull();
+    });
+
+    it("is removed with its repository", () => {
+      store.failSupplyChain(repoId, "down", at);
+      store.deleteRepo(repoId);
+      expect(rawDb(store).prepare("SELECT count(*) AS n FROM supply_chain_failure").get()).toEqual({ n: 0 });
+    });
+  });
+
+  it("reads facts stored without a listing flag, and refuses one that is not a boolean", () => {
+    store.saveSupplyChain(repoId, supplyChainRecord(), []);
+    const facts = { ...supplyChainFacts() } as Partial<ReturnType<typeof supplyChainFacts>>;
+    delete facts.listingComplete;
+    rawDb(store).prepare("UPDATE supply_chain SET facts = ?").run(JSON.stringify(facts));
+    expect(store.supplyChain(repoId)!.facts.listingComplete).toBeUndefined();
+
+    rawDb(store)
+      .prepare("UPDATE supply_chain SET facts = ?")
+      .run(JSON.stringify({ ...facts, listingComplete: "yes" }));
+    expect(store.supplyChain(repoId)).toBeNull();
+  });
+
+  it("answers no record for facts that an earlier build wrote as version 1, so the next crawl reads them again", () => {
+    store.saveSupplyChain(repoId, supplyChainRecord(), []);
+    rawDb(store)
+      .prepare("UPDATE supply_chain SET facts = ?")
+      .run(
+        JSON.stringify({
+          ...supplyChainFacts(),
+          version: 1,
+          lockfiles: [{ path: "a", read: "parsed", packages: 1, publicPackages: 1 }],
+        }),
+      );
+
+    expect(store.supplyChain(repoId)).toBeNull();
   });
 
   it("changes the scorecard memo key when a read fails", () => {
     store.saveScorecard(repoId, "2026-09-29T10:00:00.000Z", null);
     const good = store.securityKeys(repoId).scorecard;
-    store.failScorecard(repoId, "down");
+    store.failScorecard(repoId, "down", "2026-09-30T08:00:00.000Z");
     expect(store.securityKeys(repoId).scorecard).not.toBe(good);
   });
 
@@ -315,7 +612,7 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     store.failPosture(repoId, "GitHub answered 500", "2026-09-30T10:00:00.000Z");
 
     expect(store.posture(repoId)).toMatchObject({ readAt: "2026-09-29T10:00:00.000Z" });
-    expect(store.postureFailure(repoId)).toEqual({ error: "GitHub answered 500", attemptedAt: "2026-09-30T10:00:00.000Z" });
+    expect(store.postureFailure(repoId)).toEqual({ message: "GitHub answered 500", attemptedAt: "2026-09-30T10:00:00.000Z" });
 
     store.savePosture(repoId, repoPosture(), "2026-10-01T10:00:00.000Z");
     expect(store.postureFailure(repoId)).toBeNull();
@@ -325,7 +622,7 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     store.failPosture(repoId, "down", "2026-09-30T10:00:00.000Z");
 
     expect(store.posture(repoId)).toBeNull();
-    expect(store.postureFailure(repoId)).toEqual({ error: "down", attemptedAt: "2026-09-30T10:00:00.000Z" });
+    expect(store.postureFailure(repoId)).toEqual({ message: "down", attemptedAt: "2026-09-30T10:00:00.000Z" });
     expect(store.securityKeys(repoId).posture).toBe("!2026-09-30T10:00:00.000Z");
   });
 
@@ -336,18 +633,16 @@ describe("supply chain facts, posture and scorecard in the store", () => {
     expect(store.securityKeys(repoId).posture).not.toBe(good);
   });
 
-  it("names the repository when a stored posture or scorecard cannot be read", () => {
-    store.savePosture(repoId, repoPosture(), "t");
-    store.saveScorecard(repoId, "t", scorecardResult());
-    rawDb(store).exec("UPDATE security_posture SET data = 'x'; UPDATE security_scorecard SET data = 'x'");
-    expect(() => store.posture(repoId)).toThrow("Stored posture of repository");
-    expect(() => store.scorecard(repoId)).toThrow("Stored scorecard of repository");
-  });
-
   it("gives memo keys that change when any of the parts is written", () => {
     const keys = () => JSON.stringify(store.securityKeys(repoId));
     const empty = keys();
-    expect(store.securityKeys(repoId)).toEqual({ sources: "", supplyChain: null, posture: null, scorecard: null });
+    expect(store.securityKeys(repoId)).toEqual({
+      sources: "",
+      supplyChain: null,
+      posture: null,
+      scorecard: null,
+      supplyChainFailure: null,
+    });
 
     store.setSourceState(repoId, "dependabot", okState());
     const afterSource = keys();
@@ -364,6 +659,7 @@ describe("supply chain facts, posture and scorecard in the store", () => {
       supplyChain: "2026-09-29T10:00:00.000Z",
       posture: "2026-09-29T11:00:00.000Z",
       scorecard: "2026-09-29T12:00:00.000Z",
+      supplyChainFailure: null,
     });
     store.setSourceState(repoId, "dependabot", okState({ attemptedAt: "2026-09-30T10:00:00.000Z" }));
     expect(keys()).not.toBe(afterScorecard);
@@ -376,7 +672,7 @@ describe("deleting a repository removes its security data", () => {
     const gone = store.addRepo("acme", "widgets", [], "main").id;
     const kept = store.addRepo("acme", "gadgets", [], "main").id;
     for (const id of [gone, kept]) {
-      store.saveSecurityAlerts(id, "dependabot", [dependabotAlert()], true);
+      store.saveSecurityAlerts(id, "dependabot", [dependabotAlert()], "replace");
       store.setSourceState(id, "dependabot", okState());
       store.saveSupplyChain(id, supplyChainRecord(), [lockedPackage()]);
       store.savePosture(id, repoPosture(), "t");
@@ -423,13 +719,13 @@ describe("opening a database made before security was read", () => {
     expect(store.findRepo("acme", "widgets")!.id).toBe(id);
     expect(store.sourceStates(id).dependabot.status).toBe("not_read");
 
-    store.saveSecurityAlerts(id, "dependabot", [dependabotAlert()], true);
+    store.saveSecurityAlerts(id, "dependabot", [dependabotAlert()], "replace");
     rawDb(store).close();
     expect(new SqliteRepoStore(path).securityAlerts(id)).toHaveLength(1);
   });
 });
 
-describe("migrating a database made by phase one of the security feature", () => {
+describe("migrating a database made by an earlier build of the security feature", () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "dora-migrate-"));
@@ -437,7 +733,7 @@ describe("migrating a database made by phase one of the security feature", () =>
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   /** The security tables exactly as phase one made them: the scorecard table had a NOT NULL read time and no error column. */
-  function phaseOneDatabase(path: string): void {
+  function earlierDatabase(path: string): void {
     const db = new DatabaseSync(path);
     db.exec(`CREATE TABLE repos (
       id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, name TEXT NOT NULL,
@@ -483,28 +779,28 @@ describe("migrating a database made by phase one of the security feature", () =>
 
   it("adds the error column, loosens the read time, keeps the stored scorecard and works end to end", () => {
     const path = join(dir, "dora.db");
-    phaseOneDatabase(path);
+    earlierDatabase(path);
 
     const store = new SqliteRepoStore(path);
     expect(store.securityKeys(1).scorecard).toBe("2026-09-28T00:00:00.000Z");
-    expect(store.scorecard(1)).toEqual({ readAt: "2026-09-28T00:00:00.000Z", result: scorecardResult(), error: null });
-    store.failScorecard(1, "down");
-    expect(store.scorecard(1)).toMatchObject({ error: "down", result: scorecardResult() });
+    expect(store.scorecard(1)).toEqual({ readAt: "2026-09-28T00:00:00.000Z", result: scorecardResult(), failure: null });
+    store.failScorecard(1, "down", "2026-09-30T00:00:00.000Z");
+    expect(store.scorecard(1)).toMatchObject({ failure: { message: "down" }, result: scorecardResult() });
     store.saveScorecard(1, "2026-09-29T00:00:00.000Z", null);
-    expect(store.scorecard(1)).toEqual({ readAt: "2026-09-29T00:00:00.000Z", result: null, error: null });
+    expect(store.scorecard(1)).toEqual({ readAt: "2026-09-29T00:00:00.000Z", result: null, failure: null });
 
-    expect(scorecardColumns(path)).toEqual(["repo_id:0", "read_at:0", "data:0", "error:0"]);
+    expect(scorecardColumns(path)).toEqual(["repo_id:0", "read_at:0", "data:0", "error:0", "attempted_at:0"]);
   });
 
   it("adds the posture failure columns, keeps the stored posture and accepts a failure", () => {
     const path = join(dir, "dora.db");
-    phaseOneDatabase(path);
+    earlierDatabase(path);
 
     const store = new SqliteRepoStore(path);
-    expect(store.posture(1)).toEqual({ posture: repoPosture({ visibility: "public" }), readAt: "2026-09-27T00:00:00.000Z" });
+    expect(store.posture(1)).toEqual({ value: repoPosture({ visibility: "public" }), readAt: "2026-09-27T00:00:00.000Z" });
     expect(store.postureFailure(1)).toBeNull();
     store.failPosture(1, "down", "2026-09-30T00:00:00.000Z");
-    expect(store.postureFailure(1)).toEqual({ error: "down", attemptedAt: "2026-09-30T00:00:00.000Z" });
+    expect(store.postureFailure(1)).toEqual({ message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" });
     expect(store.posture(1)!.readAt).toBe("2026-09-27T00:00:00.000Z");
 
     const db = new DatabaseSync(path);
@@ -518,38 +814,213 @@ describe("migrating a database made by phase one of the security feature", () =>
       "attempted_at:0",
     ]);
     // A second open finds the new shape and keeps what was stored.
-    expect(new SqliteRepoStore(path).postureFailure(1)).toMatchObject({ error: "down" });
+    expect(new SqliteRepoStore(path).postureFailure(1)).toMatchObject({ message: "down" });
+  });
+
+  it("rebuilds only the old table when the other is current, and keeps the failure a current table holds", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    // The scorecard table is already in its current shape and holds a failed first read; only the posture table is old.
+    raw.exec(`DROP TABLE security_scorecard;
+      CREATE TABLE security_scorecard (
+        repo_id INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE, read_at TEXT, data TEXT, error TEXT,
+        attempted_at TEXT
+      );
+      INSERT INTO security_scorecard (repo_id, read_at, data, error, attempted_at)
+        VALUES (1, NULL, NULL, 'down', '2026-09-30T00:00:00.000Z')`);
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+
+    expect(store.scorecard(1)).toEqual({
+      readAt: null,
+      result: null,
+      failure: { message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" },
+    });
+    expect(store.posture(1)).toEqual({ value: repoPosture({ visibility: "public" }), readAt: "2026-09-27T00:00:00.000Z" });
+    store.failPosture(1, "also down", "2026-09-30T00:00:00.000Z");
+    expect(store.postureFailure(1)).toMatchObject({ message: "also down" });
+  });
+
+  it("keeps the failure a posture table held while it is rebuilt for a read time that must be nullable", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    raw.exec(`DROP TABLE security_posture;
+      CREATE TABLE security_posture (
+        repo_id INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE, read_at TEXT NOT NULL, data TEXT NOT NULL,
+        error TEXT, attempted_at TEXT
+      );`);
+    raw
+      .prepare(
+        "INSERT INTO security_posture (repo_id, read_at, data, error, attempted_at) VALUES (1, '2026-09-27T00:00:00.000Z', ?, 'down', '2026-09-30T00:00:00.000Z')",
+      )
+      .run(JSON.stringify(repoPosture({ visibility: "public" })));
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+
+    expect(store.postureFailure(1)).toEqual({ message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" });
+    expect(store.posture(1)!.readAt).toBe("2026-09-27T00:00:00.000Z");
+  });
+
+  it("leaves both tables as they were, and raises, when a rebuild fails part way", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    // An old posture table that lacks the `data` column the copy reads, so the second rebuild fails after the first.
+    raw.exec(`DROP TABLE security_posture;
+      CREATE TABLE security_posture (repo_id INTEGER PRIMARY KEY, read_at TEXT NOT NULL);
+      INSERT INTO security_posture (repo_id, read_at) VALUES (1, '2026-09-27T00:00:00.000Z')`);
+    raw.close();
+
+    expect(() => new SqliteRepoStore(path)).toThrow(/data/);
+
+    const db = new DatabaseSync(path);
+    const columns = (table: string) =>
+      (db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string; notnull: number }[]).map(
+        (c) => `${c.name}:${c.notnull}`,
+      );
+    // The scorecard rebuild that came first was undone with it.
+    expect(columns("security_scorecard")).toEqual(["repo_id:0", "read_at:1", "data:0"]);
+    expect(columns("security_posture")).toEqual(["repo_id:0", "read_at:1"]);
+    expect(columns("security_scorecard_earlier")).toEqual([]);
+    expect(db.prepare("SELECT read_at FROM security_scorecard").get()).toEqual({ read_at: "2026-09-28T00:00:00.000Z" });
+    db.close();
+  });
+
+  it("drops a scorecard failure the earlier build stored without an attempt time, and keeps the result", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    raw.exec(`DROP TABLE security_scorecard;
+      CREATE TABLE security_scorecard (
+        repo_id INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE, read_at TEXT, data TEXT, error TEXT
+      )`);
+    raw
+      .prepare("INSERT INTO security_scorecard (repo_id, read_at, data, error) VALUES (1, '2026-09-28T00:00:00.000Z', ?, 'down')")
+      .run(JSON.stringify(scorecardResult()));
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+
+    expect(store.scorecard(1)).toEqual({ readAt: "2026-09-28T00:00:00.000Z", result: scorecardResult(), failure: null });
+    store.failScorecard(1, "down again", "2026-09-30T00:00:00.000Z");
+    expect(store.scorecard(1)!.failure).toEqual({ message: "down again", attemptedAt: "2026-09-30T00:00:00.000Z" });
+  });
+
+  it("gives an error row of the earlier build no last good read, since it may carry the read time of a source never graded", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    raw.exec(`INSERT INTO security_sources (repo_id, source, status, read_at, attempted_at, error)
+      VALUES (1, 'dependabot', 'error', '2026-06-01T00:00:00.000Z', '2026-09-28T00:00:00.000Z', 'down')`);
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+
+    // The read time left over from an earlier no_access state is gone, so these alerts are not graded again.
+    expect(store.sourceStates(1).dependabot).toEqual({
+      status: "error",
+      error: "down",
+      attemptedAt: "2026-09-28T00:00:00.000Z",
+      lastGood: null,
+    });
+    // A failure written by this build keeps its last good read, and a second open does not strip it.
+    store.setSourceState(1, "dependabot", {
+      status: "error",
+      error: "down",
+      attemptedAt: "2026-09-29T00:00:00.000Z",
+      lastGood: { readAt: "2026-09-27T00:00:00.000Z", truncated: false, skipped: 0 },
+    });
+    expect((new SqliteRepoStore(path).sourceStates(1).dependabot as { lastGood: unknown }).lastGood).toEqual({
+      readAt: "2026-09-27T00:00:00.000Z",
+      truncated: false,
+      skipped: 0,
+    });
+  });
+
+  it("rebuilds a posture table that has the error column but not the attempt time, keeping what it held", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    raw.exec(`DROP TABLE security_posture;
+      CREATE TABLE security_posture (
+        repo_id INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE, read_at TEXT, data TEXT, error TEXT
+      )`);
+    raw
+      .prepare("INSERT INTO security_posture (repo_id, read_at, data) VALUES (1, '2026-09-27T00:00:00.000Z', ?)")
+      .run(JSON.stringify(repoPosture({ visibility: "public" })));
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+    store.failPosture(1, "down", "2026-09-30T00:00:00.000Z");
+
+    expect(store.postureFailure(1)).toEqual({ message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" });
+    expect(store.posture(1)!.readAt).toBe("2026-09-27T00:00:00.000Z");
+  });
+
+  it("adds the skipped column to a source table without it, keeping the rows, and does it once", () => {
+    const path = join(dir, "dora.db");
+    earlierDatabase(path);
+    const raw = new DatabaseSync(path);
+    raw
+      .prepare(
+        "INSERT INTO security_sources (repo_id, source, status, read_at, attempted_at, truncated) VALUES (1, 'dependabot', 'ok', '2026-09-28T00:00:00.000Z', '2026-09-28T00:00:00.000Z', 1)",
+      )
+      .run();
+    raw.close();
+
+    const store = new SqliteRepoStore(path);
+    new SqliteRepoStore(path);
+
+    expect(store.sourceStates(1).dependabot).toEqual({
+      status: "ok",
+      readAt: "2026-09-28T00:00:00.000Z",
+      attemptedAt: "2026-09-28T00:00:00.000Z",
+      truncated: true,
+      skipped: 0,
+    });
   });
 
   it("accepts a first failed read, which has no read time", () => {
     const path = join(dir, "dora.db");
-    phaseOneDatabase(path);
+    earlierDatabase(path);
     const raw = new DatabaseSync(path);
     raw.exec("DELETE FROM security_scorecard");
     raw.close();
 
     const store = new SqliteRepoStore(path);
-    store.failScorecard(1, "down");
+    store.failScorecard(1, "down", "2026-09-30T00:00:00.000Z");
 
-    expect(store.scorecard(1)).toEqual({ readAt: null, result: null, error: "down" });
+    expect(store.scorecard(1)).toEqual({
+      readAt: null,
+      result: null,
+      failure: { message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" },
+    });
   });
 
   it("changes nothing on a second open", () => {
     const path = join(dir, "dora.db");
-    phaseOneDatabase(path);
+    earlierDatabase(path);
     const first = new SqliteRepoStore(path);
-    first.failScorecard(1, "down");
+    first.failScorecard(1, "down", "2026-09-30T00:00:00.000Z");
     const columns = scorecardColumns(path);
 
     const second = new SqliteRepoStore(path);
 
     expect(scorecardColumns(path)).toEqual(columns);
-    expect(second.scorecard(1)).toEqual({ readAt: "2026-09-28T00:00:00.000Z", result: scorecardResult(), error: "down" });
+    expect(second.scorecard(1)).toEqual({
+      readAt: "2026-09-28T00:00:00.000Z",
+      result: scorecardResult(),
+      failure: { message: "down", attemptedAt: "2026-09-30T00:00:00.000Z" },
+    });
   });
 
-  it("leaves the other security tables as phase one made them", () => {
+  it("leaves the other security tables as the earlier build made them", () => {
     const path = join(dir, "dora.db");
-    phaseOneDatabase(path);
+    earlierDatabase(path);
     new SqliteRepoStore(path);
     const db = new DatabaseSync(path);
     const names = (table: string) =>
@@ -564,6 +1035,7 @@ describe("migrating a database made by phase one of the security feature", () =>
       "attempted_at",
       "truncated",
       "error",
+      "skipped",
     ]);
     expect(names("supply_chain")).toEqual(["repo_id", "commit_sha", "read_at", "version", "facts", "packages"]);
     expect(names("security_alerts")).toEqual(["repo_id", "source", "key", "state", "data"]);

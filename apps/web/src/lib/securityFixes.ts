@@ -1,6 +1,5 @@
 import type { DependencyGroup, SecurityAction, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { targetName } from "./security";
 
 /*
  * The snippets and commands that go with each kind of finding. They are plain text built from the report's own
@@ -86,7 +85,7 @@ type Instruction = Extract<UpgradeAdvice, { kind: "instruction" }>;
 export interface UpgradeInput {
   ecosystem: string | null;
   manifestPath: string | null;
-  name: string;
+  name: string | null;
   version: string | null;
   relationship: DependencyGroup["relationship"];
 }
@@ -190,7 +189,7 @@ const overridesJson = (key: string[], name: string, version: string): string => 
  * nothing odd is ever offered for pasting.
  */
 export function upgradeAdvice({ ecosystem, manifestPath, name, version, relationship }: UpgradeInput): UpgradeAdvice | null {
-  if (!version || !SAFE_NAME.test(name) || !SAFE_VERSION.test(version)) return null;
+  if (!version || !name || !SAFE_NAME.test(name) || !SAFE_VERSION.test(version)) return null;
   const file = manifestPath ? baseName(manifestPath) : "";
   const tool = toolOf(file, ecosystem);
   if (tool === null) return null;
@@ -553,15 +552,11 @@ const codeScanner = (_a: SecurityAction, ctx: FixContext): Snippet[] =>
     ? [snippet("semgrep", semgrepSnippet(), { note: copy.security.snippetNotes.semgrep })]
     : [snippet("codeql", codeqlSnippet(ctx.branch, ctx.ecosystems), { note: copy.security.snippetNotes.codeql })];
 
-/** The advice for an upgrade action, or null when no command or instruction is known. */
+/** The advice for an upgrade action, or null when no command or instruction is known, as when the package has no name. */
 export function upgradeAdviceFor(action: SecurityAction): UpgradeAdvice | null {
-  return upgradeAdvice({
-    ecosystem: action.ecosystem,
-    manifestPath: action.manifestPath,
-    name: targetName(action),
-    version: action.upgradeTo,
-    relationship: action.relationship,
-  });
+  if (action.kind !== "upgrade_dependency") return null;
+  const { ecosystem, manifestPath, name, upgradeTo, relationship } = action.package;
+  return upgradeAdvice({ ecosystem, manifestPath, name, version: upgradeTo, relationship });
 }
 
 /** The prose of an upgrade that is an instruction and not a command, or null. */

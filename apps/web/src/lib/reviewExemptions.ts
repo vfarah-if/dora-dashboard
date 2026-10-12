@@ -29,10 +29,13 @@ export function exemptionProblem(
   text: string,
   maxEntries: number,
   limits: ReviewExemptionDefaults["limits"],
-): "tooMany" | "tooLong" | "control" | null {
+  /** True for title words, which are matched as whole words and so each need a letter or a digit. */
+  needsWord = false,
+): "tooMany" | "tooLong" | "control" | "noWord" | null {
   const entries = parseLabelList(text);
   if (entries.length > maxEntries) return "tooMany";
   if (entries.some((entry) => entry.length > limits.length)) return "tooLong";
   if (entries.some(hasControlCharacter)) return "control";
+  if (needsWord && entries.some((entry) => !/[\p{L}\p{N}]/u.test(entry))) return "noWord";
   return null;
 }

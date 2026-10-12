@@ -6,6 +6,7 @@ import { copy } from "../copy";
 import { AlertsTable } from "../components/AlertsTable";
 import { BandLabel } from "../components/BandLabel";
 import { BranchProtectionCard } from "../components/BranchProtectionCard";
+import { FailedSourcesNotice } from "../components/FailedSourcesNotice";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DependencyTable } from "../components/DependencyTable";
 import { DependencyUpdatesCard } from "../components/DependencyUpdatesCard";
@@ -27,7 +28,7 @@ import { SupplyChainCard } from "../components/SupplyChainCard";
 import { WeaknessesChart } from "../components/WeaknessesChart";
 import { searchForCodePage } from "../lib/codeDetail";
 import { formatDate, formatDateTime, isoDaysAgo } from "../lib/format";
-import { alertsReadAt, joinWords, notReadYet, securityPartWeekNote, unreadParts } from "../lib/security";
+import { alertsReadAt, joinWords, notReadKind, notReadYet, securityPartWeekNote, unreadParts } from "../lib/security";
 import { repoName } from "../lib/series";
 import { useRangeParams } from "../lib/urlState";
 import { partWeek } from "../lib/weekly";
@@ -49,7 +50,7 @@ function PartlyRead({ report }: { report: SecurityReport }) {
 }
 
 function Header({ report, listingName }: { report: SecurityReport | undefined; listingName: string | null }) {
-  const readAt = report ? alertsReadAt(report) : null;
+  const read = report ? alertsReadAt(report) : null;
   const name = report ? repoName(report.repo) : listingName;
   return (
     <header className="page-header page-header-row">
@@ -61,7 +62,11 @@ function Header({ report, listingName }: { report: SecurityReport | undefined; l
             <p className="lede">
               {c.rangeSummary(formatDate(report.range.from), formatDate(report.range.to))}
               {" · "}
-              {readAt ? c.alertsRead(formatDateTime(readAt)) : c.alertsNotRead}
+              {read?.at
+                ? read.stale
+                  ? c.alertsStale(formatDateTime(read.at))
+                  : c.alertsRead(formatDateTime(read.at))
+                : c.alertsNotRead}
             </p>
             <p className="grade-line">
               <span>{report.grade ? c.gradeLine : c.gradeNone}</span>{" "}
@@ -81,7 +86,8 @@ function Body({ report }: { report: SecurityReport }) {
     // What was read by other means, the workflow files and the branch rules, is facts and not zeros, so it stays.
     return (
       <>
-        <NotReadNotice repoId={report.repo.id} />
+        {notReadKind(report.sources) === "never" && <FailedSourcesNotice report={report} sourcesOnPage />}
+        <NotReadNotice repoId={report.repo.id} sources={report.sources} />
         {report.supplyChain.status === "ok" && (
           <>
             <SupplyChainCard report={report} group="workflows" />
@@ -100,6 +106,7 @@ function Body({ report }: { report: SecurityReport }) {
   const part = partWeek(report, isoDaysAgo(0));
   return (
     <>
+      <FailedSourcesNotice report={report} sourcesOnPage leaveOutUnreadNamed />
       <PartlyRead report={report} />
       <StartHere report={report} />
       <SecurityGrade report={report} />

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { copy } from "../copy";
-import { noSecurity, securityAction, securityReport } from "../test/fixtures";
+import { noSecurity, offSource, securityAction, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
 import { CopySnippet } from "./CopySnippet";
 import { Glossary } from "./Glossary";
@@ -113,13 +113,15 @@ describe("CopySnippet", () => {
 
 describe("PassFail", () => {
   it.each([
-    ["met", "Met", "checks-passing"],
-    ["unmet", "Not met", "checks-failing"],
-    ["unseen", "Not visible", "checks-none"],
-  ] as const)("shows %s as an icon and the word %s", (state, word, className) => {
+    ["met", "Met"],
+    ["unmet", "Not met"],
+    ["unseen", "Not visible"],
+  ] as const)("shows %s as an icon and the word %s", (state, word) => {
     const { container } = render(<PassFail state={state} />);
     expect(screen.getByText(word)).toBeInTheDocument();
-    expect(container.querySelector(`.${className} svg`)).toHaveAttribute("aria-hidden", "true");
+    // The icon adds nothing to what is read out, so the state never depends on it or its colour.
+    expect(container).toHaveTextContent(new RegExp(`^${word}$`));
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("takes a word of its own where Met and Not met do not fit", () => {
@@ -422,10 +424,10 @@ describe("ActionItem", () => {
   it("works out whether GitHub code scanning can be used from the repository's visibility and the source", () => {
     const base = securityReport();
     const privateOff = securityReport({
-      posture: { ...base.posture!, visibility: "private" },
+      posture: { ...base.posture!, value: { ...base.posture!.value, visibility: "private" } },
       sources: {
         ...base.sources,
-        code_scanning: { ...base.sources.code_scanning, status: "off", reason: "needs_advanced_security" },
+        code_scanning: offSource("needs_advanced_security"),
       },
     });
     expect(fixContext(base).codeScanning).toBe(true);
@@ -438,9 +440,9 @@ describe("ActionItem", () => {
 
   it("offers Semgrep, with what it needs, for a private repository without code scanning, and CodeQL for a public one", () => {
     const base = securityReport();
-    const off = { ...base.sources.code_scanning, status: "off" as const, reason: "needs_advanced_security" as const };
+    const off = offSource("needs_advanced_security");
     const privateReport = securityReport({
-      posture: { ...base.posture!, visibility: "private" },
+      posture: { ...base.posture!, value: { ...base.posture!.value, visibility: "private" } },
       sources: { ...base.sources, code_scanning: off },
     });
     const { unmount } = render(
@@ -460,7 +462,7 @@ describe("ActionItem", () => {
           action={securityAction({ kind: "enable_code_scanning", refs: [] })}
           context={fixContext(
             securityReport({
-              posture: { ...base.posture!, visibility: "public" },
+              posture: { ...base.posture!, value: { ...base.posture!.value, visibility: "public" } },
               sources: { ...base.sources, code_scanning: off },
             }),
           )}
@@ -474,7 +476,7 @@ describe("ActionItem", () => {
   it("says, in words and with no Copy button, how to fix a package that comes in through another package", () => {
     render(
       <ol>
-        <ActionItem action={securityAction({ relationship: "transitive" })} context={context} />
+        <ActionItem action={securityAction({ package: { relationship: "transitive" } })} context={context} />
       </ol>,
     );
     expect(screen.getByText(/left-pad comes in through another package/)).toBeInTheDocument();
@@ -484,7 +486,7 @@ describe("ActionItem", () => {
   });
 
   it("says in words, with no Copy button, what to do where the fix is a requirements file", () => {
-    const { container } = show({ ecosystem: "pip", target: "pip:left-pad", manifestPath: "requirements.txt" });
+    const { container } = show({ target: "pip:left-pad", package: { ecosystem: "pip", manifestPath: "requirements.txt" } });
     const words = screen.getByText(/Set left-pad==1.3.1 in requirements.txt/);
     expect(words.closest("code")).toBeNull();
     expect(screen.queryByRole("button", { name: /Copy/ })).not.toBeInTheDocument();
@@ -522,6 +524,30 @@ describe("ActionItem", () => {
       </ol>,
     );
     expect(screen.queryByRole("link", { name: new RegExp(copy.security.branchSettingsLink) })).not.toBeInTheDocument();
+  });
+
+  it("offers no settings link at all when the report carries an empty address, as when no alert source is wired", () => {
+    const base = fixContext(securityReport());
+    render(
+      <ol>
+        <ActionItem
+          action={securityAction({ kind: "enable_push_protection", band: null, refs: [] })}
+          context={{ ...base, settingsUrl: "" }}
+        />
+      </ol>,
+    );
+    expect(screen.queryByRole("link", { name: new RegExp(copy.security.settingsLink) })).not.toBeInTheDocument();
+  });
+
+  it("offers no command, and no instruction naming nothing, for a package the host did not name", () => {
+    render(
+      <ol>
+        <ActionItem action={securityAction({ target: null, package: { name: null } })} context={fixContext(securityReport())} />
+      </ol>,
+    );
+    expect(screen.getAllByText(/A package that GitHub did not name has 2 open critical alerts/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("group", { name: copy.security.snippets.upgrade })).not.toBeInTheDocument();
+    expect(screen.queryByText(/npm install/)).not.toBeInTheDocument();
   });
 
   it("writes the limits it names from the report's thresholds", () => {
@@ -572,15 +598,22 @@ describe("ActionItem", () => {
   });
 });
 
+/** The numbered actions as a person counts them, which are the items of the first list and not the steps inside one. */
+const actionItems = () => {
+  const [list] = screen.getAllByRole("list");
+  return within(list!)
+    .getAllByRole("listitem")
+    .filter((item) => item.closest("ol, ul") === list);
+};
+
 describe("SecurityActions", () => {
   const many = (count: number) =>
     securityReport({ actions: Array.from({ length: count }, (_, i) => securityAction({ target: `npm:pkg-${i + 1}` })) });
 
   it("numbers the actions in the order core gave them", () => {
     renderRoute(<SecurityActions report={securityReport()} />);
-    const list = screen.getAllByRole("list").find((l) => l.classList.contains("action-list"))!;
-    expect(list.tagName).toBe("OL");
-    expect([...list.querySelectorAll(".action-sentence")].map((p) => p.textContent?.slice(0, 22))).toEqual([
+    expect(screen.getAllByRole("list")[0]!.tagName).toBe("OL");
+    expect(actionItems().map((item) => item.textContent?.slice(0, 22))).toEqual([
       "left-pad has 2 open cr",
       "The workflow .github/w",
       "No Dependabot or Renov",
@@ -606,10 +639,10 @@ describe("SecurityActions", () => {
 
   it("shows ten and offers the rest behind a button", async () => {
     const user = userEvent.setup();
-    const { container } = renderRoute(<SecurityActions report={many(12)} />);
-    expect(container.querySelectorAll(".action-item")).toHaveLength(10);
+    renderRoute(<SecurityActions report={many(12)} />);
+    expect(actionItems()).toHaveLength(10);
     await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
-    expect(container.querySelectorAll(".action-item")).toHaveLength(12);
+    expect(actionItems()).toHaveLength(12);
     expect(screen.getByRole("button", { name: copy.space.showFewer })).toBeInTheDocument();
   });
 
@@ -618,8 +651,8 @@ describe("SecurityActions", () => {
     const { container } = renderRoute(<SecurityActions report={many(12)} />);
     await user.click(container.querySelector("summary")!);
     startPrint();
-    expect(container.querySelectorAll(".action-item")).toHaveLength(10);
-    // Only the one opened on screen is open on paper.
+    expect(actionItems()).toHaveLength(10);
+    // Only the one opened on screen is open on paper, and the open attribute is what the printer follows.
     expect(container.querySelectorAll("details[open]")).toHaveLength(1);
     const note = screen.getByText(copy.security.printMore(2));
     expect(note).toHaveClass("print-only");
@@ -628,10 +661,10 @@ describe("SecurityActions", () => {
 
   it("hides the show all button from the printed copy, and prints no note once everything is shown", async () => {
     const user = userEvent.setup();
-    const { container } = renderRoute(<SecurityActions report={many(12)} />);
+    renderRoute(<SecurityActions report={many(12)} />);
     expect(screen.getByRole("button", { name: copy.space.showAll(12) })).toHaveClass("screen-only");
     await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
-    expect(container.querySelectorAll(".action-item")).toHaveLength(12);
+    expect(actionItems()).toHaveLength(12);
     expect(screen.queryByText(copy.security.printMore(2))).not.toBeInTheDocument();
   });
 

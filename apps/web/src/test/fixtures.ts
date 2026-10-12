@@ -1,4 +1,6 @@
 import type {
+  ActionPackage,
+  Band,
   BranchRules,
   CodeDetailReport,
   CodeHealthReport,
@@ -15,9 +17,17 @@ import type {
   ReviewExemptionDefaults,
   ReviewQueue,
   SecurityAction,
+  SecurityActionKind,
+  SecurityCheckName,
+  SecurityGrade,
+  SecurityGradeMissing,
+  SecurityPartName,
   SecurityAlertRef,
   SecurityReport,
   SecuritySummary,
+  NoAccessReason,
+  OffReason,
+  SourceRead,
   SourceState,
   SpaceReport,
   SupplyChainLine,
@@ -57,11 +67,9 @@ export function repo(overrides: Partial<RepoListing> = {}): RepoListing {
     deployRuns: 10,
     issues: 0,
     issuesEnabled: null,
-    issueLabels: null,
-    issueLabelsUnreadable: false,
+    issueLabels: { kind: "defaults" },
     issueError: null,
-    reviewExemptions: null,
-    reviewExemptionsUnreadable: false,
+    reviewExemptions: { kind: "defaults" },
     ...overrides,
   };
 }
@@ -870,21 +878,30 @@ const noTime = { count: 0, median: null, p75: null, mean: null };
 const timeSummary = (median: number) => ({ count: 4, median, p75: median * 2, mean: median });
 
 const securitySources = (): SecurityReport["sources"] => {
-  const ok = (readAt: string): SourceState => ({
-    status: "ok",
-    reason: null,
-    readAt,
-    attemptedAt: readAt,
-    truncated: false,
-    error: null,
-  });
+  const ok = (readAt: string): SourceState => ({ status: "ok", readAt, attemptedAt: readAt, truncated: false, skipped: 0 });
   return {
     dependabot: ok("2026-03-01T10:00:00Z"),
     code_scanning: ok("2026-03-01T10:01:00Z"),
     secret_scanning: ok("2026-03-01T10:02:00Z"),
-    osv: { status: "off", reason: "lookup_off", readAt: null, attemptedAt: null, truncated: false, error: null },
+    osv: { status: "not_used", reason: "lookup_off", attemptedAt: "2026-03-01T10:00:00Z" },
   };
 };
+
+const attempted = "2026-03-01T10:00:00Z";
+
+/** A source switched off, a source the credential cannot read, and one whose last attempt failed. */
+export const offSource = (reason: OffReason = "disabled"): SourceState => ({ status: "off", reason, attemptedAt: attempted });
+export const noAccessSource = (reason: NoAccessReason = "forbidden"): SourceState => ({
+  status: "no_access",
+  reason,
+  attemptedAt: attempted,
+});
+export const errorSource = (error = "GitHub answered 502", lastGood: SourceRead | null = null): SourceState => ({
+  status: "error",
+  error,
+  attemptedAt: "2026-03-02T10:00:00Z",
+  lastGood,
+});
 
 const noRules: BranchRules = {
   requirePullRequest: null,
@@ -898,22 +915,38 @@ const noRules: BranchRules = {
   requireLinearHistory: null,
 };
 
-export function securityAction(overrides: Partial<SecurityAction> = {}): SecurityAction {
-  return {
+type ActionOverrides = Partial<Pick<SecurityAction, "severity" | "count" | "target" | "likelyExploited" | "refs">> & {
+  kind?: SecurityActionKind;
+  band?: Band | null;
+  onPath?: boolean;
+  /** Only read for the two dependency kinds. */
+  package?: Partial<ActionPackage>;
+};
+
+const dependencyPackage: ActionPackage = {
+  ecosystem: "npm",
+  name: "left-pad",
+  manifestPath: "package-lock.json",
+  relationship: "direct",
+  upgradeTo: "1.3.1",
+};
+
+/** An upgrade of left-pad unless the overrides say another kind, which then carries no package. */
+export function securityAction(overrides: ActionOverrides = {}): SecurityAction {
+  const { package: pkg, ...rest } = overrides;
+  const action = {
     kind: "upgrade_dependency",
     band: "medium",
     onPath: true,
     severity: "critical",
     count: 2,
     target: "npm:left-pad",
-    upgradeTo: "1.3.1",
-    ecosystem: "npm",
-    manifestPath: "package-lock.json",
-    relationship: "direct",
     likelyExploited: false,
     refs: [{ label: "Prototype pollution in left-pad", url: "https://github.com/acme/widgets/security/dependabot/1" }],
-    ...overrides,
+    ...rest,
   };
+  const dependency = action.kind === "upgrade_dependency" || action.kind === "replace_dependency";
+  return (dependency ? { ...action, package: { ...dependencyPackage, ...pkg } } : action) as SecurityAction;
 }
 
 export function securityAlert(overrides: Partial<SecurityAlertRef> = {}): SecurityAlertRef {
@@ -943,15 +976,19 @@ const line = (
   total = items.length,
 ): SupplyChainLine => ({ check, met, graded, items, total });
 
+type ReportFields = Omit<SecurityReport, "grade" | "gradeMissing">;
+
+/** The fields of a report, with the grade or the reason for none given as two optional fields that are settled together. */
+type ReportOverrides = Partial<ReportFields> & { grade?: SecurityGrade | null; gradeMissing?: SecurityGradeMissing | null };
+
 /** A report for acme/widgets that is graded medium, with a little of everything so each section has something to show. */
-export function securityReport(overrides: Partial<SecurityReport> = {}): SecurityReport {
-  return {
+export function securityReport(overrides: ReportOverrides = {}): SecurityReport {
+  const merged: ReportFields & { grade: SecurityGrade | null; gradeMissing: SecurityGradeMissing | null } = {
     repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z" },
     range: { from: "2026-01-01T00:00:00Z", to: "2026-03-01T23:59:59Z" },
     gradedAt: "2026-03-01T12:00:00Z",
-    fixWithinDays: { critical: 7, high: 30, medium: 90, low: 180 },
-    likelyExploitedEpss: 0.1,
     thresholds: {
+      fixWithinDays: { critical: 7, high: 30, medium: 90, low: 180 },
       staleUpdateDays: 30,
       likelyExploitedEpss: 0.1,
       lowAlertAdviceDays: 180,
@@ -980,26 +1017,35 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
       ],
     },
     ecosystems: ["npm", "github-actions"],
+    supplyChainFailure: null,
+    postureFailure: null,
     posture: {
-      visibility: "public",
-      isAdmin: false,
-      branch: {
-        name: "main",
-        protected: true,
-        rules: { ...noRules, requirePullRequest: true, requiredApprovals: 1, blockForcePushes: false, requireStatusChecks: null },
-        detail: "rulesets_only",
+      readAt: "2026-03-01T10:03:00Z",
+      value: {
+        visibility: "public",
+        isAdmin: false,
+        branch: {
+          name: "main",
+          protected: true,
+          rules: {
+            ...noRules,
+            requirePullRequest: true,
+            requiredApprovals: 1,
+            blockForcePushes: false,
+            requireStatusChecks: null,
+          },
+          detail: "rulesets_only",
+        },
+        settings: {
+          dependabotSecurityUpdates: true,
+          secretScanning: null,
+          pushProtection: false,
+          validityChecks: null,
+          privateVulnerabilityReporting: null,
+        },
+        advisories: null,
       },
-      settings: {
-        dependabotSecurityUpdates: true,
-        secretScanning: null,
-        pushProtection: false,
-        validityChecks: null,
-        privateVulnerabilityReporting: null,
-      },
-      advisories: null,
     },
-    postureReadAt: "2026-03-01T10:03:00Z",
-    postureError: null,
     dependabotVersionUpdates: null,
     grade: {
       overall: { band: "medium", check: "criticalOpen", reason: "criticalOpen", part: "vulnerabilities" },
@@ -1031,7 +1077,6 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
     ],
     raiseGrade: { to: "high", actions: 2 },
     open: {
-      total: 6,
       bySeverity: { critical: 1, high: 2, medium: 2, low: 1, unknown: 0 },
       bySource: { dependabot: 4, code_scanning: 2, secret_scanning: 0, osv: 0 },
       pastFix: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0 },
@@ -1144,14 +1189,16 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
     },
     securityIssues: { open: 2, oldestOpenDays: 20, closedInRange: 1, timeToClose: timeSummary(72) },
     scorecard: {
-      score: 6.4,
-      date: "2026-02-28",
-      checks: [
-        { name: "Branch-Protection", score: 3, reason: "branch protection is not maximal" },
-        { name: "Fuzzing", score: -1, reason: "no fuzzer integration found" },
-      ],
+      status: "ok",
+      result: {
+        score: 6.4,
+        date: "2026-02-28",
+        checks: [
+          { name: "Branch-Protection", score: 3, reason: "branch protection is not maximal" },
+          { name: "Fuzzing", score: -1, reason: "no fuzzer integration found" },
+        ],
+      },
     },
-    scorecardStatus: "ok",
     actions: [
       securityAction(),
       securityAction({
@@ -1161,10 +1208,6 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
         severity: null,
         count: 1,
         target: ".github/workflows/ci.yml",
-        upgradeTo: null,
-        ecosystem: null,
-        manifestPath: null,
-        relationship: null,
         refs: [{ label: "acme-tools/setup@v2", url: null }],
       }),
       securityAction({
@@ -1174,10 +1217,6 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
         severity: null,
         count: 1,
         target: null,
-        upgradeTo: null,
-        ecosystem: null,
-        manifestPath: null,
-        relationship: null,
         refs: [],
       }),
       securityAction({
@@ -1187,39 +1226,30 @@ export function securityReport(overrides: Partial<SecurityReport> = {}): Securit
         severity: null,
         count: 1,
         target: null,
-        upgradeTo: null,
-        ecosystem: null,
-        manifestPath: null,
-        relationship: null,
         refs: [],
       }),
     ],
     ...overrides,
   };
+  const { grade, gradeMissing, ...rest } = merged;
+  return grade
+    ? { ...rest, grade, gradeMissing: null }
+    : { ...rest, grade: null, gradeMissing: gradeMissing ?? "nothing_measured" };
 }
 
 /** A report with nothing graded, so RepoPage's own "High" bands are the only ones on the page. */
-export function noSecurity(overrides: Partial<SecurityReport> = {}): SecurityReport {
-  const notRead: SourceState = {
-    status: "not_read",
-    reason: null,
-    readAt: null,
-    attemptedAt: null,
-    truncated: false,
-    error: null,
-  };
+export function noSecurity(overrides: ReportOverrides = {}): SecurityReport {
+  const notRead: SourceState = { status: "not_read" };
   return securityReport({
     sources: { dependabot: notRead, code_scanning: notRead, secret_scanning: notRead, osv: notRead },
     supplyChain: { status: "none", reason: "not_read" },
     ecosystems: [],
     posture: null,
-    postureReadAt: null,
     grade: null,
     gradeMissing: "not_crawled",
     checks: [],
     raiseGrade: null,
     open: {
-      total: 0,
       bySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
       bySource: { dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 },
       pastFix: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
@@ -1242,15 +1272,21 @@ export function noSecurity(overrides: Partial<SecurityReport> = {}): SecurityRep
       oldestOpenDays: null,
     },
     securityIssues: null,
-    scorecard: null,
-    scorecardStatus: "off",
+    scorecard: { status: "off" },
     actions: [],
     ...overrides,
   });
 }
 
-export function securitySummary(overrides: Partial<SecuritySummary> = {}): SecuritySummary {
-  return {
+type SummaryOverrides = Partial<Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing">> & {
+  band?: Band | null;
+  limitedBy?: { part: SecurityPartName; check: SecurityCheckName | "all" } | null;
+  gradeMissing?: SecurityGradeMissing | null;
+};
+
+export function securitySummary(overrides: SummaryOverrides = {}): SecuritySummary {
+  const merged: Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing"> &
+    Required<Pick<SummaryOverrides, "band" | "limitedBy" | "gradeMissing">> = {
     repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z", crawlStatus: "idle" },
     band: "medium",
     limitedBy: { part: "vulnerabilities", check: "criticalOpen" },
@@ -1263,7 +1299,8 @@ export function securitySummary(overrides: Partial<SecuritySummary> = {}): Secur
     read: true,
     dependabotVersionUpdates: null,
     unmeasured: [],
-    sources: { dependabot: "ok", code_scanning: "ok", secret_scanning: "no_access", osv: "off" },
+    sources: { dependabot: "ok", code_scanning: "ok", secret_scanning: "no_access", osv: "not_used" },
+    used: { dependabot: true, code_scanning: true, secret_scanning: false, osv: false },
     supplyChain: "ok",
     readAt: "2026-03-01T10:02:00Z",
     failed: false,
@@ -1272,4 +1309,8 @@ export function securitySummary(overrides: Partial<SecuritySummary> = {}): Secur
     topAction: securityAction(),
     ...overrides,
   };
+  const { band, limitedBy, gradeMissing, ...rest } = merged;
+  return band && limitedBy
+    ? { ...rest, band, limitedBy, gradeMissing: null }
+    : { ...rest, band: null, limitedBy: null, gradeMissing: gradeMissing ?? "nothing_measured" };
 }

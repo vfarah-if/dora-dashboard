@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REVIEW_EXEMPTIONS,
+  ExemptionMatcher,
   REVIEW_EXEMPTION_DEFAULTS,
   REVIEW_EXEMPTION_LIMITS,
   exemptionMatcher,
@@ -77,6 +78,37 @@ describe("the defaults", () => {
     expect(DEFAULT_REVIEW_EXEMPTIONS.labels).toEqual(["reviewed-elsewhere"]);
     expect(REVIEW_EXEMPTION_DEFAULTS).toEqual({ ...DEFAULT_REVIEW_EXEMPTIONS, limits: REVIEW_EXEMPTION_LIMITS });
     expect(REVIEW_EXEMPTION_LIMITS).toEqual({ titleWords: 30, labels: 30, length: 100 });
+  });
+
+  it("are frozen, so no caller can change them for every other one", () => {
+    for (const shared of [
+      DEFAULT_REVIEW_EXEMPTIONS,
+      DEFAULT_REVIEW_EXEMPTIONS.titleWords,
+      DEFAULT_REVIEW_EXEMPTIONS.labels,
+      REVIEW_EXEMPTION_DEFAULTS,
+      REVIEW_EXEMPTION_DEFAULTS.limits,
+      REVIEW_EXEMPTION_LIMITS,
+    ]) {
+      expect(Object.isFrozen(shared)).toBe(true);
+    }
+    expect(() => (DEFAULT_REVIEW_EXEMPTIONS.labels as string[]).push("anything")).toThrow(TypeError);
+    expect(isReviewExempt({ title: "Add widget", labels: ["anything"] }, exemptionMatcher())).toBe(false);
+  });
+});
+
+describe("exemptionMatcher", () => {
+  it("is built only from rules, which it lowers itself, so labels saved in any case match", () => {
+    const matcher = exemptionMatcher({ titleWords: ["Vendor Sync"], labels: ["Reviewed-Elsewhere"] });
+    expect(matcher).toBeInstanceOf(ExemptionMatcher);
+    expect(isReviewExempt({ title: "Add widget", labels: ["REVIEWED-ELSEWHERE"] }, matcher)).toBe(true);
+    expect(isReviewExempt({ title: "vendor SYNC for May", labels: null }, matcher)).toBe(true);
+  });
+
+  it("shows none of its parts, so a hand-made object of words and labels cannot stand in for one", () => {
+    expect(Object.keys(exemptionMatcher())).toEqual([]);
+    const handMade = { phrases: [], labels: new Set(["Reviewed-Elsewhere"]) };
+    // @ts-expect-error a plain object of parts is not a matcher
+    expect(() => isReviewExempt({ title: "Add widget", labels: ["Reviewed-Elsewhere"] }, handMade)).toThrow(TypeError);
   });
 });
 

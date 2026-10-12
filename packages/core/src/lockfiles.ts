@@ -6,7 +6,7 @@
 import { baseName, isTestPath } from "./codeTooling.js";
 import type { LockedEcosystem, LockedPackage, LockfileSummary } from "./securityTypes.js";
 
-/** The most public packages one lockfile yields. Entries past it are still counted in the summary. */
+/** The most public packages one lockfile yields. Entries past it are still counted, and the summary says it is capped. */
 export const MAX_LOCKED_PACKAGES = 20_000;
 
 const MAX_LINE = 2_000;
@@ -47,6 +47,7 @@ interface Collected {
   packages: LockedPackage[];
   found: number;
   publicPackages: number;
+  capped: boolean;
 }
 
 const VERSION = /^\d[0-9A-Za-z.+_-]{0,99}$/;
@@ -70,7 +71,7 @@ function collector(ecosystem: LockedEcosystem, lockfile: string) {
       publicPackages++;
       if (packages.length < MAX_LOCKED_PACKAGES) packages.push({ ecosystem, name, version, lockfile });
     },
-    done: (): Collected => ({ packages, found, publicPackages }),
+    done: (): Collected => ({ packages, found, publicPackages, capped: publicPackages > packages.length }),
   };
 }
 
@@ -186,11 +187,24 @@ interface TomlPackage {
   version: string | null;
   /** The raw value of a `source = ...` key, or null. */
   source: string | null;
-  /** True when the package has its own `[package.source]` table. */
-  sourceTable: boolean;
+  /**
+   * True when the package names a source in any form: a `source = ...` key with any value, inline table included,
+   * a dotted key such as `source.type = ...`, or its own `[package.source]` table.
+   */
+  hasSource: boolean;
 }
 
 const quoted = (value: string): string | null => /^"([^"]*)"\s*$/.exec(value)?.[1] ?? null;
+
+// TOML allows any key bare, in double quotes or in single quotes, with spaces around the dots of a dotted key.
+const PACKAGE = String.raw`(?:package|"package"|'package')`;
+const SOURCE = String.raw`(?:source|"source"|'source')`;
+/** A key that names the package's source, whether it is set whole (`source =`) or dotted (`source.type =`). */
+const SOURCE_KEY = new RegExp(String.raw`^${SOURCE}\s*[.=]`);
+/** A table header for the package's source, such as `[package.source]` or `[package."source"]`. */
+const SOURCE_TABLE = new RegExp(String.raw`^\[\s*${PACKAGE}\s*\.\s*${SOURCE}\s*[\].]`);
+/** A table header inside the current package, such as `[package.dependencies]`, which keeps the package current. */
+const PACKAGE_TABLE = new RegExp(String.raw`^\[\[?\s*${PACKAGE}\s*\.`);
 
 /**
  * The `[[package]]` blocks of a lock file. Keys are read only from the package's own table, so a dependency that is
@@ -208,13 +222,14 @@ function tomlPackages(content: string): TomlPackage[] | null {
     if (line.startsWith("[")) {
       inOwnTable = line === "[[package]]";
       if (inOwnTable) {
-        current = { name: null, version: null, source: null, sourceTable: false };
+        current = { name: null, version: null, source: null, hasSource: false };
         packages.push(current);
-      } else if (line === "[package.source]" && current) current.sourceTable = true;
-      else if (!/^\[\[?package\./.test(line)) current = null;
+      } else if (SOURCE_TABLE.test(line) && current) current.hasSource = true;
+      else if (!PACKAGE_TABLE.test(line)) current = null;
       continue;
     }
     if (!inOwnTable || !current) continue;
+    if (SOURCE_KEY.test(line)) current.hasSource = true;
     const key = /^(name|version|source)\s*=\s*(.*)$/.exec(line);
     if (!key) continue;
     if (key[1] === "name") current.name = quoted(key[2]!);
@@ -245,11 +260,12 @@ const readCargo = readToml("crates.io", ({ source }) => {
 /**
  * Poetry is the one reader that keeps an entry unless it proves otherwise, because poetry.lock gives a public package
  * no positive signal: a package from PyPI carries no `source`, and only one from a private index, a git URL, a path or
- * an archive has a `[package.source]` table (with `type`, `url` and `reference`). Reading every entry that has such a
- * table as private is therefore safe, since Poetry writes the table for every source but PyPI. A package that Poetry
- * resolved from a private index never lacks the table, so nothing private is sent to OSV by this default.
+ * an archive names a source (with `type`, `url` and `reference`). Poetry writes that as a `[package.source]` table, but
+ * TOML allows the same thing as an inline table (`source = { type = "legacy", ... }`) or as dotted keys
+ * (`source.type = "legacy"`), so a package that names a source in any of these forms is private. Since every source
+ * but PyPI is written down, nothing Poetry resolved from a private index is sent to OSV by this default.
  */
-const readPoetry = readToml("PyPI", ({ sourceTable }) => !sourceTable);
+const readPoetry = readToml("PyPI", ({ hasSource }) => !hasSource);
 
 const readUv = readToml("PyPI", ({ source }) => {
   const registry = source === null ? null : /^\{\s*registry\s*=\s*"([^"]*)"\s*\}$/.exec(source)?.[1];
@@ -338,16 +354,23 @@ const READERS = new Map<string, Reader>([
 ]);
 
 /**
+ * True when every public package of the lockfile was kept for lookup: it was parsed and not capped. Only such a
+ * lockfile can say that an alert it no longer yields is fixed.
+ */
+export const isLockfileComplete = (summary: LockfileSummary): boolean => summary.read === "parsed" && !summary.capped;
+
+/**
  * The public-registry packages of one lockfile and a summary of how it read. Deduplicated by name and version and
  * capped at `MAX_LOCKED_PACKAGES`. Never throws: anything it cannot understand is `malformed`, and a lockfile whose
  * registry cannot be proved (pnpm, Yarn Berry, Bun, Go, Composer) is `not_supported` with no packages.
  */
 export function readLockfile(path: string, content: string): { summary: LockfileSummary; packages: LockedPackage[] } {
-  const summarise = (read: LockfileSummary["read"], packages = 0, publicPackages = 0): LockfileSummary => ({
+  const summarise = (read: LockfileSummary["read"], packages = 0, publicPackages = 0, capped = false): LockfileSummary => ({
     path,
     read,
     packages,
     publicPackages,
+    capped,
   });
   const reader = READERS.get(baseName(path));
   if (!reader) return { summary: summarise("not_supported"), packages: [] };
@@ -355,7 +378,10 @@ export function readLockfile(path: string, content: string): { summary: Lockfile
   try {
     const result = reader(path, content);
     if (result === "malformed" || result === "not_supported") return { summary: summarise(result), packages: [] };
-    return { summary: summarise("parsed", result.found, result.publicPackages), packages: result.packages };
+    return {
+      summary: summarise("parsed", result.found, result.publicPackages, result.capped),
+      packages: result.packages,
+    };
   } catch {
     return { summary: summarise("malformed"), packages: [] };
   }

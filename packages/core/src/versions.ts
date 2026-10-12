@@ -2,8 +2,9 @@ const DOTTED = /^v?(\d+(?:\.\d+)*)$/;
 
 /**
  * Compares two dotted numeric versions such as `1.2.10` and `1.2.9`, with an optional leading `v`; a missing part
- * counts as zero, so `1.2` equals `1.2.0`. Answers null for anything else, such as a pre-release or a component too large to compare exactly, because ordering those
- * is ecosystem specific and a wrong answer would advise the wrong upgrade.
+ * counts as zero, so `1.2` equals `1.2.0`. Answers null for anything else, such as a pre-release or a component too
+ * large to compare exactly, because ordering those is ecosystem specific and a wrong answer would advise the wrong
+ * upgrade.
  */
 export function compareVersions(a: string, b: string): number | null {
   const left = DOTTED.exec(a.trim());

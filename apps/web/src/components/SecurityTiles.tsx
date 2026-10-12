@@ -41,7 +41,7 @@ export function OpenAlertTiles({ report }: { report: SecurityReport }) {
               tone={past > 0 ? "danger" : undefined}
               hint={
                 <>
-                  <span className="hint-line">{severityExplanation(severity, report.fixWithinDays)}</span>
+                  <span className="hint-line">{severityExplanation(severity, report.thresholds.fixWithinDays)}</span>
                   <span className="hint-line">{past > 0 ? c.open.pastFix(past) : c.open.withinFix}</span>
                 </>
               }
@@ -55,10 +55,10 @@ export function OpenAlertTiles({ report }: { report: SecurityReport }) {
         />
       </div>
       <p className="chart-subtitle">{c.likelyExploitedWhy(likelyShare(report.thresholds))}</p>
-      {open.total === 0 ? (
+      {report.openAlertTotal === 0 ? (
         <p className="chart-subtitle">{unreadParts(report).length > 0 ? c.open.noneButUnread : c.open.none}</p>
       ) : (
-        <p className="chart-subtitle">{c.open.total(open.total, sources)}</p>
+        <p className="chart-subtitle">{c.open.total(report.openAlertTotal, sources)}</p>
       )}
     </SecurityBlock>
   );

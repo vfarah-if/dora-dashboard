@@ -1,4 +1,12 @@
-import { LIKELY_EXPLOITED_EPSS, type SecurityAlert, type Severity, type SourceState } from "./securityTypes.js";
+import {
+  LIKELY_EXPLOITED_EPSS,
+  type AlertSource,
+  type SecurityAlert,
+  type Severity,
+  type SourceError,
+  type SourceRead,
+  type SourceState,
+} from "./securityTypes.js";
 
 /**
  * How severities rank, lowest number worst. An unrated alert is graded as medium (`FIX_WITHIN_DAYS`), so it ranks just
@@ -18,10 +26,12 @@ const RULE_SEVERITY: Record<"none" | "note" | "warning" | "error", Severity> = {
 };
 
 /**
- * An alert's severity, worked out when a report is built so a change to the mapping needs no crawl (as issue kinds are,
- * ADR 0028). Null for a code scanning alert that is about quality rather than security, which is never graded.
+ * An alert's severity. For code scanning and secret scanning it is worked out when a report is built, so a change to
+ * that mapping needs no crawl (as issue kinds are, ADR 0028). Null for a code scanning alert that is about quality
+ * rather than security, which is never graded.
  *
- * - Dependabot and OSV: the severity as published.
+ * - Dependabot and OSV: the severity as published, mapped once when the alert is read and stored with it, so a change
+ *   to that mapping applies from the next crawl that reads the alert.
  * - Code scanning: GitHub's security severity when there is one; otherwise, for a rule tagged `security`, error is high,
  *   warning medium and note low.
  * - Secret scanning: a secret that still works, may still work, or has leaked publicly is critical; one GitHub says no
@@ -45,9 +55,40 @@ export function severityOf(alert: SecurityAlert): Severity | null {
   }
 }
 
+/**
+ * The read whose alerts a source's state stands on: this attempt's when it succeeded, or the last good one an `error`
+ * state carries. Null for every other state, including `no_access`, whose stored alerts are kept but not used.
+ */
+export function lastGoodRead(state: SourceState): SourceRead | null {
+  if (state.status === "ok") return { readAt: state.readAt, truncated: state.truncated, skipped: state.skipped };
+  return state.status === "error" ? state.lastGood : null;
+}
+
 /** A source's alerts can be used when it was read, or when its last read failed but an earlier one succeeded. */
 export function isUsable(state: SourceState): boolean {
-  return state.status === "ok" || (state.status === "error" && state.readAt !== null);
+  return lastGoodRead(state) !== null;
+}
+
+/**
+ * The state after an attempt failed. The last good read is kept only from an `ok` state or from an `error` state that
+ * still had one, so a failure after `no_access`, `off` or `not_used` cannot bring back alerts that were not in use.
+ */
+export function failedSource(previous: SourceState, error: string, attemptedAt: string): SourceError {
+  return { status: "error", error, attemptedAt, lastGood: lastGoodRead(previous) };
+}
+
+/**
+ * Whether each source's alerts count. Dependency alerts come from Dependabot when it is usable and otherwise from OSV,
+ * so the two are never counted together; code scanning and secret scanning count when usable.
+ */
+export function usedSources(sources: Record<AlertSource, SourceState>): Record<AlertSource, boolean> {
+  const dependabot = isUsable(sources.dependabot);
+  return {
+    dependabot,
+    code_scanning: isUsable(sources.code_scanning),
+    secret_scanning: isUsable(sources.secret_scanning),
+    osv: !dependabot && isUsable(sources.osv),
+  };
 }
 
 /** The exploit prediction for a dependency alert, or null for any other kind or when none is published. */

@@ -8,6 +8,11 @@ export interface CloneView {
   commitSha: string;
   /** POSIX paths relative to the clone, regular files only, as `WorkspaceReader.list` returns them. */
   paths: readonly string[];
+  /**
+   * False when the walk that made `paths` was cut short or skipped a directory it could not read, so a file missing from
+   * it may still exist. An inspector must not take a missing file to mean a deleted one.
+   */
+  listingComplete: boolean;
   /** The file's text, or null when it is missing, a link, not a regular file or larger than `maxBytes`. */
   read(path: string, maxBytes: number): Promise<string | null>;
 }
@@ -19,10 +24,13 @@ export interface CloneView {
  * - `isStale` says whether the facts held for `repoId` need reading again for `head`, the branch's current commit. It
  *   is asked when the head has not moved since the last code snapshot, and a true answer makes code health clone once
  *   just to call `inspect`, without analysing or saving a code snapshot.
+ * - `fail` records, beside the facts the inspector holds, that an inspection of the clone failed, with a message that is
+ *   safe to show; the next good `inspect` clears it. It is best effort and may throw, and the caller logs that.
  * - `inspect` may throw. The caller logs it and carries on, so a failure here never costs the code snapshot.
  * - An inspector never runs anything from the clone and never reads outside the view.
  */
 export interface CloneInspector {
   isStale(repoId: number, head: string): boolean;
   inspect(view: CloneView): Promise<void>;
+  fail(repoId: number, message: string): void;
 }

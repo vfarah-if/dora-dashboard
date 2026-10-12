@@ -83,9 +83,10 @@ try {
   // Coverage is read alongside the analysis, so switching analysis off switches it off too.
   const coverage = config.codeAnalysis ? new CoverageService(store, new GitHubCoverageSource(), undefined, log) : undefined;
   const issues = new IssueCrawlService(store, new GitHubIssueProvider(), log);
+  const alertSource = new GitHubSecurityAlertSource();
   const security = new SecurityCrawlService(
     store,
-    new GitHubSecurityAlertSource(),
+    alertSource,
     config.osvLookup ? new OsvVulnerabilityDatabase() : null,
     config.scorecardLookup ? new OpenSsfScorecardSource() : null,
     () => new Date(),
@@ -103,6 +104,7 @@ try {
   const [summary] = new SecurityReportService(store, store, {
     codeAnalysis: config.codeAnalysis,
     scorecardLookup: config.scorecardLookup,
+    settingsUrl: (owner, name) => alertSource.settingsUrl(owner, name),
   }).summaries([repo.id]);
   if (summary) console.log(describeSecurity(summary));
 } finally {

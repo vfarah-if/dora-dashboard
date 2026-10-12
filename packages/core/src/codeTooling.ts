@@ -135,6 +135,8 @@ export function toolingCandidates(paths: readonly string[], limit = 200): string
 // pattern runs over more than one short command at a time.
 
 const MAX_LINE = 2_000;
+/** The most lines of one file `commandsByFile` reads, as the supply chain reader's own limit in `supplyChain.ts`. */
+const MAX_FILE_LINES = 20_000;
 const MAX_CI_CHARS = 1_000_000;
 const MAX_MAKE_LINE = 4_096;
 const MAX_MAKE_VARIABLE = 1_024;
@@ -174,22 +176,19 @@ function commandsOf(line: string): string[] {
 /** Splits on `&&`, `||`, `;` and `|`, but not inside quotes, so `echo "a && b"` stays one command. */
 function splitCommands(text: string): string[] {
   const commands: string[] = [];
-  let current = "";
+  let start = 0;
   let quote = "";
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]!;
     if (quote) quote = ch === quote ? "" : quote;
     else if (ch === '"' || ch === "'") quote = ch;
     const separator = !quote && (ch === ";" || ch === "|" || (ch === "&" && text[i + 1] === "&"));
-    if (!separator) {
-      current += ch;
-      continue;
-    }
-    commands.push(current.trim());
-    current = "";
+    if (!separator) continue;
+    commands.push(text.slice(start, i).trim());
     if (text[i + 1] === ch) i++;
+    start = i + 1;
   }
-  commands.push(current.trim());
+  commands.push(text.slice(start).trim());
   return commands;
 }
 
@@ -322,14 +321,12 @@ const commandSources = (files: readonly CandidateFile[]): CommandSources => ({
 function expandCommands({ scripts, targets }: CommandSources, lines: readonly string[]): string[] {
   const seen = new Set<string>();
   const commands: string[] = [];
-  const queue: string[] = [];
   let size = 0;
 
   const take = (found: readonly string[]) => {
     for (const command of found.flatMap(commandsOf)) {
       if ((size += command.length) > MAX_CI_CHARS) return;
       commands.push(command);
-      queue.push(command);
     }
   };
   const follow = (kind: "make" | "script", name: string) => {
@@ -340,7 +337,10 @@ function expandCommands({ scripts, targets }: CommandSources, lines: readonly st
   };
 
   take(lines);
-  for (let command = queue.shift(); command !== undefined; command = queue.shift()) {
+  // Each command is followed once, in the order found, and `take` appends what it leads to. An index walks the list
+  // rather than `shift()`, which copies the whole array once it is large and makes a long workflow quadratic.
+  for (let i = 0; i < commands.length; i++) {
+    const command = commands[i]!;
     for (const m of command.matchAll(/\bmake\s+([^\n;&|#]{0,200})/g)) words(m[1]!).forEach((w) => follow("make", w));
     for (const m of command.matchAll(PACKAGE_RUN)) follow("script", m[1]!);
     for (const m of command.matchAll(/\bturbo\s+(?:run\s+)?([^\n;&|#]{0,200})/g))
@@ -362,14 +362,15 @@ function ciCommands(files: readonly CandidateFile[]): string[] {
 /**
  * The commands each given file would run, keyed by path, with make targets and package scripts from `support` (the
  * Makefiles and package.json files) followed. Unlike `ciCommands` a step marked `continue-on-error` still counts,
- * because the supply chain facts ask what a workflow runs, not whether it can fail the build.
+ * because the supply chain facts ask what a workflow runs, not whether it can fail the build. Each file is read to its
+ * first 20,000 lines, as the rest of its supply chain facts are.
  */
 export function commandsByFile(files: readonly CandidateFile[], support: readonly CandidateFile[]): Map<string, string[]> {
   const sources = commandSources(support);
   const found = new Map<string, string[]>();
   for (const file of files) {
     const lines = file.content
-      .split("\n")
+      .split("\n", MAX_FILE_LINES)
       .map((raw) => raw.slice(0, MAX_LINE))
       .filter((line) => !line.trimStart().startsWith("#"));
     found.set(file.path, expandCommands(sources, lines));

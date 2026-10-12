@@ -8,9 +8,11 @@ import type { PullRequest, ReviewExemptionDefaults, ReviewExemptionRules } from 
  * the repository's labels. No pattern supplied by a user is ever run, so a rule cannot cause a slow match.
  */
 
-/** The title words and the label that apply until a repository overrides them. */
-export const DEFAULT_REVIEW_EXEMPTIONS: ReviewExemptionRules = {
-  titleWords: [
+type Frozen<T> = { readonly [K in keyof T]: T[K] extends (infer E)[] ? readonly E[] : Readonly<T[K]> };
+
+/** The title words and the label that apply until a repository overrides them. Frozen, as every caller shares it. */
+export const DEFAULT_REVIEW_EXEMPTIONS: Frozen<ReviewExemptionRules> = Object.freeze({
+  titleWords: Object.freeze([
     "sync",
     "synced",
     "syncing",
@@ -20,19 +22,22 @@ export const DEFAULT_REVIEW_EXEMPTIONS: ReviewExemptionRules = {
     "synchronized",
     "syncronise",
     "syncronize",
-  ],
-  labels: ["reviewed-elsewhere"],
-};
+  ]),
+  labels: Object.freeze(["reviewed-elsewhere"]),
+});
 
 /** The most entries each list may hold, and the most characters one entry may have. */
-export const REVIEW_EXEMPTION_LIMITS = { titleWords: 30, labels: 30, length: 100 } as const;
+export const REVIEW_EXEMPTION_LIMITS = Object.freeze({ titleWords: 30, labels: 30, length: 100 } as const);
 
-/** The defaults and the limits in the shape the web reads, as `IssueLabelDefaults` does for issue labels. */
-export const REVIEW_EXEMPTION_DEFAULTS: ReviewExemptionDefaults = {
-  titleWords: [...DEFAULT_REVIEW_EXEMPTIONS.titleWords],
-  labels: [...DEFAULT_REVIEW_EXEMPTIONS.labels],
-  limits: { ...REVIEW_EXEMPTION_LIMITS },
-};
+/**
+ * The defaults and the limits in the shape the web reads, as `IssueLabelDefaults` does for issue labels. Frozen, so a
+ * caller that wants to change it copies it first.
+ */
+export const REVIEW_EXEMPTION_DEFAULTS: Frozen<ReviewExemptionDefaults> = Object.freeze({
+  titleWords: DEFAULT_REVIEW_EXEMPTIONS.titleWords,
+  labels: DEFAULT_REVIEW_EXEMPTIONS.labels,
+  limits: REVIEW_EXEMPTION_LIMITS,
+});
 
 /** Lower case words made of letters and digits; any other character, punctuation included, ends a word. */
 export function wordsOf(text: string): string[] {
@@ -44,24 +49,6 @@ export function wordsOf(text: string): string[] {
 
 const normaliseLabel = (label: string) => label.trim().toLowerCase();
 
-/** A rule set ready to test pull requests against: each title word as a list of words, and the labels as a set. */
-export interface ExemptionMatcher {
-  phrases: string[][];
-  labels: Set<string>;
-}
-
-/**
- * The matcher for a repository's rules. A saved override replaces both defaults lists, so a list left empty exempts
- * nothing of that kind; `null` or no rules at all means the defaults.
- */
-export function exemptionMatcher(rules?: ReviewExemptionRules | null): ExemptionMatcher {
-  const used = rules ?? DEFAULT_REVIEW_EXEMPTIONS;
-  return {
-    phrases: used.titleWords.map(wordsOf).filter((phrase) => phrase.length > 0),
-    labels: new Set(used.labels.map(normaliseLabel).filter((label) => label !== "")),
-  };
-}
-
 function holdsPhrase(words: readonly string[], phrase: readonly string[]): boolean {
   for (let start = 0; start + phrase.length <= words.length; start++) {
     if (phrase.every((word, offset) => words[start + offset] === word)) return true;
@@ -69,11 +56,37 @@ function holdsPhrase(words: readonly string[], phrase: readonly string[]): boole
   return false;
 }
 
+/**
+ * A repository's rules ready to test pull requests against. It can only be built from rules, which it reduces to
+ * lower case words and labels itself, and its parts are private, so no caller can hand it labels in another case that
+ * would then never match.
+ */
+export class ExemptionMatcher {
+  readonly #phrases: readonly (readonly string[])[];
+  readonly #labels: ReadonlySet<string>;
+
+  /** A saved override replaces both default lists, so a list left empty exempts nothing of that kind. */
+  constructor(rules: Frozen<ReviewExemptionRules>) {
+    this.#phrases = rules.titleWords.map(wordsOf).filter((phrase) => phrase.length > 0);
+    this.#labels = new Set(rules.labels.map(normaliseLabel).filter((label) => label !== ""));
+  }
+
+  /** True when the title holds one of the words as a whole word, or the pull request has one of the labels. */
+  exempts(pr: Pick<PullRequest, "title" | "labels">): boolean {
+    const words = wordsOf(pr.title);
+    if (this.#phrases.some((phrase) => holdsPhrase(words, phrase))) return true;
+    return (pr.labels ?? []).some((label) => this.#labels.has(normaliseLabel(label)));
+  }
+}
+
+/** The matcher for a repository's rules; `null` or no rules at all means the defaults. */
+export function exemptionMatcher(rules?: ReviewExemptionRules | null): ExemptionMatcher {
+  return new ExemptionMatcher(rules ?? DEFAULT_REVIEW_EXEMPTIONS);
+}
+
 /** True when the title holds one of the words as a whole word, or the pull request has one of the labels. */
 export function isReviewExempt(pr: Pick<PullRequest, "title" | "labels">, matcher: ExemptionMatcher): boolean {
-  const words = wordsOf(pr.title);
-  if (matcher.phrases.some((phrase) => holdsPhrase(words, phrase))) return true;
-  return (pr.labels ?? []).some((label) => matcher.labels.has(normaliseLabel(label)));
+  return matcher.exempts(pr);
 }
 
 /**

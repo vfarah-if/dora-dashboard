@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { osvFindings, reconcileOsvAlerts } from "../src/osvAlerts.js";
-import { depAlert, lockedPackage, vulnerability } from "./security.js";
+import { osvFindings, osvPackageKey, presentLockfiles, reconcileOsvAlerts } from "../src/osvAlerts.js";
+import { emptyFacts, lockedPackage, osvAlert, vulnerability } from "./security.js";
 
 const NOW = "2026-03-01T00:00:00Z";
 const EARLIER = "2026-01-01T00:00:00Z";
@@ -40,6 +40,12 @@ describe("osvFindings", () => {
 
   it("makes no alert for a package with no vulnerabilities or no answer", () => {
     expect(osvFindings([lockedPackage(), lockedPackage({ name: "ms" })], [[]], NOW)).toEqual([]);
+  });
+
+  it("makes no alert for a package whose answer was cut short, and still reads the packages after it", () => {
+    const packages = [lockedPackage(), lockedPackage({ name: "ms" })];
+    const alerts = osvFindings(packages, [null, [vulnerability({ id: "GHSA-ms", aliases: [] })]], NOW);
+    expect(alerts.map((a) => a.key)).toEqual(["GHSA-ms|npm|ms|package-lock.json"]);
   });
 
   it("groups a record and its alias record into one finding named by the GHSA id", () => {
@@ -125,6 +131,15 @@ describe("osvFindings", () => {
     ["the lowest of the fixes when the locked version cannot be placed", "nightly", ["2.0.0", "1.5.0"], "1.5.0"],
     ["the first fix in text order when nothing compares", "nightly", ["2.0.0-rc.2", "2.0.0-rc.1"], "2.0.0-rc.1"],
     ["a pre-release fix when only pre-releases exist for a pre-release", "1.0.0-beta", ["1.0.0-rc.1"], "1.0.0-rc.1"],
+    // A fix from an older release line, such as a backport, is below a pre-release of a later one.
+    ["nothing below a pre-release's own release", "1.0.0-beta", ["0.9.0"], null],
+    ["a pre-release fix rather than a release below", "1.0.0-beta", ["0.9.0", "1.0.0-rc.1"], "1.0.0-rc.1"],
+    ["no pre-release fix of an older release", "1.0.0-beta", ["0.9.0-rc.1"], null],
+    ["no fix that cannot be placed, beside a pre-release", "1.0.0-beta", ["nightly"], null],
+    // Text order would put "10.0.0-rc" first; by release, 9.1.0 is the lower.
+    ["the pre-release fix of the lowest release", "9.0.0-beta", ["10.0.0-rc", "9.1.0-rc"], "9.1.0-rc"],
+    ["no pre-release fix whose release is too large to compare", "1.0.0-beta", ["99999999999999999999.0.0-rc"], null],
+    ["the first fix in text order when no fix has a release", "nightly", ["zeta", "alpha"], "alpha"],
   ])("offers %s", (_, locked, fixed, expected) => {
     const found = osvFindings([lockedPackage({ version: locked })], [[vulnerability({ fixedVersions: fixed })]], NOW);
     expect(found[0]!.dependency.patchedVersion).toBe(expected);
@@ -169,10 +184,43 @@ describe("osvFindings", () => {
   });
 });
 
+describe("osvPackageKey", () => {
+  it("names a package by ecosystem, name and lockfile, leaving the version out", () => {
+    expect(osvPackageKey(lockedPackage({ version: "1.0.0" }))).toBe(osvPackageKey(lockedPackage({ version: "2.0.0" })));
+    expect(osvPackageKey(lockedPackage())).not.toBe(osvPackageKey(lockedPackage({ lockfile: "web/package-lock.json" })));
+  });
+
+  it("cannot be confused by a separator inside a name", () => {
+    const a = osvPackageKey({ ecosystem: "npm", name: "a|b", lockfile: "c" });
+    const b = osvPackageKey({ ecosystem: "npm", name: "a", lockfile: "b|c" });
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("presentLockfiles", () => {
+  const summary = (path: string) => ({ path, read: "parsed" as const, packages: 1, publicPackages: 1, capped: false });
+  const lockfiles = [summary("package-lock.json"), summary("web/yarn.lock")];
+
+  it("gives every lockfile of a complete listing, read or not", () => {
+    expect(presentLockfiles(emptyFacts({ lockfiles, listingComplete: true }))).toEqual(
+      new Set(["package-lock.json", "web/yarn.lock"]),
+    );
+  });
+
+  it("gives none for a listing that stopped short, since a lockfile it left out may still exist", () => {
+    expect(presentLockfiles(emptyFacts({ lockfiles, listingComplete: false }))).toBeNull();
+  });
+
+  it("reads a record stored before the listing was flagged as one that stopped short", () => {
+    const { listingComplete: _, ...older } = emptyFacts({ lockfiles });
+    expect("listingComplete" in older).toBe(false);
+    expect(presentLockfiles(older)).toBeNull();
+  });
+});
+
 describe("reconcileOsvAlerts", () => {
-  const stored = (overrides: Parameters<typeof depAlert>[0] = {}) =>
-    depAlert({
-      source: "osv",
+  const stored = (overrides: Parameters<typeof osvAlert>[0] = {}) =>
+    osvAlert({
       key: "k1",
       createdAt: EARLIER,
       ...overrides,
@@ -183,7 +231,9 @@ describe("reconcileOsvAlerts", () => {
     now: NOW,
     lockfilesRead: new Set(paths),
     lockfilesPresent: new Set([...paths, "package-lock.json"]),
+    unanswered: new Set<string>(),
   });
+  const lodash = osvPackageKey({ ecosystem: "npm", name: "lodash", lockfile: "package-lock.json" });
 
   it("adds a finding that is new, opened now", () => {
     const fresh = stored({ key: "k2", createdAt: NOW });
@@ -244,21 +294,64 @@ describe("reconcileOsvAlerts", () => {
       now: NOW,
       lockfilesRead: new Set(),
       lockfilesPresent: new Set(["web/package-lock.json"]),
+      unanswered: new Set([lodash]),
     });
     expect(alert).toMatchObject({ state: "fixed", closedAt: NOW, closeReason: "not_found", createdAt: EARLIER });
   });
 
   it("keeps an open alert whose lockfile is present but was not read", () => {
     const old = stored();
-    const at = { now: NOW, lockfilesRead: new Set<string>(), lockfilesPresent: new Set(["package-lock.json"]) };
+    const at = { ...read(), lockfilesPresent: new Set(["package-lock.json"]) };
     expect(reconcileOsvAlerts([old], [], at)).toEqual([old]);
   });
 
   it("closes only the alerts of the deleted lockfile and keeps the rest", () => {
     const kept = stored({ key: "a" });
     const gone = stored({ key: "b", dependency: { manifestPath: "old/package-lock.json" } });
-    const at = { now: NOW, lockfilesRead: new Set<string>(), lockfilesPresent: new Set(["package-lock.json"]) };
+    const at = { ...read(), lockfilesPresent: new Set(["package-lock.json"]) };
     expect(reconcileOsvAlerts([kept, gone], [], at).map((a) => `${a.key}:${a.state}`)).toEqual(["a:open", "b:fixed"]);
+  });
+
+  it("keeps an open alert whose package was not answered, although its lockfile was read", () => {
+    const old = stored();
+    expect(reconcileOsvAlerts([old], [], { ...read("package-lock.json"), unanswered: new Set([lodash]) })).toEqual([old]);
+  });
+
+  it("closes the alerts of answered packages beside one that was not answered", () => {
+    const withheld = stored({ key: "a", dependency: { name: "@acme/internal" } });
+    const answered = stored({ key: "b" });
+    const unanswered = new Set([osvPackageKey({ ecosystem: "npm", name: "@acme/internal", lockfile: "package-lock.json" })]);
+    const result = reconcileOsvAlerts([withheld, answered], [], { ...read("package-lock.json"), unanswered });
+    expect(result.map((a) => `${a.key}:${a.state}`)).toEqual(["a:open", "b:fixed"]);
+  });
+
+  it("closes an alert whose package is gone from a lockfile that was read in full", () => {
+    // The package was not sent because the lockfile no longer holds it, so it is not among the unanswered either.
+    const [alert] = reconcileOsvAlerts([stored({ dependency: { name: "left-pad" } })], [], read("package-lock.json"));
+    expect(alert).toMatchObject({ state: "fixed", closeReason: "not_found" });
+  });
+
+  describe("after a listing of the clone that stopped short", () => {
+    // Two open alerts: one in a lockfile the listing did not reach, one in a lockfile that was listed and read in full.
+    const unlisted = stored({ key: "a", dependency: { manifestPath: "deep/package-lock.json" } });
+    const listed = stored({ key: "b" });
+    const states = (lockfilesPresent: ReadonlySet<string> | null) =>
+      reconcileOsvAlerts([unlisted, listed], [], { ...read("package-lock.json"), lockfilesPresent }).map(
+        (a) => `${a.key}:${a.state}`,
+      );
+
+    it("keeps the alerts of a lockfile it did not list, which may still exist", () => {
+      expect(states(null)).toEqual(["a:open", "b:fixed"]);
+    });
+
+    it("closes the same alert once a complete listing shows its lockfile gone", () => {
+      expect(states(new Set(["package-lock.json"]))).toEqual(["a:fixed", "b:fixed"]);
+    });
+
+    it("keeps an alert of a listed lockfile that was not read in full", () => {
+      const at = { ...read(), lockfilesPresent: null };
+      expect(reconcileOsvAlerts([listed], [], at)).toEqual([listed]);
+    });
   });
 
   it("starts a new span for a fixed alert that returns, with createdAt set to the reopen", () => {

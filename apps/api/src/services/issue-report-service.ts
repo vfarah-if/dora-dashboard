@@ -2,6 +2,7 @@ import { buildIssueReport, type IssueReport, type IssueReportOptions } from "@do
 import { NotFoundError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
 import { dayOf, validateDateRange } from "./date-range.js";
+import { rulesOf } from "./saved-override.js";
 
 /**
  * What a caller asks of an issue report: core's options without the instant it is built at, which the clock gives, and
@@ -29,7 +30,7 @@ export class IssueReportService {
       ...(options.to === undefined ? {} : { to: options.to }),
       now: now.toISOString(),
       people: options.people === true,
-      labels: this.store.issueState(repoId).labels,
+      labels: rulesOf(this.store.issueState(repoId).labels),
     });
   }
 }

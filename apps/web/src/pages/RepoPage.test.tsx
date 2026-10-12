@@ -3,7 +3,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RepoPage } from "./RepoPage";
 import { mockFetch as stubFetch, renderRoute, type Handler, type MockResponse } from "../test/render";
-import { noSecurity, repo, report, securityAction, securityReport, week } from "../test/fixtures";
+import { noAccessSource, noSecurity, offSource, repo, report, securityAction, securityReport, week } from "../test/fixtures";
 import { copy } from "../copy";
 
 const noHealth = { body: { status: "none" } };
@@ -111,8 +111,10 @@ describe("RepoPage", () => {
 
     it("leaves the reviewed and self-merged tiles as they were, beside it", async () => {
       await show(report());
-      expect(screen.getByRole("heading", { level: 3, name: copy.flow.reviewed })).toHaveTextContent("Reviewed");
-      expect(screen.getByRole("heading", { level: 3, name: copy.flow.selfMerged })).toBeInTheDocument();
+      // The fixture's totals are 0.5 reviewed and 0.25 self-merged, whatever the unreviewed share says.
+      const tileOf = (label: string) => screen.getByRole("heading", { level: 3, name: label }).closest("article")!;
+      expect(tileOf(copy.flow.reviewed)).toHaveTextContent("50%");
+      expect(tileOf(copy.flow.selfMerged)).toHaveTextContent("25%");
     });
 
     it("offers the reviewed elsewhere rules beside the tiles once the repository list has loaded", async () => {
@@ -690,7 +692,7 @@ describe("RepoPage security", () => {
       securityReport({
         sources: {
           ...base.sources,
-          secret_scanning: { ...base.sources.secret_scanning, status: "no_access", reason: "forbidden" },
+          secret_scanning: noAccessSource("forbidden"),
         },
       }),
     );
@@ -703,8 +705,9 @@ describe("RepoPage security", () => {
     const base = securityReport();
     await open(
       securityReport({
-        sources: { ...base.sources, code_scanning: { ...base.sources.code_scanning, status: "off", reason: "disabled" } },
-        open: { ...base.open, total: 0 },
+        sources: { ...base.sources, code_scanning: offSource("disabled") },
+        openAlertTotal: 0,
+        open: { ...base.open, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 } },
       }),
     );
     const section = (await screen.findByRole("heading", { level: 2, name: copy.security.section.title })).closest("section")!;
@@ -722,18 +725,16 @@ describe("RepoPage security", () => {
     const base = securityReport();
     await open(
       securityReport({
-        sources: { ...base.sources, dependabot: { ...base.sources.dependabot, status: "off", reason: "disabled" } },
+        sources: { ...base.sources, dependabot: offSource("disabled") },
         dependabotVersionUpdates: ".github/dependabot.yml",
         actions: [
           securityAction({
             kind: "enable_dependabot",
             target: "dependabot",
-            ecosystem: null,
-            manifestPath: null,
             count: 1,
             refs: [],
           }),
-          securityAction({ kind: "fix_low_alerts", target: null, ecosystem: null, manifestPath: null, count: 2, refs: [] }),
+          securityAction({ kind: "fix_low_alerts", target: null, count: 2, refs: [] }),
         ],
         thresholds: { ...base.thresholds, lowAlertAdviceDays: 45 },
       }),

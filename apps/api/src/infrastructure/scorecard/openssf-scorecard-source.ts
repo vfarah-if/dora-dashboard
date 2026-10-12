@@ -32,8 +32,9 @@ function isoDate(value: unknown): string | null {
  * - The origin is fixed, no `Authorization` header or cookie is sent, and a redirect is refused. The only thing that
  *   leaves is the public owner and name, which the caller sends only for a repository GitHub says is public.
  * - A 404 means the project is not in the weekly scan and answers null.
- * - Only `score`, `date` (an ISO date or date-time, else the reply is refused) and each check's `name`, `score` and `reason` are mapped; `details` and the documentation
- *   text are not. A check with no usable score (Scorecard uses -1 for "not applicable") keeps that score.
+ * - Only `score`, `date` (an ISO date or date-time, else the reply is refused) and each check's `name`, `score` and
+ *   `reason` are mapped; `details` and the documentation text are not. A check with no usable score (Scorecard uses -1 for "not
+ *   applicable") keeps that score.
  * - The reply is read up to 1 MiB.
  */
 export class OpenSsfScorecardSource implements ScorecardSource {

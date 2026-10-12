@@ -9,7 +9,16 @@ import { EmptyState, ErrorState, Skeleton } from "../components/States";
 import { StatTile } from "../components/StatTile";
 import { StickyPanel } from "../components/StickyPanel";
 import { formatNumber } from "../lib/format";
-import { actionSentence, joinWords, lastRead, listTotals, openSummary, sourceCoverage, splitGraded } from "../lib/security";
+import {
+  actionSentence,
+  joinWords,
+  neverCrawled,
+  lastRead,
+  listTotals,
+  openSummary,
+  sourceCoverage,
+  splitGraded,
+} from "../lib/security";
 import { repoName } from "../lib/series";
 
 const c = copy.security.list;
@@ -18,7 +27,7 @@ function Row({ summary }: { summary: SecuritySummary }) {
   const name = repoName(summary.repo);
   const score = summary.scorecard;
   const unread = !summary.read;
-  const figure = (text: string) => (unread ? c.notReadRow : text);
+  const figure = (text: string) => (unread ? (neverCrawled(summary.sources) ? c.notReadRow : c.notUsedRow) : text);
   return (
     <li className="card repo-row">
       <div className="repo-row-body">

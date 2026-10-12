@@ -1,3 +1,4 @@
+import type { SecuritySummary } from "@dora-dashboard/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,7 +13,7 @@ const second = securitySummary({
   open: { critical: 3, high: 0, medium: 0, low: 0, unknown: 0 },
   pastFix: 2,
   actions: 4,
-  topAction: securityAction({ kind: "rotate_secret", target: "GitHub Personal Access Token", count: 1, ecosystem: null }),
+  topAction: securityAction({ kind: "rotate_secret", target: "GitHub Personal Access Token", count: 1 }),
   scorecard: 7.25,
 });
 const ungraded = securitySummary({
@@ -27,11 +28,12 @@ const ungraded = securitySummary({
   read: false,
   raiseGrade: null,
   sources: { dependabot: "not_read", code_scanning: "not_read", secret_scanning: "not_read", osv: "not_read" },
+  used: { dependabot: false, code_scanning: false, secret_scanning: false, osv: false },
   supplyChain: "not_read",
   topAction: null,
 });
 
-const show = (summaries: unknown[], health: unknown = { osv: true }) => {
+const show = (summaries: SecuritySummary[], health: unknown = { osv: true }) => {
   const fetchMock = mockFetch({
     "GET /api/security": { body: summaries },
     "GET /api/health": { body: health },
@@ -120,7 +122,7 @@ describe("SecurityListPage", () => {
   });
 
   it("says nothing could be measured when that is the reason", async () => {
-    show([{ ...ungraded, gradeMissing: "nothing_measured" }]);
+    show([securitySummary({ ...ungraded, gradeMissing: "nothing_measured" })]);
     expect(await screen.findByText(copy.security.list.gradeMissing.nothing_measured)).toBeInTheDocument();
   });
 
@@ -160,20 +162,26 @@ describe("SecurityListPage", () => {
       securitySummary({
         read: false,
         sources: { dependabot: "no_access", code_scanning: "not_read", secret_scanning: "not_read", osv: "not_read" },
+        supplyChain: "not_read",
+        used: { dependabot: false, code_scanning: false, secret_scanning: false, osv: false },
       }),
     ]);
     const row = (await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ })).closest("li")!;
+    // Refused is not "not read yet", because a crawl would not change it.
     expect(within(row.querySelector("dl")!).getByText(copy.security.list.facts.open).parentElement).toHaveTextContent(
-      copy.security.list.notReadRow,
+      copy.security.list.notUsedRow,
     );
+    expect(row).toHaveTextContent(copy.security.list.coverage.noneUsable);
+    expect(row).not.toHaveTextContent("Nothing has been read yet.");
   });
 
   it("explains Dependabot version updates against alerts, in the detail page's words, when the summary says so", async () => {
     show([
       securitySummary({
         dependabotVersionUpdates: ".github/dependabot.yml",
-        sources: { dependabot: "off", code_scanning: "ok", secret_scanning: "ok", osv: "off" },
-        topAction: securityAction({ kind: "enable_dependabot", target: "dependabot", ecosystem: null, count: 1 }),
+        sources: { dependabot: "off", code_scanning: "ok", secret_scanning: "ok", osv: "not_used" },
+        used: { dependabot: false, code_scanning: true, secret_scanning: true, osv: false },
+        topAction: securityAction({ kind: "enable_dependabot", target: "dependabot", count: 1 }),
       }),
     ]);
     const words = copy.security.dependabotAlerts.what(".github/dependabot.yml");
@@ -186,7 +194,7 @@ describe("SecurityListPage", () => {
     show([
       securitySummary({
         thresholds,
-        topAction: securityAction({ kind: "fix_low_alerts", target: null, ecosystem: null, count: 3 }),
+        topAction: securityAction({ kind: "fix_low_alerts", target: null, count: 3 }),
       }),
     ]);
     expect(await screen.findByText(/3 low severity alerts have been open for more than 45 days/)).toBeInTheDocument();
@@ -200,7 +208,12 @@ describe("SecurityListPage", () => {
   });
 
   it("does not call Dependabot unread when the OSV lookup covered for it", async () => {
-    show([securitySummary({ sources: { dependabot: "off", code_scanning: "ok", secret_scanning: "ok", osv: "ok" } })]);
+    show([
+      securitySummary({
+        sources: { dependabot: "off", code_scanning: "ok", secret_scanning: "ok", osv: "ok" },
+        used: { dependabot: false, code_scanning: true, secret_scanning: true, osv: true },
+      }),
+    ]);
     expect(
       await screen.findByText("Read code scanning, secret scanning, the OSV.dev lookup and workflow and dependency files."),
     ).toBeInTheDocument();

@@ -20,7 +20,13 @@ const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
 const MAX_LOCKFILE_TOTAL_BYTES = 64 * 1024 * 1024;
 const MAX_LOCKFILES = 20;
 
-const unreadable = (path: string): LockfileSummary => ({ path, read: "unreadable", packages: 0, publicPackages: 0 });
+const unreadable = (path: string): LockfileSummary => ({
+  path,
+  read: "unreadable",
+  packages: 0,
+  publicPackages: 0,
+  capped: false,
+});
 
 /**
  * Reads the supply chain facts from a clone that code health has already made (ADR 0032): workflows and the actions
@@ -28,7 +34,7 @@ const unreadable = (path: string): LockfileSummary => ({ path, read: "unreadable
  * files `supplyChainCandidates` names, so a key-like file is never opened, and it runs nothing from the clone.
  *
  * An inspection that completes stores a row even when some files could not be read; the facts say which. One that
- * throws stores nothing, so the facts stay stale and the next crawl tries again.
+ * throws stores no facts, so they stay stale and the next crawl tries again; the caller records the failure beside them.
  */
 export class SupplyChainService implements CloneInspector {
   constructor(
@@ -41,6 +47,10 @@ export class SupplyChainService implements CloneInspector {
     return !record || record.facts.version !== SUPPLY_CHAIN_VERSION || record.commitSha !== head;
   }
 
+  fail(repoId: number, message: string): void {
+    this.store.failSupplyChain(repoId, message, this.now().toISOString());
+  }
+
   async inspect(view: CloneView): Promise<void> {
     const candidates = supplyChainCandidates(view.paths);
     const unread: string[] = [];
@@ -49,7 +59,15 @@ export class SupplyChainService implements CloneInspector {
     const tooling = await this.readText(view, candidates.tooling);
     const { summaries, packages } = await this.readLockfiles(view, candidates.lockfiles);
 
-    const facts = supplyChainFacts({ paths: view.paths, workflows, lockfiles: summaries, unread, dockerfiles, tooling });
+    const facts = supplyChainFacts({
+      paths: view.paths,
+      listingComplete: view.listingComplete,
+      workflows,
+      lockfiles: summaries,
+      unread,
+      dockerfiles,
+      tooling,
+    });
     this.store.saveSupplyChain(view.repoId, { commitSha: view.commitSha, readAt: this.now().toISOString(), facts }, packages);
   }
 
@@ -66,8 +84,8 @@ export class SupplyChainService implements CloneInspector {
 
   /**
    * Each listed lockfile gets a summary. One that cannot be read, that would pass the total budget, or that is past
-   * the first `MAX_LOCKFILES` is `unreadable`, so the report never understates how many there are. The event loop is
-   * yielded to after each parse, so a repository of large lockfiles does not hold the API unresponsive.
+   * the first `MAX_LOCKFILES` is `unreadable`, so the OSV lookup keeps its alerts rather than closing them. The event
+   * loop is yielded to after each parse, so a repository of large lockfiles does not hold the API unresponsive.
    */
   private async readLockfiles(
     view: CloneView,

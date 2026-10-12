@@ -187,6 +187,56 @@ describe("FsWorkspaceReader limits", () => {
     expect(await new FsWorkspaceReader().list(root)).toEqual(["pkg/src/z"]);
   });
 
+  describe("whether the listing was complete", () => {
+    it("is complete for a walk that saw everything, though it skipped vendored directories and links by design", async () => {
+      mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+      writeFileSync(join(root, "a"), "x");
+
+      expect(await new FsWorkspaceReader().listing(root)).toEqual({ paths: ["a"], complete: true });
+    });
+
+    it("is incomplete when the entry cap cut it, and says which files it found", async () => {
+      for (const name of ["a", "b", "c", "d"]) writeFileSync(join(root, name), "x");
+
+      const listing = await new FsWorkspaceReader({ maxEntries: 2, maxDepth: 5 }).listing(root);
+
+      expect(listing.complete).toBe(false);
+      expect(listing.paths).toHaveLength(2);
+    });
+
+    it("is complete when the entries exactly fill the cap", async () => {
+      for (const name of ["a", "b"]) writeFileSync(join(root, name), "x");
+      expect((await new FsWorkspaceReader({ maxEntries: 2, maxDepth: 5 }).listing(root)).complete).toBe(true);
+    });
+
+    it("is incomplete when the depth cap left a directory unwalked", async () => {
+      mkdirSync(join(root, "a", "b"), { recursive: true });
+      for (const name of ["top", "a/one", "a/b/two"]) writeFileSync(join(root, name), "x");
+
+      expect(await new FsWorkspaceReader({ maxEntries: 100, maxDepth: 1 }).listing(root)).toEqual({
+        paths: ["a/one", "top"],
+        complete: false,
+      });
+    });
+
+    it("is incomplete when a directory could not be read, though the rest was listed", async () => {
+      mkdirSync(join(root, "locked"));
+      writeFileSync(join(root, "locked", "hidden"), "x");
+      writeFileSync(join(root, "open"), "x");
+      chmodSync(join(root, "locked"), 0o000);
+      try {
+        expect(await new FsWorkspaceReader().listing(root)).toEqual({ paths: ["open"], complete: false });
+      } finally {
+        chmodSync(join(root, "locked"), 0o755);
+      }
+    });
+
+    it("is what `list` returns the paths of", async () => {
+      writeFileSync(join(root, "a"), "x");
+      expect(await new FsWorkspaceReader().list(root)).toEqual(["a"]);
+    });
+  });
+
   it("carries on past a directory it cannot read", async () => {
     mkdirSync(join(root, "locked"));
     writeFileSync(join(root, "locked", "hidden"), "x");

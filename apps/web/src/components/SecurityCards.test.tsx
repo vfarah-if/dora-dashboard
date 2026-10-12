@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { SourceState, SupplyChainLine } from "@dora-dashboard/core";
+import type { SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { noSecurity, securityReport } from "../test/fixtures";
+import { errorSource, noAccessSource, noSecurity, offSource, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
 import { BranchProtectionCard } from "./BranchProtectionCard";
 import { DependencyUpdatesCard } from "./DependencyUpdatesCard";
@@ -195,54 +195,59 @@ describe("BranchProtectionCard", () => {
 
   it("never says only rulesets could be read for an unprotected branch or for an administrator", () => {
     const base = securityReport();
-    const posture = base.posture!;
+    const held = base.posture!;
+    const posture = held.value;
+    const holding = (value: typeof posture) => ({ ...base, posture: { ...held, value } });
     const { rerender } = render(<BranchProtectionCard report={base} />);
     expect(screen.getByText(/Only rulesets could be read/)).toBeInTheDocument();
     rerender(
       <BranchProtectionCard
-        report={{ ...base, posture: { ...posture, branch: { ...posture.branch, protected: false, detail: "rulesets_only" } } }}
+        report={holding({ ...posture, branch: { ...posture.branch, protected: false, detail: "rulesets_only" } })}
       />,
     );
     expect(screen.getByText(/The branch is not protected\./)).toBeInTheDocument();
     expect(screen.queryByText(/Only rulesets could be read/)).not.toBeInTheDocument();
-    rerender(<BranchProtectionCard report={{ ...base, posture: { ...posture, isAdmin: true } }} />);
+    rerender(<BranchProtectionCard report={holding({ ...posture, isAdmin: true })} />);
     expect(screen.queryByText(/Only rulesets could be read/)).not.toBeInTheDocument();
     expect(screen.getByText(/The account the dashboard uses is an administrator/)).toBeInTheDocument();
   });
 
   it("shows private vulnerability reporting and advisories as public only, neutrally, on a private repository", () => {
     const base = securityReport();
-    const posture = base.posture!;
+    const posture = base.posture!.value;
     render(
       <BranchProtectionCard
         report={{
           ...base,
           posture: {
-            ...posture,
-            visibility: "private",
-            isAdmin: true,
-            branch: {
-              ...posture.branch,
-              rules: {
-                requirePullRequest: true,
-                requiredApprovals: 1,
-                dismissStaleReviews: true,
-                requireCodeOwnerReview: true,
-                requireStatusChecks: true,
-                blockForcePushes: true,
-                blockDeletion: true,
-                requireSignedCommits: true,
-                requireLinearHistory: true,
+            ...base.posture!,
+            value: {
+              ...posture,
+              visibility: "private",
+              isAdmin: true,
+              branch: {
+                ...posture.branch,
+                rules: {
+                  requirePullRequest: true,
+                  requiredApprovals: 1,
+                  dismissStaleReviews: true,
+                  requireCodeOwnerReview: true,
+                  requireStatusChecks: true,
+                  blockForcePushes: true,
+                  blockDeletion: true,
+                  requireSignedCommits: true,
+                  requireLinearHistory: true,
+                },
               },
+              settings: {
+                dependabotSecurityUpdates: true,
+                secretScanning: true,
+                pushProtection: true,
+                validityChecks: true,
+                privateVulnerabilityReporting: null,
+              },
+              advisories: null,
             },
-            settings: {
-              dependabotSecurityUpdates: true,
-              secretScanning: true,
-              pushProtection: true,
-              validityChecks: true,
-              privateVulnerabilityReporting: null,
-            },
-            advisories: null,
           },
         }}
       />,
@@ -264,7 +269,13 @@ describe("BranchProtectionCard", () => {
     expect(screen.getByText(copy.security.branch.advisoriesHidden)).toBeInTheDocument();
     rerender(
       <BranchProtectionCard
-        report={{ ...base, posture: { ...base.posture!, advisories: { draft: 0, triage: 2, published: 1, closed: 5 } } }}
+        report={{
+          ...base,
+          posture: {
+            ...base.posture!,
+            value: { ...base.posture!.value, advisories: { draft: 0, triage: 2, published: 1, closed: 5 } },
+          },
+        }}
       />,
     );
     expect(screen.getByText("0 in draft, 2 in triage, 1 published and 5 closed.")).toBeInTheDocument();
@@ -272,7 +283,7 @@ describe("BranchProtectionCard", () => {
 
   it("leaves out the not visible explanation when every rule, setting and advisory could be seen", () => {
     const base = securityReport();
-    const posture = base.posture!;
+    const posture = base.posture!.value;
     const seen = {
       ...posture,
       isAdmin: true,
@@ -299,23 +310,34 @@ describe("BranchProtectionCard", () => {
       },
       advisories: { draft: 0, triage: 0, published: 0, closed: 0 },
     };
-    render(<BranchProtectionCard report={{ ...base, posture: seen, postureReadAt: null }} />);
+    render(<BranchProtectionCard report={{ ...base, posture: { ...base.posture!, value: seen } }} />);
     expect(screen.queryByText(copy.security.branch.notVisibleTitle)).not.toBeInTheDocument();
     // Signed commits, the validity checks and private reporting. The history rule is no longer shown.
     expect(screen.getAllByText("Not met")).toHaveLength(3);
   });
 
-  it("says quietly that the facts are from an earlier read when the latest attempt failed, and keeps showing them", () => {
-    const { rerender } = render(<BranchProtectionCard report={securityReport({ postureError: "GitHub is down" })} />);
-    expect(screen.getByText(copy.security.branch.postureError)).toBeInTheDocument();
+  it("gives the stored message, and says the facts are from an earlier read, when the latest attempt failed", () => {
+    const failure = { message: "GitHub answered 502", attemptedAt: "2026-03-02T10:00:00Z" };
+    const { rerender } = render(<BranchProtectionCard report={securityReport({ postureFailure: failure })} />);
+    expect(screen.getByText(copy.security.branch.failedKept("GitHub answered 502"))).toBeInTheDocument();
     expect(screen.getByText("Changes need a pull request")).toBeInTheDocument();
-    rerender(<BranchProtectionCard report={securityReport({ postureError: null })} />);
-    expect(screen.queryByText(copy.security.branch.postureError)).not.toBeInTheDocument();
+    // The time shown is the earlier read, not the failed attempt.
+    expect(screen.getByText(/Read on 1 Mar 2026, 10:03/)).toBeInTheDocument();
+    rerender(<BranchProtectionCard report={securityReport({ postureFailure: null })} />);
+    expect(screen.queryByText(/GitHub answered 502/)).not.toBeInTheDocument();
   });
 
-  it("says the settings have not been read yet when there is no posture", () => {
+  it("says the settings have not been read yet when there is no posture and no failure", () => {
     render(<BranchProtectionCard report={noSecurity()} />);
     expect(screen.getByText(copy.security.branch.notRead)).toBeInTheDocument();
+    expect(screen.queryByText("Met")).not.toBeInTheDocument();
+  });
+
+  it("gives the stored message, and not a promise of the next crawl alone, when the first read failed", () => {
+    const failure = { message: "GitHub answered 403", attemptedAt: "2026-03-02T10:00:00Z" };
+    render(<BranchProtectionCard report={noSecurity({ postureFailure: failure })} />);
+    expect(screen.getByText(copy.security.branch.failedNone("GitHub answered 403"))).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.branch.notRead)).not.toBeInTheDocument();
     expect(screen.queryByText("Met")).not.toBeInTheDocument();
   });
 });
@@ -433,36 +455,57 @@ describe("ScorecardCard", () => {
     expect(screen.getByText(copy.security.scorecard.only)).toBeInTheDocument();
   });
 
-  it.each(["off", "not_public", "not_scanned", "error"] as const)("explains the %s status and shows no score", (status) => {
-    render(<ScorecardCard report={securityReport({ scorecard: null, scorecardStatus: status })} />);
+  it.each(["off", "not_public", "not_scanned", "not_read"] as const)("explains the %s status and shows no score", (status) => {
+    render(<ScorecardCard report={securityReport({ scorecard: { status } })} />);
     expect(screen.getByText(copy.security.scorecard.status[status])).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  it("says the Scorecard retry rules as they are, not that it is tried at every crawl", () => {
-    render(<ScorecardCard report={securityReport({ scorecard: null, scorecardStatus: "error" })} />);
-    const text = screen.getByText(copy.security.scorecard.status.error).textContent!;
-    expect(text).toContain("more than a day old");
-    expect(text).toContain("every full crawl");
-    expect(text).not.toContain("next crawl");
+  it("says a repository that has not been asked yet is asked at the next crawl, not that Scorecard has not scanned it", () => {
+    render(<ScorecardCard report={securityReport({ scorecard: { status: "not_read" } })} />);
+    expect(screen.getByText(/asked at the next crawl/)).toBeInTheDocument();
+    expect(screen.queryByText(copy.security.scorecard.status.not_scanned)).not.toBeInTheDocument();
   });
 
-  it("treats an ok status with no result as not scanned", () => {
-    render(<ScorecardCard report={securityReport({ scorecard: null, scorecardStatus: "ok" })} />);
-    expect(screen.getByText(copy.security.scorecard.status.not_scanned)).toBeInTheDocument();
+  describe("when the lookup failed", () => {
+    const result = {
+      score: 5.2,
+      date: "2026-02-20",
+      checks: [{ name: "Maintained", score: 10, reason: "active" }],
+    };
+    const error = (lastGood: typeof result | null) =>
+      securityReport({
+        scorecard: { status: "error", message: "Scorecard answered 502", attemptedAt: "2026-03-02T10:00:00Z", lastGood },
+      });
+
+    it("says the retry rules as they are, not that it is tried at every crawl", () => {
+      render(<ScorecardCard report={error(null)} />);
+      const text = screen.getByText(copy.security.scorecard.status.error).textContent!;
+      expect(text).toContain("more than a day old");
+      expect(text).toContain("every full crawl");
+      expect(text).not.toContain("next crawl");
+    });
+
+    it("shows the stored message and when it failed, with the last good score and checks beside the notice", () => {
+      render(<ScorecardCard report={error(result)} />);
+      expect(
+        screen.getByText('The lookup failed on 2 Mar 2026, 10:00 with the message "Scorecard answered 502".'),
+      ).toBeInTheDocument();
+      expect(screen.getByText(copy.security.scorecard.earlierScore)).toBeInTheDocument();
+      expect(screen.getByText("5.2 out of 10")).toBeInTheDocument();
+      expect(screen.getByText("Scanned on 20 Feb 2026.")).toBeInTheDocument();
+      expect(within(screen.getByRole("table")).getByText("Maintained")).toBeInTheDocument();
+    });
+
+    it("says no earlier score is held, and draws no table, when nothing was read before", () => {
+      render(<ScorecardCard report={error(null)} />);
+      expect(screen.getByText(copy.security.scorecard.noEarlierScore)).toBeInTheDocument();
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    });
   });
 });
 
 describe("SourcesPanel", () => {
-  const state = (overrides: Partial<SourceState>): SourceState => ({
-    status: "ok",
-    reason: null,
-    readAt: "2026-03-01T10:00:00Z",
-    attemptedAt: null,
-    truncated: false,
-    error: null,
-    ...overrides,
-  });
   const card = (name: string) => screen.getByRole("heading", { level: 3, name }).closest("li")!;
 
   it("is a section other parts of the page can link to", () => {
@@ -495,9 +538,9 @@ describe("SourcesPanel", () => {
         report={{
           ...base,
           sources: {
-            dependabot: state({ status: "off", reason: "disabled", readAt: null }),
-            code_scanning: state({ status: "off", reason: "needs_advanced_security", readAt: null }),
-            secret_scanning: state({ status: "no_access", reason: "admin_only_or_off", readAt: null }),
+            dependabot: offSource("disabled"),
+            code_scanning: offSource("needs_advanced_security"),
+            secret_scanning: noAccessSource("admin_only_or_off"),
             osv: base.sources.osv,
           },
         }}
@@ -524,11 +567,14 @@ describe("SourcesPanel", () => {
     const base = securityReport();
     render(
       <SourcesPanel
-        report={{ ...base, sources: { ...base.sources, osv: state({ status: "off", reason: "dependabot_ok", readAt: null }) } }}
+        report={{
+          ...base,
+          sources: { ...base.sources, osv: { status: "not_used", reason: "dependabot_ok", attemptedAt: "2026-03-01T10:00:00Z" } },
+        }}
       />,
     );
     const osv = card("OSV.dev lookup");
-    expect(osv).toHaveTextContent(copy.security.sources.notNeeded);
+    expect(osv).toHaveTextContent(copy.security.sources.notUsedLabel.dependabot_ok);
     // Something that is not needed was never going to be read, so it has no read line at all.
     expect(osv).not.toHaveTextContent(copy.security.sources.notYet);
     expect(osv).not.toHaveTextContent(/Read on/);
@@ -548,10 +594,10 @@ describe("SourcesPanel", () => {
         report={{
           ...base,
           sources: {
-            dependabot: state({ status: "off", reason: "disabled", readAt: null }),
-            code_scanning: state({ status: "no_access", reason: "forbidden", readAt: null }),
-            secret_scanning: state({ status: "not_read", reason: null, readAt: null }),
-            osv: state({ status: "error", error: "down", readAt: null }),
+            dependabot: offSource("disabled"),
+            code_scanning: noAccessSource("forbidden"),
+            secret_scanning: { status: "not_read" },
+            osv: errorSource("down"),
           },
         }}
       />,
@@ -569,7 +615,7 @@ describe("SourcesPanel", () => {
         report={{
           ...base,
           settingsUrl: "javascript:alert(1)",
-          sources: { ...base.sources, dependabot: state({ status: "off", reason: "disabled", readAt: null }) },
+          sources: { ...base.sources, dependabot: offSource("disabled") },
         }}
       />,
     );
@@ -577,15 +623,76 @@ describe("SourcesPanel", () => {
     expect(card("Dependabot alerts")).toHaveTextContent("How to switch it on.");
   });
 
-  it("says a failed read keeps the earlier results", () => {
+  it("says a failed read keeps the earlier results, and when they were read", () => {
     const base = securityReport();
+    const lastGood = { readAt: "2026-02-20T09:00:00Z", truncated: false, skipped: 0 };
     render(
-      <SourcesPanel
-        report={{ ...base, sources: { ...base.sources, code_scanning: state({ status: "error", error: "GitHub is down" }) } }}
-      />,
+      <SourcesPanel report={{ ...base, sources: { ...base.sources, code_scanning: errorSource("GitHub is down", lastGood) } }} />,
     );
     expect(card("Code scanning")).toHaveTextContent("Failed");
     expect(card("Code scanning")).toHaveTextContent('"GitHub is down". Earlier results are kept.');
+    expect(card("Code scanning")).toHaveTextContent("Last read successfully on 20 Feb 2026, 09:00");
+  });
+
+  it("does not promise earlier results for a failure that has none", () => {
+    const base = securityReport();
+    render(<SourcesPanel report={{ ...base, sources: { ...base.sources, code_scanning: errorSource("GitHub is down") } }} />);
+    expect(card("Code scanning")).toHaveTextContent("There is no earlier read to fall back on.");
+    expect(card("Code scanning")).not.toHaveTextContent("Earlier results are kept");
+  });
+
+  it("shows how many alerts of a source could not be read", () => {
+    const base = securityReport();
+    const ok = {
+      status: "ok" as const,
+      readAt: "2026-03-01T10:01:00Z",
+      attemptedAt: "2026-03-01T10:01:00Z",
+      truncated: false,
+      skipped: 2,
+    };
+    render(<SourcesPanel report={{ ...base, sources: { ...base.sources, code_scanning: ok } }} />);
+    expect(card("Code scanning")).toHaveTextContent("2 alerts could not be read.");
+  });
+
+  it("shows a failed branch read and a failed inspection of the clone with an error state and the stored message", () => {
+    render(
+      <SourcesPanel
+        report={securityReport({
+          postureFailure: { message: "GitHub answered 502", attemptedAt: "2026-03-02T10:00:00Z" },
+          supplyChainFailure: { message: "the clone could not be read", attemptedAt: "2026-03-02T10:00:00Z" },
+        })}
+      />,
+    );
+    expect(card("Branch rules and settings")).toHaveTextContent("Failed");
+    expect(card("Branch rules and settings")).toHaveTextContent('"GitHub answered 502"');
+    expect(card("Branch rules and settings").querySelector(".checks-failing")).not.toBeNull();
+    expect(card("Workflow and dependency files")).toHaveTextContent('"the clone could not be read"');
+    expect(card("Workflow and dependency files")).toHaveTextContent("Last read successfully on 1 Mar 2026, 10:05");
+  });
+
+  it("offers no settings link, and no empty link, when no alert source is wired and the address is empty", () => {
+    const base = securityReport();
+    render(<SourcesPanel report={{ ...base, settingsUrl: "", sources: { ...base.sources, dependabot: offSource() } }} />);
+    expect(within(card("Dependabot alerts")).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("does not say Dependabot was read for an OSV lookup it replaced while Dependabot is failing", () => {
+    const base = securityReport();
+    const lastGood = { readAt: "2026-02-20T09:00:00Z", truncated: false, skipped: 0 };
+    render(
+      <SourcesPanel
+        report={{
+          ...base,
+          sources: {
+            ...base.sources,
+            dependabot: errorSource("down", lastGood),
+            osv: { status: "not_used", reason: "dependabot_ok", attemptedAt: "2026-03-01T10:00:00Z" },
+          },
+        }}
+      />,
+    );
+    expect(card("OSV.dev lookup")).toHaveTextContent(copy.security.sources.reasons.dependabot_failed);
+    expect(card("OSV.dev lookup")).not.toHaveTextContent("Dependabot alerts were read");
   });
 
   it("says the files and the settings have not been read when they have not", () => {

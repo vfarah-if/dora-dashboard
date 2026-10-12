@@ -10,13 +10,14 @@ import type { IssueCrawlService } from "../src/services/issue-crawl-service.js";
 import { FakeProvider, pr, run } from "./fakes.js";
 
 function recordingLog() {
+  const errors: { context: Record<string, unknown>; message: string }[] = [];
   const warnings: { context: Record<string, unknown>; message: string }[] = [];
   const log: Logger = {
     info: () => undefined,
-    error: () => undefined,
+    error: (context, message) => void errors.push({ context: context as Record<string, unknown>, message }),
     warn: (context, message) => void warnings.push({ context: context as Record<string, unknown>, message }),
   };
-  return { log, warnings };
+  return { log, errors, warnings };
 }
 
 describe("the security step of a crawl", () => {
@@ -67,7 +68,7 @@ describe("the security step of a crawl", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it("logs a step that throws, and carries on to coverage and the end of the crawl", async () => {
+  it("logs, as an error, a step that throws, and carries on to coverage and the end of the crawl", async () => {
     const logged = recordingLog();
     const security = step(async () => {
       throw new UpstreamError("GitHub answered 500", 500);
@@ -79,7 +80,8 @@ describe("the security step of a crawl", () => {
     expect(order).toEqual(["coverage"]);
     expect(store.getRepo(repoId)).toMatchObject({ crawlStatus: "idle", crawlError: null });
     expect(store.counts(repoId).pullRequests).toBe(1);
-    expect(logged.warnings).toEqual([
+    expect(logged.warnings).toEqual([]);
+    expect(logged.errors).toEqual([
       {
         context: { err: new UpstreamError("GitHub answered 500", 500), repoId },
         message: "security step failed, and the crawl went on",

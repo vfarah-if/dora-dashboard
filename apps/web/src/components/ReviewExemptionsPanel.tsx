@@ -15,7 +15,7 @@ interface FieldProps {
   hint: string;
   value: string;
   placeholder: string;
-  problem: "tooMany" | "tooLong" | "control" | null;
+  problem: "tooMany" | "tooLong" | "control" | "noWord" | null;
   limits: Limits | undefined;
   maxEntries: number | undefined;
   onChange: (value: string) => void;
@@ -43,10 +43,11 @@ function Field({ id, label, hint, value, placeholder, problem, limits, maxEntrie
         {hint}
       </p>
       {problem && (
-        <p id={problemId} className="field-hint">
+        <p id={problemId} className="field-hint" role="alert">
           {problem === "tooMany" && maxEntries !== undefined && text.tooMany(maxEntries)}
           {problem === "tooLong" && limits && text.tooLong(limits.length)}
           {problem === "control" && text.control}
+          {problem === "noWord" && text.noWord}
         </p>
       )}
     </div>
@@ -64,7 +65,7 @@ function ReviewExemptionsForm({ repo }: { repo: RepoListing }) {
   const defaultsQuery = useReviewExemptionDefaults();
   const defaults = defaultsQuery.data;
   const limits = defaults?.limits;
-  const current = inputsFor(repo.reviewExemptions, defaults);
+  const current = inputsFor(repo.reviewExemptions.kind === "override" ? repo.reviewExemptions.rules : null, defaults);
   // Only what the person has typed is held here, so the boxes follow the defaults until they load or are reset.
   const [typed, setTyped] = useState<Partial<ExemptionInputs>>({});
   const [done, setDone] = useState<"saved" | "reset" | null>(null);
@@ -72,7 +73,7 @@ function ReviewExemptionsForm({ repo }: { repo: RepoListing }) {
   const idBase = useId();
   const inputs: ExemptionInputs = { ...current, ...typed };
 
-  const wordsProblem = limits ? exemptionProblem(inputs.titleWords, limits.titleWords, limits) : null;
+  const wordsProblem = limits ? exemptionProblem(inputs.titleWords, limits.titleWords, limits, true) : null;
   const labelsProblem = limits ? exemptionProblem(inputs.labels, limits.labels, limits) : null;
   const blocked = !limits || wordsProblem !== null || labelsProblem !== null;
 
@@ -103,7 +104,7 @@ function ReviewExemptionsForm({ repo }: { repo: RepoListing }) {
         {text.title}
       </h3>
       <p className="field-hint">{text.lede}</p>
-      {repo.reviewExemptionsUnreadable && (
+      {repo.reviewExemptions.kind === "unreadable" && (
         <p className="notice notice-warning" role="alert">
           {text.unreadable}
         </p>

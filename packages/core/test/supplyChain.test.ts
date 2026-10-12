@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isActionPath, isWorkflowPath } from "../src/codeTooling.js";
 import { supplyChainCandidates, supplyChainFacts } from "../src/supplyChain.js";
 import type { WorkflowFinding, WorkflowRisk } from "../src/securityTypes.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 import { WORKFLOW_PATH, chainFacts, file, withPermissions, workflowFacts } from "./security.js";
 
 const SHA = "a".repeat(40);
@@ -352,9 +353,26 @@ describe("script injection", () => {
   });
 
   it("keeps evidence to 200 characters", () => {
-    const found = run(`      - run: echo \${{ format('{0}', github.event.issue.title, '${"y".repeat(300)}') }}`);
+    // Twelve references joined by " || " are 12 * 24 + 11 * 4 = 332 characters, within the 500 an expression may hold.
+    const long = Array.from({ length: 12 }, () => "github.event.issue.title").join(" || ");
+    const found = run(`      - run: echo \${{ ${long} }}`);
     expect(found).toHaveLength(1);
-    expect(found[0]!.evidence).toHaveLength(200);
+    expect(found[0]!.evidence).toBe(long.slice(0, 200));
+  });
+
+  // A literal in an expression may be a hardcoded token; it must never be stored or returned (rule 9).
+  it("stores the expression with its string literals blanked, so a literal token is never kept", () => {
+    const token = `ghp_${"A1b2".repeat(9)}`;
+    const yaml = withPermissions(
+      privileged,
+      `      - run: echo \${{ github.event.issue.title || '${token}' }} "\${{ format("{0}", github.head_ref) }}"`,
+    );
+    const facts = workflowFacts(yaml);
+    expect(facts.findings.filter((f) => f.risk === "scriptInjection").map((f) => f.evidence)).toEqual([
+      "github.event.issue.title || ''",
+      "format('', github.head_ref)",
+    ]);
+    expect(JSON.stringify(facts)).not.toContain(token);
   });
 });
 
@@ -851,6 +869,16 @@ describe("manifests, lockfiles and ecosystems", () => {
     expect(chainFacts({ paths }).missingLockfiles).toEqual(["package.json", "svc/Gemfile", "svc/api/package.json"]);
   });
 
+  it("reports no manifest as missing its lockfile when the listing stopped short, since the lockfile may be unlisted", () => {
+    // The same paths as above, where three manifests have no lockfile listed; a cut listing cannot show any is missing.
+    const paths = ["package.json", "Cargo.toml", "Cargo.lock", "svc/Gemfile", "svc/api/package.json"];
+    const cut = chainFacts({ paths, listingComplete: false });
+    expect(cut.missingLockfiles).toEqual([]);
+    // The rest of what the manifests say still stands.
+    expect(cut.manifestsByEcosystem).toEqual(chainFacts({ paths }).manifestsByEcosystem);
+    expect(cut.ecosystems).toEqual(chainFacts({ paths }).ecosystems);
+  });
+
   it("treats a lockfile in a parent directory as covering a workspace package", () => {
     const paths = ["package.json", "package-lock.json", "packages/a/package.json", "packages/a/src/deep/package.json"];
     expect(chainFacts({ paths }).missingLockfiles).toEqual([]);
@@ -949,8 +977,8 @@ describe("manifests, lockfiles and ecosystems", () => {
 describe("lockfile summaries", () => {
   it("passes the summaries it was given through, sorted by path", () => {
     const given = [
-      { path: "z/yarn.lock", read: "parsed" as const, packages: 3, publicPackages: 2 },
-      { path: "package-lock.json", read: "malformed" as const, packages: 0, publicPackages: 0 },
+      { path: "z/yarn.lock", read: "parsed" as const, packages: 3, publicPackages: 2, capped: false },
+      { path: "package-lock.json", read: "malformed" as const, packages: 0, publicPackages: 0, capped: false },
     ];
     expect(chainFacts({ paths: ["z/yarn.lock", "package-lock.json"], lockfiles: given }).lockfiles.map((l) => l.path)).toEqual([
       "package-lock.json",
@@ -960,7 +988,9 @@ describe("lockfile summaries", () => {
 
   it("reports a pnpm lockfile it was never asked to read as not_supported, so it is not missing", () => {
     const found = chainFacts({ paths: ["package.json", "pnpm-lock.yaml"] });
-    expect(found.lockfiles).toEqual([{ path: "pnpm-lock.yaml", read: "not_supported", packages: 0, publicPackages: 0 }]);
+    expect(found.lockfiles).toEqual([
+      { path: "pnpm-lock.yaml", read: "not_supported", packages: 0, publicPackages: 0, capped: false },
+    ]);
     expect(found.missingLockfiles).toEqual([]);
   });
 
@@ -974,9 +1004,9 @@ describe("lockfile summaries", () => {
 });
 
 describe("supplyChainFacts counts and bounds", () => {
-  it("is version 1 and empty for an empty repository", () => {
+  it("is version 2 and empty for an empty repository", () => {
     expect(chainFacts()).toEqual({
-      version: 1,
+      version: 2,
       workflowsRead: 0,
       workflowsUnread: [],
       dockerfilesUnread: [],
@@ -992,7 +1022,13 @@ describe("supplyChainFacts counts and bounds", () => {
       keyFiles: [],
       dockerfiles: [],
       ecosystems: [],
+      listingComplete: true,
     });
+  });
+
+  it("carries whether the listing of the clone was complete", () => {
+    expect(chainFacts({ listingComplete: true }).listingComplete).toBe(true);
+    expect(chainFacts({ listingComplete: false }).listingComplete).toBe(false);
   });
 
   it("counts workflow files read but not composite actions, and lists the unread ones", () => {
@@ -1153,9 +1189,9 @@ describe("supplyChainFacts on a whole workflow", () => {
 
 describe("supplyChainFacts never reads key files", () => {
   it("takes key files from paths alone", () => {
-    expect(supplyChainFacts({ paths: [".env"], workflows: [], lockfiles: [], unread: [] }).keyFiles).toEqual([
-      { path: ".env", strength: "strong" },
-    ]);
+    expect(
+      supplyChainFacts({ paths: [".env"], listingComplete: true, workflows: [], lockfiles: [], unread: [] }).keyFiles,
+    ).toEqual([{ path: ".env", strength: "strong" }]);
   });
 });
 
@@ -1163,49 +1199,48 @@ describe("supplyChainFacts never reads key files", () => {
 
 describe("hostile volume", () => {
   const head = (on: string) => `${on}\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n`;
-  const FAST_MS = 2_000;
-  const timed = <T>(work: () => T): { result: T; ms: number } => {
-    const started = performance.now();
-    const result = work();
-    return { result, ms: performance.now() - started };
-  };
+  const steps = (on: string, count: number, step: (i: number) => string) =>
+    head(on) + Array.from({ length: count }, (_, i) => step(i)).join("\n");
 
-  it("returns capped findings, quickly, for 100 nested run keys over 1,200 lines of five expressions each", () => {
-    const nested = Array.from({ length: 100 }, (_, i) => `${" ".repeat(i + 1)}run:`);
-    const line = `${" ".repeat(101)}${"${{github.head_ref}} ".repeat(5).trim()}`;
-    const yaml = head("on: pull_request_target") + [...nested, ...Array.from({ length: 1200 }, () => line)].join("\n");
-    const { result, ms } = timed(() => workflowFacts(yaml));
+  it("returns capped findings for 100 nested run keys over 1,200 lines of five expressions each", () => {
+    const nested = (depth: number) => {
+      const keys = Array.from({ length: depth }, (_, i) => `${" ".repeat(i + 1)}run:`);
+      const line = `${" ".repeat(depth + 1)}${"${{github.head_ref}} ".repeat(5).trim()}`;
+      return head("on: pull_request_target") + [...keys, ...Array.from({ length: 1200 }, () => line)].join("\n");
+    };
+    const result = workflowFacts(nested(100));
     // 1,200 lines of five expressions is 6,000 matches when each is read once, and the module keeps 2,000 of them.
     expect(result.findings).toHaveLength(2000);
     expect(result.findings.every((f) => f.risk === "scriptInjection")).toBe(true);
-    expect(ms).toBeLessThan(FAST_MS);
+    // The lines are read once whatever the depth. Reading the block again for each key would take four times as long.
+    expect(growth(workflowFacts, nested(25), nested(100))).toBeLessThan(2);
   });
 
-  it("returns capped findings and actions, quickly, for a 20,000 line file with many expressions", () => {
-    const lines = Array.from(
-      { length: 19_994 },
-      (_, i) =>
-        `      - run: echo \${{ github.head_ref }} \${{ github.event.issue.title }} \${{ github.event.comment.body }} ${i}`,
-    );
-    const yaml = head("on: issue_comment") + lines.join("\n");
-    const { result, ms } = timed(() => workflowFacts(yaml));
-    expect(result.findings).toHaveLength(2000);
-    expect(ms).toBeLessThan(FAST_MS);
+  it("returns capped findings from a file of many expressions, in time proportional to its length", () => {
+    const yaml = (count: number) =>
+      steps(
+        "on: issue_comment",
+        count,
+        (i) =>
+          `      - run: echo \${{ github.head_ref }} \${{ github.event.issue.title }} \${{ github.event.comment.body }} ${i}`,
+      );
+    // 5,000 lines of three expressions is 15,000 matches, and the module keeps 2,000 of them.
+    expect(workflowFacts(yaml(5_000)).findings).toHaveLength(2000);
+    expect(growth(workflowFacts, yaml(1_250), yaml(5_000))).toBeLessThan(PROPORTIONAL);
   });
 
-  it("keeps at most 10,000 actions from a 20,000 line file of uses", () => {
-    const yaml = head("on: push") + Array.from({ length: 19_994 }, () => "      - uses: acme/tool@v1").join("\n");
-    const { result, ms } = timed(() => workflowFacts(yaml));
-    expect(result.actions).toHaveLength(10_000);
-    expect(ms).toBeLessThan(FAST_MS);
+  it("keeps at most 10,000 actions from a 20,000 line file of uses, in time proportional to its length", () => {
+    // Six lines of head and 19,994 steps make the 20,000 lines the module reads, twice the actions it keeps.
+    const yaml = (count: number) => steps("on: push", count, () => "      - uses: acme/tool@v1");
+    expect(workflowFacts(yaml(19_994)).actions).toHaveLength(10_000);
+    expect(growth(workflowFacts, yaml(2_500), yaml(10_000))).toBeLessThan(PROPORTIONAL);
   });
 
-  it("looks for a step's own persist-credentials within a bounded window, so many checkouts stay fast", () => {
-    const yaml =
-      head("on: pull_request_target") + Array.from({ length: 19_994 }, () => "        uses: actions/checkout@v4").join("\n");
-    const { result, ms } = timed(() => workflowFacts(yaml));
-    expect(result.findings).toHaveLength(2000);
-    expect(ms).toBeLessThan(FAST_MS);
+  it("looks for a step's own persist-credentials within a bounded window, so many checkouts take proportional time", () => {
+    const yaml = (count: number) => steps("on: pull_request_target", count, () => "        uses: actions/checkout@v4");
+    expect(workflowFacts(yaml(5_000)).findings).toHaveLength(2000);
+    // Both sizes are well past the 200 rows the window reads each way, so only an unbounded search grows faster.
+    expect(growth(workflowFacts, yaml(1_250), yaml(5_000))).toBeLessThan(PROPORTIONAL);
   });
 
   it("reads a run block once, however deeply its keys nest", () => {
@@ -1219,10 +1254,9 @@ describe("hostile volume", () => {
     ]);
   });
 
-  it("does not take long over a run line with a thousand spaces between words", () => {
-    const yaml = head("on: push") + Array.from({ length: 1000 }, () => `      - run: a${" ".repeat(1900)}b`).join("\n");
-    const { ms } = timed(() => workflowFacts(yaml));
-    expect(ms).toBeLessThan(1000);
+  it("reads run lines with long gaps between words in time proportional to the gap", () => {
+    const yaml = (spaces: number) => steps("on: push", 250, () => `      - run: a${" ".repeat(spaces)}b`);
+    expect(growth(workflowFacts, yaml(475), yaml(1900))).toBeLessThan(PROPORTIONAL);
   });
 });
 

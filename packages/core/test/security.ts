@@ -5,10 +5,22 @@ import type {
   AlertSource,
   BranchRules,
   CodeAlert,
-  DependencyAlert,
+  DependabotAlert,
+  HeldPosture,
   LockedPackage,
+  NoAccessReason,
+  NotUsedReason,
+  OffReason,
+  OsvAlert,
   RepoPosture,
   SecretAlert,
+  SourceError,
+  SourceNoAccess,
+  SourceNotRead,
+  SourceNotUsed,
+  SourceOff,
+  SourceOk,
+  SourceRead,
   SourceState,
   SupplyChainFacts,
   SupplyChainRecord,
@@ -25,58 +37,57 @@ export const NOW = "2026-10-07T12:00:00Z";
 /** The instant this many days (or fractions of a day) before `NOW`. */
 export const daysAgo = (days: number): string => new Date(Date.parse(NOW) - days * DAY_MS).toISOString();
 
-export const ok = (readAt = "2026-10-07T08:00:00Z"): SourceState => ({
+export const ok = (readAt = "2026-10-07T08:00:00Z", overrides: Partial<SourceRead> = {}): SourceOk => ({
   status: "ok",
-  reason: null,
   readAt,
   attemptedAt: readAt,
   truncated: false,
-  error: null,
+  skipped: 0,
+  ...overrides,
 });
 
-export const off = (reason: SourceState["reason"] = "disabled"): SourceState => ({
+export const off = (reason: OffReason = "disabled"): SourceOff => ({
   status: "off",
   reason,
-  readAt: null,
   attemptedAt: "2026-10-07T08:00:00Z",
-  truncated: false,
-  error: null,
 });
 
-export const noAccess = (reason: SourceState["reason"] = "forbidden"): SourceState => ({ ...off(reason), status: "no_access" });
-
-export const notRead = (): SourceState => ({
-  status: "not_read",
-  reason: null,
-  readAt: null,
-  attemptedAt: null,
-  truncated: false,
-  error: null,
+export const noAccess = (reason: NoAccessReason = "forbidden"): SourceNoAccess => ({
+  status: "no_access",
+  reason,
+  attemptedAt: "2026-10-07T08:00:00Z",
 });
+
+/** The OSV lookup was not needed this time. */
+export const notUsed = (reason: NotUsedReason = "lookup_off"): SourceNotUsed => ({
+  status: "not_used",
+  reason,
+  attemptedAt: "2026-10-07T08:00:00Z",
+});
+
+export const notRead = (): SourceNotRead => ({ status: "not_read" });
 
 /** Failed this time; usable only when `readAt` is given, as an earlier read stands. */
-export const failed = (readAt: string | null = null): SourceState => ({
+export const failed = (readAt: string | null = null): SourceError => ({
   status: "error",
-  reason: null,
-  readAt,
-  attemptedAt: "2026-10-07T09:00:00Z",
-  truncated: false,
   error: "GitHub did not answer",
+  attemptedAt: "2026-10-07T09:00:00Z",
+  lastGood: readAt === null ? null : { readAt, truncated: false, skipped: 0 },
 });
 
 export const allOk = (): Record<AlertSource, SourceState> => ({
   dependabot: ok(),
   code_scanning: ok(),
   secret_scanning: ok(),
-  osv: off("lookup_off"),
+  osv: notUsed("lookup_off"),
 });
 
 let counter = 0;
 const nextKey = () => String(++counter);
 
 export function depAlert(
-  overrides: Partial<Omit<DependencyAlert, "dependency">> & { dependency?: Partial<DependencyAlert["dependency"]> } = {},
-): DependencyAlert {
+  overrides: Partial<Omit<DependabotAlert, "dependency">> & { dependency?: Partial<DependabotAlert["dependency"]> } = {},
+): DependabotAlert {
   const { dependency, ...rest } = overrides;
   const key = rest.key ?? nextKey();
   return {
@@ -99,6 +110,42 @@ export function depAlert(
       patchedVersion: "4.17.21",
       vulnerableRange: "< 4.17.21",
       advisoryId: `GHSA-${key}`,
+      cveId: null,
+      epss: null,
+      cvssScore: null,
+      cwes: [],
+      ...dependency,
+    },
+    ...rest,
+  };
+}
+
+/** An OSV finding for lodash in the root lockfile, as `osvFindings` makes one. */
+export function osvAlert(
+  overrides: Partial<Omit<OsvAlert, "dependency">> & { dependency?: Partial<OsvAlert["dependency"]> } = {},
+): OsvAlert {
+  const { dependency, ...rest } = overrides;
+  const key = rest.key ?? `GHSA-${nextKey()}|npm|lodash|package-lock.json`;
+  return {
+    source: "osv",
+    key,
+    state: "open",
+    createdAt: daysAgo(1),
+    closedAt: null,
+    closeReason: null,
+    title: "Command injection in lodash",
+    url: "https://osv.dev/vulnerability/GHSA-35jh-r3h4-6jhm",
+    severity: "medium",
+    dependency: {
+      ecosystem: "npm",
+      name: "lodash",
+      manifestPath: "package-lock.json",
+      scope: null,
+      relationship: null,
+      lockedVersion: "4.17.0",
+      patchedVersion: "4.17.21",
+      vulnerableRange: null,
+      advisoryId: "GHSA-35jh-r3h4-6jhm",
       cveId: null,
       epss: null,
       cvssScore: null,
@@ -179,6 +226,7 @@ export function emptyFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyCha
     keyFiles: [],
     dockerfiles: [],
     ecosystems: ["npm"],
+    listingComplete: true,
     ...overrides,
   };
 }
@@ -239,6 +287,9 @@ export function posture(
   };
 }
 
+/** A posture as the report's input holds it: the value with the time it was read. */
+export const held = (value: RepoPosture = posture(), readAt = "2026-10-07T08:00:00Z"): HeldPosture => ({ value, readAt });
+
 /** Facts for an elite repository: every source read, a clean clone and a protected branch. */
 export function facts(overrides: Partial<SecurityFacts> = {}): SecurityFacts {
   return {
@@ -263,12 +314,11 @@ export function input(overrides: Partial<SecurityInput> = {}): SecurityInput {
     supplyChain: record(),
     supplyChainMissing: null,
     pullRequests: [],
+    supplyChainFailure: null,
     settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
-    posture: posture(),
-    postureReadAt: "2026-10-07T08:00:00Z",
-    postureError: null,
-    scorecard: null,
-    scorecardStatus: "off",
+    posture: held(),
+    postureFailure: null,
+    scorecard: { status: "off" },
     issues: null,
     ...overrides,
   };
@@ -278,16 +328,6 @@ export function input(overrides: Partial<SecurityInput> = {}): SecurityInput {
 export const msAgo = (ms: number): string => new Date(Date.parse(NOW) - ms).toISOString();
 
 export const file = (path: string, content: string): CandidateFile => ({ path, content });
-
-export const sourceState = (overrides: Partial<SourceState> = {}): SourceState => ({
-  status: "ok",
-  reason: null,
-  readAt: "2026-01-02T00:00:00Z",
-  attemptedAt: "2026-01-02T00:00:00Z",
-  truncated: false,
-  error: null,
-  ...overrides,
-});
 
 export const lockedPackage = (overrides: Partial<LockedPackage> = {}): LockedPackage => ({
   ecosystem: "npm",
@@ -312,7 +352,7 @@ export const WORKFLOW_PATH = ".github/workflows/ci.yml";
 
 /** The supply chain facts of a repository holding only the given paths and files; everything else is empty. */
 export function chainFacts(input: Partial<SupplyChainInput> = {}): SupplyChainFacts {
-  return supplyChainFacts({ paths: [], workflows: [], lockfiles: [], unread: [], ...input });
+  return supplyChainFacts({ paths: [], listingComplete: true, workflows: [], lockfiles: [], unread: [], ...input });
 }
 
 /** The facts of one workflow file with the given contents. */

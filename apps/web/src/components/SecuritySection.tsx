@@ -5,6 +5,7 @@ import { copy } from "../copy";
 import { searchForCodePage } from "../lib/codeDetail";
 import { formatNumber } from "../lib/format";
 import {
+  actionKey,
   actionSentence,
   dependabotAlertsOn,
   ACTION_EFFORT,
@@ -17,6 +18,7 @@ import {
   updateConfigPath,
   verdictSentence,
 } from "../lib/security";
+import { FailedSourcesNotice } from "./FailedSourcesNotice";
 import { NotReadNotice } from "./NotReadNotice";
 import { BandLabel } from "./BandLabel";
 import { EffortTag } from "./SecurityParts";
@@ -31,7 +33,7 @@ function Summary({ report }: { report: SecurityReport }) {
   const top = topActions(report.actions);
   const past = pastFixTotal(report.open.pastFix);
   const missing = unreadParts(report);
-  if (notReadYet(report.sources)) return <NotReadNotice repoId={report.repo.id} />;
+  if (notReadYet(report.sources)) return <NotReadNotice repoId={report.repo.id} sources={report.sources} />;
   return (
     <>
       {grade ? (
@@ -55,9 +57,10 @@ function Summary({ report }: { report: SecurityReport }) {
         />
         <StatTile label={c.tiles.actions} value={formatNumber(report.actions.length, 0)} />
       </div>
+      <FailedSourcesNotice report={report} sourcesOnPage={false} leaveOutUnreadNamed />
       {missing.length > 0 && (
         <p className="chart-subtitle">
-          {report.open.total === 0 ? copy.security.open.noneButUnread : c.partial(joinWords(missing))}
+          {report.openAlertTotal === 0 ? copy.security.open.noneButUnread : c.partial(joinWords(missing))}
         </p>
       )}
       {top.shown.length === 0 ? (
@@ -66,8 +69,8 @@ function Summary({ report }: { report: SecurityReport }) {
         <div className="card">
           <h3 className="chart-title">{c.topTitle}</h3>
           <ol className="start-actions">
-            {top.shown.map((action) => (
-              <li key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}>
+            {top.shown.map((action, index) => (
+              <li key={actionKey(action, index)}>
                 <span>
                   {actionSentence(
                     action,
@@ -108,7 +111,11 @@ export function SecuritySection({ repoId, range }: { repoId: number; range: Repo
       <p className="section-lede">{c.lede}</p>
       {report.isPending && <SkeletonGrid count={4} height={120} label={c.loading} />}
       {report.isError && <ErrorState error={report.error} onRetry={() => void report.refetch()} />}
-      {report.data && <Summary report={report.data} />}
+      {report.data && (
+        <div className={report.isPlaceholderData ? "is-refreshing" : undefined} aria-busy={report.isFetching}>
+          <Summary report={report.data} />
+        </div>
+      )}
     </section>
   );
 }

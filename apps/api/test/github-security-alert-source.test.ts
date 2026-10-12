@@ -134,6 +134,7 @@ describe("GitHubSecurityAlertSource alerts", () => {
       status: "ok",
       truncated: false,
       skipped: 0,
+      skippedKeys: [],
       alerts: [
         {
           source: "dependabot",
@@ -219,8 +220,17 @@ describe("GitHubSecurityAlertSource alerts", () => {
     expect(read.alerts.map((a) => a.severity)).toEqual(["critical", "unknown"]);
     expect(read.alerts[1]).toMatchObject({
       title: "Vulnerable dependency",
-      dependency: { ecosystem: "unknown", name: "unknown", manifestPath: "", advisoryId: "" },
+      // A package GitHub did not name stays unnamed, rather than becoming one that unrelated alerts would share.
+      dependency: { ecosystem: null, name: null, manifestPath: null, advisoryId: null },
     });
+  });
+
+  it("leaves a code scanning rule that has no id unnamed, and titles the alert without inventing one", async () => {
+    const http = host({ [listUrl("code-scanning/alerts")]: () => json([{ ...codeRaw, rule: { severity: "error" } }]) });
+
+    const read = ok(await new GitHubSecurityAlertSource(http).codeAlerts("t", "acme", "widgets"));
+
+    expect(read.alerts[0]).toMatchObject({ title: "Code scanning alert", code: { ruleId: null } });
   });
 
   it("accepts an exploit prediction sent as one object and one that lacks a figure", async () => {
@@ -270,6 +280,7 @@ describe("GitHubSecurityAlertSource alerts", () => {
       status: "ok",
       truncated: false,
       skipped: 0,
+      skippedKeys: [],
       alerts: [
         {
           source: "code_scanning",
@@ -325,6 +336,7 @@ describe("GitHubSecurityAlertSource alerts", () => {
       status: "ok",
       truncated: false,
       skipped: 0,
+      skippedKeys: [],
       alerts: [
         {
           source: "secret_scanning",
@@ -447,17 +459,25 @@ describe("GitHubSecurityAlertSource alerts", () => {
     ["another host", "https://evil.example.test/steal?page=2"],
     ["the same host over http", "http://api.github.com/repos/acme/widgets/dependabot/alerts?page=2"],
     ["a different port", "https://api.github.com:8443/repos/acme/widgets/dependabot/alerts?page=2"],
-  ])("does not follow a next link to %s, so the token goes nowhere else", async (_label, target) => {
-    const http = host({ [listUrl("dependabot/alerts")]: () => json([dependabotRaw], 200, { link: `<${target}>; rel="next"` }) });
+  ])(
+    "does not follow a next link to %s, so the token goes nowhere else, and says the list was cut short",
+    async (_label, target) => {
+      const http = host({
+        [listUrl("dependabot/alerts")]: () => json([dependabotRaw], 200, { link: `<${target}>; rel="next"` }),
+      });
 
-    const read = (await new GitHubSecurityAlertSource(http).dependencyAlerts("secret-token", "acme", "widgets")) as {
-      alerts: unknown[];
-    };
+      const read = (await new GitHubSecurityAlertSource(http).dependencyAlerts("secret-token", "acme", "widgets")) as {
+        alerts: unknown[];
+        truncated: boolean;
+      };
 
-    expect(read.alerts).toHaveLength(1);
-    expect(http).toHaveBeenCalledTimes(1);
-    expect(urlsOf(http).join(" ")).not.toContain("evil.example.test");
-  });
+      expect(read.alerts).toHaveLength(1);
+      // The list went on, so the caller must not prune the alerts on the pages that were not read.
+      expect(read.truncated).toBe(true);
+      expect(http).toHaveBeenCalledTimes(1);
+      expect(urlsOf(http).join(" ")).not.toContain("evil.example.test");
+    },
+  );
 
   it("stops at ten pages and says the list was cut short", async () => {
     let n = 0;
@@ -515,6 +535,8 @@ describe("GitHubSecurityAlertSource alerts", () => {
     expect(read.status).toBe("ok");
     expect(read.alerts).toHaveLength(1);
     expect(read.skipped).toBe(5);
+    // Only the two that had a number can be named; the unnumbered ones, the text and the null cannot.
+    expect((read as unknown as { skippedKeys: string[] }).skippedKeys).toEqual(["7", "7"]);
   });
 
   it("uses the page it knows for an alert whose address GitHub gave on another site", async () => {
@@ -668,7 +690,7 @@ describe("GitHubSecurityAlertSource addresses", () => {
       "acme",
       "widgets",
     );
-    expect(read).toEqual({ status: "ok", alerts: [], truncated: false, skipped: 0 });
+    expect(read).toEqual({ status: "ok", alerts: [], truncated: false, skipped: 0, skippedKeys: [] });
   });
 });
 
@@ -738,7 +760,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       [REPO]: () => json({ ...repoBody, visibility: "public", private: false }),
       [`${REPO}/branches/main`]: () => json(branchBody),
       [`${REPO}/branches/main/protection`]: () => json(protectionBody),
-      [`${REPO}/rules/branches/main`]: () => json(rulesBody),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json(rulesBody),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
       [`${REPO}/security-advisories?per_page=100`]: () => json(advisoriesBody),
     });
@@ -808,7 +830,7 @@ describe("GitHubSecurityAlertSource posture", () => {
           protected: false,
           protection: { enabled: false, required_status_checks: { enforcement_level: "off", contexts: [], checks: [] } },
         }),
-      [`${REPO}/rules/branches/main`]: () => json([]),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false, paused: false }),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
       [`${REPO}/security-advisories?per_page=100`]: () => json([]),
@@ -852,7 +874,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       [REPO]: () => json({ visibility: "private" }),
       [`${REPO}/branches/main`]: () => json({ protected: false }),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
-      [`${REPO}/rules/branches/main`]: () => refusal(404, "Not Found"),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => refusal(404, "Not Found"),
     });
     const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
     expect(branch).toMatchObject({
@@ -868,7 +890,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       [`${REPO}/branches/main`]: () => json({ protected: true }),
       [`${REPO}/branches/main/protection`]: () => refusal(404, "Branch not protected"),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
-      [`${REPO}/rules/branches/main`]: () => json([{ type: "deletion" }]),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([{ type: "deletion" }]),
     });
     const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
     expect(branch.detail).toBe("full");
@@ -881,7 +903,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       [`${REPO}/branches/main`]: () => json({ protected: true }),
       [`${REPO}/branches/main/protection`]: () => refusal(404, "Not Found"),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
-      [`${REPO}/rules/branches/main`]: () => json([]),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
     });
     const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
     expect(branch.detail).toBe("rulesets_only");
@@ -893,7 +915,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       const http = host({
         [REPO]: () => json({ visibility }),
         [`${REPO}/branches/main`]: () => json({ protected: false }),
-        [`${REPO}/rules/branches/main`]: () => json([]),
+        [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
         [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
         [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
         [`${REPO}/security-advisories?per_page=100`]: () => json([{ state: "draft" }]),
@@ -909,7 +931,7 @@ describe("GitHubSecurityAlertSource posture", () => {
     const http = host({
       [REPO]: () => json({ visibility: "public" }),
       [`${REPO}/branches/main`]: () => json({ protected: false }),
-      [`${REPO}/rules/branches/main`]: () => json([]),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
       [`${REPO}/security-advisories?per_page=100`]: () => json([{ state: "draft" }]),
@@ -931,10 +953,10 @@ describe("GitHubSecurityAlertSource posture", () => {
           },
         }),
       [`${REPO}/branches/main/protection`]: () => refusal(403, "Resource not accessible by personal access token"),
-      [`${REPO}/rules/branches/main`]: () => json([{ type: "deletion" }]),
-      [`${REPO}/automated-security-fixes`]: () => refusal(403, "no"),
-      [`${REPO}/private-vulnerability-reporting`]: () => refusal(404, "no"),
-      [`${REPO}/security-advisories?per_page=100`]: () => refusal(403, "no"),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([{ type: "deletion" }]),
+      [`${REPO}/automated-security-fixes`]: () => refusal(403, "Resource not accessible by personal access token"),
+      [`${REPO}/private-vulnerability-reporting`]: () => refusal(404, "Not Found"),
+      [`${REPO}/security-advisories?per_page=100`]: () => refusal(403, "Must have admin rights to Repository."),
     });
 
     const posture = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
@@ -966,11 +988,12 @@ describe("GitHubSecurityAlertSource posture", () => {
     expect(posture.advisories).toBeNull();
   });
 
-  it("answers detail none, with every part null, when nothing can be read", async () => {
+  it("answers detail none, with every part null, when this credential may see none of it", async () => {
+    const hidden = () => refusal(403, "Resource not accessible by personal access token");
     const http = host({
-      [REPO]: () => refusal(404, "Not Found"),
-      [`${REPO}/branches/main`]: () => refusal(404, "Branch not found"),
-      [`${REPO}/rules/branches/main`]: () => refusal(404, "Not Found"),
+      [REPO]: hidden,
+      [`${REPO}/branches/main`]: hidden,
+      [`${REPO}/rules/branches/main?per_page=100`]: () => refusal(404, "Not Found"),
       [`${REPO}/automated-security-fixes`]: () => refusal(404, "Not Found"),
       [`${REPO}/private-vulnerability-reporting`]: () => refusal(404, "Not Found"),
       [`${REPO}/security-advisories?per_page=100`]: () => json({ message: "not a list" }),
@@ -990,7 +1013,7 @@ describe("GitHubSecurityAlertSource posture", () => {
     const http = host({
       [REPO]: () => json({ private: true }),
       [`${REPO}/branches/release/2026`]: () => json({ protected: false }),
-      [`${REPO}/rules/branches/release/2026`]: () => json([]),
+      [`${REPO}/rules/branches/release/2026?per_page=100`]: () => json([]),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: true }),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
       [`${REPO}/security-advisories?per_page=100`]: () => json([]),
@@ -1006,7 +1029,7 @@ describe("GitHubSecurityAlertSource posture", () => {
     const http = host({
       [REPO]: () => json({}),
       [`${REPO}/branches/a%3Fb%23c`]: () => json({ protected: false }),
-      [`${REPO}/rules/branches/a%3Fb%23c`]: () => json([]),
+      [`${REPO}/rules/branches/a%3Fb%23c?per_page=100`]: () => json([]),
       [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
       [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
       [`${REPO}/security-advisories?per_page=100`]: () => json([]),
@@ -1035,7 +1058,7 @@ describe("GitHubSecurityAlertSource posture", () => {
       [REPO]: () => json({ permissions: { admin: true } }),
       [`${REPO}/branches/main`]: () => json({ protected: true }),
       [`${REPO}/branches/main/protection`]: () => json({ allow_force_pushes: { enabled: true } }),
-      [`${REPO}/rules/branches/main`]: () =>
+      [`${REPO}/rules/branches/main?per_page=100`]: () =>
         json([
           { type: "pull_request", parameters: { required_approving_review_count: 3 } },
           { type: "required_signatures" },
@@ -1056,5 +1079,410 @@ describe("GitHubSecurityAlertSource posture", () => {
       requireSignedCommits: true,
       requireStatusChecks: true,
     });
+  });
+});
+
+describe("GitHubSecurityAlertSource refusals that are not a permission", () => {
+  const SSO = "Resource protected by organization SAML enforcement. You must grant your credential access.";
+  const SECONDARY = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.";
+  const PROTECTION = `${REPO}/branches/main/protection`;
+
+  /** A public repository with a protected branch, every part answering, and `overrides` changing some of the answers. */
+  const postureHost = (overrides: Record<string, () => Response> = {}) =>
+    host({
+      [REPO]: () => json({ visibility: "public", permissions: { admin: true } }),
+      [`${REPO}/branches/main`]: () => json({ protected: true }),
+      [PROTECTION]: () => json({ allow_force_pushes: { enabled: false } }),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([]),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: true }),
+      [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: true }),
+      [`${REPO}/security-advisories?per_page=100`]: () => json([]),
+      ...overrides,
+    });
+  const posture = (http: ReturnType<typeof host>) => new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+  const PARTS: [string, string][] = [
+    ["the repository", REPO],
+    ["the branch", `${REPO}/branches/main`],
+    ["classic protection", PROTECTION],
+    ["the branch's rules", `${REPO}/rules/branches/main?per_page=100`],
+    ["automated security fixes", `${REPO}/automated-security-fixes`],
+    ["private vulnerability reporting", `${REPO}/private-vulnerability-reporting`],
+    ["the advisories", `${REPO}/security-advisories?per_page=100`],
+  ];
+
+  it.each(PARTS)("raises, rather than saving nulls, for a single sign-on 403 on %s", async (_part, url) => {
+    const error = await posture(postureHost({ [url]: () => refusal(403, SSO) })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UpstreamError);
+    expect((error as UpstreamError).message).toContain("SAML enforcement");
+    expect((error as UpstreamError).status).toBe(403);
+  });
+
+  it.each(PARTS)("raises the rate limit error for a secondary limit with no header on %s", async (_part, url) => {
+    await expect(posture(postureHost({ [url]: () => refusal(403, SECONDARY) }))).rejects.toThrow(RATE_LIMIT_MESSAGE);
+  });
+
+  it.each(PARTS)("leaves %s unknown, and raises nothing, when GitHub says admin rights are needed", async (_part, url) => {
+    const read = await posture(postureHost({ [url]: () => refusal(403, "Must have admin rights to Repository.") }));
+    expect(read.branch.name).toBe("main");
+  });
+
+  it("raises for a branch GitHub cannot find, naming the branch, so the earlier posture is kept", async () => {
+    const error = await posture(postureHost({ [`${REPO}/branches/main`]: () => refusal(404, "Branch not found") })).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({ name: "NotFoundError" });
+    expect((error as Error).message).toContain('"main"');
+  });
+
+  it("raises for a repository GitHub cannot find", async () => {
+    await expect(posture(postureHost({ [REPO]: () => refusal(404, "Not Found") }))).rejects.toMatchObject({
+      name: "NotFoundError",
+    });
+  });
+
+  it.each(PARTS.filter(([part]) => part !== "the repository" && part !== "the branch"))(
+    "leaves %s unknown for a 404, which GitHub sends when only an administrator can read it",
+    async (_part, url) => {
+      const read = await posture(postureHost({ [url]: () => refusal(404, "Not Found") }));
+      expect(read.visibility).toBe("public");
+    },
+  );
+
+  it("names what was refused in the error, with GitHub's message", async () => {
+    const error = await posture(postureHost({ [PROTECTION]: () => refusal(403, SSO) })).catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/^GitHub refused to read the branch's protection: Resource protected/);
+  });
+});
+
+describe("GitHubSecurityAlertSource free text from upstream", () => {
+  const PERSON = "Contact alice@example.test, who wrote ghp_secret into this";
+
+  it("keeps no free text in the error for an alert list it was refused, nor for a later page", async () => {
+    const first = host({ [listUrl("code-scanning/alerts")]: () => refusal(403, PERSON) });
+    const error = await new GitHubSecurityAlertSource(first).codeAlerts("t", "acme", "widgets").catch((e: unknown) => e);
+    expect((error as Error).message).toBe("GitHub refused to list code scanning alerts");
+
+    const page2 = listUrl("code-scanning/alerts", "&page=2");
+    const later = host({
+      [listUrl("code-scanning/alerts")]: () => json([codeRaw], 200, { link: `<${page2}>; rel="next"` }),
+      [page2]: () => refusal(403, PERSON),
+    });
+    const second = await new GitHubSecurityAlertSource(later).codeAlerts("t", "acme", "widgets").catch((e: unknown) => e);
+    expect((second as Error).message).toBe("GitHub refused to list code scanning alerts");
+  });
+
+  it("keeps a message of a known kind, and none of any other, for a refused part of the posture", async () => {
+    const REPO_ = `${API}/repos/acme/widgets`;
+    const read = (message: string) =>
+      new GitHubSecurityAlertSource(host({ [REPO_]: () => refusal(403, message) })).posture("t", "acme", "widgets", "main");
+
+    await expect(read("Resource protected by organization SAML enforcement")).rejects.toThrow(
+      "GitHub refused to read the repository: Resource protected by organization SAML enforcement",
+    );
+    await expect(read(PERSON)).rejects.toThrow(/^GitHub refused to read the repository$/);
+  });
+});
+
+describe("GitHubSecurityAlertSource classification messages", () => {
+  const list = (path: string) => listUrl(path);
+
+  it("raises, rather than calling Dependabot off, for a 403 that merely contains the word disabled", async () => {
+    const http = host({ [list("dependabot/alerts")]: () => refusal(403, "Your account is disabled for this organisation") });
+    await expect(new GitHubSecurityAlertSource(http).dependencyAlerts("t", "acme", "widgets")).rejects.toMatchObject({
+      status: 403,
+    });
+  });
+
+  it.each([
+    "Two-factor authentication is not enabled for this account",
+    "Advanced Security billing is overdue for this organisation",
+  ])("raises, rather than calling code scanning off, for the 403 %j", async (message) => {
+    const http = host({ [list("code-scanning/alerts")]: () => refusal(403, message) });
+    await expect(new GitHubSecurityAlertSource(http).codeAlerts("t", "acme", "widgets")).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("reads a 403 that says admin rights are needed as no access for each source", async () => {
+    const message = "Must have admin rights to Repository.";
+    const http = host({
+      [list("dependabot/alerts")]: () => refusal(403, message),
+      [list("code-scanning/alerts")]: () => refusal(403, message),
+      [list("secret-scanning/alerts") + "&hide_secret=true"]: () => refusal(403, message),
+    });
+    const source = new GitHubSecurityAlertSource(http);
+    expect(await source.dependencyAlerts("t", "acme", "widgets")).toEqual({ status: "no_access", reason: "forbidden" });
+    expect(await source.codeAlerts("t", "acme", "widgets")).toEqual({ status: "no_access", reason: "forbidden" });
+    expect(await source.secretAlerts("t", "acme", "widgets")).toEqual({ status: "no_access", reason: "admin_only_or_off" });
+  });
+
+  it("raises the rate limit error for a secondary limit that sent no header, whatever the source", async () => {
+    const http = host({
+      [list("dependabot/alerts")]: () => refusal(403, "You have exceeded a secondary rate limit."),
+    });
+    await expect(new GitHubSecurityAlertSource(http).dependencyAlerts("t", "acme", "widgets")).rejects.toThrow(
+      RATE_LIMIT_MESSAGE,
+    );
+  });
+});
+
+describe("GitHubSecurityAlertSource lists that go on", () => {
+  const RULES = `${REPO}/rules/branches/main?per_page=100`;
+  const ADVISORIES = `${REPO}/security-advisories?per_page=100`;
+  const page = (url: string, n: number) => `${url}&page=${n}`;
+  const next = (url: string) => ({ link: `<${url}>; rel="next"` });
+  const filler = (count: number) => Array.from({ length: count }, () => ({ type: "creation" }));
+
+  /** An unprotected public branch, so classic protection is fully known and only the rulesets decide. */
+  const base = (extra: Record<string, () => Response>) =>
+    host({
+      [REPO]: () => json({ visibility: "public" }),
+      [`${REPO}/branches/main`]: () => json({ protected: false }),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+      [`${REPO}/private-vulnerability-reporting`]: () => json({ enabled: false }),
+      [RULES]: () => json([]),
+      [ADVISORIES]: () => json([]),
+      ...extra,
+    });
+  const posture = (http: ReturnType<typeof host>) => new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+  it("reports detail none for a branch known to be unprotected when its rulesets were cut and nothing seen is enforced", async () => {
+    const refused = base({ [RULES]: () => json([{ type: "creation" }], 200, next("https://evil.example.test/rules?page=2")) });
+    const { branch } = await posture(refused);
+    // A ruleset past the cut might protect the branch, so it is not known to be unprotected.
+    expect(branch.detail).toBe("none");
+    expect(branch.protected).toBe(false);
+
+    const capped = base({
+      [RULES]: () => json(filler(100), 200, next(page(RULES, 2))),
+      ...Object.fromEntries([2, 3, 4, 5].map((at) => [page(RULES, at), () => json(filler(100), 200, next(page(RULES, at + 1)))])),
+    });
+    expect((await posture(capped)).branch.detail).toBe("none");
+  });
+
+  it("keeps detail rulesets_only when a cut ruleset list still shows a rule enforced, and full when it was read in full", async () => {
+    const seen = base({ [RULES]: () => json([{ type: "deletion" }], 200, next("https://evil.example.test/rules?page=2")) });
+    expect((await posture(seen)).branch.detail).toBe("rulesets_only");
+
+    expect((await posture(base({}))).branch.detail).toBe("full");
+  });
+
+  it("asks for 100 rules to a page and follows the next link, so a rule on page two is seen", async () => {
+    const http = base({
+      [RULES]: () => json(filler(100), 200, next(page(RULES, 2))),
+      [page(RULES, 2)]: () => json([{ type: "non_fast_forward" }]),
+    });
+
+    const { branch } = await posture(http);
+
+    // Page one alone would have said force pushes are allowed.
+    expect(branch.rules.blockForcePushes).toBe(true);
+    expect(branch.rules.blockDeletion).toBe(false);
+    expect(urlsOf(http).filter((url) => url.includes("/rules/branches/main"))).toEqual([RULES, page(RULES, 2)]);
+  });
+
+  it("stops after five pages of rules and leaves a rule it did not see unknown, not missing", async () => {
+    let n = 0;
+    const http = base({
+      [RULES]: () => json(filler(100), 200, next(page(RULES, 2))),
+      ...Object.fromEntries(
+        [2, 3, 4, 5, 6].map((at) => [
+          page(RULES, at),
+          () => {
+            n++;
+            return json(at === 3 ? [{ type: "deletion" }] : filler(100), 200, next(page(RULES, at + 1)));
+          },
+        ]),
+      ),
+    });
+
+    const { branch } = await posture(http);
+
+    expect(n).toBe(4);
+    expect(urlsOf(http).filter((url) => url.includes("/rules/branches/main"))).toHaveLength(5);
+    // Seen on page three.
+    expect(branch.rules.blockDeletion).toBe(true);
+    // Not seen in what was read, but the list went on, so it is not known to be absent.
+    expect(branch.rules.blockForcePushes).toBeNull();
+    expect(branch.rules.requireSignedCommits).toBeNull();
+  });
+
+  it("leaves unseen rules unknown when the next link of the rules was refused", async () => {
+    const http = base({
+      [RULES]: () => json([{ type: "deletion" }], 200, next("https://evil.example.test/rules?page=2")),
+    });
+    const { branch } = await posture(http);
+    expect(branch.rules).toMatchObject({ blockDeletion: true, blockForcePushes: null, requirePullRequest: null });
+    expect(urlsOf(http).join(" ")).not.toContain("evil");
+  });
+
+  it("raises when a later page of rules is refused, rather than saving half a list", async () => {
+    const http = base({
+      [RULES]: () => json(filler(100), 200, next(page(RULES, 2))),
+      [page(RULES, 2)]: () => refusal(403, "Resource protected by organization SAML enforcement."),
+    });
+    await expect(posture(http)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("raises when a later page of rules is not a list", async () => {
+    const http = base({
+      [RULES]: () => json(filler(100), 200, next(page(RULES, 2))),
+      [page(RULES, 2)]: () => json({ message: "oops" }),
+    });
+    await expect(posture(http)).rejects.toThrow("no list of the branch's rules");
+  });
+
+  it("follows the next link of the advisories and counts those on every page", async () => {
+    const http = base({
+      [ADVISORIES]: () => json([{ state: "draft" }, { state: "closed" }], 200, next(page(ADVISORIES, 2))),
+      [page(ADVISORIES, 2)]: () => json([{ state: "draft" }, { state: "published" }]),
+    });
+    expect((await posture(http)).advisories).toEqual({ draft: 2, triage: 0, published: 1, closed: 1 });
+  });
+
+  it("reports the advisories as not read when the list went on past what was read", async () => {
+    const refused = base({
+      [ADVISORIES]: () => json([{ state: "draft" }], 200, next("http://api.github.com/x?page=2")),
+    });
+    expect((await posture(refused)).advisories).toBeNull();
+
+    const forever = base({
+      [ADVISORIES]: () => json([{ state: "draft" }], 200, next(page(ADVISORIES, 2))),
+      ...Object.fromEntries(
+        [2, 3, 4, 5].map((at) => [page(ADVISORIES, at), () => json([{ state: "draft" }], 200, next(page(ADVISORIES, at + 1)))]),
+      ),
+    });
+    const http = forever;
+    expect((await posture(http)).advisories).toBeNull();
+    expect(urlsOf(http).filter((url) => url.includes("security-advisories"))).toHaveLength(5);
+  });
+
+  it("marks an alert list truncated when a next link is too long to read, so nothing unread is pruned", async () => {
+    const http = host({
+      [listUrl("code-scanning/alerts")]: () =>
+        json([codeRaw], 200, {
+          link: `<${listUrl("code-scanning/alerts", "&page=2")}>; rel="next"; title="${"x".repeat(5000)}"`,
+        }),
+    });
+    const read = ok(await new GitHubSecurityAlertSource(http).codeAlerts("t", "acme", "widgets"));
+    expect(read.alerts).toHaveLength(1);
+    expect(read.truncated).toBe(true);
+  });
+});
+
+describe("GitHubSecurityAlertSource mapping details", () => {
+  const one = async (path: string, call: "dependencyAlerts" | "codeAlerts" | "secretAlerts", raw: unknown, extra = "") => {
+    const http = host({ [listUrl(path, extra)]: () => json([raw]) });
+    return ok(await new GitHubSecurityAlertSource(http)[call]("t", "acme", "widgets")).alerts[0] as unknown as {
+      closedAt: string | null;
+      closeReason: string | null;
+      title: string;
+      url: string;
+      exposure?: { type: string };
+    };
+  };
+
+  it.each([
+    ["false positive", "false_positive"],
+    ["used in tests", "used_in_tests"],
+    ["won't fix", "wont_fix"],
+  ])("maps the code scanning dismissal %j to %s", async (reason, code) => {
+    const alert = await one("code-scanning/alerts", "codeAlerts", { ...codeRaw, dismissed_reason: reason });
+    expect(alert.closeReason).toBe(code);
+  });
+
+  it("leaves a code scanning dismissal with a reason it does not know without a reason", async () => {
+    const alert = await one("code-scanning/alerts", "codeAlerts", { ...codeRaw, dismissed_reason: "free text a person typed" });
+    expect(alert.closeReason).toBeNull();
+  });
+
+  it("closes a fixed code alert at fixed_at, and at updated_at when it has none", async () => {
+    const fixed = { ...codeRaw, state: "fixed", dismissed_reason: null, dismissed_at: null, fixed_at: "2026-09-07T10:00:00Z" };
+    const withTime = await one("code-scanning/alerts", "codeAlerts", fixed);
+    expect(withTime).toMatchObject({ closedAt: "2026-09-07T10:00:00Z", closeReason: "fixed" });
+    const without = await one("code-scanning/alerts", "codeAlerts", { ...fixed, fixed_at: null });
+    expect(without.closedAt).toBe("2026-09-05T10:00:00Z");
+  });
+
+  it("closes a fixed Dependabot alert at fixed_at, and at updated_at when it has none", async () => {
+    const fixed = {
+      ...dependabotRaw,
+      state: "fixed",
+      dismissed_at: null,
+      dismissed_reason: null,
+      fixed_at: "2026-09-08T10:00:00Z",
+    };
+    expect((await one("dependabot/alerts", "dependencyAlerts", fixed)).closedAt).toBe("2026-09-08T10:00:00Z");
+    expect((await one("dependabot/alerts", "dependencyAlerts", { ...fixed, fixed_at: null })).closedAt).toBe(
+      "2026-09-04T10:00:00Z",
+    );
+  });
+
+  it("closes a resolved secret alert at resolved_at, and at updated_at when it has none", async () => {
+    const hidden = "&hide_secret=true";
+    expect((await one("secret-scanning/alerts", "secretAlerts", secretRaw, hidden)).closedAt).toBe("2026-09-05T10:00:00Z");
+    const without = await one("secret-scanning/alerts", "secretAlerts", { ...secretRaw, resolved_at: null }, hidden);
+    expect(without.closedAt).toBe("2026-09-06T10:00:00Z");
+  });
+
+  it("cuts a published title to 300 characters, for each source", async () => {
+    const long = "a".repeat(400);
+    const dependabot = await one("dependabot/alerts", "dependencyAlerts", {
+      ...dependabotRaw,
+      security_advisory: { ...dependabotRaw.security_advisory, summary: long },
+    });
+    expect(dependabot.title).toBe("a".repeat(300));
+    const code = await one("code-scanning/alerts", "codeAlerts", { ...codeRaw, rule: { ...codeRaw.rule, description: long } });
+    expect(code.title).toBe("a".repeat(300));
+    const secret = await one(
+      "secret-scanning/alerts",
+      "secretAlerts",
+      { ...secretRaw, secret_type_display_name: long },
+      "&hide_secret=true",
+    );
+    expect(secret.title).toBe("a".repeat(300));
+    expect(secret.exposure?.type).toBe("a".repeat(300));
+  });
+});
+
+describe("GitHubSecurityAlertSource alert pages", () => {
+  const known = "https://github.com/acme/widgets/security/dependabot/7";
+
+  it.each([
+    "https://github.com.evil.example.test/acme/widgets/security/dependabot/7",
+    "https://github.com@evil.example.test/acme/widgets/security/dependabot/7",
+    "https://evil.example.test/https://github.com/acme/widgets",
+    "http://github.com/acme/widgets/security/dependabot/7",
+  ])("uses the page it knows, not %s", async (html) => {
+    const http = host({ [listUrl("dependabot/alerts")]: () => json([{ ...dependabotRaw, html_url: html }]) });
+    const read = ok(await new GitHubSecurityAlertSource(http).dependencyAlerts("t", "acme", "widgets"));
+    expect(read.alerts[0]!.url).toBe(known);
+  });
+
+  it("keeps an address on the site's own host", async () => {
+    const own = "https://github.com/acme/widgets/security/dependabot/7?query=1";
+    const http = host({ [listUrl("dependabot/alerts")]: () => json([{ ...dependabotRaw, html_url: own }]) });
+    const read = ok(await new GitHubSecurityAlertSource(http).dependencyAlerts("t", "acme", "widgets"));
+    expect(read.alerts[0]!.url).toBe(own);
+  });
+});
+
+describe("GitHubSecurityAlertSource status check hint", () => {
+  it("leaves required checks unknown when the branch's hint says enforcement is off and nothing else can see them", async () => {
+    const http = host({
+      [REPO]: () => json({ visibility: "private" }),
+      [`${REPO}/branches/main`]: () =>
+        json({
+          protected: true,
+          protection: { enabled: true, required_status_checks: { enforcement_level: "off", contexts: ["ci"], checks: [] } },
+        }),
+      [`${REPO}/branches/main/protection`]: () => refusal(403, "Resource not accessible by personal access token"),
+      [`${REPO}/rules/branches/main?per_page=100`]: () => json([{ type: "deletion" }]),
+      [`${REPO}/automated-security-fixes`]: () => json({ enabled: false }),
+    });
+
+    const { branch } = await new GitHubSecurityAlertSource(http).posture("t", "acme", "widgets", "main");
+
+    expect(branch.detail).toBe("rulesets_only");
+    expect(branch.rules.requireStatusChecks).toBeNull();
   });
 });

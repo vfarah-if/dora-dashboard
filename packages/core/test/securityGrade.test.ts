@@ -25,8 +25,10 @@ import {
   msAgo,
   noAccess,
   notRead,
+  notUsed,
   ok,
   off,
+  osvAlert,
   posture,
   record,
   secretAlert,
@@ -200,7 +202,7 @@ describe("secrets", () => {
 });
 
 describe("which sources are used", () => {
-  const osv = depAlert({ source: "osv", severity: "critical", createdAt: daysAgo(1), key: "osv-1" });
+  const osv = osvAlert({ severity: "critical", createdAt: daysAgo(1), key: "osv-1" });
   const dependabot = depAlert({ severity: "high", createdAt: daysAgo(1), key: "dep-1" });
 
   it("uses Dependabot's alerts and ignores OSV's when Dependabot is usable", () => {
@@ -218,7 +220,7 @@ describe("which sources are used", () => {
   });
 
   it("uses no dependency alerts when neither is usable, even if some are stored", () => {
-    const sources = { ...allOk(), dependabot: noAccess(), osv: off("lookup_off") };
+    const sources = { ...allOk(), dependabot: noAccess(), osv: notUsed("lookup_off") };
     expect(gradedAlerts([osv, dependabot], sources)).toEqual([]);
   });
 
@@ -286,7 +288,12 @@ describe("Dependabot switched off", () => {
   });
 
   it("measures the part even when it is the only thing known", () => {
-    const sources = { dependabot: off("disabled"), code_scanning: notRead(), secret_scanning: notRead(), osv: off("lookup_off") };
+    const sources = {
+      dependabot: off("disabled"),
+      code_scanning: notRead(),
+      secret_scanning: notRead(),
+      osv: notUsed("lookup_off"),
+    };
     expect(part({ sources }, "vulnerabilities").check).toBe("dependenciesUnwatched");
   });
 
@@ -415,7 +422,7 @@ describe("the change control part", () => {
   });
 
   it("does not let change control alone make a grade", () => {
-    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: off("lookup_off") };
+    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: notUsed("lookup_off") };
     const result = grade({ sources, supplyChain: null, supplyChainMissing: "analysis_off" });
     expect(result.grade).toBeNull();
     expect(result.gradeMissing).toBe("nothing_measured");
@@ -500,6 +507,25 @@ describe("branch state", () => {
     expect(branchState(unread)).toMatchObject({ read: false, unprotected: false });
     expect(branchState(null)).toEqual({ read: false, unprotected: false, forcePushAllowed: false, enforced: false });
   });
+
+  // The branch says it has no classic protection, but the rulesets could not be read, so a ruleset may still protect it.
+  const rulesetsUnread = posture({ branch: { protected: false, detail: "none", rules: noRules } });
+
+  it("is not read, nor called unprotected, when the branch has no classic protection and the rulesets are unknown", () => {
+    expect(branchState(rulesetsUnread)).toEqual({ read: false, unprotected: false, forcePushAllowed: false, enforced: false });
+  });
+
+  it("leaves change control unmeasured rather than capping the grade at high when the rulesets are unknown", () => {
+    const result = grade({ posture: rulesetsUnread });
+    expect(result.grade!.parts.changeControl).toBeNull();
+    expect(result.grade!.unmeasured).toContain("changeControl");
+    expect(result.grade!.overall.band).toBe("elite");
+  });
+
+  it("is read and protected when the branch says it is protected, whatever the rulesets", () => {
+    const classicOnly = posture({ branch: { protected: true, detail: "none", rules: noRules } });
+    expect(branchState(classicOnly)).toEqual({ read: true, unprotected: false, forcePushAllowed: false, enforced: true });
+  });
 });
 
 describe("the overall grade", () => {
@@ -550,7 +576,7 @@ describe("a grade that cannot be given", () => {
       dependabot: notRead(),
       code_scanning: noAccess(),
       secret_scanning: off("not_set_up"),
-      osv: off("lookup_off"),
+      osv: notUsed("lookup_off"),
     };
     const result = grade({ sources, supplyChain: null, supplyChainMissing: "analysis_off" });
     expect(result.grade).toBeNull();
@@ -558,7 +584,7 @@ describe("a grade that cannot be given", () => {
   });
 
   it("is still given from the clone alone, naming what is unmeasured", () => {
-    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: off("lookup_off") };
+    const sources = { dependabot: notRead(), code_scanning: notRead(), secret_scanning: notRead(), osv: notUsed("lookup_off") };
     const result = grade({ sources });
     expect(result.grade!.parts.vulnerabilities).toBeNull();
     expect(result.grade!.unmeasured).toEqual(["dependencies", "code", "secrets"]);

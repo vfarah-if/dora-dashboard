@@ -480,7 +480,7 @@ describe("snippets for each kind of action", () => {
   });
 
   it("reads how the package comes in from the action, and offers an override and no install for a transitive one", () => {
-    const action = securityAction({ relationship: "transitive" });
+    const action = securityAction({ package: { relationship: "transitive" } });
     const snippets = snippetsFor(action, context);
     expect(snippets.map((s) => s.id)).toEqual(["upgradeInPlace", "npmOverrides"]);
     expect(snippets.map((s) => s.code).join("\n")).not.toContain("npm install");
@@ -488,8 +488,8 @@ describe("snippets for each kind of action", () => {
   });
 
   it("gives each action its own advice from its own relationship, so the same package in two manifests can differ", () => {
-    const root = securityAction({ manifestPath: "package-lock.json", relationship: "transitive" });
-    const web = securityAction({ manifestPath: "apps/web/package-lock.json", relationship: "direct" });
+    const root = securityAction({ package: { manifestPath: "package-lock.json", relationship: "transitive" } });
+    const web = securityAction({ package: { manifestPath: "apps/web/package-lock.json", relationship: "direct" } });
     expect(snippetsFor(root, context).map((s) => s.id)).toEqual(["upgradeInPlace", "npmOverrides"]);
     expect(snippetsFor(web, context).map((s) => [s.id, s.code])).toEqual([
       ["upgrade", "cd apps/web && npm install left-pad@1.3.1"],
@@ -498,20 +498,41 @@ describe("snippets for each kind of action", () => {
   });
 
   it("offers an instruction, and no copyable snippet, where the advice is prose", () => {
-    const action = securityAction({ ecosystem: "pip", target: "pip:left-pad", manifestPath: "requirements.txt" });
+    const action = securityAction({ target: "pip:left-pad", package: { ecosystem: "pip", manifestPath: "requirements.txt" } });
     expect(snippetsFor(action, context)).toEqual([]);
     expect(upgradeInstruction(action)).toBe("Set left-pad==1.3.1 in requirements.txt, then install the requirements again.");
   });
 
+  it("offers nothing to run for a package with no name, even where the manager and the version are known", () => {
+    const unnamed = securityAction({ target: null, package: { name: null } });
+    expect(snippetsFor(unnamed, context)).toEqual([]);
+    expect(upgradeInstruction(unnamed)).toBeNull();
+    expect(
+      upgradeAdvice({
+        ecosystem: "npm",
+        manifestPath: "package-lock.json",
+        name: null,
+        version: "1.0.0",
+        relationship: "direct",
+      }),
+    ).toBeNull();
+  });
+
+  it("offers no upgrade command for an action that is not an upgrade, such as replacing a package", () => {
+    expect(snippetsFor(securityAction({ kind: "replace_dependency" }), context)).toEqual([]);
+  });
+
   it("offers no upgrade command when none is known or there is no fixed version", () => {
-    expect(snippetsFor(securityAction({ ecosystem: "swift", manifestPath: "Package.resolved" }), context)).toEqual([]);
-    expect(snippetsFor(securityAction({ upgradeTo: null }), context)).toEqual([]);
-    expect(upgradeInstruction(securityAction({ upgradeTo: null }))).toBeNull();
+    expect(snippetsFor(securityAction({ package: { ecosystem: "swift", manifestPath: "Package.resolved" } }), context)).toEqual(
+      [],
+    );
+    expect(snippetsFor(securityAction({ package: { upgradeTo: null } }), context)).toEqual([]);
+    expect(upgradeInstruction(securityAction({ package: { upgradeTo: null } }))).toBeNull();
   });
 
   it("puts the note of a command beside its snippet", () => {
     const [snippet] = snippetsFor(
-      securityAction({ ecosystem: "rubygems", target: "rubygems:left-pad", manifestPath: "Gemfile.lock" }),
+      securityAction({ target: "rubygems:left-pad", package: { ecosystem: "rubygems", manifestPath: "Gemfile.lock" } }),
       context,
     );
     expect(snippet!.note).toContain("Gemfile");

@@ -2,7 +2,7 @@
  * Every user-facing string in the application. Components read from here and never write copy inline,
  * so wording can be reviewed in one place. Functions are used where a sentence carries a value.
  */
-import type { SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
+import type { CloseReason, NotUsedReason, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
 
 /** The figures an action's sentence is written from. */
 export interface ActionFacts {
@@ -27,6 +27,9 @@ export interface FixCopy {
   steps: readonly string[];
 }
 
+/** " with the message "x"" for a failure that gave one, and nothing for one that gave none. */
+const withMessage = (message: string) => (message ? ` with the message "${message}"` : "");
+const unnamedPackage = "A package that GitHub did not name";
 const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
 const some = (count: number, noun: string, nouns = `${noun}s`) => `${count} ${plural(count, noun, nouns)}`;
 
@@ -52,7 +55,7 @@ const FIX = {
   },
   upgrade_dependency: {
     what: ({ count, name, upgradeTo, severity }) =>
-      `${name} has ${some(count, `open ${severity ? `${severity} ` : ""}alert`)}, and version ${upgradeTo ?? "a newer one"} fixes ${plural(count, "it", "them")}.`,
+      `${name || unnamedPackage} has ${some(count, `open ${severity ? `${severity} ` : ""}alert`)}, and version ${upgradeTo ?? "a newer one"} fixes ${plural(count, "it", "them")}.`,
     why: "The version of this package that you use contains a flaw that has been published, so attackers know how to use it against every project that has not upgraded. Upgrading to the fixed version closes the gap, usually without any change to your own code.",
     steps: [
       "Run the upgrade command shown below, or merge the pull request that Dependabot has already raised for it if there is one.",
@@ -62,7 +65,7 @@ const FIX = {
   },
   replace_dependency: {
     what: ({ count, name }) =>
-      `${name} has ${some(count, "open alert")}, and its maintainers have not published a fixed version yet.`,
+      `${name || unnamedPackage} has ${some(count, "open alert")}, and its maintainers have not published a fixed version yet.`,
     why: "No patched release exists, so upgrading cannot help. The flaw stays in your project until you replace the package, stop using the feature that is affected, or the maintainers publish a fix.",
     steps: [
       "Read the advisory linked below to see which feature of the package is affected and whether your code uses it.",
@@ -71,7 +74,8 @@ const FIX = {
     ],
   },
   fix_code_alert: {
-    what: ({ count, name }) => `Code scanning found ${some(count, "open alert")} for the rule ${name}.`,
+    what: ({ count, name }) =>
+      `Code scanning found ${some(count, "open alert")} for ${name ? `the rule ${name}` : "a rule that GitHub did not name"}.`,
     why: "Code scanning has spotted a pattern in your own code that is known to cause security problems, such as building a database query out of text that a visitor typed. These are weaknesses that an attacker can reach through your running application.",
     steps: [
       "Open the first location listed below and read the message on the alert to see what the scanner saw.",
@@ -951,6 +955,7 @@ export const copy = {
     tooMany: (limit: number) => `Name at most ${limit} entries in each box.`,
     tooLong: (limit: number) => `Each entry can have at most ${limit} characters.`,
     control: "Entries cannot contain control characters, such as a tab or a line break.",
+    noWord: "Each title word needs at least one letter or digit, because titles are matched on whole words.",
     unreadable: "The rules saved for this repository could not be read, so the defaults apply until you save them again.",
     loadingDefaults: "Loading the default rules. Saving is available once they have loaded.",
   },
@@ -2546,6 +2551,7 @@ export const copy = {
       },
       noOpen: "No open alerts",
       notReadRow: "Not read yet",
+      notUsedRow: "Not measured",
       startWith: "Start with",
       gradeMissing: {
         not_crawled: "This repository has not been crawled yet, so there is nothing to grade.",
@@ -2558,6 +2564,7 @@ export const copy = {
         "Dependencies are not being looked up in OSV.dev, which is an optional extra that covers repositories where Dependabot alerts are off. Set OSV_LOOKUP=on in the environment file of the dashboard to switch it on.",
       coverage: {
         none: "Nothing has been read yet.",
+        noneUsable: "No alert source could be used, so open the repository to see why.",
         read: (read: string) => `Read ${read}.`,
         readAndMissing: (read: string, missing: string) => `Read ${read}. Not read ${missing}.`,
         sources: {
@@ -2582,6 +2589,7 @@ export const copy = {
       invalidAddress: "This address does not name a repository.",
       alertsRead: (when: string) => `Alerts read on ${when}`,
       alertsNotRead: "Alerts have not been read yet",
+      alertsStale: (when: string) => `Some alerts are older than this, and the oldest was read on ${when}`,
       gradeLine: "Security grade",
       gradeNone: "No security grade yet",
       rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
@@ -2750,13 +2758,15 @@ export const copy = {
       crawl: "Crawl now",
       crawling: "Crawling now, this page updates when it finishes",
       failed: "The crawl could not be started. Try again in a moment.",
-      row: "Not read yet",
+      refused: {
+        title: "No alerts could be used for this repository",
+        body: "The dashboard asked GitHub, but none of the alert sources could be used, so the figures that would normally appear here are left out, because zeros would look like an all clear when nothing has been measured. Each source says below what happened and what to do.",
+        retry: "Where a source failed, crawling again tries it once more.",
+      },
     },
     fixTitle: "How to fix",
-    fixOne: "How to fix this",
     why: "Why it matters",
     steps: "What to do",
-    snippetsTitle: "Copy and paste",
     learnMore: "Learn more on GitHub",
     affected: "Where to look",
     printMore: (count: number) => `and ${count} more, listed on the security page`,
@@ -3187,6 +3197,9 @@ export const copy = {
         days: (count: number) => `${count} days`,
       },
       reasons: {
+        fixed: "fixed",
+        not_found: "no longer found",
+        unspecified: "no reason given",
         fix_started: "a fix has been started",
         inaccurate: "judged inaccurate",
         no_bandwidth: "no time to fix",
@@ -3199,8 +3212,7 @@ export const copy = {
         auto_dismissed: "closed automatically by GitHub",
         pattern_deleted: "the pattern was deleted",
         pattern_edited: "the pattern was edited",
-      },
-      reasonFallback: (reason: string) => reason.replace(/_/g, " "),
+      } satisfies Record<CloseReason | "unspecified", string>,
       pushProtection: (count: number) =>
         `${count} ${count === 1 ? "secret was" : "secrets were"} pushed in this range after the person pushing chose to bypass push protection.`,
     },
@@ -3213,6 +3225,8 @@ export const copy = {
       filterOption: (name: string, count: number) => `${name} (${count})`,
       filterNote: (name: string) => `Only alerts from ${name} are listed here.`,
       capped: (shown: number, total: number) => `Showing the ${shown} worst of ${total} open alerts.`,
+      noneInWorst: (name: string, shown: number) =>
+        `None of the ${shown} worst open alerts come from ${name}, though it has others further down the list.`,
       none: "No open alerts match.",
       severity: "Severity",
       problem: "Problem",
@@ -3222,13 +3236,12 @@ export const copy = {
       fixBy: "Fix-by date",
       weakness: "Kind of problem",
       whereText: {
-        package: (name: string, version: string | null, manifest: string) =>
-          `${name}${version ? ` ${version}` : ""} in ${manifest}`,
+        package: (name: string | null, version: string | null, manifest: string | null) =>
+          `${name ?? "A package GitHub did not name"}${version ? ` ${version}` : ""}${manifest ? ` in ${manifest}` : ""}`,
         code: (path: string | null, line: number | null) =>
           path ? (line === null ? path : `${path} line ${line}`) : "A location GitHub did not report",
         secret: (type: string) => `A secret of the kind ${type}`,
       },
-      alertLink: (title: string) => `Open the alert ${title}`,
     },
 
     upgrades: {
@@ -3251,6 +3264,9 @@ export const copy = {
       several: (versions: string) => `Different fixes for different alerts, ${versions}`,
       command: "Command",
       noCommand: "No command is known for this package manager",
+      unnamed: "A package GitHub did not name",
+      noCommandUnnamed: "No command, because GitHub did not name the package",
+      noManifest: "Not reported",
       nothingToInstall: "Nothing to install until a fix is published",
       chooseVersion: "Choose one of the fixed versions first",
       pastFix: "Past fix-by date",
@@ -3308,7 +3324,6 @@ export const copy = {
       dockerfilesUnread: (count: number) =>
         `${count} ${count === 1 ? "Dockerfile was" : "Dockerfiles were"} not read, so ${count === 1 ? "it is" : "they are"} left out of the checks.`,
       nothingFound: "There is nothing to check in this section.",
-      moreItems: (count: number) => `and ${count} more`,
       totalNote: (shown: number, total: number) => `Showing ${shown} of ${total}.`,
       table: { check: "Check", result: "Result", detail: "What was found" },
       line: (path: string, line: number | null) => (line === null ? path : `${path} line ${line}`),
@@ -3427,6 +3442,15 @@ export const copy = {
       },
     },
 
+    failedSources: {
+      title: "Some sources failed the last time they were read",
+      body: (sources: string) =>
+        `The last attempt failed for ${sources}. The figures use the earlier read where there is one, so they may be out of date.`,
+      since: (name: string, when: string) => `${name}, last read on ${when}`,
+      never: (name: string) => `${name}, never read`,
+      link: "See how each source is read",
+    },
+
     passFail: { met: "Met", unmet: "Not met", unseen: "Not visible" },
 
     branch: {
@@ -3434,8 +3458,10 @@ export const copy = {
       lede: "Rules on your deploy branch decide whether a mistake or a stolen account can push straight to production, and a few repository settings decide whether GitHub helps you.",
       notRead: "Branch rules and settings have not been read yet. They are read during the next crawl.",
       readOn: (when: string) => `Read on ${when}`,
-      postureError:
-        "The latest attempt to read the branch rules and settings did not succeed, so the facts below are from an earlier read.",
+      failedKept: (message: string) =>
+        `The latest attempt to read the branch rules and settings failed${withMessage(message)}, so the facts below are from an earlier read.`,
+      failedNone: (message: string) =>
+        `The latest attempt to read the branch rules and settings failed${withMessage(message)}, so nothing has been read yet. It is tried again at the next crawl.`,
       about: (branch: string, visibility: string | null, admin: boolean | null) =>
         `The deploy branch is ${branch}${visibility ? ` in a ${visibility} repository` : ""}. ${admin === true ? "The account the dashboard uses is an administrator, so it can read the branch rules and settings." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
       visibility: { public: "public", private: "private", internal: "internal" },
@@ -3518,9 +3544,14 @@ export const copy = {
         off: "The Scorecard lookup is switched off. Set SCORECARD_LOOKUP=on in the environment file of the dashboard to switch it on.",
         not_public: "This repository is not public, so its name is never sent to Scorecard and it has no score.",
         not_scanned: "Scorecard has not scanned this repository. Only public projects in its weekly scan have a score.",
+        not_read:
+          "Scorecard has not been asked about this repository yet. It is asked at the next crawl, once the lookup is switched on.",
         error:
           "The Scorecard lookup failed the last time it ran. Any earlier score is kept, and the lookup is tried again at a crawl once the last good read is more than a day old, and at every full crawl.",
       },
+      failedWith: (message: string, when: string) => `The lookup failed on ${when}${withMessage(message)}.`,
+      earlierScore: "The score and checks below are from the last lookup that worked.",
+      noEarlierScore: "No earlier score is held.",
       check: "Check",
       checkScore: "Score",
       reason: "What it found",
@@ -3537,10 +3568,24 @@ export const copy = {
       readOn: (when: string) => `Read on ${when}`,
       notYet: "Not read yet",
       truncated: "More alerts exist than the dashboard reads in one go, so the oldest are not shown.",
-      failed: (message: string) => `The last attempt failed with the message "${message}". Earlier results are kept.`,
-      failedNoMessage: "The last attempt failed. Earlier results are kept.",
-      status: { ok: "Read", off: "Switched off", no_access: "No access", error: "Failed", not_read: "Not read yet" },
-      notNeeded: "Not needed",
+      skipped: (count: number) => `${count} ${count === 1 ? "alert" : "alerts"} could not be read.`,
+      failed: (message: string) => `The last attempt failed${withMessage(message)}. Earlier results are kept.`,
+      failedNoEarlier: (message: string) =>
+        `The last attempt failed${withMessage(message)}. There is no earlier read to fall back on.`,
+      lastGoodOn: (when: string) => `Last read successfully on ${when}`,
+      status: {
+        ok: "Read",
+        off: "Switched off",
+        no_access: "No access",
+        not_used: "Not used",
+        error: "Failed",
+        not_read: "Not read yet",
+      },
+      notUsedLabel: {
+        lookup_off: "Switched off",
+        dependabot_ok: "Not needed",
+        no_inventory: "Nothing to look up",
+      } satisfies Record<NotUsedReason, string>,
       reasons: {
         disabled: "It is switched off for this repository.",
         not_set_up: "It has not been set up for this repository.",
@@ -3549,7 +3594,9 @@ export const copy = {
         forbidden: "GitHub refused the dashboard's sign in access to it.",
         admin_only_or_off: "Either it is switched off, or only a repository administrator can read it.",
         lookup_off: "The lookup is switched off on this dashboard.",
-        dependabot_ok: "It is not needed, because Dependabot alerts were read.",
+        dependabot_ok: "It is not needed while Dependabot alerts can be used.",
+        dependabot_failed:
+          "Dependabot's last read failed, so its earlier alerts are still graded and this lookup is not used in their place.",
         no_inventory: "There were no lockfiles that prove where packages came from, so there was nothing to look up.",
       },
       enable: {
@@ -3569,12 +3616,18 @@ export const copy = {
         ok: (sha: string, when: string) => `Read from commit ${sha} on ${when}.`,
         analysis_off: "Code analysis is switched off on this dashboard.",
         not_read: "These files have not been read yet.",
+        failed: (message: string) => `The last inspection failed${withMessage(message)}. Earlier results are kept.`,
+        failedNoEarlier: (message: string) =>
+          `The last inspection failed${withMessage(message)}. There is no earlier read to fall back on.`,
         enable:
           "Set CODE_ANALYSIS=on in the environment file of the dashboard and crawl again, so that the workflow files can be read.",
       },
       posture: {
         ok: (when: string) => `Read on ${when}.`,
         notRead: "They have not been read yet.",
+        failed: (message: string) => `The last attempt failed${withMessage(message)}. Earlier results are kept.`,
+        failedNoEarlier: (message: string) =>
+          `The last attempt failed${withMessage(message)}. There is no earlier read to fall back on.`,
         enable: "Branch rules can be read with read access. Most repository settings need a repository administrator.",
       },
     },
@@ -3655,7 +3708,6 @@ export const copy = {
       title: "Security",
       lede: "A short summary of this repository's security grade and what to do next.",
       loading: "Loading security",
-      noGrade: "No security grade yet.",
       tiles: {
         critical: "Critical alerts",
         high: "High severity alerts",

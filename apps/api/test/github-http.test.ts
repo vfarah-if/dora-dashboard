@@ -7,19 +7,23 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(body), { status, headers });
 
 describe("nextLink", () => {
+  const next = (url: string) => ({ kind: "next", url });
+
   it("finds the next address among several relations", () => {
     const header = `<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=3>; rel="next", <https://api.github.com/x?page=9>; rel="last"`;
-    expect(nextLink(header, FROM)).toBe("https://api.github.com/x?page=3");
+    expect(nextLink(header, FROM)).toEqual(next("https://api.github.com/x?page=3"));
   });
 
   it("reads a next relation that is not quoted or is followed by other parameters", () => {
-    expect(nextLink("<https://api.github.com/x?page=2>; rel=next", FROM)).toBe("https://api.github.com/x?page=2");
-    expect(nextLink(`<https://api.github.com/x?page=2>; rel="next"; title="more"`, FROM)).toBe("https://api.github.com/x?page=2");
+    expect(nextLink("<https://api.github.com/x?page=2>; rel=next", FROM)).toEqual(next("https://api.github.com/x?page=2"));
+    expect(nextLink(`<https://api.github.com/x?page=2>; rel="next"; title="more"`, FROM)).toEqual(
+      next("https://api.github.com/x?page=2"),
+    );
   });
 
   it("resolves a relative address against the page it came from", () => {
-    expect(nextLink(`</repos/acme/widgets/x?page=2>; rel="next"`, FROM)).toBe(
-      "https://api.github.com/repos/acme/widgets/x?page=2",
+    expect(nextLink(`</repos/acme/widgets/x?page=2>; rel="next"`, FROM)).toEqual(
+      next("https://api.github.com/repos/acme/widgets/x?page=2"),
     );
   });
 
@@ -27,6 +31,11 @@ describe("nextLink", () => {
     ["no header", null],
     ["an empty header", ""],
     ["no next relation", `<https://api.github.com/x?page=1>; rel="prev"`],
+  ])("says the list ended for %s", (_label, header) => {
+    expect(nextLink(header, FROM)).toEqual({ kind: "none" });
+  });
+
+  it.each([
     ["another host", `<https://evil.example.test/x?page=2>; rel="next"`],
     ["a host that only starts like ours", `<https://api.github.com.evil.example.test/x>; rel="next"`],
     ["a host with credentials that read like ours", `<https://api.github.com@evil.example.test/x>; rel="next"`],
@@ -35,8 +44,8 @@ describe("nextLink", () => {
     ["a scheme that is not http", `<javascript:alert(1)>; rel="next"`],
     ["an address that cannot be read", `<https://>; rel="next"`],
     ["a header over 4 KiB", `<https://api.github.com/x?page=2>; rel="next"${" ".repeat(4100)}`],
-  ])("answers null for %s", (_label, header) => {
-    expect(nextLink(header, FROM)).toBeNull();
+  ])("says the next page was refused, not that the list ended, for %s", (_label, header) => {
+    expect(nextLink(header, FROM)).toEqual({ kind: "refused" });
   });
 });
 
@@ -156,6 +165,40 @@ describe("reading a reply", () => {
   });
 });
 
+describe("error replies", () => {
+  const failed = (response: Response) =>
+    request<never>(
+      vi.fn(async () => response),
+      "tok",
+      FROM,
+    ).catch((e: unknown) => e as UpstreamError) as Promise<UpstreamError>;
+
+  it("keeps GitHub's message only when it names a permission, a rate limit or a missing thing, else only the status", async () => {
+    expect((await failed(json({ message: "Resource not accessible by integration" }, 403))).message).toBe(
+      "GitHub answered 403: Resource not accessible by integration",
+    );
+    // Free text from upstream is not kept, whatever it says, so nothing a person wrote can reach a stored error.
+    expect((await failed(json({ message: "Server Error, ask alice@example.test or see ghp_secret" }, 500))).message).toBe(
+      "GitHub answered 500",
+    );
+    expect((await failed(new Response("<html><body>Bad gateway</body></html>", { status: 502 }))).message).toBe(
+      "GitHub answered 502",
+    );
+    expect((await failed(new Response(null, { status: 503 }))).message).toBe("GitHub answered 503");
+  });
+
+  it("reads at most 64 KiB of an error body, so a huge one costs the status only", async () => {
+    const huge = new Response(JSON.stringify({ message: "x".repeat(70 * 1024) }), { status: 500 });
+    expect((await failed(huge)).message).toBe("GitHub answered 500");
+  });
+
+  it("raises the rate limit error for a 403 whose message says rate limit, with no header", async () => {
+    const error = await failed(json({ message: "You have exceeded a secondary rate limit." }, 403));
+    expect(error.message).toContain(RATE_LIMIT_MESSAGE);
+    expect(error.status).toBe(403);
+  });
+});
+
 describe("requestPage", () => {
   const read = (response: Response, refusals: readonly number[] = [403, 404]) =>
     requestPage<unknown>(
@@ -170,7 +213,10 @@ describe("requestPage", () => {
       json([1], 200, { link: `<https://api.github.com/x?page=2>; rel="next"` }),
     );
 
-    expect(await requestPage(http, "tok", FROM, [])).toEqual({ body: [1], next: "https://api.github.com/x?page=2" });
+    expect(await requestPage(http, "tok", FROM, [])).toEqual({
+      body: [1],
+      next: { kind: "next", url: "https://api.github.com/x?page=2" },
+    });
 
     const headers = http.mock.calls[0]![1]!.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer tok");
@@ -200,6 +246,27 @@ describe("requestPage", () => {
     await expect(read(json({ message: "limit" }, 429, { "retry-after": "30" }), [429])).rejects.toThrow(RATE_LIMIT_MESSAGE);
   });
 
+  it("raises the rate limit error for a 403 whose message says rate limit, though no header says so", async () => {
+    const secondary = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.";
+    await expect(read(json({ message: secondary }, 403))).rejects.toThrow(RATE_LIMIT_MESSAGE);
+    await expect(read(json({ message: secondary }, 403), [])).rejects.toThrow(RATE_LIMIT_MESSAGE);
+    await expect(read(json({ message: "API rate limit exceeded for user ID 1." }, 403), [404])).rejects.toThrow(
+      RATE_LIMIT_MESSAGE,
+    );
+    // Any other 403 is still handed back for the caller to classify.
+    expect(await read(json({ message: "Resource not accessible by personal access token" }, 403))).toMatchObject({ status: 403 });
+  });
+
+  it("raises the rate limit error for any 429, even with no header and no message", async () => {
+    await expect(read(new Response(null, { status: 429 }), [429])).rejects.toThrow(RATE_LIMIT_MESSAGE);
+  });
+
+  it("keeps the next page's refusal apart from the end of the list", async () => {
+    const refused = json([1], 200, { link: `<https://evil.example.test/x?page=2>; rel="next"` });
+    expect(await read(refused, [])).toEqual({ body: [1], next: { kind: "refused" } });
+    expect(await read(json([1]), [])).toEqual({ body: [1], next: { kind: "none" } });
+  });
+
   it("raises as `request` does for a status that is not listed", async () => {
     await expect(read(json({ message: "missing" }, 404), [403])).rejects.toMatchObject({ name: "NotFoundError" });
     await expect(read(json({ message: "no" }, 403), [404])).rejects.toBeInstanceOf(UpstreamError);
@@ -224,6 +291,18 @@ describe("requestPage", () => {
         FROM,
         [],
       ),
-    ).rejects.toThrow("dns");
+    ).rejects.toMatchObject({ name: "UpstreamError", status: 502, message: "GitHub could not be reached" });
+  });
+
+  it("keeps the cause of a transport failure for the log but puts neither the address nor the cause in the message", async () => {
+    const reset = new TypeError("fetch failed: ECONNRESET for https://api.github.com/secret-path");
+    const error = (await request(
+      vi.fn(async () => Promise.reject(reset)),
+      "tok-123",
+      FROM,
+    ).catch((e: unknown) => e)) as UpstreamError;
+    expect(error).toBeInstanceOf(UpstreamError);
+    expect(error.cause).toBe(reset);
+    expect(error.message).not.toMatch(/secret-path|tok-123|ECONNRESET/);
   });
 });

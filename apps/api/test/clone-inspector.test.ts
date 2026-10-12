@@ -3,7 +3,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
 import type { CloneInspector, CloneView } from "../src/services/clone-inspector.js";
-import { ANALYSER_MISSING, CodeHealthService } from "../src/services/code-health-service.js";
+import {
+  ANALYSER_MISSING,
+  CLONE_FAILURE,
+  CodeHealthService,
+  INSPECTION_FAILURE,
+  LISTING_FAILURE,
+} from "../src/services/code-health-service.js";
 import { CrawlService } from "../src/services/crawl-service.js";
 import { FakeCodeAnalyser, FakeProvider, FakeSourceCheckout, FakeWorkspaceReader, pr, run } from "./fakes.js";
 
@@ -20,6 +26,13 @@ class FakeInspector implements CloneInspector {
   isStale(repoId: number, head: string): boolean {
     this.asked.push({ repoId, head });
     return this.stale;
+  }
+
+  /** Every failure the service recorded beside the facts, in order. */
+  readonly failures: { repoId: number; message: string }[] = [];
+
+  fail(repoId: number, message: string): void {
+    this.failures.push({ repoId, message });
   }
 
   async inspect(view: CloneView): Promise<void> {
@@ -126,6 +139,26 @@ describe("the clone inspector during code health", () => {
     expect(inspector.views).toHaveLength(2);
     expect(checkout.requests).toHaveLength(2);
     expect(analyser.analysed).toHaveLength(2);
+  });
+
+  it("reads the facts again, and records no failed analysis, when the inspector cannot tell whether they are stale", async () => {
+    await service.analyse("t", repoId);
+    inspector.isStale = () => {
+      throw new Error("Stored supply chain facts of repository 1 are not readable");
+    };
+
+    const snapshot = await service.analyse("t", repoId);
+
+    // The code was not measured again, and the snapshot is the earlier good one with no error.
+    expect(snapshot.error).toBeNull();
+    expect(analyser.analysed).toHaveLength(1);
+    // The inspector was shown the clone, so its row can be written again.
+    expect(inspector.views).toHaveLength(2);
+    expect(checkout.requests).toHaveLength(2);
+    expect(logged.warnings.map((w) => w.message)).toContain(
+      "could not tell whether the supply chain facts are stale; reading them again",
+    );
+    expect(logged.warnings.map((w) => w.message)).not.toContain("code analysis failed");
   });
 
   it("clones nothing for an unchanged head whose facts are fresh, and asks the inspector with the head", async () => {
@@ -277,6 +310,69 @@ describe("the clone inspector during code health", () => {
       await readerless.analyse("t", repoId);
 
       expect(checkout.requests).toEqual([]);
+    });
+  });
+
+  it("shows the inspector whether the listing was complete", async () => {
+    await service.analyse("t", repoId);
+    expect(inspector.views[0]!.listingComplete).toBe(true);
+
+    reader.listingComplete = false;
+    await service.analyse("t", repoId, true);
+    expect(inspector.views[1]!.listingComplete).toBe(false);
+  });
+
+  describe("recording a failed inspection beside the facts", () => {
+    it("records nothing when the inspection succeeds", async () => {
+      await service.analyse("t", repoId);
+      expect(inspector.failures).toEqual([]);
+    });
+
+    it("records a neutral message, which carries nothing from the cause, when the inspector throws", async () => {
+      inspector.failWith = new Error("lockfile exploded at /tmp/clone-x with ghp_secret");
+
+      await service.analyse("t", repoId);
+
+      expect(inspector.failures).toEqual([{ repoId, message: INSPECTION_FAILURE }]);
+      expect(JSON.stringify(inspector.failures)).not.toMatch(/ghp_secret|clone-x|exploded/);
+    });
+
+    it("records a failure to clone an unchanged head for the inspection alone", async () => {
+      await service.analyse("t", repoId);
+      checkout.failWith = new Error("network down");
+
+      await service.analyse("t", repoId);
+
+      expect(inspector.failures).toEqual([{ repoId, message: CLONE_FAILURE }]);
+    });
+
+    it("records a clone that cannot be listed, though the analysis goes on", async () => {
+      reader.listFailWith = new Error("too deep");
+
+      const snapshot = await service.analyse("t", repoId);
+
+      expect(snapshot.error).toBeNull();
+      expect(inspector.failures).toEqual([{ repoId, message: LISTING_FAILURE }]);
+    });
+
+    it("logs, and goes on, when the failure cannot be recorded", async () => {
+      inspector.failWith = new Error("lockfile exploded");
+      inspector.fail = () => {
+        throw new Error("database is locked");
+      };
+
+      const snapshot = await service.analyse("t", repoId);
+
+      expect(snapshot.error).toBeNull();
+      expect(logged.warnings.map((w) => w.message)).toContain("could not record the failed inspection");
+    });
+
+    it("records each failed attempt, so the message and time are those of the latest", async () => {
+      inspector.failWith = new Error("lockfile exploded");
+      await service.analyse("t", repoId);
+      await service.analyse("t", repoId);
+
+      expect(inspector.failures).toHaveLength(2);
     });
   });
 

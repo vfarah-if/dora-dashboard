@@ -1,6 +1,6 @@
 import type { SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { ACTION_EFFORT, actionSentence, dependabotAlertsOn, startHere, updateConfigPath } from "../lib/security";
+import { ACTION_EFFORT, actionKey, actionSentence, dependabotAlertsOn, startHere, updateConfigPath } from "../lib/security";
 import { BandLabel } from "./BandLabel";
 import { EffortTag } from "./SecurityParts";
 
@@ -38,8 +38,8 @@ export function StartHere({ report }: { report: SecurityReport }) {
                   : c.nothingToRaise(copy.dora.band[start.band].toLowerCase())}
               </p>
               <ol className="start-actions">
-                {start.top.shown.map((action) => (
-                  <li key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}>
+                {start.top.shown.map((action, index) => (
+                  <li key={actionKey(action, index)}>
                     <span>
                       {actionSentence(
                         action,

@@ -1,6 +1,14 @@
 import type { SecurityAction, SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { ACTION_EFFORT, actionSentence, dependabotAlertsOn, safeHttpUrl, severityLabel, updateConfigPath } from "../lib/security";
+import {
+  ACTION_EFFORT,
+  actionKey,
+  actionSentence,
+  dependabotAlertsOn,
+  safeHttpUrl,
+  severityLabel,
+  updateConfigPath,
+} from "../lib/security";
 import { LEARN_MORE, settingsLinkFor, snippetsFor, upgradeInstruction, type FixContext } from "../lib/securityFixes";
 import { CopySnippet } from "./CopySnippet";
 import { ExternalLink } from "./ExternalLink";
@@ -13,13 +21,13 @@ export function fixContext(report: SecurityReport): FixContext {
   return {
     repo: report.repo,
     ecosystems: report.ecosystems,
-    branch: report.posture?.branch.name ?? "main",
+    branch: report.posture?.value.branch.name ?? "main",
     settingsUrl: report.settingsUrl,
     versionUpdates: report.dependabotVersionUpdates,
     updateConfig: updateConfigPath(report),
     dependabotAlertsOn: dependabotAlertsOn(report),
     // The CodeQL upload needs GitHub code scanning, which a private repository has only with GitHub Code Security.
-    codeScanning: report.posture?.visibility === "public" || report.sources.code_scanning.status === "ok",
+    codeScanning: report.posture?.value.visibility === "public" || report.sources.code_scanning.status === "ok",
     thresholds: report.thresholds,
   };
 }
@@ -129,12 +137,8 @@ export function SecurityActions({ report }: { report: SecurityReport }) {
           <SecurityList total={actions.length} limit={10}>
             {(limit) => (
               <ol className="action-list">
-                {actions.slice(0, limit).map((action) => (
-                  <ActionItem
-                    key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}
-                    action={action}
-                    context={context}
-                  />
+                {actions.slice(0, limit).map((action, index) => (
+                  <ActionItem key={actionKey(action, index)} action={action} context={context} />
                 ))}
               </ol>
             )}

@@ -26,6 +26,7 @@ function view(files: Record<string, string>, extra: Partial<CloneView> = {}) {
     repoId: 1,
     commitSha: "abc1234",
     paths: Object.keys(files),
+    listingComplete: true,
     async read(path, maxBytes) {
       reads.push({ path, maxBytes });
       const content = files[path];
@@ -62,6 +63,13 @@ describe("the supply chain inspector", () => {
       expect(service.isStale(repoId, "def5678")).toBe(true);
     });
 
+    it("is stale, and does not throw, when the stored facts cannot be read", () => {
+      store.saveSupplyChain(repoId, supplyChainRecord({ commitSha: "abc1234" }), []);
+      (store as unknown as { db: { exec(sql: string): void } }).db.exec("UPDATE supply_chain SET facts = 'nope'");
+
+      expect(service.isStale(repoId, "abc1234")).toBe(true);
+    });
+
     it("is stale when the facts were read by another version", () => {
       store.saveSupplyChain(
         repoId,
@@ -69,6 +77,35 @@ describe("the supply chain inspector", () => {
         [],
       );
       expect(service.isStale(repoId, "abc1234")).toBe(true);
+    });
+  });
+
+  describe("whether the listing was complete", () => {
+    it("stores that the listing was complete, or that it was cut, with the facts", async () => {
+      await service.inspect({ ...view({}).clone, repoId });
+      expect(store.supplyChain(repoId)!.facts.listingComplete).toBe(true);
+
+      await service.inspect({ ...view({}, { listingComplete: false }).clone, repoId });
+      expect(store.supplyChain(repoId)!.facts.listingComplete).toBe(false);
+    });
+  });
+
+  describe("recording a failure", () => {
+    it("stores the message with the time beside the record it leaves alone, and a good inspection clears it", async () => {
+      store.saveSupplyChain(repoId, supplyChainRecord({ commitSha: "old1234" }), []);
+
+      service.fail(repoId, "The clone could not be read");
+
+      expect(store.supplyChainFailure(repoId)).toEqual({
+        message: "The clone could not be read",
+        attemptedAt: NOW.toISOString(),
+      });
+      expect(store.supplyChain(repoId)!.commitSha).toBe("old1234");
+
+      const { clone } = view({});
+      await service.inspect({ ...clone, repoId });
+
+      expect(store.supplyChainFailure(repoId)).toBeNull();
     });
   });
 
@@ -90,7 +127,7 @@ describe("the supply chain inspector", () => {
         workflowsUnread: [],
         dockerfilesUnread: [],
         dockerfilesUnreadTotal: 0,
-        lockfiles: [{ path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1 }],
+        lockfiles: [{ path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false }],
       });
       expect(store.lockedPackages(repoId)).toEqual([
         { ecosystem: "npm", name: "lodash", version: "4.17.20", lockfile: "package-lock.json" },
@@ -131,8 +168,8 @@ describe("the supply chain inspector", () => {
       expect(facts.workflowsRead).toBe(1);
       expect(facts.workflowsUnread).toEqual([".github/workflows/big.yml"]);
       expect(facts.lockfiles).toEqual([
-        { path: "Cargo.lock", read: "unreadable", packages: 0, publicPackages: 0 },
-        { path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1 },
+        { path: "Cargo.lock", read: "unreadable", packages: 0, publicPackages: 0, capped: false },
+        { path: "package-lock.json", read: "parsed", packages: 1, publicPackages: 1, capped: false },
       ]);
     });
 

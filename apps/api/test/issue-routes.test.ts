@@ -46,20 +46,19 @@ describe("issues through the repository routes", () => {
     it("carries the issue fields, empty before anything was read", async () => {
       const [row] = (await app.inject("/api/repos")).json<Record<string, unknown>[]>();
 
-      expect(row).toMatchObject({ id, issues: 0, issuesEnabled: null, issueLabels: null, issueError: null });
+      expect(row).toMatchObject({ id, issues: 0, issuesEnabled: null, issueLabels: { kind: "defaults" }, issueError: null });
     });
 
     it("says whether a saved override can be read", async () => {
-      const labelsUnreadable = async () => (await app.inject("/api/repos")).json<{ issueLabelsUnreadable: boolean }[]>()[0]!;
-      expect(await labelsUnreadable()).toMatchObject({ issueLabelsUnreadable: false });
+      const labels = async () => (await app.inject("/api/repos")).json<{ issueLabels: { kind: string } }[]>()[0]!.issueLabels;
+      expect(await labels()).toEqual({ kind: "defaults" });
 
       const db = (store as unknown as { db: DatabaseSync }).db;
       db.prepare("UPDATE repos SET issue_labels = '{not json' WHERE id = ?").run(id);
-      expect(await labelsUnreadable()).toMatchObject({ issueLabelsUnreadable: true });
-      expect((await app.inject("/api/repos")).json<{ issueLabels: unknown }[]>()[0]!.issueLabels).toBeNull();
+      expect(await labels()).toEqual({ kind: "unreadable" });
 
       await put({ labels: { kinds: { bug: ["defect"] } } });
-      expect(await labelsUnreadable()).toMatchObject({ issueLabelsUnreadable: false });
+      expect((await labels()).kind).toBe("override");
     });
 
     it("counts the issues a crawl read and says issues are on", async () => {
@@ -67,7 +66,7 @@ describe("issues through the repository routes", () => {
 
       const [row] = (await app.inject("/api/repos")).json<Record<string, unknown>[]>();
 
-      expect(row).toMatchObject({ issues: 2, issuesEnabled: true, issueLabels: null, issueError: null });
+      expect(row).toMatchObject({ issues: 2, issuesEnabled: true, issueLabels: { kind: "defaults" }, issueError: null });
     });
 
     it("says issues are off, and why a read failed", async () => {
@@ -105,40 +104,43 @@ describe("issues through the repository routes", () => {
         owner: "acme",
         name: "widgets",
         issues: 0,
-        issueLabels: { kinds: { bug: ["defect"] }, priorities: { P0: ["sev1"] } },
+        issueLabels: { kind: "override", rules: { kinds: { bug: ["defect"] }, priorities: { P0: ["sev1"] } } },
       });
       expect((await app.inject("/api/repos")).json<{ issueLabels: unknown }[]>()[0]!.issueLabels).toEqual({
-        kinds: { bug: ["defect"] },
-        priorities: { P0: ["sev1"] },
+        kind: "override",
+        rules: { kinds: { bug: ["defect"] }, priorities: { P0: ["sev1"] } },
       });
     });
 
     it("round-trips an override of priorities alone, with no kinds key", async () => {
       const res = await put({ labels: { priorities: { P0: ["sev1"] } } });
 
-      const saved = res.json<{ issueLabels: Record<string, unknown> }>().issueLabels;
-      expect(saved).toEqual({ priorities: { P0: ["sev1"] } });
-      expect("kinds" in saved).toBe(false);
-      const stored = store.issueState(id).labels!;
-      expect("kinds" in stored).toBe(false);
+      const saved = res.json<{ issueLabels: { kind: string; rules: Record<string, unknown> } }>().issueLabels;
+      expect(saved).toEqual({ kind: "override", rules: { priorities: { P0: ["sev1"] } } });
+      expect("kinds" in saved.rules).toBe(false);
+      const stored = store.issueState(id).labels;
+      expect(stored.kind === "override" && "kinds" in stored.rules).toBe(false);
     });
 
     it("tidies the names before saving them", async () => {
       const res = await put({ labels: { kinds: { bug: [" defect ", "Defect", "  ", "fault"], feature: [" "] } } });
 
-      expect(res.json<{ issueLabels: unknown }>().issueLabels).toEqual({ kinds: { bug: ["defect", "fault"] } });
+      expect(res.json<{ issueLabels: unknown }>().issueLabels).toEqual({
+        kind: "override",
+        rules: { kinds: { bug: ["defect", "fault"] } },
+      });
     });
 
     it("returns to the defaults when the labels are null, or nothing is left of them", async () => {
       await put({ labels: { kinds: { bug: ["defect"] } } });
 
-      expect((await put({ labels: null })).json<{ issueLabels: unknown }>().issueLabels).toBeNull();
+      expect((await put({ labels: null })).json<{ issueLabels: unknown }>().issueLabels).toEqual({ kind: "defaults" });
 
       await put({ labels: { kinds: { bug: ["defect"] } } });
       expect(
         (await put({ labels: { kinds: { bug: [" "] }, priorities: {} } })).json<{ issueLabels: unknown }>().issueLabels,
-      ).toBeNull();
-      expect(store.issueState(id).labels).toBeNull();
+      ).toEqual({ kind: "defaults" });
+      expect(store.issueState(id).labels).toEqual({ kind: "defaults" });
     });
 
     it("starts no crawl", async () => {
@@ -169,7 +171,7 @@ describe("issues through the repository routes", () => {
       const res = await put(payload);
 
       expect(res.statusCode).toBe(400);
-      expect(store.issueState(id).labels).toBeNull();
+      expect(store.issueState(id).labels).toEqual({ kind: "defaults" });
     });
 
     it("accepts a name of exactly 100 characters and 30 names", async () => {
@@ -182,7 +184,7 @@ describe("issues through the repository routes", () => {
       const res = await put({ labels: { kinds: { bug: ["defect"] } } }, undefined, { origin: "http://evil.example.test" });
 
       expect(res.statusCode).toBe(403);
-      expect(store.issueState(id).labels).toBeNull();
+      expect(store.issueState(id).labels).toEqual({ kind: "defaults" });
     });
 
     it("accepts the dashboard's own origin", async () => {
