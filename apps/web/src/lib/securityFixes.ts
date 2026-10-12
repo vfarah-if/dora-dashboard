@@ -52,7 +52,10 @@ const snippet = (id: Snippet["id"], code: string, extra: { note?: string | null;
 
 // --- Safe values -----------------------------------------------------------------------------------------------
 
-/** What registries allow in a package name, starting with a letter, a digit or the @ of a scope, never a dash that a shell reads as an option. */
+/**
+ * What registries allow in a package name, starting with a letter, a digit or the @ of a scope, never a dash that a shell
+ * reads as an option.
+ */
 const SAFE_NAME = /^[@A-Za-z0-9][@A-Za-z0-9._/+~-]*$/;
 /** A version starts with a digit or a letter, such as the v of a Go version, and never with a dash or a tilde. */
 const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+~-]*$/;
@@ -704,7 +707,10 @@ const ADVISORIES = `${DOCS}/code-security/concepts/vulnerability-reporting-and-m
 const FEATURES = `${DOCS}/code-security/getting-started/github-security-features`;
 const SECURE_DEPENDENCIES = `${DOCS}/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies`;
 
-/** The GitHub documentation page that explains each kind of finding, or null for a setting of this dashboard rather than of GitHub. */
+/**
+ * The GitHub documentation page that explains each kind of finding, or null for a setting of this dashboard rather than of
+ * GitHub.
+ */
 export const LEARN_MORE: Record<SecurityActionKind, string | null> = {
   rotate_secret: `${DOCS}/code-security/tutorials/remediate-leaked-secrets/remediating-a-leaked-secret`,
   upgrade_dependency: ALERTS,

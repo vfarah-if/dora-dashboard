@@ -14,7 +14,8 @@ function UpgradeTo({ group }: { group: DependencyGroup }) {
 }
 
 function Command({ group }: { group: DependencyGroup }) {
-  // Without one fixed version there is nothing to install, whatever the package manager, so say that and not that the manager is unknown.
+  // Without one fixed version there is nothing to install, whatever the package manager, so say that and not that the
+  // manager is unknown.
   if (!group.upgradeTo) return <span>{group.patchedVersions.length > 0 ? c.chooseVersion : c.nothingToInstall}</span>;
   const advice = upgradeAdvice({
     ecosystem: group.ecosystem,
