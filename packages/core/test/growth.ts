@@ -8,7 +8,8 @@ const ROUNDS = 5;
  * budget. CI runs every workspace's suite at once on a shared runner and under coverage, where a run took about ten
  * times as long as on a laptop, so a fixed budget passed locally and failed there. A ratio cancels out the machine's
  * speed. CPU time rather than time on the clock leaves out the time the process spends waiting for a core while other
- * suites run, and the least of five runs leaves out a pause that happens to land on one of them.
+ * suites run, and the least of five runs leaves out a pause that happens to land on one of them. Five runs of each size
+ * take a while on CI, so the suite's timeout in vitest.config.ts is raised for the same reason.
  */
 export function growth<T>(work: (input: T) => unknown, small: T, large: T): number {
   let leastSmall = Infinity;
