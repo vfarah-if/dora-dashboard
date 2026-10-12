@@ -288,7 +288,7 @@ const FIX = {
     why: "With security updates on, Dependabot opens a pull request with the fix as soon as an alert appears, which turns a warning into a change that you only have to review.",
     steps: [
       `${SETTINGS_PATH}.`,
-      "Switch on Dependabot security updates.",
+      "Switch on Dependabot security updates. It is a setting, so no file in the repository can switch it on.",
       "Review and merge the pull requests that Dependabot opens.",
     ],
   },
@@ -2727,6 +2727,23 @@ export const copy = {
         "Keep your existing configuration file, because it carries on raising the regular version updates.",
       ],
     },
+    securityUpdates: {
+      /** Says what is already on, so the sentence never seems to contradict GitHub's Security tab. */
+      what: ({ file, alertsOn }: { file: string | null; alertsOn: boolean }) => {
+        const on = [
+          alertsOn ? "Dependabot alerts are on" : null,
+          file ? `${updater(file).subject} set up in ${file}` : null,
+        ].filter((part): part is string => part !== null);
+        const lead = on.length > 0 ? `${on.join(" and ")}, but ` : "";
+        return `${lead}Dependabot security updates are a separate switch and are off, so nobody raises the fix when an alert appears.`;
+      },
+      why: "Dependabot has three separate switches. Alerts tell you that a package you use has a known flaw, version updates keep your packages recent on a schedule, and security updates raise a pull request with the fix as soon as an alert appears. GitHub's Security tab lists only the alerts, so it can say Enabled while security updates are still off.",
+      steps: [
+        "Open the repository's Settings and choose Advanced Security in the Security section of the sidebar. The Security tab does not show this switch.",
+        "In the Dependabot part of that page, find Dependabot security updates and select Enable. No file in the repository can switch it on, so a configuration file does not change it.",
+        "Crawl again so that this page sees the change, then review and merge the pull requests that Dependabot opens.",
+      ],
+    },
     notRead: {
       title: "Security has not been read for this repository yet",
       body: "Security alerts are read during a crawl, and this repository has not been crawled since security was added. The figures that would normally appear here are left out, because zeros would look like an all clear when nothing has been measured yet.",
@@ -3464,7 +3481,8 @@ export const copy = {
         privateVulnerabilityReporting: "Private vulnerability reporting",
       },
       settingHints: {
-        dependabotSecurityUpdates: "Dependabot opens a pull request with the fix when an alert appears.",
+        dependabotSecurityUpdates:
+          "Dependabot opens a pull request with the fix when an alert appears. This is a separate switch from Dependabot alerts, found under Settings, then Advanced Security.",
         secretScanning: "GitHub looks for passwords and keys in the code.",
         pushProtection: "A push that contains a secret is stopped before it lands.",
         validityChecks: "GitHub tells you whether a leaked secret is still active.",

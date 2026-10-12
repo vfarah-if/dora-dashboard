@@ -288,11 +288,51 @@ describe("ActionItem", () => {
       branch: "main",
       settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
       versionUpdates: null,
+      updateConfig: null,
+      dependabotAlertsOn: true,
       codeScanning: true,
       thresholds: securityReport().thresholds,
     });
     expect(fixContext(noSecurity()).branch).toBe("main");
     expect(fixContext(noSecurity()).ecosystems).toEqual([]);
+  });
+
+  it("explains that security updates are a setting no file can switch on when a Dependabot file exists", () => {
+    const base = securityReport();
+    if (base.supplyChain.status !== "ok") throw new Error("the fixture reads the supply chain");
+    const withFile = securityReport({
+      supplyChain: {
+        ...base.supplyChain,
+        lines: base.supplyChain.lines.map((l) =>
+          l.check === "updateConfig"
+            ? { ...l, met: true, total: 1, items: [{ path: ".github/dependabot.yml", line: null, detail: null }] }
+            : l,
+        ),
+      },
+    });
+    const action = securityAction({ kind: "enable_security_updates", band: null, severity: null, refs: [] });
+    const { unmount } = render(
+      <ol>
+        <ActionItem action={action} context={fixContext(withFile)} />
+      </ol>,
+    );
+    expect(
+      screen.getByText(copy.security.securityUpdates.what({ file: ".github/dependabot.yml", alertsOn: true }), { selector: "p" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(copy.security.securityUpdates.why)).toBeInTheDocument();
+    expect(screen.getByText(/GitHub's Security tab lists only the alerts/)).toBeInTheDocument();
+    expect(screen.getByText(/No file in the repository can switch it on/)).toBeInTheDocument();
+    unmount();
+
+    // With neither a configuration file nor alerts read, the plain advice stands, and it still says it is a setting.
+    const quiet = { ...context, dependabotAlertsOn: false };
+    render(
+      <ol>
+        <ActionItem action={action} context={quiet} />
+      </ol>,
+    );
+    expect(screen.getByText(copy.security.fix.enable_security_updates.what(), { selector: "p" })).toBeInTheDocument();
+    expect(screen.getByText(/It is a setting, so no file in the repository can switch it on/)).toBeInTheDocument();
   });
 
   it("states what is wrong with the tags that say how much work it is and what it holds back", () => {

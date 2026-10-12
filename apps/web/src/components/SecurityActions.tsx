@@ -1,6 +1,6 @@
 import type { SecurityAction, SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { ACTION_EFFORT, actionSentence, safeHttpUrl, severityLabel } from "../lib/security";
+import { ACTION_EFFORT, actionSentence, dependabotAlertsOn, safeHttpUrl, severityLabel, updateConfigPath } from "../lib/security";
 import { LEARN_MORE, settingsLinkFor, snippetsFor, upgradeInstruction, type FixContext } from "../lib/securityFixes";
 import { CopySnippet } from "./CopySnippet";
 import { ExternalLink } from "./ExternalLink";
@@ -16,6 +16,8 @@ export function fixContext(report: SecurityReport): FixContext {
     branch: report.posture?.branch.name ?? "main",
     settingsUrl: report.settingsUrl,
     versionUpdates: report.dependabotVersionUpdates,
+    updateConfig: updateConfigPath(report),
+    dependabotAlertsOn: dependabotAlertsOn(report),
     // The CodeQL upload needs GitHub code scanning, which a private repository has only with GitHub Code Security.
     codeScanning: report.posture?.visibility === "public" || report.sources.code_scanning.status === "ok",
     thresholds: report.thresholds,
@@ -47,8 +49,19 @@ function Refs({ refs }: { refs: SecurityAction["refs"] }) {
  */
 export function ActionItem({ action, context }: { action: SecurityAction; context: FixContext }) {
   const fix = c.fix[action.kind];
-  const alt = action.kind === "enable_dependabot" && context.versionUpdates ? c.dependabotAlerts : null;
-  const sentence = actionSentence(action, context.versionUpdates ?? null, context.thresholds ?? null);
+  const alt =
+    action.kind === "enable_dependabot" && context.versionUpdates
+      ? c.dependabotAlerts
+      : action.kind === "enable_security_updates" && (context.updateConfig || context.dependabotAlertsOn)
+        ? c.securityUpdates
+        : null;
+  const sentence = actionSentence(
+    action,
+    context.versionUpdates ?? null,
+    context.thresholds ?? null,
+    context.updateConfig ?? null,
+    context.dependabotAlertsOn ?? false,
+  );
   const snippets = snippetsFor(action, context);
   const settings = settingsLinkFor(action.kind, context.settingsUrl);
   const settingsUrl = settings ? safeHttpUrl(settings.url) : null;

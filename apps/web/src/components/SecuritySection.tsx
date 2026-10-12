@@ -6,6 +6,7 @@ import { searchForCodePage } from "../lib/codeDetail";
 import { formatNumber } from "../lib/format";
 import {
   actionSentence,
+  dependabotAlertsOn,
   ACTION_EFFORT,
   joinWords,
   notReadYet,
@@ -13,6 +14,7 @@ import {
   reportCoverage,
   topActions,
   unreadParts,
+  updateConfigPath,
   verdictSentence,
 } from "../lib/security";
 import { NotReadNotice } from "./NotReadNotice";
@@ -66,7 +68,15 @@ function Summary({ report }: { report: SecurityReport }) {
           <ol className="start-actions">
             {top.shown.map((action) => (
               <li key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}>
-                <span>{actionSentence(action, report.dependabotVersionUpdates, report.thresholds)}</span>{" "}
+                <span>
+                  {actionSentence(
+                    action,
+                    report.dependabotVersionUpdates,
+                    report.thresholds,
+                    updateConfigPath(report),
+                    dependabotAlertsOn(report),
+                  )}
+                </span>{" "}
                 <EffortTag effort={ACTION_EFFORT[action.kind]} />
               </li>
             ))}

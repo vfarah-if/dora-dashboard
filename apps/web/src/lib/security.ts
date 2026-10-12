@@ -349,17 +349,33 @@ export function actionFacts(action: SecurityAction, thresholds: SecurityThreshol
   };
 }
 
+/** The Dependabot or Renovate configuration file the clone found, or null when there is none or the files were not read. */
+export function updateConfigPath(report: Pick<SecurityReport, "supplyChain">): string | null {
+  if (report.supplyChain.status !== "ok") return null;
+  const line = report.supplyChain.lines.find((l) => l.check === "updateConfig");
+  return line?.met ? (line.items[0]?.path ?? null) : null;
+}
+
+/** True when Dependabot alerts were read, so they are switched on whatever the other Dependabot switches say. */
+export const dependabotAlertsOn = (report: Pick<SecurityReport, "sources">): boolean => report.sources.dependabot.status === "ok";
+
 /**
  * The one sentence saying what is wrong, with the numbers. `versionUpdates` is the update configuration path that the
- * report gives when version updates run while Dependabot alerts are off, and `thresholds` are the limits the report
- * used, which a list row does not carry.
+ * report gives when version updates run while Dependabot alerts are off, `thresholds` are the limits the report
+ * used, which a list row does not carry, and `updateConfig` is the configuration file whatever the alerts' state, so
+ * the security updates advice can say that a file does not switch them on; `alertsOn` lets that advice say Dependabot
+ * alerts are already on, which is what GitHub's Security tab shows.
  */
 export function actionSentence(
   action: SecurityAction,
   versionUpdates: string | null = null,
   thresholds: SecurityThresholds | null = null,
+  updateConfig: string | null = null,
+  alertsOn = false,
 ): string {
   if (action.kind === "enable_dependabot" && versionUpdates) return copy.security.dependabotAlerts.what(versionUpdates);
+  if (action.kind === "enable_security_updates" && (updateConfig || alertsOn))
+    return copy.security.securityUpdates.what({ file: updateConfig, alertsOn });
   return copy.security.fix[action.kind].what(actionFacts(action, thresholds));
 }
 

@@ -14,6 +14,7 @@ import {
   SUPPLY_CHAIN_CHECK_IDS,
   SUPPLY_CHAIN_GROUPS,
   actionSentence,
+  dependabotAlertsOn,
   advisoriesText,
   advisorySentence,
   branchDetailLine,
@@ -64,6 +65,7 @@ import {
   topActions,
   unmeasuredSentences,
   unreadParts,
+  updateConfigPath,
   verdictSentence,
   weaknessMeaning,
   weaknessName,
@@ -912,6 +914,54 @@ describe("safeHttpUrl", () => {
     expect(safeHttpUrl("data:text/html,x")).toBeNull();
     expect(safeHttpUrl("not a url")).toBeNull();
     expect(safeHttpUrl(null)).toBeNull();
+  });
+});
+
+describe("Dependabot version updates and security updates", () => {
+  const withConfig = (met: boolean) => {
+    const base = securityReport();
+    if (base.supplyChain.status !== "ok") throw new Error("the fixture reads the supply chain");
+    return securityReport({
+      supplyChain: {
+        ...base.supplyChain,
+        lines: base.supplyChain.lines.map((l) =>
+          l.check === "updateConfig"
+            ? { ...l, met, total: met ? 1 : 0, items: met ? [{ path: "renovate.json", line: null, detail: null }] : [] }
+            : l,
+        ),
+      },
+    });
+  };
+
+  it("knows Dependabot alerts are on only when they were read", () => {
+    expect(dependabotAlertsOn(securityReport())).toBe(true);
+    const off = securityReport({
+      sources: { ...securityReport().sources, dependabot: state({ status: "off", reason: "disabled", readAt: null }) },
+    });
+    expect(dependabotAlertsOn(off)).toBe(false);
+  });
+
+  it("finds the configuration file whatever the state of Dependabot alerts", () => {
+    expect(updateConfigPath(withConfig(true))).toBe("renovate.json");
+    expect(updateConfigPath(withConfig(false))).toBeNull();
+    expect(updateConfigPath(noSecurity())).toBeNull();
+  });
+
+  it("says what is already on and that security updates are a separate switch, and keeps the plain sentence otherwise", () => {
+    const action = securityAction({ kind: "enable_security_updates" });
+    expect(actionSentence(action, null, null, ".github/dependabot.yml")).toBe(
+      "Dependabot version updates are set up in .github/dependabot.yml, but Dependabot security updates are a separate switch and are off, so nobody raises the fix when an alert appears.",
+    );
+    expect(actionSentence(action, null, null, null, true)).toBe(
+      "Dependabot alerts are on, but Dependabot security updates are a separate switch and are off, so nobody raises the fix when an alert appears.",
+    );
+    expect(actionSentence(action, null, null, ".github/dependabot.yml", true)).toBe(
+      "Dependabot alerts are on and Dependabot version updates are set up in .github/dependabot.yml, but Dependabot security updates are a separate switch and are off, so nobody raises the fix when an alert appears.",
+    );
+    expect(actionSentence(action, null, null, "renovate.json")).toMatch(
+      /^Renovate is set up in renovate\.json, but Dependabot security updates/,
+    );
+    expect(actionSentence(action)).toBe(copy.security.fix.enable_security_updates.what());
   });
 });
 

@@ -1,6 +1,6 @@
 import type { SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { ACTION_EFFORT, actionSentence, startHere } from "../lib/security";
+import { ACTION_EFFORT, actionSentence, dependabotAlertsOn, startHere, updateConfigPath } from "../lib/security";
 import { BandLabel } from "./BandLabel";
 import { EffortTag } from "./SecurityParts";
 
@@ -40,7 +40,15 @@ export function StartHere({ report }: { report: SecurityReport }) {
               <ol className="start-actions">
                 {start.top.shown.map((action) => (
                   <li key={`${action.kind}-${action.target ?? ""}-${action.manifestPath ?? ""}`}>
-                    <span>{actionSentence(action, report.dependabotVersionUpdates, report.thresholds)}</span>{" "}
+                    <span>
+                      {actionSentence(
+                        action,
+                        report.dependabotVersionUpdates,
+                        report.thresholds,
+                        updateConfigPath(report),
+                        dependabotAlertsOn(report),
+                      )}
+                    </span>{" "}
                     <EffortTag effort={ACTION_EFFORT[action.kind]} />
                   </li>
                 ))}

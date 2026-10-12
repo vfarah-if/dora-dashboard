@@ -29,6 +29,10 @@ export interface FixContext {
   settingsUrl: string;
   /** The update configuration path when version updates run while Dependabot alerts are off, else null. */
   versionUpdates?: string | null;
+  /** The Dependabot or Renovate configuration file, whatever the state of Dependabot alerts, else null. */
+  updateConfig?: string | null;
+  /** True when Dependabot alerts were read, so the security updates advice can say they are already on. */
+  dependabotAlertsOn?: boolean;
   /**
    * True where GitHub code scanning can be used, which is on a public repository or where it has been read. Where it
    * is not, a scanner that uploads nothing to GitHub is offered, because the CodeQL upload step fails there.
