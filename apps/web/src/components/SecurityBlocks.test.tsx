@@ -285,7 +285,6 @@ describe("ActionItem", () => {
 
   it("derives the fix context from the report", () => {
     expect(context).toEqual({
-      repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z" },
       ecosystems: ["npm", "github-actions"],
       branch: "main",
       settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
@@ -294,9 +293,34 @@ describe("ActionItem", () => {
       dependabotAlertsOn: true,
       codeScanning: true,
       thresholds: securityReport().thresholds,
+      privateReporting: false,
     });
     expect(fixContext(noSecurity()).branch).toBe("main");
     expect(fixContext(noSecurity()).ecosystems).toEqual([]);
+  });
+
+  it("knows private reporting is on only when the settings say so", () => {
+    const base = securityReport();
+    const withReporting = (value: boolean | null) =>
+      securityReport({
+        posture: {
+          ...base.posture!,
+          value: { ...base.posture!.value, settings: { ...base.posture!.value.settings, privateVulnerabilityReporting: value } },
+        },
+      });
+    expect(fixContext(withReporting(true)).privateReporting).toBe(true);
+    expect(fixContext(withReporting(false)).privateReporting).toBe(false);
+    expect(fixContext(withReporting(null)).privateReporting).toBe(false);
+    expect(fixContext(noSecurity()).privateReporting).toBe(false);
+  });
+
+  it("adds advice for a common code scanning rule after the steps, and none for a rule it does not know", () => {
+    const code = { kind: "fix_code_alert", band: "high", severity: "high", count: 5, refs: [] };
+    const { unmount } = show({ ...code, target: "js/polynomial-redos" });
+    expect(screen.getByText(copy.security.codeAlertAdvice.slowRegex)).toHaveClass("action-instruction");
+    unmount();
+    const { container } = show({ ...code, target: "js/unused-local-variable" });
+    expect(container.querySelector(".action-instruction")).toBeNull();
   });
 
   it("explains that security updates are a setting no file can switch on when a Dependabot file exists", () => {

@@ -425,6 +425,18 @@ describe("DependencyTable", () => {
     expect(within(row!.querySelector("th")!).getByText(copy.security.upgrades.relationship.transitive)).toBeInTheDocument();
   });
 
+  it("gives both ways in words for a package whose source does not say how it comes in, as OSV does", () => {
+    const [root] = dependencyGroups;
+    render(<DependencyTable groups={[{ ...root!, relationship: null }]} />);
+    const [row] = within(screen.getByRole("table")).getAllByRole("row").slice(1);
+    const words = within(row!).getByText(/does not say whether your project names left-pad/);
+    expect(words.tagName).toBe("SPAN");
+    expect(words).toHaveTextContent("Run npm update left-pad first");
+    expect(words).toHaveTextContent("add an override in package.json when another package brings it in");
+    expect(words).not.toHaveTextContent(/\bbelow\b/);
+    expect(within(row!).queryByRole("code")).not.toBeInTheDocument();
+  });
+
   it("gives words and not a command for a requirements file or a build file", () => {
     const [root] = dependencyGroups;
     render(

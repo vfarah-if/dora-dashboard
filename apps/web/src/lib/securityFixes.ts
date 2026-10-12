@@ -1,5 +1,5 @@
 import type { DependencyGroup, SecurityAction, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
-import { copy } from "../copy";
+import { copy, type UnknownWays } from "../copy";
 
 /*
  * The snippets and commands that go with each kind of finding. They are plain text built from the report's own
@@ -19,7 +19,6 @@ export interface Snippet {
 }
 
 export interface FixContext {
-  repo: { owner: string; name: string };
   /** Dependabot ecosystem names the repository needs, from the report. */
   ecosystems: readonly string[];
   /** The deploy branch when it is known, else main. */
@@ -39,6 +38,8 @@ export interface FixContext {
   codeScanning?: boolean;
   /** The limits the report used, for sentences that name a number of days. */
   thresholds?: SecurityThresholds | null;
+  /** True when private vulnerability reporting was read as on, so a security policy can point reporters to it. */
+  privateReporting?: boolean;
 }
 
 const snippet = (id: Snippet["id"], code: string, extra: { note?: string | null; instead?: string | null } = {}): Snippet => ({
@@ -207,6 +208,10 @@ export function upgradeAdvice({ ecosystem, manifestPath, name, version, relation
   const indirect = relationship === "transitive" || relationship === "mixed";
   const through = (mechanism: string) =>
     relationship === "mixed" ? text.mixed(name, version, mechanism) : text.transitive(name, version, mechanism);
+  // A source that does not say how the package comes in, such as OSV.dev, gets both ways where they differ, because
+  // installing a package that another one brings in would add a dependency the project does not otherwise have.
+  const unknown = (ways: UnknownWays, tryFirst: string | null, paste: Instruction["snippet"] = null) =>
+    instruction(text.unknown(name, version, ways, tryFirst === null ? null : run(tryFirst)), tryFirst, paste);
   const command = (words: string, note: string | null = null): UpgradeAdvice => ({
     kind: "command",
     command: run(words),
@@ -214,35 +219,31 @@ export function upgradeAdvice({ ecosystem, manifestPath, name, version, relation
   });
   const goVersion = version.startsWith("v") ? version : `v${version}`;
 
+  const npmOverride = { id: "npmOverrides", code: overridesJson(["overrides"], name, version) } as const;
+  const yarnResolution = { id: "yarnResolutions", code: overridesJson(["resolutions"], name, version) } as const;
+  const pnpmOverride = { id: "pnpmOverrides", code: overridesJson(["pnpm", "overrides"], name, version) } as const;
+
   switch (tool) {
     case "npm":
+      if (relationship === null) return unknown(text.unknownWays.npm(name, version), `npm update ${name}`, npmOverride);
       return indirect
-        ? instruction(through(text.mechanism.npm), `npm update ${name}`, {
-            id: "npmOverrides",
-            code: overridesJson(["overrides"], name, version),
-          })
+        ? instruction(through(text.mechanism.npm), `npm update ${name}`, npmOverride)
         : command(`npm install ${name}@${version}`);
     case "yarn":
-      return indirect
-        ? instruction(through(text.mechanism.yarn), null, {
-            id: "yarnResolutions",
-            code: overridesJson(["resolutions"], name, version),
-          })
-        : instruction(text.yarn(name, version));
+      if (relationship === null) return unknown(text.unknownWays.yarn(name, version), null, yarnResolution);
+      return indirect ? instruction(through(text.mechanism.yarn), null, yarnResolution) : instruction(text.yarn(name, version));
     case "pnpm":
-      return indirect
-        ? instruction(through(text.mechanism.pnpm), null, {
-            id: "pnpmOverrides",
-            code: overridesJson(["pnpm", "overrides"], name, version),
-          })
-        : command(`pnpm update ${name}@${version}`);
+      if (relationship === null) return unknown(text.unknownWays.pnpm(name, version), null, pnpmOverride);
+      return indirect ? instruction(through(text.mechanism.pnpm), null, pnpmOverride) : command(`pnpm update ${name}@${version}`);
     case "poetry":
+      if (relationship === null) return unknown(text.unknownWays.poetry(name, version), `poetry update ${name}`);
       return indirect
         ? command(`poetry update ${name}`, text.notes.poetryUpdate)
         : command(`poetry add ${name}@^${version}`, text.notes.poetryDev);
     case "uv":
       return command(`uv lock --upgrade-package ${name}==${version}`);
     case "pipenv":
+      if (relationship === null) return unknown(text.unknownWays.pipenv(name, version), null);
       return indirect
         ? instruction(text.pip(name, version))
         : command(`pipenv install ${name}==${version}`, text.notes.pipenvDev);
@@ -346,19 +347,26 @@ export function dependabotYml(ecosystems: readonly string[]): string {
   );
 }
 
-export const securityPolicyMarkdown = (repo: string): string =>
+/**
+ * A starting SECURITY.md. It sends reporters to the "Report a vulnerability" button only when private vulnerability
+ * reporting is known to be on, because the button is not there otherwise, and asks for an address instead. It names
+ * no repository, since GitHub shows it in place, and promises nothing about releases, which a repository may not have.
+ */
+export const securityPolicyMarkdown = (privateReporting: boolean): string =>
   lines(
-    `# Security policy for ${repo}`,
+    "# Security policy",
     "",
     "## Reporting a vulnerability",
     "",
-    'Please do not open a public issue for a security problem. Instead, use the "Report a vulnerability" button on the Security tab of this repository, or write to <your contact address>.',
+    privateReporting
+      ? 'Please do not open a public issue for a security problem. Instead, use the "Report a vulnerability" button on the Security tab of this repository, which reaches the maintainers privately.'
+      : "Please do not open a public issue for a security problem. Instead, write to <your contact address>.",
     "",
     "We will acknowledge your report within three working days and keep you informed until the problem is fixed.",
     "",
     "## Supported versions",
     "",
-    "The latest release receives security fixes.",
+    "Fixes are made on the default branch. <Say which releases also receive fixes, or remove this sentence if you do not publish releases.>",
   );
 
 export const gitignoreSnippet = (): string => lines(".env", ".env.*", "!.env.example", "*.pem", "*.key");
@@ -373,7 +381,18 @@ export function untrackSnippet(refs: SecurityAction["refs"]): string {
 }
 
 export const persistCredentialsSnippet = (): string =>
-  lines("- uses: actions/checkout@<full 40 character commit sha> # v4", "  with:", "    persist-credentials: false");
+  lines(pinnedUsesSnippet({ repo: "actions/checkout", ref: null }), "  with:", "    persist-credentials: false");
+
+/** A pinned step of a workflow template. The tag is a placeholder too, so the template never names an old version. */
+const usesStep = (repo: string): string => `      ${pinnedUsesSnippet({ repo, ref: null })}`;
+
+/** The checkout step of a workflow template, which never leaves the token on disk for the steps after it. */
+const checkoutStep = (...options: string[]): string[] => [
+  usesStep("actions/checkout"),
+  "        with:",
+  ...options.map((option) => `          ${option}`),
+  "          persist-credentials: false",
+];
 
 export const nonRootSnippet = (): string =>
   lines(
@@ -412,6 +431,8 @@ export const secretsInheritSnippet = (): string =>
     "      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}",
   );
 
+const DEPENDENCY_REVIEW_ACTION = "actions/dependency-review-action";
+
 export const dependencyReviewSnippet = (): string =>
   lines(
     "name: Dependency review",
@@ -422,8 +443,8 @@ export const dependencyReviewSnippet = (): string =>
     "  review:",
     "    runs-on: ubuntu-latest",
     "    steps:",
-    "      - uses: actions/checkout@<full 40 character commit sha> # v4",
-    "      - uses: actions/dependency-review-action@<full 40 character commit sha> # v4",
+    "      # Compares the dependency graphs of the two commits through GitHub, so nothing is checked out.",
+    usesStep(DEPENDENCY_REVIEW_ACTION),
   );
 
 export const secretScannerSnippet = (): string =>
@@ -436,10 +457,8 @@ export const secretScannerSnippet = (): string =>
     "  scan:",
     "    runs-on: ubuntu-latest",
     "    steps:",
-    "      - uses: actions/checkout@<full 40 character commit sha> # v4",
-    "        with:",
-    "          fetch-depth: 0",
-    "      - uses: trufflesecurity/trufflehog@<full 40 character commit sha> # v3",
+    ...checkoutStep("fetch-depth: 0"),
+    usesStep("trufflesecurity/trufflehog"),
     "        with:",
     "          extra_args: --only-verified",
   );
@@ -488,8 +507,8 @@ export function codeqlSnippet(branch: string, ecosystems: readonly string[] = []
     "  analyse:",
     "    runs-on: ubuntu-latest",
     "    steps:",
-    "      - uses: actions/checkout@<full 40 character commit sha> # v4",
-    "      - uses: github/codeql-action/init@<full 40 character commit sha> # v3",
+    ...checkoutStep(),
+    usesStep("github/codeql-action/init"),
     "        with:",
     ...(languages.length > 0
       ? [
@@ -501,7 +520,7 @@ export function codeqlSnippet(branch: string, ecosystems: readonly string[] = []
           "          # java-kotlin, javascript-typescript, python, ruby, swift",
           "          languages: <your languages>",
         ]),
-    "      - uses: github/codeql-action/analyze@<full 40 character commit sha> # v3",
+    usesStep("github/codeql-action/analyze"),
   );
 }
 
@@ -519,7 +538,7 @@ export const semgrepSnippet = (): string =>
     "    container:",
     "      image: semgrep/semgrep",
     "    steps:",
-    "      - uses: actions/checkout@<full 40 character commit sha> # v4",
+    ...checkoutStep(),
     "      - run: semgrep scan --config auto --error",
   );
 
@@ -546,11 +565,47 @@ const pin = (a: SecurityAction): Snippet[] => {
   return [snippet("pinnedUses", pinnedUsesSnippet(use)), snippet("shaLookup", shaLookupSnippet(use))];
 };
 
+/** The command that finds the commit for the placeholders in a workflow template. */
+const lookUp = (repo: string | null = null): Snippet => snippet("shaLookup", shaLookupSnippet(repo ? { repo, ref: null } : null));
+
 /** The scanner that suits the repository: CodeQL where GitHub code scanning can be used, else one that uploads nothing. */
-const codeScanner = (_a: SecurityAction, ctx: FixContext): Snippet[] =>
+const codeScanner = (_a: SecurityAction, ctx: FixContext): Snippet[] => [
   ctx.codeScanning === false
-    ? [snippet("semgrep", semgrepSnippet(), { note: copy.security.snippetNotes.semgrep })]
-    : [snippet("codeql", codeqlSnippet(ctx.branch, ctx.ecosystems), { note: copy.security.snippetNotes.codeql })];
+    ? snippet("semgrep", semgrepSnippet(), { note: copy.security.snippetNotes.semgrep })
+    : snippet("codeql", codeqlSnippet(ctx.branch, ctx.ecosystems), { note: copy.security.snippetNotes.codeql }),
+  lookUp(),
+];
+
+const secretScanner = (): Snippet[] => [snippet("secretScanner", secretScannerSnippet()), lookUp()];
+
+/** CodeQL query names, after the language and any folder, and the advice that suits each. Other rules get none. */
+const CODE_RULE_ADVICE: ReadonlyMap<string, keyof typeof copy.security.codeAlertAdvice> = new Map([
+  ["polynomial-redos", "slowRegex"],
+  ["redos", "slowRegex"],
+  ["sql-injection", "sqlInjection"],
+  ["xss", "xss"],
+  ["reflected-xss", "xss"],
+  ["reflective-xss", "xss"],
+  ["stored-xss", "xss"],
+  ["xss-through-dom", "xss"],
+  ["xss-through-exception", "xss"],
+  ["html-constructed-from-input", "xss"],
+  ["command-line-injection", "commandInjection"],
+  ["command-injection", "commandInjection"],
+  ["indirect-command-line-injection", "commandInjection"],
+  ["shell-command-constructed-from-input", "commandInjection"],
+  ["path-injection", "pathInjection"],
+]);
+
+/**
+ * Advice for the rule behind a code scanning action, such as `js/polynomial-redos` or `cs/web/xss`, when it is one of
+ * the common rules that the page knows, else null, so the steps' advice to follow the rule's own help stands alone.
+ */
+export function codeAlertAdvice(action: SecurityAction): string | null {
+  if (action.kind !== "fix_code_alert" || !action.target) return null;
+  const key = CODE_RULE_ADVICE.get(action.target.slice(action.target.lastIndexOf("/") + 1).toLowerCase());
+  return key ? copy.security.codeAlertAdvice[key] : null;
+}
 
 /** The advice for an upgrade action, or null when no command or instruction is known, as when the package has no name. */
 export function upgradeAdviceFor(action: SecurityAction): UpgradeAdvice | null {
@@ -597,10 +652,14 @@ export const SNIPPETS: Record<SecurityActionKind, (action: SecurityAction, ctx: 
   pin_own_actions: pin,
   add_update_config: updateConfig,
   add_lockfile: none,
-  add_security_policy: (_a, ctx) => [snippet("securityPolicy", securityPolicyMarkdown(`${ctx.repo.owner}/${ctx.repo.name}`))],
+  add_security_policy: (_a, ctx) => [
+    snippet("securityPolicy", securityPolicyMarkdown(ctx.privateReporting === true), {
+      note: ctx.privateReporting === true ? null : copy.security.snippetNotes.securityPolicyAddress,
+    }),
+  ],
   review_weak_key_files: none,
   enable_code_scanning: codeScanner,
-  check_secret_scanning: () => [snippet("secretScanner", secretScannerSnippet())],
+  check_secret_scanning: secretScanner,
   grant_alert_access: none,
   turn_on_code_analysis: () => [snippet("analysisOn", analysisOnSnippet())],
   fix_low_alerts: none,
@@ -612,8 +671,9 @@ export const SNIPPETS: Record<SecurityActionKind, (action: SecurityAction, ctx: 
   triage_advisories: none,
   add_dependency_review: () => [
     snippet("dependencyReview", dependencyReviewSnippet(), { note: copy.security.snippetNotes.dependencyReview }),
+    lookUp(DEPENDENCY_REVIEW_ACTION),
   ],
-  add_secret_scanner_ci: () => [snippet("secretScanner", secretScannerSnippet())],
+  add_secret_scanner_ci: secretScanner,
   add_static_analysis: codeScanner,
   avoid_curl_pipe_shell: () => [snippet("curlPipe", curlPipeSnippet())],
   avoid_secrets_inherit: () => [snippet("secretsInherit", secretsInheritSnippet())],

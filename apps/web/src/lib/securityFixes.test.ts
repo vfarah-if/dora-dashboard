@@ -9,9 +9,11 @@ import {
   SETTINGS_KINDS,
   SNIPPETS,
   branchSettingsUrl,
+  codeAlertAdvice,
   codeqlLanguages,
   codeqlSnippet,
   dependabotYml,
+  dependencyReviewSnippet,
   digestSnippet,
   firstActionRepo,
   gitignoreSnippet,
@@ -24,7 +26,9 @@ import {
   pullRequestTriggerSnippet,
   scriptInjectionRisky,
   scriptInjectionSnippet,
+  secretScannerSnippet,
   securityPolicyMarkdown,
+  semgrepSnippet,
   settingsLinkFor,
   shaLookupSnippet,
   snippetsFor,
@@ -40,7 +44,6 @@ const KINDS = Object.keys(ACTION_EFFORT) as SecurityActionKind[];
 const NO_DASH = /[–—]/;
 
 const context: FixContext = {
-  repo: { owner: "acme", name: "widgets" },
   ecosystems: ["npm", "github-actions"],
   branch: "main",
   settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
@@ -215,8 +218,49 @@ describe("upgradeAdvice for a package that comes in through another", () => {
     expect(instructionOf(upgradeAdvice(input({ manifestPath: "Pipfile.lock", relationship: "transitive" }))).command).toBeNull();
   });
 
-  it("treats a package with no known relationship as direct", () => {
-    expect(commandOf(upgradeAdvice(input({ relationship: null })))).toBe("npm install left-pad@1.3.1");
+  it("gives both ways for npm when the source does not say how the package comes in, trying an update in place first", () => {
+    const advice = instructionOf(upgradeAdvice(input({ relationship: null })));
+    expect(advice.text).toBe(
+      "The alert does not say whether your project names left-pad or another package brings it in. Run npm update left-pad first, which stays within the versions already allowed. If that leaves it older than 1.3.1, run npm install left-pad@1.3.1 when your project names it, or add an override in package.json when another package brings it in, since installing it yourself would add a dependency that your project does not otherwise use.",
+    );
+    expect(advice.command).toBe("npm update left-pad");
+    expect(advice.snippet).toEqual({ id: "npmOverrides", code: expect.stringContaining('"left-pad": "1.3.1"') });
+  });
+
+  it("names the folder in the update it suggests first, as the command it offers does", () => {
+    const advice = instructionOf(upgradeAdvice(input({ manifestPath: "apps/web/package-lock.json", relationship: null })));
+    expect(advice.command).toBe("cd apps/web && npm update left-pad");
+    expect(advice.text).toContain("Run cd apps/web && npm update left-pad first");
+  });
+
+  it.each([
+    ["yarn.lock", null, "yarnResolutions", "add a resolution in package.json", null],
+    ["pnpm-lock.yaml", null, "pnpmOverrides", "add an override under pnpm in package.json", null],
+    ["poetry.lock", "poetry update left-pad", null, "update the package that depends on it", "--group dev"],
+    ["Pipfile.lock", null, null, "update the package that depends on it", "--dev"],
+  ])(
+    "gives both ways from %s when the source does not say, never the direct command alone",
+    (manifestPath, command, id, indirect, devFlag) => {
+      const advice = instructionOf(upgradeAdvice(input({ manifestPath, relationship: null })));
+      expect(advice.command).toBe(command);
+      expect(advice.snippet?.id ?? null).toBe(id);
+      expect(advice.text).toContain(`${indirect} when another package brings it in`);
+      expect(advice.text.includes(`Run ${command} first`)).toBe(command !== null);
+      if (devFlag) expect(advice.text).toContain(devFlag);
+      // The upgrades table shows the words without the blocks that follow them in the fix guide.
+      expect(advice.text).not.toMatch(/\bbelow\b/);
+      expect(advice.text).not.toContain("Pipfile");
+      expect(advice.text).not.toMatch(NO_DASH);
+    },
+  );
+
+  it("keeps a command that suits both ways when the source does not say", () => {
+    expect(commandOf(upgradeAdvice(input({ manifestPath: "Cargo.lock", relationship: null })))).toBe(
+      "cargo update -p left-pad --precise 1.3.1",
+    );
+    expect(commandOf(upgradeAdvice(input({ manifestPath: "uv.lock", relationship: null })))).toBe(
+      "uv lock --upgrade-package left-pad==1.3.1",
+    );
   });
 });
 
@@ -336,13 +380,44 @@ describe("fixed snippets", () => {
     expect(writes[0]).toMatch(/^#/);
   });
 
-  it("writes a starting security policy for the repository with a marked contact placeholder", () => {
-    const text = securityPolicyMarkdown("acme/widgets");
-    expect(text.split("\n")[0]).toBe("# Security policy for acme/widgets");
-    expect(text).toContain("Report a vulnerability");
+  it("writes a starting security policy that asks for an address while private reporting is off", () => {
+    const text = securityPolicyMarkdown(false);
+    expect(text.split("\n")[0]).toBe("# Security policy");
     expect(text).toContain("<your contact address>");
+    expect(text).not.toContain("Report a vulnerability");
+    expect(text).toContain("<Say which releases also receive fixes");
     expect(text).not.toContain("example.com");
     expect(text).not.toMatch(NO_DASH);
+  });
+
+  it("points reporters to the Report a vulnerability button only once private reporting is on", () => {
+    const text = securityPolicyMarkdown(true);
+    expect(text).toContain('"Report a vulnerability" button');
+    expect(text).not.toContain("<your contact address>");
+    expect(text).not.toMatch(NO_DASH);
+  });
+
+  it("keeps every template's checkout from leaving the token on disk, and names no version that could go stale", () => {
+    const templates = [
+      codeqlSnippet("main", ["npm"]),
+      semgrepSnippet(),
+      secretScannerSnippet(),
+      dependencyReviewSnippet(),
+      persistCredentialsSnippet(),
+    ];
+    for (const text of templates) {
+      const rows = text.split("\n");
+      rows.forEach((row, i) => {
+        if (!row.includes("actions/checkout@")) return;
+        expect(
+          rows.slice(i + 1, i + 5).map((r) => r.trim()),
+          text,
+        ).toContain("persist-credentials: false");
+      });
+      expect(text).not.toMatch(/# v\d/);
+      for (const use of text.match(/uses: .*/g) ?? [])
+        expect(use, text).toContain("@<full 40 character commit sha> # <version tag>");
+    }
   });
 
   it("ignores environment files but keeps the example", () => {
@@ -592,10 +667,13 @@ describe("snippets for each kind of action", () => {
     });
   });
 
-  it("writes the policy for this repository", () => {
-    expect(snippetsFor(securityAction({ kind: "add_security_policy" }), context)[0]!.code).toContain(
-      "# Security policy for acme/widgets",
-    );
+  it("writes the policy for the state of private reporting, with a note while it is off", () => {
+    const [off] = snippetsFor(securityAction({ kind: "add_security_policy" }), context);
+    expect(off!.code).toBe(securityPolicyMarkdown(false));
+    expect(off!.note).toBe(copy.security.snippetNotes.securityPolicyAddress);
+    const [on] = snippetsFor(securityAction({ kind: "add_security_policy" }), { ...context, privateReporting: true });
+    expect(on!.code).toBe(securityPolicyMarkdown(true));
+    expect(on!.note).toBeUndefined();
   });
 
   it("offers the CodeQL workflow for the branch where GitHub code scanning is available, with a caution about the upload", () => {
@@ -615,7 +693,7 @@ describe("snippets for each kind of action", () => {
   it("offers a scanner that uploads nothing to GitHub where code scanning is not available, and says what it needs", () => {
     for (const kind of ["add_static_analysis", "enable_code_scanning"] as const) {
       const snippets = snippetsFor(securityAction({ kind }), { ...context, codeScanning: false });
-      expect(snippets.map((s) => s.id)).toEqual(["semgrep"]);
+      expect(snippets.map((s) => s.id)).toEqual(["semgrep", "shaLookup"]);
       expect(snippets[0]!.code).toContain("semgrep scan --config auto --error");
       expect(snippets[0]!.code).toContain("pull_request:");
       expect(snippets[0]!.code).not.toContain("security-events");
@@ -624,6 +702,27 @@ describe("snippets for each kind of action", () => {
     }
     expect(copy.security.snippetNotes.semgrep).toContain("needs no GitHub Code Security");
     expect(copy.security.snippetNotes.codeql).toContain("needs GitHub Code Security");
+  });
+
+  it("offers dependency review with no checkout and the command that finds the commit for its placeholder", () => {
+    const snippets = snippetsFor(securityAction({ kind: "add_dependency_review" }), context);
+    expect(snippets.map((s) => s.id)).toEqual(["dependencyReview", "shaLookup"]);
+    expect(snippets[0]!.code).not.toContain("actions/checkout");
+    expect(snippets[0]!.code).toContain(
+      "      - uses: actions/dependency-review-action@<full 40 character commit sha> # <version tag>",
+    );
+    expect(snippets[1]!.code).toBe("gh api repos/actions/dependency-review-action/commits/<version tag> --jq .sha");
+  });
+
+  it("offers the command that finds the commits for every scanner workflow", () => {
+    for (const kind of ["add_secret_scanner_ci", "check_secret_scanning", "add_static_analysis"] as const) {
+      expect(
+        snippetsFor(securityAction({ kind }), context)
+          .map((s) => s.id)
+          .at(-1),
+        kind,
+      ).toBe("shaLookup");
+    }
   });
 
   it("says that dependency review needs GitHub Code Security on a private repository", () => {
@@ -728,5 +827,34 @@ describe("settings links", () => {
 
   it("keeps the two sets of kinds apart", () => {
     for (const kind of SETTINGS_KINDS) expect(BRANCH_KINDS.has(kind)).toBe(false);
+  });
+});
+
+describe("code alert advice", () => {
+  it.each([
+    ["js/polynomial-redos", "slowRegex"],
+    ["py/redos", "slowRegex"],
+    ["java/sql-injection", "sqlInjection"],
+    ["py/reflective-xss", "xss"],
+    ["cs/web/xss", "xss"],
+    ["go/command-injection", "commandInjection"],
+    ["js/shell-command-constructed-from-input", "commandInjection"],
+    ["js/html-constructed-from-input", "xss"],
+    ["go/stored-xss", "xss"],
+    ["rb/path-injection", "pathInjection"],
+    ["JS/Polynomial-ReDoS", "slowRegex"],
+  ] as const)("advises on %s", (target, key) => {
+    expect(codeAlertAdvice(securityAction({ kind: "fix_code_alert", target }))).toBe(copy.security.codeAlertAdvice[key]);
+  });
+
+  it("gives none for a rule it does not know, no rule, a name every object has, or another kind of action", () => {
+    for (const target of ["js/unused-local-variable", "constructor", "x/__proto__", "x/toString", "", null]) {
+      expect(codeAlertAdvice(securityAction({ kind: "fix_code_alert", target })), String(target)).toBeNull();
+    }
+    expect(codeAlertAdvice(securityAction({ kind: "rotate_secret", target: "js/redos" }))).toBeNull();
+  });
+
+  it("writes every piece of advice without a dash", () => {
+    for (const text of Object.values(copy.security.codeAlertAdvice)) expect(text).not.toMatch(NO_DASH);
   });
 });

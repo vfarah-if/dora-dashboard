@@ -9,7 +9,14 @@ import {
   severityLabel,
   updateConfigPath,
 } from "../lib/security";
-import { LEARN_MORE, settingsLinkFor, snippetsFor, upgradeInstruction, type FixContext } from "../lib/securityFixes";
+import {
+  LEARN_MORE,
+  codeAlertAdvice,
+  settingsLinkFor,
+  snippetsFor,
+  upgradeInstruction,
+  type FixContext,
+} from "../lib/securityFixes";
 import { CopySnippet } from "./CopySnippet";
 import { ExternalLink } from "./ExternalLink";
 import { PathText } from "./PathText";
@@ -19,7 +26,6 @@ const c = copy.security;
 
 export function fixContext(report: SecurityReport): FixContext {
   return {
-    repo: report.repo,
     ecosystems: report.ecosystems,
     branch: report.posture?.value.branch.name ?? "main",
     settingsUrl: report.settingsUrl,
@@ -29,6 +35,7 @@ export function fixContext(report: SecurityReport): FixContext {
     // The CodeQL upload needs GitHub code scanning, which a private repository has only with GitHub Code Security.
     codeScanning: report.posture?.value.visibility === "public" || report.sources.code_scanning.status === "ok",
     thresholds: report.thresholds,
+    privateReporting: report.posture?.value.settings.privateVulnerabilityReporting === true,
   };
 }
 
@@ -73,7 +80,7 @@ export function ActionItem({ action, context }: { action: SecurityAction; contex
   const snippets = snippetsFor(action, context);
   const settings = settingsLinkFor(action.kind, context.settingsUrl);
   const settingsUrl = settings ? safeHttpUrl(settings.url) : null;
-  const instruction = action.kind === "upgrade_dependency" ? upgradeInstruction(action) : null;
+  const instruction = upgradeInstruction(action) ?? codeAlertAdvice(action);
   const learn = LEARN_MORE[action.kind];
   const learnUrl = learn ? safeHttpUrl(learn) : null;
   return (

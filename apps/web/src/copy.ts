@@ -17,6 +17,15 @@ export interface ActionFacts {
   thresholds: SecurityThresholds | null;
 }
 
+/** The two ways to upgrade a package when the source does not say whether the project names it, and a caution. */
+export interface UnknownWays {
+  /** What to do when the project names the package itself. */
+  direct: string;
+  /** What to do when another package brings it in. */
+  indirect: string;
+  note?: string;
+}
+
 /** The three answers every finding gives, in plain words. */
 export interface FixCopy {
   /** What is wrong, in one sentence with the numbers. */
@@ -76,11 +85,11 @@ const FIX = {
   fix_code_alert: {
     what: ({ count, name }) =>
       `Code scanning found ${some(count, "open alert")} for ${name ? `the rule ${name}` : "a rule that GitHub did not name"}.`,
-    why: "Code scanning has spotted a pattern in your own code that is known to cause security problems, such as building a database query out of text that a visitor typed. These are weaknesses that an attacker can reach through your running application.",
+    why: "Code scanning has found a pattern in your own code that is known to lead to a weakness, such as a database query built from text that a visitor typed, or a regular expression that a long input can keep busy. The weakness is in code you wrote, so only a change to that code closes it.",
     steps: [
-      "Open the first location listed below and read the message on the alert to see what the scanner saw.",
-      "Change the code so that anything coming from outside is checked or escaped before it is used, following the advice on the alert.",
-      "Push the change and wait for the next scan, which closes the alert by itself once the pattern has gone.",
+      "Open each location listed below and read the alert's message and the rule's help on GitHub, which say what the scanner saw and how that kind of problem is fixed. The line numbers are those of the branch that was scanned, usually the default branch, so they may have moved on a newer branch.",
+      "Change the code as the rule's help describes. Checking or escaping outside text fixes most injection rules, but not every rule, so follow the help for this one.",
+      "Open a pull request with the change. Code scanning usually checks pull requests too and shows there whether the alerts are fixed, and they close once the change is merged.",
     ],
   },
   fix_pr_head_checkout: {
@@ -208,8 +217,8 @@ const FIX = {
     what: () => "The repository has no security policy telling people how to report a problem.",
     why: "Someone who finds a flaw needs to know how to tell you about it privately. Without a policy they may post it publicly, or decide not to report it at all.",
     steps: [
-      "Create SECURITY.md using the starting text shown below.",
-      "Replace the contact with an address, or the private reporting feature, that your team really monitors.",
+      "Create SECURITY.md in the root of the repository, or in .github or docs, using the starting text shown below.",
+      "Replace the parts in angle brackets. Point people to private vulnerability reporting only once it is switched on, because its Report a vulnerability button is not there until then, and give an address that your team reads otherwise.",
       "Commit it to the default branch so that GitHub links to it from the repository.",
     ],
   },
@@ -329,8 +338,8 @@ const FIX = {
     why: "Dependency review warns in the pull request that adds a vulnerable package, which is the cheapest moment to choose a different one.",
     steps: [
       "Check that your plan allows it. Dependency review is free on public repositories, but on a private repository it needs GitHub Code Security.",
-      "Add the workflow shown below to .github/workflows and commit it to the default branch.",
-      "Make the check required on the deploy branch so that it blocks a vulnerable addition.",
+      "Add the workflow shown below to .github/workflows, with the commit of the action's latest release in place of the placeholder, which the command below it looks up. It needs no checkout, because it compares the two commits through GitHub.",
+      "If the deploy branch is protected, make the check required so that it blocks a vulnerable addition. Without protection it shows as a failed check, and the pull request can still be merged.",
     ],
   },
   add_secret_scanner_ci: {
@@ -2785,6 +2794,21 @@ export const copy = {
         "CodeQL uploads its results to GitHub code scanning. That is free on a public repository, but on a private repository it needs GitHub Code Security.",
       dependencyReview:
         "Dependency review is free on public repositories. On a private repository it needs GitHub Code Security, and the action fails without it.",
+      securityPolicyAddress:
+        "Private vulnerability reporting is not switched on, so this asks for an address. Once you switch it on, you can point people to its Report a vulnerability button instead.",
+    },
+
+    /** Advice for the most common code scanning rules, shown after the steps when the rule is one of them. */
+    codeAlertAdvice: {
+      slowRegex:
+        "This rule finds a regular expression that a long, specially made input can keep busy for seconds or minutes, which stalls the server. Rewrite it so that no character can be read by two repeats next to each other, such as \\s*(.*) where both can take a space, anchor it to the start of the text, or limit how long the text can be before it is matched.",
+      sqlInjection:
+        "This rule finds a database query built from outside text. Pass the text to the query as a parameter instead, so that it can never be read as part of the query.",
+      xss: "This rule finds outside text written into a page as HTML. Let your framework insert it as text, or escape it for the place where it is written, so that it can never run as script.",
+      commandInjection:
+        "This rule finds a shell command built from outside text. Pass the arguments as a list to a call that does not start a shell, so that the text can never be read as a command.",
+      pathInjection:
+        "This rule finds a file path built from outside text. Resolve the path and check that it is still inside the folder it should be in before you open the file.",
     },
 
     snippets: {
@@ -2831,6 +2855,38 @@ export const copy = {
         `${name} comes in through another package, so installing it yourself would add a dependency you do not otherwise use. Update the package that depends on it, and if that is not enough, force version ${version} with ${mechanism}.`,
       mixed: (name: string, version: string, mechanism: string) =>
         `${name} is a direct dependency in some places and comes in through other packages in others. Use version ${version} where you depend on it directly, and force the same version everywhere else with ${mechanism}.`,
+      /** For a source that does not say how the package comes in, such as OSV.dev, which reads only the lockfile. */
+      /**
+       * For a source that does not say how the package comes in, such as OSV.dev, which reads only the lockfile. It
+       * names every command and file itself, because the upgrades table shows it without the blocks that follow it in
+       * the fix guide.
+       */
+      unknown: (name: string, version: string, ways: UnknownWays, tryFirst: string | null) =>
+        `The alert does not say whether your project names ${name} or another package brings it in.${tryFirst ? ` Run ${tryFirst} first, which stays within the versions already allowed.` : ""} If ${tryFirst ? "that leaves it" : "it is"} older than ${version}, ${ways.direct} when your project names it, or ${ways.indirect} when another package brings it in, since installing it yourself would add a dependency that your project does not otherwise use.${ways.note ? ` ${ways.note}` : ""}`,
+      unknownWays: {
+        npm: (name: string, version: string): UnknownWays => ({
+          direct: `run npm install ${name}@${version}`,
+          indirect: "add an override in package.json",
+        }),
+        yarn: (name: string, version: string): UnknownWays => ({
+          direct: `change ${name} to ${version} in package.json and run yarn install`,
+          indirect: "add a resolution in package.json",
+        }),
+        pnpm: (name: string, version: string): UnknownWays => ({
+          direct: `run pnpm update ${name}@${version}`,
+          indirect: "add an override under pnpm in package.json",
+        }),
+        poetry: (name: string, version: string): UnknownWays => ({
+          direct: `run poetry add ${name}@^${version}`,
+          indirect: "update the package that depends on it",
+          note: "If it is a development dependency, add --group dev to poetry add.",
+        }),
+        pipenv: (name: string, version: string): UnknownWays => ({
+          direct: `run pipenv install ${name}==${version}`,
+          indirect: "update the package that depends on it",
+          note: "If it is a development dependency, add --dev to pipenv install.",
+        }),
+      },
       mechanism: {
         npm: "an override in package.json",
         yarn: "a resolution in package.json",
