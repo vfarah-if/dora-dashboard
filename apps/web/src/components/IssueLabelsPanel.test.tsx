@@ -56,7 +56,12 @@ describe("IssueLabelsPanel", () => {
   });
 
   it("starts from the repository's current override", () => {
-    setup(repo({ issues: 12, issueLabels: { kinds: { bug: ["broken", "defect"] }, priorities: { P0: ["sev1"] } } }));
+    setup(
+      repo({
+        issues: 12,
+        issueLabels: { kind: "override", rules: { kinds: { bug: ["broken", "defect"] }, priorities: { P0: ["sev1"] } } },
+      }),
+    );
     expect(field(copy.issueLabels.kindLabel("Bug"))).toHaveValue("broken, defect");
     expect(field(copy.issueLabels.priorityLabel("P0"))).toHaveValue("sev1");
     expect(field(copy.issueLabels.kindLabel("Feature"))).toHaveValue("");
@@ -79,7 +84,7 @@ describe("IssueLabelsPanel", () => {
   });
 
   it("clears the boxes and sends null when reset to defaults", async () => {
-    const { user, sent } = setup(repo({ issues: 12, issueLabels: { kinds: { bug: ["broken"] } } }));
+    const { user, sent } = setup(repo({ issues: 12, issueLabels: { kind: "override", rules: { kinds: { bug: ["broken"] } } } }));
     await user.click(screen.getByRole("button", { name: copy.issueLabels.reset }));
     expect(await screen.findByText(copy.issueLabels.resetDone)).toBeInTheDocument();
     expect(sent()).toEqual({ labels: null });
@@ -198,7 +203,7 @@ describe("IssueLabelsPanel", () => {
   });
 
   it("warns that saved names could not be read, so the defaults apply until they are saved again", () => {
-    setup(repo({ issues: 12, issueLabelsUnreadable: true }));
+    setup(repo({ issues: 12, issueLabels: { kind: "unreadable" } }));
     expect(screen.getByRole("alert")).toHaveTextContent(copy.issueLabels.unreadable);
   });
 

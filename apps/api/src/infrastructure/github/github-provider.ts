@@ -1,7 +1,8 @@
 import type { DeployRun, OpenPullRequest, PullRequest, RequestedReviewer, Review } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
-import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
+import type { Fetch } from "../http/fetch.js";
+import { API, request, RETRYABLE } from "./github-http.js";
 
 const PULL_REQUESTS_QUERY = `
 query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
@@ -15,7 +16,7 @@ query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
         author { login __typename }
         mergedBy { login }
         commits(first: 1) { nodes { commit { authoredDate committedDate } } }
-        reviews(first: 100) { nodes { author { login } state submittedAt } }
+        reviews(first: 100) { nodes { author { login __typename } state submittedAt } }
         files(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { path } }
         labels(first: 20) { nodes { name } }
         trailers: commits(last: 100) { nodes { commit { message } } }

@@ -1,4 +1,7 @@
 import type {
+  ActionPackage,
+  Band,
+  BranchRules,
   CodeDetailReport,
   CodeHealthReport,
   IssueLabelDefaults,
@@ -11,8 +14,23 @@ import type {
   SpaceHygieneItemFinding,
   QueueEntry,
   RepoReport,
+  ReviewExemptionDefaults,
   ReviewQueue,
+  SecurityAction,
+  SecurityActionKind,
+  SecurityCheckName,
+  SecurityGrade,
+  SecurityGradeMissing,
+  SecurityPartName,
+  SecurityAlertRef,
+  SecurityReport,
+  SecuritySummary,
+  NoAccessReason,
+  OffReason,
+  SourceRead,
+  SourceState,
   SpaceReport,
+  SupplyChainLine,
   WeekRow,
 } from "@dora-dashboard/core";
 
@@ -49,9 +67,9 @@ export function repo(overrides: Partial<RepoListing> = {}): RepoListing {
     deployRuns: 10,
     issues: 0,
     issuesEnabled: null,
-    issueLabels: null,
-    issueLabelsUnreadable: false,
+    issueLabels: { kind: "defaults" },
     issueError: null,
+    reviewExemptions: { kind: "defaults" },
     ...overrides,
   };
 }
@@ -79,6 +97,9 @@ export function report(
       authors: authorCount,
       reviewedShare: 0.5,
       selfMergedShare: 0.25,
+      unreviewedCount: 1,
+      unreviewedShare: 0.25,
+      exemptCount: 2,
       authorWeeks: 3,
       mergedPerAuthorWeek: 2,
       linesMerged: 360,
@@ -579,6 +600,15 @@ export function issueReport(options: { people?: boolean } = {}): IssueReport {
   };
 }
 
+/** What `GET /api/review-exemptions/defaults` answers: the title words and label that apply, and the limits it enforces. */
+export function reviewExemptionDefaults(): ReviewExemptionDefaults {
+  return {
+    titleWords: ["sync", "synced", "syncing", "synchronise"],
+    labels: ["reviewed-elsewhere"],
+    limits: { titleWords: 30, labels: 30, length: 100 },
+  };
+}
+
 /** What `GET /api/issue-labels/defaults` answers: the names the API classifies with and the limits it enforces. */
 export function issueLabelDefaults(): IssueLabelDefaults {
   return {
@@ -840,4 +870,474 @@ export function coverageOk(overrides: Record<string, unknown> = {}): CodeDetailR
     },
     ...overrides,
   } as CodeDetailReport["coverage"];
+}
+
+// --- Security ---------------------------------------------------------------------------------------------------
+
+const noTime = { count: 0, median: null, p75: null, mean: null };
+const timeSummary = (median: number) => ({ count: 4, median, p75: median * 2, mean: median });
+
+const securitySources = (): SecurityReport["sources"] => {
+  const ok = (readAt: string): SourceState => ({ status: "ok", readAt, attemptedAt: readAt, truncated: false, skipped: 0 });
+  return {
+    dependabot: ok("2026-03-01T10:00:00Z"),
+    code_scanning: ok("2026-03-01T10:01:00Z"),
+    secret_scanning: ok("2026-03-01T10:02:00Z"),
+    osv: { status: "not_used", reason: "lookup_off", attemptedAt: "2026-03-01T10:00:00Z" },
+  };
+};
+
+const attempted = "2026-03-01T10:00:00Z";
+
+/** A source switched off, a source the credential cannot read, and one whose last attempt failed. */
+export const offSource = (reason: OffReason = "disabled"): SourceState => ({ status: "off", reason, attemptedAt: attempted });
+export const noAccessSource = (reason: NoAccessReason = "forbidden"): SourceState => ({
+  status: "no_access",
+  reason,
+  attemptedAt: attempted,
+});
+export const errorSource = (error = "GitHub answered 502", lastGood: SourceRead | null = null): SourceState => ({
+  status: "error",
+  error,
+  attemptedAt: "2026-03-02T10:00:00Z",
+  lastGood,
+});
+
+const noRules: BranchRules = {
+  requirePullRequest: null,
+  requiredApprovals: null,
+  dismissStaleReviews: null,
+  requireCodeOwnerReview: null,
+  requireStatusChecks: null,
+  blockForcePushes: null,
+  blockDeletion: null,
+  requireSignedCommits: null,
+  requireLinearHistory: null,
+};
+
+type ActionOverrides = Partial<Pick<SecurityAction, "severity" | "count" | "target" | "likelyExploited" | "refs">> & {
+  kind?: SecurityActionKind;
+  band?: Band | null;
+  onPath?: boolean;
+  /** Only read for the two dependency kinds. */
+  package?: Partial<ActionPackage>;
+};
+
+const dependencyPackage: ActionPackage = {
+  ecosystem: "npm",
+  name: "left-pad",
+  manifestPath: "package-lock.json",
+  relationship: "direct",
+  upgradeTo: "1.3.1",
+};
+
+/** An upgrade of left-pad unless the overrides say another kind, which then carries no package. */
+export function securityAction(overrides: ActionOverrides = {}): SecurityAction {
+  const { package: pkg, ...rest } = overrides;
+  const action = {
+    kind: "upgrade_dependency",
+    band: "medium",
+    onPath: true,
+    severity: "critical",
+    count: 2,
+    target: "npm:left-pad",
+    likelyExploited: false,
+    refs: [{ label: "Prototype pollution in left-pad", url: "https://github.com/acme/widgets/security/dependabot/1" }],
+    ...rest,
+  };
+  const dependency = action.kind === "upgrade_dependency" || action.kind === "replace_dependency";
+  return (dependency ? { ...action, package: { ...dependencyPackage, ...pkg } } : action) as SecurityAction;
+}
+
+export function securityAlert(overrides: Partial<SecurityAlertRef> = {}): SecurityAlertRef {
+  return {
+    source: "dependabot",
+    key: "1",
+    severity: "critical",
+    title: "Prototype pollution in left-pad",
+    url: "https://github.com/acme/widgets/security/dependabot/1",
+    createdAt: "2026-02-20T10:00:00Z",
+    ageHours: 240,
+    pastFix: true,
+    likelyExploited: true,
+    epss: 0.42,
+    cvssScore: 9.8,
+    cwes: ["CWE-1321"],
+    where: { kind: "package", ecosystem: "npm", name: "left-pad", version: "1.3.0", manifestPath: "package-lock.json" },
+    ...overrides,
+  };
+}
+
+const line = (
+  check: SupplyChainLine["check"],
+  met: boolean,
+  graded = true,
+  items: SupplyChainLine["items"] = [],
+  total = items.length,
+): SupplyChainLine => ({ check, met, graded, items, total });
+
+type ReportFields = Omit<SecurityReport, "grade" | "gradeMissing">;
+
+/** When a source last read well, by the same rule as the API's, so that a report built here agrees with its sources. */
+const lastGoodOf = (sources: SecurityReport["sources"]): SecurityReport["lastGoodAt"] => {
+  const at = (state: SourceState): string | null =>
+    state.status === "ok" ? state.readAt : state.status === "error" ? (state.lastGood?.readAt ?? null) : null;
+  return {
+    dependabot: at(sources.dependabot),
+    code_scanning: at(sources.code_scanning),
+    secret_scanning: at(sources.secret_scanning),
+    osv: at(sources.osv),
+  };
+};
+
+/** Which sources count: those with a good read, with OSV only standing in when Dependabot cannot be used. */
+const usedOf = (sources: SecurityReport["sources"]): SecurityReport["used"] => {
+  const read = lastGoodOf(sources);
+  return {
+    dependabot: read.dependabot !== null,
+    code_scanning: read.code_scanning !== null,
+    secret_scanning: read.secret_scanning !== null,
+    osv: read.dependabot === null && read.osv !== null,
+  };
+};
+
+/** The fields of a report, with the grade or the reason for none given as two optional fields that are settled together. */
+type ReportOverrides = Partial<ReportFields> & { grade?: SecurityGrade | null; gradeMissing?: SecurityGradeMissing | null };
+
+/** A report for acme/widgets that is graded medium, with a little of everything so each section has something to show. */
+export function securityReport(overrides: ReportOverrides = {}): SecurityReport {
+  const merged: ReportFields & { grade: SecurityGrade | null; gradeMissing: SecurityGradeMissing | null } = {
+    repo: { id: 1, owner: "acme", name: "widgets", deployBranch: "main", lastCrawledAt: "2026-03-01T10:00:00Z" },
+    range: { from: "2026-01-01T00:00:00Z", to: "2026-03-01T23:59:59Z" },
+    gradedAt: "2026-03-01T12:00:00Z",
+    thresholds: {
+      fixWithinDays: { critical: 7, high: 30, medium: 90, low: 180 },
+      staleUpdateDays: 30,
+      likelyExploitedEpss: 0.1,
+      lowAlertAdviceDays: 180,
+    },
+    settingsUrl: "https://github.com/acme/widgets/settings/security_analysis",
+    sources: securitySources(),
+    used: usedOf(overrides.sources ?? securitySources()),
+    lastGoodAt: lastGoodOf(overrides.sources ?? securitySources()),
+    supplyChain: {
+      status: "ok",
+      commitSha: "abcdef1234567890",
+      readAt: "2026-03-01T10:05:00Z",
+      workflowsRead: 3,
+      workflowsUnread: [],
+      dockerfilesUnread: [],
+      dockerfilesUnreadTotal: 0,
+      findingsDropped: 0,
+      actionsDropped: 0,
+      lines: [
+        line("prHeadCheckout", true),
+        line("scriptInjection", true),
+        line("unpinnedActions", false, true, [{ path: ".github/workflows/ci.yml", line: 12, detail: "acme-tools/setup@v2" }]),
+        line("workflowPermissions", false, true, [{ path: ".github/workflows/ci.yml", line: null, detail: null }]),
+        line("keyFiles", true),
+        line("updateConfig", false, false),
+        line("lockfiles", true, false),
+        line("securityPolicy", false, false),
+        line("staticAnalysis", false, false),
+        line("baseImagesPinned", false, false, [{ path: "Dockerfile", line: null, detail: null }]),
+      ],
+    },
+    ecosystems: ["npm", "github-actions"],
+    supplyChainFailure: null,
+    postureFailure: null,
+    posture: {
+      readAt: "2026-03-01T10:03:00Z",
+      value: {
+        visibility: "public",
+        isAdmin: false,
+        branch: {
+          name: "main",
+          protected: true,
+          rules: {
+            ...noRules,
+            requirePullRequest: true,
+            requiredApprovals: 1,
+            blockForcePushes: false,
+            requireStatusChecks: null,
+          },
+          detail: "rulesets_only",
+        },
+        settings: {
+          dependabotSecurityUpdates: true,
+          secretScanning: null,
+          pushProtection: false,
+          validityChecks: null,
+          privateVulnerabilityReporting: null,
+        },
+        advisories: null,
+      },
+    },
+    dependabotVersionUpdates: null,
+    grade: {
+      overall: { band: "medium", check: "criticalOpen", reason: "criticalOpen", part: "vulnerabilities" },
+      parts: {
+        vulnerabilities: { band: "medium", check: "criticalOpen", reason: "criticalOpen" },
+        supplyChain: { band: "high", check: "unpinnedActions", reason: "unpinnedActions" },
+        changeControl: null,
+      },
+      unmeasured: ["changeControl"],
+    },
+    gradeMissing: null,
+    checks: [
+      { part: "vulnerabilities", check: "criticalPastFix", value: 0, band: "elite", met: true, count: 0, limits: false },
+      { part: "vulnerabilities", check: "criticalOpen", value: 1, band: "medium", met: false, count: 1, limits: true },
+      {
+        part: "vulnerabilities",
+        check: "highPastFix",
+        value: 1,
+        band: "medium",
+        met: false,
+        count: 1,
+        oldestDays: 45,
+        limits: false,
+      },
+      { part: "vulnerabilities", check: "highOpen", value: 1, band: "high", met: false, count: 1, limits: false },
+      { part: "supplyChain", check: "prHeadCheckout", value: 0, band: "elite", met: true, count: 0, limits: false },
+      { part: "supplyChain", check: "unpinnedActions", value: 1, band: "high", met: false, count: 1, limits: true },
+      { part: "supplyChain", check: "keyFiles", value: null, limits: false },
+    ],
+    raiseGrade: { to: "high", actions: 2 },
+    open: {
+      bySeverity: { critical: 1, high: 2, medium: 2, low: 1, unknown: 0 },
+      bySource: { dependabot: 4, code_scanning: 2, secret_scanning: 0, osv: 0 },
+      pastFix: { critical: 0, high: 1, medium: 0, low: 0, unknown: 0 },
+    },
+    likelyExploitedOpen: 1,
+    weekly: [
+      {
+        week: "2026-02-16",
+        partial: false,
+        opened: 2,
+        fixed: 1,
+        dismissed: 0,
+        openAtEnd: { critical: 0, high: 1, medium: 1, low: 0, unknown: 0 },
+        pastFixAtEnd: 0,
+      },
+      {
+        week: "2026-02-23",
+        partial: false,
+        opened: 3,
+        fixed: 0,
+        dismissed: 1,
+        openAtEnd: { critical: 1, high: 2, medium: 2, low: 1, unknown: 0 },
+        pastFixAtEnd: 1,
+      },
+      {
+        week: "2026-03-02",
+        partial: true,
+        opened: 0,
+        fixed: 0,
+        dismissed: 0,
+        openAtEnd: { critical: 1, high: 2, medium: 2, low: 1, unknown: 0 },
+        pastFixAtEnd: 1,
+      },
+    ],
+    timeToFix: timeSummary(48),
+    timeToFixBySeverity: [
+      { severity: "critical", summary: timeSummary(24) },
+      { severity: "high", summary: timeSummary(96) },
+      { severity: "medium", summary: noTime },
+      { severity: "low", summary: noTime },
+      { severity: "unknown", summary: noTime },
+    ],
+    fixedInRange: 4,
+    dismissed: {
+      total: 3,
+      byReason: [
+        { reason: "tolerable_risk", count: 2 },
+        { reason: "false_positive", count: 1 },
+      ],
+    },
+    pushProtectionBypassedInRange: 0,
+    weaknesses: [
+      { cwe: "CWE-1321", open: 2, fixedInRange: 1 },
+      { cwe: "CWE-79", open: 1, fixedInRange: 0 },
+      { cwe: "CWE-9999", open: 1, fixedInRange: 2 },
+    ],
+    openAlerts: [
+      securityAlert(),
+      securityAlert({
+        source: "code_scanning",
+        key: "7",
+        severity: "high",
+        title: "Database query built from user-provided value",
+        url: "https://github.com/acme/widgets/security/code-scanning/7",
+        ageHours: 72,
+        pastFix: false,
+        likelyExploited: false,
+        epss: null,
+        cvssScore: null,
+        cwes: ["CWE-89"],
+        where: { kind: "code", path: "src/db/query.ts", line: 42, ruleId: "js/sql-injection" },
+      }),
+    ],
+    openAlertTotal: 6,
+    dependencyGroups: [
+      {
+        ecosystem: "npm",
+        name: "left-pad",
+        manifestPath: "package-lock.json",
+        relationship: "direct",
+        lockedVersions: ["1.3.0"],
+        alerts: 2,
+        worstSeverity: "critical",
+        upgradeTo: "1.3.1",
+        patchedVersions: ["1.3.1"],
+        pastFix: 0,
+        likelyExploited: true,
+      },
+      {
+        ecosystem: "npm",
+        name: "is-odd",
+        manifestPath: "apps/web/package-lock.json",
+        relationship: "transitive",
+        lockedVersions: ["3.0.0", "3.0.1"],
+        alerts: 1,
+        worstSeverity: "high",
+        upgradeTo: null,
+        patchedVersions: [],
+        pastFix: 1,
+        likelyExploited: false,
+      },
+    ],
+    dependencyUpdates: {
+      openedInRange: 5,
+      mergedInRange: 3,
+      closedUnmergedInRange: 1,
+      openNow: 1,
+      timeToMerge: timeSummary(30),
+      oldestOpenDays: 12,
+    },
+    securityIssues: { open: 2, oldestOpenDays: 20, closedInRange: 1, timeToClose: timeSummary(72) },
+    scorecard: {
+      status: "ok",
+      result: {
+        score: 6.4,
+        date: "2026-02-28",
+        checks: [
+          { name: "Branch-Protection", score: 3, reason: "branch protection is not maximal" },
+          { name: "Fuzzing", score: -1, reason: "no fuzzer integration found" },
+        ],
+      },
+    },
+    actions: [
+      securityAction(),
+      securityAction({
+        kind: "pin_actions",
+        band: "high",
+        onPath: false,
+        severity: null,
+        count: 1,
+        target: ".github/workflows/ci.yml",
+        refs: [{ label: "acme-tools/setup@v2", url: null }],
+      }),
+      securityAction({
+        kind: "add_update_config",
+        band: null,
+        onPath: false,
+        severity: null,
+        count: 1,
+        target: null,
+        refs: [],
+      }),
+      securityAction({
+        kind: "enable_push_protection",
+        band: null,
+        onPath: false,
+        severity: null,
+        count: 1,
+        target: null,
+        refs: [],
+      }),
+    ],
+    ...overrides,
+  };
+  const { grade, gradeMissing, ...rest } = merged;
+  return grade
+    ? { ...rest, grade, gradeMissing: null }
+    : { ...rest, grade: null, gradeMissing: gradeMissing ?? "nothing_measured" };
+}
+
+/** A report with nothing graded, so RepoPage's own "High" bands are the only ones on the page. */
+export function noSecurity(overrides: ReportOverrides = {}): SecurityReport {
+  const notRead: SourceState = { status: "not_read" };
+  return securityReport({
+    sources: { dependabot: notRead, code_scanning: notRead, secret_scanning: notRead, osv: notRead },
+    supplyChain: { status: "none", reason: "not_read" },
+    ecosystems: [],
+    posture: null,
+    grade: null,
+    gradeMissing: "not_crawled",
+    checks: [],
+    raiseGrade: null,
+    open: {
+      bySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+      bySource: { dependabot: 0, code_scanning: 0, secret_scanning: 0, osv: 0 },
+      pastFix: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
+    },
+    likelyExploitedOpen: 0,
+    weekly: [],
+    timeToFix: noTime,
+    fixedInRange: 0,
+    dismissed: { total: 0, byReason: [] },
+    weaknesses: [],
+    openAlerts: [],
+    openAlertTotal: 0,
+    dependencyGroups: [],
+    dependencyUpdates: {
+      openedInRange: 0,
+      mergedInRange: 0,
+      closedUnmergedInRange: 0,
+      openNow: 0,
+      timeToMerge: noTime,
+      oldestOpenDays: null,
+    },
+    securityIssues: null,
+    scorecard: { status: "off" },
+    actions: [],
+    ...overrides,
+  });
+}
+
+type SummaryOverrides = Partial<Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing">> & {
+  band?: Band | null;
+  limitedBy?: { part: SecurityPartName; check: SecurityCheckName | "all" } | null;
+  gradeMissing?: SecurityGradeMissing | null;
+};
+
+export function securitySummary(overrides: SummaryOverrides = {}): SecuritySummary {
+  const merged: Omit<SecuritySummary, "band" | "limitedBy" | "gradeMissing"> &
+    Required<Pick<SummaryOverrides, "band" | "limitedBy" | "gradeMissing">> = {
+    repo: { id: 1, owner: "acme", name: "widgets", lastCrawledAt: "2026-03-01T10:00:00Z", crawlStatus: "idle" },
+    band: "medium",
+    limitedBy: { part: "vulnerabilities", check: "criticalOpen" },
+    gradeMissing: null,
+    open: { critical: 1, high: 2, medium: 2, low: 1, unknown: 0 },
+    pastFix: 1,
+    likelyExploited: 1,
+    actions: 2,
+    raiseGrade: { to: "high", actions: 2 },
+    read: true,
+    dependabotVersionUpdates: null,
+    unmeasured: [],
+    sources: { dependabot: "ok", code_scanning: "ok", secret_scanning: "no_access", osv: "not_used" },
+    used: { dependabot: true, code_scanning: true, secret_scanning: false, osv: false },
+    supplyChain: "ok",
+    readAt: "2026-03-01T10:02:00Z",
+    failed: false,
+    scorecard: null,
+    thresholds: securityReport().thresholds,
+    topAction: securityAction(),
+    ...overrides,
+  };
+  const { band, limitedBy, gradeMissing, ...rest } = merged;
+  return band && limitedBy
+    ? { ...rest, band, limitedBy, gradeMissing: null }
+    : { ...rest, band: null, limitedBy: null, gradeMissing: gradeMissing ?? "nothing_measured" };
 }

@@ -8,6 +8,10 @@ import type { CoverageSource } from "./interfaces/coverage-source.js";
 import type { IssueProvider } from "./interfaces/issue-provider.js";
 import type { CodeAnalyser } from "./interfaces/code-analyser.js";
 import type { RepoStore } from "./interfaces/repo-store.js";
+import type { ScorecardSource } from "./interfaces/scorecard-source.js";
+import type { SecurityAlertSource } from "./interfaces/security-alert-source.js";
+import type { SecurityStore } from "./interfaces/security-store.js";
+import type { VulnerabilityDatabase } from "./interfaces/vulnerability-database.js";
 import type { WorkspaceReader } from "./interfaces/workspace-reader.js";
 import type { SourceCheckout } from "./interfaces/source-checkout.js";
 import type { SourceProvider } from "./interfaces/source-provider.js";
@@ -20,7 +24,9 @@ import { registerErrorHandler } from "./routes/errors.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerJiraRoutes } from "./routes/jira.js";
 import { registerRepoRoutes } from "./routes/repos.js";
+import { registerReviewExemptionRoutes } from "./routes/review-exemptions.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
+import { registerSecurityRoutes } from "./routes/security.js";
 import { DeviceSignInService } from "./services/device-sign-in-service.js";
 import { CodeHealthService } from "./services/code-health-service.js";
 import { CodeDetailService } from "./services/code-detail-service.js";
@@ -32,13 +38,16 @@ import { JiraAuthService } from "./services/jira-auth-service.js";
 import { RepoService } from "./services/repo-service.js";
 import { ReportService } from "./services/report-service.js";
 import { ReviewQueueService } from "./services/review-queue-service.js";
+import { SecurityCrawlService } from "./services/security-crawl-service.js";
+import { SecurityReportService } from "./services/security-report-service.js";
 import { SpaceReportService } from "./services/space-report-service.js";
+import { SupplyChainService } from "./services/supply-chain-service.js";
 import { TrackerService } from "./services/tracker-service.js";
 import { WorkItemCrawlService } from "./services/work-item-crawl-service.js";
 
 export interface AppDeps {
   config: Config;
-  store: RepoStore;
+  store: RepoStore & SecurityStore;
   provider: SourceProvider;
   sessions: SessionStore;
   cli: CliTokenSource;
@@ -57,6 +66,15 @@ export interface AppDeps {
    * a crawl reads no coverage, while stored coverage is still shown.
    */
   coverage?: CoverageSource;
+  /**
+   * GitHub security alerts and repository posture, read during the crawl. Leave it out and a crawl reads none; stored
+   * alerts and the report routes still work.
+   */
+  securityAlerts?: SecurityAlertSource;
+  /** OSV.dev, used only when `config.osvLookup` is on. */
+  vulnerabilities?: VulnerabilityDatabase;
+  /** The OpenSSF Scorecard, used only when `config.scorecardLookup` is on. */
+  scorecard?: ScorecardSource;
   /** The time source for review waits and the review queue cache; tests pass a fixed one. */
   clock?: () => Date;
   /**
@@ -98,8 +116,22 @@ function createApp(deps: AppDeps): FastifyInstance {
   return Fastify({ logger: loggerOptions(deps.logger), ajv: { customOptions: { removeAdditional: false } } });
 }
 
+/** The OSV database and the Scorecard source are used only when their switch is on, so nothing leaves by accident. */
+const osvOf = (deps: AppDeps): VulnerabilityDatabase | null => (deps.config.osvLookup ? (deps.vulnerabilities ?? null) : null);
+const scorecardOf = (deps: AppDeps): ScorecardSource | null => (deps.config.scorecardLookup ? (deps.scorecard ?? null) : null);
+
 function createCodeHealth(deps: AppDeps, app: FastifyInstance): CodeHealthService {
-  return new CodeHealthService(deps.store, deps.checkout ?? null, deps.analyser ?? null, undefined, app.log, deps.reader ?? null);
+  // The supply chain facts are read from the clone code analysis makes, so they exist only when analysis is on.
+  const inspector = deps.config.codeAnalysis ? new SupplyChainService(deps.store, deps.clock) : null;
+  return new CodeHealthService(
+    deps.store,
+    deps.checkout ?? null,
+    deps.analyser ?? null,
+    undefined,
+    app.log,
+    deps.reader ?? null,
+    inspector,
+  );
 }
 
 function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHealthService): CrawlService {
@@ -108,7 +140,24 @@ function createCrawler(deps: AppDeps, app: FastifyInstance, codeHealth: CodeHeal
   const issues = deps.issues && new IssueCrawlService(deps.store, deps.issues, app.log);
   const coverage =
     analyseDuringCrawl && deps.coverage ? new CoverageService(deps.store, deps.coverage, deps.clock, app.log) : undefined;
-  return new CrawlService(deps.store, deps.provider, analyseDuringCrawl ? codeHealth : undefined, app.log, issues, coverage);
+  const security =
+    deps.securityAlerts &&
+    new SecurityCrawlService(
+      deps.store,
+      deps.securityAlerts,
+      osvOf(deps),
+      scorecardOf(deps),
+      deps.clock ?? (() => new Date()),
+      app.log,
+      deps.config.osvPrivateNpmScopes,
+    );
+  return new CrawlService(deps.store, deps.provider, {
+    ...(analyseDuringCrawl ? { codeHealth } : {}),
+    log: app.log,
+    ...(issues ? { issues } : {}),
+    ...(security ? { security } : {}),
+    ...(coverage ? { coverage } : {}),
+  });
 }
 
 /** Jira is on only when the config carries the Atlassian app (ADR 0020) and the adapters were handed in. */
@@ -170,9 +219,24 @@ function registerRoutes(
     repos,
     reports: new IssueReportService(deps.store, deps.clock),
   });
+  registerReviewExemptionRoutes(app, { guard: requireSession(auth), config: deps.config, repos });
   registerReviewQueueRoutes(app, {
     guard: requireSession(auth),
     queue: new ReviewQueueService(deps.store, deps.provider, deps.clock),
+  });
+  registerSecurityRoutes(app, {
+    guard: requireSession(auth),
+    reports: new SecurityReportService(
+      deps.store,
+      deps.store,
+      {
+        codeAnalysis: deps.config.codeAnalysis,
+        scorecardLookup: scorecardOf(deps) !== null,
+        settingsUrl: (owner: string, name: string) => deps.securityAlerts?.settingsUrl(owner, name) ?? "",
+      },
+      deps.clock,
+      app.log,
+    ),
   });
   const workItemCrawler = jira && jiraAuth && registerJira(app, deps, requireSession(auth), jira, jiraAuth);
   app.get("/api/health", async () => ({
@@ -180,6 +244,8 @@ function registerRoutes(
     authMode: deps.config.authMode,
     provider: deps.provider.kind,
     jira: jira !== undefined,
+    osv: osvOf(deps) !== null,
+    scorecard: scorecardOf(deps) !== null,
   }));
   return workItemCrawler;
 }

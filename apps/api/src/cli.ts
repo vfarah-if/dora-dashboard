@@ -11,6 +11,9 @@ import { FsWorkspaceReader } from "./infrastructure/fs/fs-workspace-reader.js";
 import { GitHubCoverageSource } from "./infrastructure/github/github-coverage-source.js";
 import { GitHubIssueProvider } from "./infrastructure/github/github-issue-provider.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
+import { GitHubSecurityAlertSource } from "./infrastructure/github/github-security-alert-source.js";
+import { OsvVulnerabilityDatabase } from "./infrastructure/osv/osv-vulnerability-database.js";
+import { OpenSsfScorecardSource } from "./infrastructure/scorecard/openssf-scorecard-source.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "./interfaces/logger.js";
 import { CodeHealthService } from "./services/code-health-service.js";
@@ -18,6 +21,9 @@ import { CoverageService } from "./services/coverage-service.js";
 import { CrawlService } from "./services/crawl-service.js";
 import { IssueCrawlService } from "./services/issue-crawl-service.js";
 import { isSafeBranch, parseRepoRef } from "./services/repo-ref.js";
+import { SecurityCrawlService } from "./services/security-crawl-service.js";
+import { SecurityReportService, describeSecurity } from "./services/security-report-service.js";
+import { SupplyChainService } from "./services/supply-chain-service.js";
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
@@ -63,13 +69,50 @@ const log: Logger = {
 const reader = new FsWorkspaceReader(undefined, log);
 try {
   const codeHealth = config.codeAnalysis
-    ? new CodeHealthService(store, new GitCheckout(), createCodeAnalyser(reader, log), undefined, log, reader)
+    ? new CodeHealthService(
+        store,
+        new GitCheckout(),
+        createCodeAnalyser(reader, log),
+        undefined,
+        log,
+        reader,
+        // Workflow, dependency and container facts are read from the same clone.
+        new SupplyChainService(store),
+      )
     : undefined;
   // Coverage is read alongside the analysis, so switching analysis off switches it off too.
   const coverage = config.codeAnalysis ? new CoverageService(store, new GitHubCoverageSource(), undefined, log) : undefined;
   const issues = new IssueCrawlService(store, new GitHubIssueProvider(), log);
-  await new CrawlService(store, provider, codeHealth, log, issues, coverage).crawl(token, repo.id, values.full);
+  const alertSource = new GitHubSecurityAlertSource();
+  const security = new SecurityCrawlService(
+    store,
+    alertSource,
+    config.osvLookup ? new OsvVulnerabilityDatabase() : null,
+    config.scorecardLookup ? new OpenSsfScorecardSource() : null,
+    () => new Date(),
+    log,
+    config.osvPrivateNpmScopes,
+  );
+  await new CrawlService(store, provider, {
+    ...(codeHealth ? { codeHealth } : {}),
+    log,
+    issues,
+    security,
+    ...(coverage ? { coverage } : {}),
+  }).crawl(token, repo.id, values.full);
   console.log(`${ref.owner}/${ref.name}`, store.counts(repo.id));
+  const [summary] = new SecurityReportService(
+    store,
+    store,
+    {
+      codeAnalysis: config.codeAnalysis,
+      scorecardLookup: config.scorecardLookup,
+      settingsUrl: (owner, name) => alertSource.settingsUrl(owner, name),
+    },
+    undefined,
+    log,
+  ).summaries([repo.id]);
+  if (summary) console.log(describeSecurity(summary));
 } finally {
   clearInterval(timer);
 }

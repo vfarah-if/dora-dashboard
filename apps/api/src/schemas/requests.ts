@@ -1,4 +1,10 @@
-import { DORA_PROFILE_IDS, ISSUE_LABEL_KINDS, ISSUE_LABEL_LIMITS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
+import {
+  DORA_PROFILE_IDS,
+  ISSUE_LABEL_KINDS,
+  ISSUE_LABEL_LIMITS,
+  ISSUE_PRIORITIES,
+  REVIEW_EXEMPTION_LIMITS,
+} from "@dora-dashboard/core";
 
 /** JSON schemas Fastify validates request bodies and query strings against before a handler runs. */
 
@@ -71,6 +77,20 @@ export const spaceReportQuery = {
 export const issueReportQuery = {
   type: "object",
   properties: { from: date, to: date, people: { type: "string", enum: ["0", "1"] } },
+} as const;
+
+export const securityReportQuery = {
+  type: "object",
+  additionalProperties: false,
+  properties: { from: date, to: date },
+} as const;
+
+/** `ids` is optional: leave it out for every repository. */
+export const securityListQuery = {
+  type: "object",
+  additionalProperties: false,
+  // Up to nine digits an id, so a longer run never turns into a number that is not finite.
+  properties: { ids: { type: "string", pattern: "^\\d{1,9}(,\\d{1,9}){0,49}$" } },
 } as const;
 
 /** `ids` is optional: leave it out for every repository. */
@@ -154,6 +174,50 @@ export const issueLabelsBody = {
           type: "object",
           additionalProperties: false,
           properties: { kinds: keyed(ISSUE_LABEL_KINDS), priorities: keyed(ISSUE_PRIORITIES) },
+        },
+      ],
+    },
+  },
+} as const;
+
+/** An exemption entry: 1 to `length` characters, none of them a control character. */
+const exemptionEntry = {
+  type: "string",
+  minLength: 1,
+  maxLength: REVIEW_EXEMPTION_LIMITS.length,
+  pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+} as const;
+
+/**
+ * A title word or phrase is matched as whole words made of letters and digits, so one with neither, such as `---`, would
+ * be saved and listed as active and never match anything. It is refused. An entry of spaces only is dropped by the save.
+ */
+const exemptionTitleWord = {
+  ...exemptionEntry,
+  // Blank entries are still tidied away on save; any other entry must hold a letter or a digit.
+  pattern: "^(?: +|(?=.*[\\p{L}\\p{N}])[^\\u0000-\\u001f\\u007f]+)$",
+} as const;
+
+/**
+ * `exemptions: null` returns the repository to the default title words and labels; otherwise both lists are given and
+ * replace the defaults. Unknown fields are refused, and `anyOf` is used for the reason `issueLabelsBody` gives.
+ */
+export const reviewExemptionsBody = {
+  type: "object",
+  required: ["exemptions"],
+  additionalProperties: false,
+  properties: {
+    exemptions: {
+      anyOf: [
+        { const: null },
+        {
+          type: "object",
+          required: ["titleWords", "labels"],
+          additionalProperties: false,
+          properties: {
+            titleWords: { type: "array", items: exemptionTitleWord, maxItems: REVIEW_EXEMPTION_LIMITS.titleWords },
+            labels: { type: "array", items: exemptionEntry, maxItems: REVIEW_EXEMPTION_LIMITS.labels },
+          },
         },
       ],
     },

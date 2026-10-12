@@ -21,6 +21,19 @@ export interface Config {
   /** Clone and analyse each repository's code during a crawl. `CODE_ANALYSIS=off` disables it. */
   codeAnalysis: boolean;
   /**
+   * Look locked dependencies up in OSV.dev during a crawl (`OSV_LOOKUP=on`, off by default). Only the ecosystem, name and
+   * version of packages a lockfile proves are public are sent (ADR 0034). It reads the lockfiles from the clone, so it
+   * cannot be on while code analysis is off.
+   */
+  osvLookup: boolean;
+  /**
+   * npm scopes, such as `@acme`, never sent to OSV even though their lockfile entries look public.
+   * `OSV_PRIVATE_NPM_SCOPES`, comma separated.
+   */
+  osvPrivateNpmScopes: string[];
+  /** Show the OpenSSF Scorecard of repositories GitHub says are public (`SCORECARD_LOOKUP=on`, off by default; ADR 0035). */
+  scorecardLookup: boolean;
+  /**
    * The Atlassian OAuth 2.0 (3LO) app, or null when Jira is off. Both credentials are set or both are empty; one alone
    * fails at start-up (ADR 0020).
    */
@@ -64,6 +77,25 @@ function sessionSecretFor(authMode: AuthMode, configured: string): string {
 }
 
 type ServerSettings = Pick<Config, "port" | "databasePath" | "webOrigin" | "codeAnalysis">;
+type LookupSettings = Pick<Config, "osvLookup" | "osvPrivateNpmScopes" | "scorecardLookup">;
+
+const isOn = (value: string | undefined): boolean => (value ?? "").trim().toLowerCase() === "on";
+
+/** The optional lookups to outside services. Each is off unless it is set to `on`, so nothing leaves by accident. */
+function readLookupSettings(env: NodeJS.ProcessEnv, codeAnalysis: boolean): LookupSettings {
+  const osvLookup = isOn(env.OSV_LOOKUP);
+  // The lookup works from the lockfiles the code analysis clone provides, so asking for it with code analysis off is a mistake.
+  if (osvLookup && !codeAnalysis)
+    throw new Error("OSV_LOOKUP=on needs code analysis; set CODE_ANALYSIS=on, or turn OSV_LOOKUP off");
+  return {
+    osvLookup,
+    osvPrivateNpmScopes: (env.OSV_PRIVATE_NPM_SCOPES ?? "")
+      .split(",")
+      .map((scope) => scope.trim())
+      .filter((scope) => scope !== ""),
+    scorecardLookup: isOn(env.SCORECARD_LOOKUP),
+  };
+}
 
 function readServerSettings(env: NodeJS.ProcessEnv): ServerSettings {
   return {
@@ -90,6 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     deviceClientId: env.GITHUB_DEVICE_CLIENT_ID || PUBLISHED_DEVICE_CLIENT_ID,
     sessionSecret: sessionSecretFor(authMode, env.SESSION_SECRET ?? ""),
     ...server,
+    ...readLookupSettings(env, server.codeAnalysis),
     jira:
       atlassianClientId === ""
         ? null

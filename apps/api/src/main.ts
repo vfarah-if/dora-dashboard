@@ -10,9 +10,12 @@ import { GitHubCoverageSource } from "./infrastructure/github/github-coverage-so
 import { GitHubDeviceFlow } from "./infrastructure/github/github-device-flow.js";
 import { GitHubIssueProvider } from "./infrastructure/github/github-issue-provider.js";
 import { GitHubProvider } from "./infrastructure/github/github-provider.js";
+import { GitHubSecurityAlertSource } from "./infrastructure/github/github-security-alert-source.js";
 import { MemoryTrackerGrantStore } from "./infrastructure/auth/memory-tracker-grant-store.js";
 import { AtlassianOAuth } from "./infrastructure/jira/atlassian-oauth.js";
 import { JiraCloudProvider } from "./infrastructure/jira/jira-cloud-provider.js";
+import { OsvVulnerabilityDatabase } from "./infrastructure/osv/osv-vulnerability-database.js";
+import { OpenSsfScorecardSource } from "./infrastructure/scorecard/openssf-scorecard-source.js";
 import { SqliteRepoStore } from "./infrastructure/sqlite/sqlite-repo-store.js";
 import { noopLogger, type Logger } from "./interfaces/logger.js";
 import { githubCodeExchange } from "./routes/auth.js";
@@ -37,6 +40,10 @@ const { app } = await buildApp({
   provider,
   issues: new GitHubIssueProvider(),
   coverage: new GitHubCoverageSource(),
+  securityAlerts: new GitHubSecurityAlertSource(),
+  // The outside lookups are built only when switched on, so a default install never has an adapter that could call out.
+  ...(config.osvLookup ? { vulnerabilities: new OsvVulnerabilityDatabase() } : {}),
+  ...(config.scorecardLookup ? { scorecard: new OpenSsfScorecardSource() } : {}),
   sessions: new MemorySessionStore(),
   cli: new GhCliTokenSource(provider),
   exchangeCode: githubCodeExchange(config),
@@ -56,4 +63,6 @@ const { app } = await buildApp({
 
 appLog = app.log;
 await app.listen({ port: config.port, host: "127.0.0.1" });
-app.log.info(`API listening on http://127.0.0.1:${config.port} (auth ${config.authMode}, jira ${config.jira ? "on" : "off"})`);
+app.log.info(
+  `API listening on http://127.0.0.1:${config.port} (auth ${config.authMode}, jira ${config.jira ? "on" : "off"}, osv ${config.osvLookup ? "on" : "off"}, scorecard ${config.scorecardLookup ? "on" : "off"})`,
+);

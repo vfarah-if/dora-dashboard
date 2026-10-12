@@ -1,12 +1,21 @@
-const HOUR_MS = 3_600_000;
+export const HOUR_MS = 3_600_000;
+export const DAY_MS = 24 * HOUR_MS;
+export const WEEK_MS = 7 * DAY_MS;
+
+/** Orders strings by code unit, so the result never depends on the machine's locale. */
+export const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Orders anything with a `path` by that path, by code unit. */
+export const byPath = <T extends { path: string }>(a: T, b: T): number => compareText(a.path, b.path);
+
+/** Orders paths with the shallowest first, then by code unit. */
+export const shallowestFirst = (a: string, b: string): number => a.split("/").length - b.split("/").length || compareText(a, b);
 
 export function hoursBetween(from: string | null, to: string | null): number | null {
   if (!from || !to) return null;
   const delta = (Date.parse(to) - Date.parse(from)) / HOUR_MS;
   return Number.isFinite(delta) ? delta : null;
 }
-
-const DAY_MS = 24 * HOUR_MS;
 
 /**
  * Hours between two instants that fall on a Monday to Friday in UTC. Saturday and Sunday count as nothing, so a
@@ -88,8 +97,6 @@ export function weekRange(firstWeek: string, lastWeek: string): string[] {
 export function isWithin(iso: string | null, from: string, to: string): iso is string {
   return iso !== null && iso >= from && iso <= to;
 }
-
-const WEEK_MS = 7 * DAY_MS;
 
 /** True for a week, given by its Monday, that had not finished by `to`, the last second of a range. */
 export function isPartialWeek(week: string, to: string): boolean {

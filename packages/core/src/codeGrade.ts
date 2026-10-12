@@ -1,4 +1,4 @@
-import type { Band } from "./dora.js";
+import { BAND_RANK, type Band } from "./dora.js";
 
 /**
  * Grade thresholds. They are this project's convention, not an industry standard (ADR 0013), and each one is
@@ -115,7 +115,6 @@ export interface CodeGrade {
   hygiene: GradePart<HygieneCheck>;
 }
 
-const RANK: Record<Band, number> = { low: 0, medium: 1, high: 2, elite: 3 };
 const label = (band: Band) => band[0]!.toUpperCase() + band.slice(1);
 const percent = (share: number) => `${(share * 100).toFixed(1)}%`;
 
@@ -129,7 +128,7 @@ const bandAtLeast = (value: number, needs: { elite: number; high: number; medium
 function lowestBanded<T extends { band?: Band }>(checks: T[]): { band: Band; check: T } | null {
   let worst: { band: Band; check: T } | null = null;
   for (const check of checks) {
-    if (check.band && (!worst || RANK[check.band] < RANK[worst.band])) worst = { band: check.band, check };
+    if (check.band && (!worst || BAND_RANK[check.band] < BAND_RANK[worst.band])) worst = { band: check.band, check };
   }
   return worst;
 }
@@ -294,7 +293,8 @@ const PART_LABEL: Record<GradePartName, string> = { maintainability: "Maintainab
 /** The lowest of the three parts; on a tie the part listed first (maintainability, testing, hygiene) is named. */
 export function overallGrade(parts: Record<GradePartName, GradePart>): CodeGrade["overall"] {
   let lowest: GradePartName = "maintainability";
-  for (const name of ["testing", "hygiene"] as const) if (RANK[parts[name].band] < RANK[parts[lowest].band]) lowest = name;
+  for (const name of ["testing", "hygiene"] as const)
+    if (BAND_RANK[parts[name].band] < BAND_RANK[parts[lowest].band]) lowest = name;
   const part = parts[lowest];
   const reason =
     part.band === "elite" ? "Every part is in the elite band" : `${PART_LABEL[lowest]} is the lowest part. ${part.reason}`;

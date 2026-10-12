@@ -11,7 +11,11 @@ import type {
   Repo,
   RepoListing,
   RepoReport,
+  ReviewExemptionDefaults,
+  ReviewExemptionRules,
   ReviewQueue,
+  SecurityReport,
+  SecuritySummary,
   SpaceDescription,
   SpaceListing,
   SpaceReport,
@@ -92,8 +96,11 @@ export const queryKeys = {
   spaces: ["spaces"] as const,
   spaceReport: (id: number, range: SpaceRange, people: boolean) => ["spaces", id, "report", range, people] as const,
   issueLabelDefaults: ["issue-label-defaults"] as const,
+  reviewExemptionDefaults: ["review-exemption-defaults"] as const,
   issues: (id: number) => ["issues", id] as const,
   issueReport: (id: number, range: SpaceRange, people: boolean) => ["issues", id, "report", range, people] as const,
+  securityList: ["security-list"] as const,
+  security: (id: number, range: SpaceRange) => ["security", id, range] as const,
 };
 
 /** The part of the page range a space report reads. Bots do not apply to issues. */
@@ -208,7 +215,7 @@ export function useCompare(ids: readonly number[], range: ReportRange) {
 }
 
 /** Invalidates a repository's queries of one kind when a crawl of it finishes, so the figures come from the new snapshot. */
-export function useRefetchAfterCrawl(id: number, kind: "code-health" | "code-detail") {
+export function useRefetchAfterCrawl(id: number, kind: "code-health" | "code-detail" | "security") {
   const client = useQueryClient();
   const repos = useRepos();
   const crawling = repos.data?.find((r) => r.id === id)?.crawlStatus === "crawling";
@@ -217,6 +224,25 @@ export function useRefetchAfterCrawl(id: number, kind: "code-health" | "code-det
     if (wasCrawling.current && !crawling) void client.invalidateQueries({ queryKey: [kind, id] });
     wasCrawling.current = crawling;
   }, [client, crawling, id, kind]);
+}
+
+/**
+ * Invalidates the queries under `queryKey` when any crawl finishes, so a page built from every repository, such as the
+ * security list, is read again once the crawl has changed what it shows. It follows the repository list, which is polled
+ * while a crawl runs.
+ */
+export function useRefetchAfterAnyCrawl(queryKey: readonly unknown[]) {
+  // Callers pass a constant key, so the effect below runs again only when the set of crawling repositories changes.
+  const client = useQueryClient();
+  const repos = useRepos();
+  const crawling = (repos.data ?? []).filter((r) => r.crawlStatus === "crawling").map((r) => r.id);
+  const before = useRef<readonly number[]>([]);
+  const key = crawling.join(",");
+  useEffect(() => {
+    const now = key ? key.split(",").map(Number) : [];
+    if (before.current.some((id) => !now.includes(id))) void client.invalidateQueries({ queryKey });
+    before.current = now;
+  }, [client, key, queryKey]);
 }
 
 /**
@@ -309,6 +335,10 @@ export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions =
 export interface Health {
   /** True when Jira is configured on the server. Treat as false when absent. */
   jira?: boolean;
+  /** True when the OSV.dev lookup of locked dependencies is switched on. Treat as false when absent. */
+  osv?: boolean;
+  /** True when the OpenSSF Scorecard lookup is switched on. Treat as false when absent. */
+  scorecard?: boolean;
 }
 
 /** Whether optional features, Jira among them, are switched on. */
@@ -474,7 +504,7 @@ export function useIssueLabelDefaults() {
   return useQuery({
     queryKey: queryKeys.issueLabelDefaults,
     queryFn: () => apiRequest<IssueLabelDefaults>("/api/issue-labels/defaults"),
-    // The defaults change only with a release of the API, so one read serves the whole session.
+    // The defaults change only with a release of the API, so reading them once an hour is plenty.
     staleTime: 60 * 60 * 1000,
   });
 }
@@ -493,5 +523,67 @@ export function useUpdateIssueLabels(id: number) {
         client.invalidateQueries({ queryKey: queryKeys.repos }),
         client.invalidateQueries({ queryKey: queryKeys.issues(id) }),
       ]),
+  });
+}
+
+/** The title words and labels that leave a pull request out of "merged with no review", and the limits an override keeps to. */
+export function useReviewExemptionDefaults() {
+  return useQuery({
+    queryKey: queryKeys.reviewExemptionDefaults,
+    queryFn: () => apiRequest<ReviewExemptionDefaults>("/api/review-exemptions/defaults"),
+    // The defaults change only with a release of the API, so reading them once an hour is plenty.
+    staleTime: 60 * 60 * 1000,
+  });
+}
+
+/**
+ * Saves a repository's review exemptions, or clears them with null. The figure is worked out when the report is built,
+ * so no crawl follows: the listing and every report are read again.
+ */
+export function useUpdateReviewExemptions(id: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (exemptions: ReviewExemptionRules | null) =>
+      apiRequest<RepoListing>(`/api/repos/${id}/review-exemptions`, { method: "PUT", body: { exemptions } }),
+    onSuccess: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.repos }),
+        client.invalidateQueries({ queryKey: ["report", id] }),
+        client.invalidateQueries({ queryKey: ["compare"] }),
+      ]),
+  });
+}
+
+/**
+ * The security summary of every repository, worst first as the API orders it. It refetches when any crawl finishes,
+ * since the crawl is what reads the alerts.
+ */
+export function useSecurityList() {
+  useRefetchAfterAnyCrawl(queryKeys.securityList);
+  return useQuery({
+    queryKey: queryKeys.securityList,
+    queryFn: ({ signal }) => apiRequest<SecuritySummary[]>("/api/security", { signal }),
+    retry: false,
+  });
+}
+
+/**
+ * One repository's security report. The grade and the open alerts describe now, and the range scopes the weekly chart,
+ * time to fix and dismissals. It refetches when a crawl of that repository finishes.
+ */
+export function useSecurityReport(id: number, range: SpaceRange) {
+  useRefetchAfterCrawl(id, "security");
+  return useQuery({
+    queryKey: queryKeys.security(id, range),
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams();
+      if (range.from) params.set("from", range.from);
+      if (range.to) params.set("to", range.to);
+      return apiRequest<SecurityReport>(withQuery(`/api/repos/${id}/security`, params.toString()), { signal });
+    },
+    enabled: isRecordId(id),
+    retry: false,
+    // A range change keeps the old figures on screen, but another repository's report is never shown under this one's address.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === id ? previous : undefined),
   });
 }

@@ -1,6 +1,7 @@
 import { buildReport, type RepoReport, type ReportOptions } from "@dora-dashboard/core";
 import { NotFoundError, ValidationError } from "../core/errors.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
+import { rulesOf } from "./saved-override.js";
 import { dayOf, validateDateRange } from "./date-range.js";
 
 export class ReportService {
@@ -13,7 +14,11 @@ export class ReportService {
     validateDateRange(options, dayOf(this.clock()));
     const repo = this.store.getRepo(repoId);
     if (!repo) throw new NotFoundError(`Unknown repository ${repoId}`);
-    return buildReport(repo, this.store.pullRequests(repo.id), this.store.deployRuns(repo.id), options);
+    const rules = rulesOf(this.store.reviewExemptionState(repo.id));
+    return buildReport(repo, this.store.pullRequests(repo.id), this.store.deployRuns(repo.id), {
+      ...options,
+      reviewExemptions: rules,
+    });
   }
 
   /** One report per repository over the same range, in the order asked for; unknown ids are an error. */

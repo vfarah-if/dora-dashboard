@@ -31,6 +31,10 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // The first test in a page's file pays for rendering the whole page cold. For RepoPage that took about 1 s on a
+    // laptop under coverage and 6.5 s on a CI runner shared with the other suites. No test here measures speed, so the
+    // 5 s default was a hidden budget that a busy runner rather than slow code failed.
+    testTimeout: 30_000,
     restoreMocks: true,
     coverage: {
       provider: "v8",

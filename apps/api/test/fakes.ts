@@ -1,6 +1,19 @@
-import { COVERAGE_SNAPSHOT_VERSION } from "@dora-dashboard/core";
+import { COVERAGE_SNAPSHOT_VERSION, SUPPLY_CHAIN_VERSION } from "@dora-dashboard/core";
 import type {
   BoardAccess,
+  CodeAlert,
+  DependabotAlert,
+  DependencyFacts,
+  OsvAlert,
+  OsvDependencyFacts,
+  AlertOf,
+  LockedPackage,
+  RepoPosture,
+  ScorecardResult,
+  SecretAlert,
+  SupplyChainFacts,
+  SupplyChainRecord,
+  Vulnerability,
   CoverageArtefact,
   CoverageReport,
   CoverageRead,
@@ -20,7 +33,10 @@ import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../src/interfaces/coverage-source.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../src/interfaces/issue-provider.js";
-import type { WorkspaceReader } from "../src/interfaces/workspace-reader.js";
+import type { Listing, WorkspaceReader } from "../src/interfaces/workspace-reader.js";
+import type { AlertRead, SecurityAlertSource } from "../src/interfaces/security-alert-source.js";
+import type { ScorecardSource } from "../src/interfaces/scorecard-source.js";
+import type { VulnerabilityDatabase } from "../src/interfaces/vulnerability-database.js";
 import {
   AnalyserMissingError,
   type AnalyserReach,
@@ -627,9 +643,19 @@ export class FakeCodeAnalyser implements CodeAnalyser {
 export class FakeWorkspaceReader implements WorkspaceReader {
   files = new Map<string, string>();
   listFailWith: Error | null = null;
+  /** How many times the listing was asked for. */
+  lists = 0;
   readonly reads: string[] = [];
 
-  async list(): Promise<string[]> {
+  /** What `listing` says about the walk, so a test can say it was cut. */
+  listingComplete = true;
+
+  async listing(dir: string): Promise<Listing> {
+    return { paths: await this.list(dir), complete: this.listingComplete };
+  }
+
+  async list(_dir?: string): Promise<string[]> {
+    this.lists++;
     if (this.listFailWith) throw this.listFailWith;
     return [...this.files.keys()];
   }
@@ -638,6 +664,359 @@ export class FakeWorkspaceReader implements WorkspaceReader {
     this.reads.push(path);
     const content = this.files.get(path);
     return content === undefined || Buffer.byteLength(content) > maxBytes ? null : content;
+  }
+}
+
+// --- Security ---------------------------------------------------------------------------------------------------
+
+// The alert builders take overrides that may close an alert, which the type only accepts with its close time, so each
+// result is cast; a test that closes an alert gives its `closedAt` too.
+
+type DependabotOverrides = Partial<Omit<DependabotAlert, "dependency">> & { dependency?: Partial<DependencyFacts> };
+
+/** An open Dependabot alert for a public package in `acme/widgets`. */
+export function dependabotAlert(overrides: DependabotOverrides = {}): DependabotAlert {
+  const { dependency, ...rest } = overrides;
+  return {
+    source: "dependabot",
+    key: "1",
+    state: "open",
+    createdAt: "2026-09-01T10:00:00Z",
+    closedAt: null,
+    closeReason: null,
+    title: "Prototype pollution in lodash",
+    url: "https://github.com/acme/widgets/security/dependabot/1",
+    severity: "high",
+    dependency: {
+      ecosystem: "npm",
+      name: "lodash",
+      manifestPath: "package-lock.json",
+      scope: "runtime",
+      relationship: "direct",
+      lockedVersion: null,
+      patchedVersion: "4.17.21",
+      vulnerableRange: "< 4.17.21",
+      advisoryId: "GHSA-aaaa-bbbb-cccc",
+      cveId: "CVE-2021-23337",
+      epss: null,
+      cvssScore: 7.2,
+      cwes: ["CWE-94"],
+      ...dependency,
+    },
+    ...rest,
+  } as DependabotAlert;
+}
+
+type OsvOverrides = Partial<Omit<OsvAlert, "dependency">> & { dependency?: Partial<OsvDependencyFacts> };
+
+/** An open OSV finding for the same package, as the lookup stores it: no scope, relationship, range, score or EPSS. */
+export function osvAlert(overrides: OsvOverrides = {}): OsvAlert {
+  const { dependency, ...rest } = overrides;
+  return {
+    source: "osv",
+    key: "GHSA-aaaa-bbbb-cccc|npm|lodash|package-lock.json",
+    state: "open",
+    createdAt: "2026-09-01T10:00:00Z",
+    closedAt: null,
+    closeReason: null,
+    title: "Prototype pollution in lodash",
+    url: "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
+    severity: "high",
+    dependency: {
+      ecosystem: "npm",
+      name: "lodash",
+      manifestPath: "package-lock.json",
+      scope: null,
+      relationship: null,
+      lockedVersion: "4.17.20",
+      patchedVersion: "4.17.21",
+      vulnerableRange: null,
+      advisoryId: "GHSA-aaaa-bbbb-cccc",
+      cveId: "CVE-2021-23337",
+      epss: null,
+      cvssScore: null,
+      cwes: [],
+      ...dependency,
+    },
+    ...rest,
+  } as OsvAlert;
+}
+
+type CodeOverrides = Partial<Omit<CodeAlert, "code">> & { code?: Partial<CodeAlert["code"]> };
+
+export function codeScanningAlert(overrides: CodeOverrides = {}): CodeAlert {
+  const { code, ...rest } = overrides;
+  return {
+    source: "code_scanning",
+    key: "2",
+    state: "open",
+    createdAt: "2026-09-02T10:00:00Z",
+    closedAt: null,
+    closeReason: null,
+    title: "Use of a broken or weak cryptographic algorithm",
+    url: "https://github.com/acme/widgets/security/code-scanning/2",
+    code: {
+      ruleId: "js/weak-cryptographic-algorithm",
+      tool: "CodeQL",
+      ruleSeverity: "error",
+      securitySeverity: "high",
+      securityTagged: true,
+      path: "src/crypto.ts",
+      line: 14,
+      cwes: ["CWE-327"],
+      ...code,
+    },
+    ...rest,
+  } as CodeAlert;
+}
+
+type SecretOverrides = Partial<Omit<SecretAlert, "exposure">> & { exposure?: Partial<SecretAlert["exposure"]> };
+
+export function secretScanningAlert(overrides: SecretOverrides = {}): SecretAlert {
+  const { exposure, ...rest } = overrides;
+  return {
+    source: "secret_scanning",
+    key: "3",
+    state: "open",
+    createdAt: "2026-09-03T10:00:00Z",
+    closedAt: null,
+    closeReason: null,
+    title: "GitHub Personal Access Token",
+    url: "https://github.com/acme/widgets/security/secret-scanning/3",
+    exposure: {
+      type: "GitHub Personal Access Token",
+      validity: "active",
+      publiclyLeaked: false,
+      pushProtectionBypassed: false,
+      ...exposure,
+    },
+    ...rest,
+  } as SecretAlert;
+}
+
+/**
+ * A private repository whose deploy branch is unprotected and was read in full, so every rule is known to be off. That is
+ * a shape the GitHub adapter returns; `rulesets_only` goes with unseen rules left null, and an unprotected branch has none.
+ */
+export function repoPosture(overrides: Partial<RepoPosture> = {}): RepoPosture {
+  return {
+    visibility: "private",
+    isAdmin: false,
+    branch: {
+      name: "main",
+      protected: false,
+      detail: "full",
+      rules: {
+        requirePullRequest: false,
+        requiredApprovals: 0,
+        dismissStaleReviews: false,
+        requireCodeOwnerReview: false,
+        requireStatusChecks: false,
+        blockForcePushes: false,
+        blockDeletion: false,
+        requireSignedCommits: false,
+        requireLinearHistory: false,
+      },
+    },
+    settings: {
+      dependabotSecurityUpdates: null,
+      secretScanning: null,
+      pushProtection: null,
+      validityChecks: null,
+      privateVulnerabilityReporting: null,
+    },
+    advisories: null,
+    ...overrides,
+  };
+}
+
+/** Facts for a repository with nothing in it that matters, at the current version. */
+export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyChainFacts {
+  return {
+    version: SUPPLY_CHAIN_VERSION,
+    listingComplete: true,
+    workflowsRead: 0,
+    workflowsUnread: [],
+    dockerfilesUnread: [],
+    dockerfilesUnreadTotal: 0,
+    actions: [],
+    findings: [],
+    findingsDropped: 0,
+    actionsDropped: 0,
+    securityTools: [],
+    updateConfig: null,
+    securityPolicy: null,
+    manifestsByEcosystem: {},
+    missingLockfiles: [],
+    lockfiles: [],
+    keyFiles: [],
+    dockerfiles: [],
+    ecosystems: [],
+    ...overrides,
+  };
+}
+
+export function supplyChainRecord(overrides: Partial<SupplyChainRecord> = {}): SupplyChainRecord {
+  return { commitSha: "abc1234", readAt: "2026-09-29T10:00:00.000Z", facts: supplyChainFacts(), ...overrides };
+}
+
+export function lockedPackage(overrides: Partial<LockedPackage> = {}): LockedPackage {
+  return { ecosystem: "npm", name: "lodash", version: "4.17.20", lockfile: "package-lock.json", ...overrides };
+}
+
+export function scorecardResult(overrides: Partial<ScorecardResult> = {}): ScorecardResult {
+  return {
+    score: 7.5,
+    date: "2026-09-28",
+    checks: [{ name: "Pinned-Dependencies", score: 5, reason: "3 out of 6 dependencies pinned" }],
+    ...overrides,
+  };
+}
+
+type AlertKind = "dependabot" | "code_scanning" | "secret_scanning";
+
+/** One recorded call to a FakeSecurityAlertSource. */
+export interface SecurityCall {
+  method: AlertKind | "posture";
+  token: string;
+  owner: string;
+  name: string;
+  branch?: string;
+}
+
+/**
+ * An in-memory alert source honouring the SecurityAlertSource contract. Each source answers an empty `ok` read until
+ * `set` gives it another answer or `fail` makes it raise, and every call is recorded with the token it carried.
+ */
+export class FakeSecurityAlertSource implements SecurityAlertSource {
+  readonly kind = "fake";
+  readonly calls: SecurityCall[] = [];
+  postureIs: RepoPosture = repoPosture();
+  postureFailWith: Error | null = null;
+  private readonly answers = new Map<AlertKind, AlertRead>();
+  private readonly failures = new Map<AlertKind, Error>();
+
+  /** How many times a source (or the posture) was read. */
+  count(method: SecurityCall["method"]): number {
+    return this.calls.filter((call) => call.method === method).length;
+  }
+
+  set<S extends AlertKind>(source: S, read: AlertRead<S>): void {
+    this.answers.set(source, read);
+  }
+
+  /** Serves these alerts as an `ok` read for the source. */
+  seed<S extends AlertKind>(
+    source: S,
+    alerts: AlertOf<S>[],
+    extra: { truncated?: boolean; skipped?: number; skippedKeys?: string[] } = {},
+  ): void {
+    this.answers.set(source, {
+      status: "ok",
+      alerts,
+      truncated: extra.truncated ?? false,
+      skipped: extra.skipped ?? extra.skippedKeys?.length ?? 0,
+      skippedKeys: extra.skippedKeys ?? [],
+    });
+  }
+
+  fail(source: AlertKind, error: Error): void {
+    this.failures.set(source, error);
+  }
+
+  private read<S extends AlertKind>(method: S, token: string, owner: string, name: string): Promise<AlertRead<S>> {
+    this.calls.push({ method, token, owner, name });
+    const failure = this.failures.get(method);
+    if (failure) return Promise.reject(failure);
+    return Promise.resolve(
+      (this.answers.get(method) ?? { status: "ok", alerts: [], truncated: false, skipped: 0, skippedKeys: [] }) as AlertRead<S>,
+    );
+  }
+
+  dependencyAlerts(token: string, owner: string, name: string): Promise<AlertRead<"dependabot">> {
+    return this.read("dependabot", token, owner, name);
+  }
+
+  codeAlerts(token: string, owner: string, name: string): Promise<AlertRead<"code_scanning">> {
+    return this.read("code_scanning", token, owner, name);
+  }
+
+  secretAlerts(token: string, owner: string, name: string): Promise<AlertRead<"secret_scanning">> {
+    return this.read("secret_scanning", token, owner, name);
+  }
+
+  async posture(token: string, owner: string, name: string, branch: string): Promise<RepoPosture> {
+    this.calls.push({ method: "posture", token, owner, name, branch });
+    if (this.postureFailWith) throw this.postureFailWith;
+    return this.postureIs;
+  }
+
+  settingsUrl(owner: string, name: string): string {
+    return `https://example.test/${owner}/${name}/settings/security_analysis`;
+  }
+}
+
+/** Answers from a table of `ecosystem:name@version` to vulnerabilities, and records every package it was asked about. */
+export class FakeVulnerabilityDatabase implements VulnerabilityDatabase {
+  readonly kind = "fake";
+  readonly asked: LockedPackage[][] = [];
+  failWith: Error | null = null;
+  private readonly known = new Map<string, Vulnerability[]>();
+  private readonly incomplete = new Set<string>();
+  /** When set, replaces the answers entirely, so a test can send a reply that does not line up with the question. */
+  replyWith: ((packages: readonly LockedPackage[]) => unknown[]) | null = null;
+
+  /** Makes `pkg` vulnerable to `vulnerabilities`. */
+  know(pkg: Pick<LockedPackage, "ecosystem" | "name" | "version">, vulnerabilities: Vulnerability[]): void {
+    this.known.set(`${pkg.ecosystem}:${pkg.name}@${pkg.version}`, vulnerabilities);
+  }
+
+  /** Makes the answer for `pkg` incomplete (null), as when a cap stopped the lookup before it was fully answered. */
+  leaveIncomplete(pkg: Pick<LockedPackage, "ecosystem" | "name" | "version">): void {
+    this.incomplete.add(`${pkg.ecosystem}:${pkg.name}@${pkg.version}`);
+  }
+
+  async lookup(packages: readonly LockedPackage[]): Promise<{ results: (Vulnerability[] | null)[] }> {
+    this.asked.push([...packages]);
+    if (this.failWith) throw this.failWith;
+    if (this.replyWith) return { results: this.replyWith(packages) as (Vulnerability[] | null)[] };
+    return {
+      results: packages.map((pkg) => {
+        const key = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+        return this.incomplete.has(key) ? null : (this.known.get(key) ?? []);
+      }),
+    };
+  }
+}
+
+export function vulnerability(overrides: Partial<Vulnerability> = {}): Vulnerability {
+  return {
+    id: "GHSA-aaaa-bbbb-cccc",
+    modified: "2026-08-01T00:00:00Z",
+    aliases: ["CVE-2021-23337"],
+    summary: "Prototype pollution in lodash",
+    severity: "high",
+    fixedVersions: ["4.17.21"],
+    url: "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
+    ...overrides,
+  };
+}
+
+/** Answers per `owner/name`: a result, null for a project that is not scanned, or an error to raise. Records who was asked. */
+export class FakeScorecardSource implements ScorecardSource {
+  readonly kind = "fake";
+  readonly asked: string[] = [];
+  private readonly answers = new Map<string, ScorecardResult | null | Error>();
+
+  set(fullName: string, answer: ScorecardResult | null | Error): void {
+    this.answers.set(fullName, answer);
+  }
+
+  async scorecard(owner: string, name: string): Promise<ScorecardResult | null> {
+    this.asked.push(`${owner}/${name}`);
+    const answer = this.answers.get(`${owner}/${name}`) ?? null;
+    if (answer instanceof Error) throw answer;
+    return answer;
   }
 }
 
@@ -652,6 +1031,9 @@ export function config(overrides: Partial<Config> = {}): Config {
     databasePath: ":memory:",
     webOrigin: "http://localhost:5181",
     codeAnalysis: true,
+    osvLookup: false,
+    osvPrivateNpmScopes: [],
+    scorecardLookup: false,
     jira: {
       clientId: "atlassian-client-id",
       clientSecret: "atlassian-client-secret",

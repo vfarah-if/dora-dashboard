@@ -15,14 +15,15 @@ import {
   type Repo,
   type ToolingFacts,
 } from "@dora-dashboard/core";
-import { NotFoundError } from "../core/errors.js";
+import { AppError, NotFoundError } from "../core/errors.js";
 import type { AnalyserReach, CodeAnalyser } from "../interfaces/code-analyser.js";
 import type { Logger } from "../interfaces/logger.js";
 import { noopLogger } from "../interfaces/logger.js";
 import type { RepoStore } from "../interfaces/repo-store.js";
-import type { SourceCheckout } from "../interfaces/source-checkout.js";
-import type { WorkspaceReader } from "../interfaces/workspace-reader.js";
+import type { Checkout, SourceCheckout } from "../interfaces/source-checkout.js";
+import type { Listing, WorkspaceReader } from "../interfaces/workspace-reader.js";
 import { ANALYSER_MISSING, ANALYSIS_OFF, codeSnapshotState } from "./code-snapshot-state.js";
+import type { CloneInspector } from "./clone-inspector.js";
 import { validateDateRange } from "./date-range.js";
 
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -39,8 +40,25 @@ interface CloneFacts {
 
 export { ANALYSER_MISSING, ANALYSIS_OFF };
 
+/** What is stored when an inspection fails, since the cause may name a path or an address; the detail is in the log. */
+export const CLONE_FAILURE = "The repository could not be cloned to read its workflows and dependencies. See the API log.";
+export const LISTING_FAILURE =
+  "The files of the clone could not be listed to read its workflows and dependencies. See the API log.";
+export const INSPECTION_FAILURE = "The workflows and dependencies of the clone could not be read. See the API log.";
+/**
+ * Two attempts in all for one head, counting the first, and then no more by `inspectIfStale` until the head moves. A crawl
+ * that analyses the code inspects the clone whatever the count.
+ */
+const MAX_INSPECTION_ATTEMPTS = 2;
+
 /** Clones a repository's deploy branch, measures its functions, keeps the result and discards the clone. */
 export class CodeHealthService {
+  /**
+   * Inspections that failed, by repository: the head they were tried on and how many times. In memory, so a process
+   * restart tries again, but a persistently failing one does not clone the repository on every crawl.
+   */
+  private readonly failedInspections = new Map<number, { head: string; attempts: number }>();
+
   constructor(
     private readonly store: RepoStore,
     private readonly checkout: SourceCheckout | null,
@@ -49,6 +67,11 @@ export class CodeHealthService {
     private readonly log: Logger = noopLogger,
     /** Reads linter, formatter and CI configuration from the clone. Without it, snapshots carry no tooling facts and no grade. */
     private readonly reader: WorkspaceReader | null = null,
+    /**
+     * Reads further facts from the clone while it exists (ADR 0032). It needs `reader` as well, to list and read files;
+     * without one it is never called.
+     */
+    private readonly inspector: CloneInspector | null = null,
   ) {}
 
   /**
@@ -96,9 +119,19 @@ export class CodeHealthService {
       // The combined analyser never reports "none" today, since it can always measure scripts. This message now mainly
       // comes back from snapshots stored before ADR 0025, when lizard was required for everything.
       const reach = await analyser.reach();
-      if (reach === "none") return { snapshot: this.failed(ANALYSER_MISSING) };
-      const unchanged = force ? null : await this.unchangedSnapshot(token, repo, reach, checkout);
-      if (unchanged) return { snapshot: unchanged, unchanged };
+      if (reach === "none") {
+        // Supply chain facts need no analyser, so the inspector still runs when there is a reader for it.
+        await this.inspectIfStale(token, repo, checkout);
+        return { snapshot: this.failed(ANALYSER_MISSING) };
+      }
+      const { unchanged, head } = force
+        ? { unchanged: null, head: null }
+        : await this.unchangedSnapshot(token, repo, reach, checkout);
+      if (unchanged && head) {
+        // The code is as it was measured, but the inspector may want the clone for what it reads.
+        await this.inspectIfStale(token, repo, checkout, head);
+        return { snapshot: unchanged, unchanged };
+      }
       return { snapshot: await this.analyseClone(token, repo, checkout, analyser) };
     } catch (error) {
       this.log.warn({ err: error, repoId: repo.id }, "code analysis failed");
@@ -117,21 +150,166 @@ export class CodeHealthService {
     repo: Repo,
     reach: AnalyserReach,
     checkout: SourceCheckout,
-  ): Promise<CodeSnapshot | null> {
+  ): Promise<{ unchanged: CodeSnapshot | null; head: string | null }> {
+    const none = { unchanged: null, head: null };
     const previous = this.store.latestCodeSnapshot(repo.id);
-    if (!previous || previous.error || previous.snapshotVersion !== CODE_SNAPSHOT_VERSION) return null;
-    if ((previous.unmeasuredFiles ?? 0) > 0 && reach === "full") return null;
+    if (!previous || previous.error || previous.snapshotVersion !== CODE_SNAPSHOT_VERSION) return none;
+    if ((previous.unmeasuredFiles ?? 0) > 0 && reach === "full") return none;
     const head = await checkout.headSha(token, repo.owner, repo.name, repo.deployBranch).catch((err: unknown) => {
       this.log.warn({ err, repoId: repo.id }, "could not read the branch head; analysing anyway");
       return null;
     });
-    return head && head === previous.commitSha ? previous : null;
+    return head && head === previous.commitSha ? { unchanged: previous, head } : none;
+  }
+
+  /** Whether an inspection of `head` has already failed as often as it may before the head moves. */
+  private givenUp(repoId: number, head: string): boolean {
+    const failed = this.failedInspections.get(repoId);
+    return failed?.head === head && failed.attempts >= MAX_INSPECTION_ATTEMPTS;
+  }
+
+  /**
+   * Notes the outcome of an inspection for `head`. A failure is counted, so it is not attempted more than
+   * `MAX_INSPECTION_ATTEMPTS` times for one head, and recorded beside the supply chain facts with a message that names no
+   * path or address, so the page can say the facts are older than the code. A good inspection clears the count; the
+   * store clears the recorded failure when it saves the facts.
+   */
+  private recordInspection(repoId: number, head: string, failure: string | null): void {
+    if (failure === null) {
+      this.failedInspections.delete(repoId);
+      return;
+    }
+    const before = this.failedInspections.get(repoId);
+    this.failedInspections.set(repoId, { head, attempts: before?.head === head ? before.attempts + 1 : 1 });
+    try {
+      this.inspector?.fail(repoId, failure);
+    } catch (err) {
+      this.log.warn({ err, repoId }, "could not record the failed inspection");
+    }
+  }
+
+  /**
+   * Clones for the inspector alone when it says its facts for the branch head are stale, and nothing was analysed.
+   * `head` is read when not given. A head that cannot be read is left for the next crawl.
+   */
+  private async inspectIfStale(token: string, repo: Repo, checkout: SourceCheckout, known?: string): Promise<void> {
+    const { inspector, reader } = this;
+    if (!inspector || !reader) return;
+    const head =
+      known ??
+      (await checkout.headSha(token, repo.owner, repo.name, repo.deployBranch).catch((err: unknown) => {
+        this.log.warn({ err, repoId: repo.id }, "could not read the branch head to inspect it");
+        return null;
+      }));
+    if (!head) return;
+    // Stored facts that cannot be read are stale, so the inspection writes them again. Asking must never fail the analysis.
+    let stale = true;
+    try {
+      stale = inspector.isStale(repo.id, head);
+    } catch (err) {
+      this.log.warn({ err, repoId: repo.id }, "could not tell whether the supply chain facts are stale; reading them again");
+    }
+    if (!stale || this.givenUp(repo.id, head)) return;
+    await this.inspectOnly(token, repo, checkout, inspector, head);
+  }
+
+  /**
+   * Clones the branch only so the inspector can read it, for a head whose code is already measured or cannot be
+   * measured. Nothing is analysed and no code snapshot is saved. Whatever fails is logged and a later crawl tries again,
+   * until `MAX_INSPECTION_ATTEMPTS` is reached for the head, because the stored snapshot is still right.
+   */
+  private async inspectOnly(
+    token: string,
+    repo: Repo,
+    checkout: SourceCheckout,
+    inspector: CloneInspector,
+    head: string,
+  ): Promise<void> {
+    let clone: Checkout;
+    try {
+      clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    } catch (err) {
+      this.log.warn({ err, repoId: repo.id }, "could not clone the branch to inspect it");
+      this.recordInspection(repo.id, head, CLONE_FAILURE);
+      return;
+    }
+    try {
+      await this.inspect(inspector, clone, repo.id, this.listing(clone.dir, repo.id));
+    } finally {
+      await clone.dispose().catch((err: unknown) => this.log.warn({ err, repoId: repo.id }, "could not remove the checkout"));
+    }
+  }
+
+  /** The clone's file listing, taken on first use and shared by everything that wants it. Null when it cannot be had. */
+  private listing(dir: string, repoId: number): () => Promise<Listing | null> {
+    let pending: Promise<Listing | null> | null = null;
+    return () => (pending ??= this.listClone(dir, repoId));
+  }
+
+  private async listClone(dir: string, repoId: number): Promise<Listing | null> {
+    const { reader } = this;
+    if (!reader) return null;
+    try {
+      return await reader.listing(dir);
+    } catch (err) {
+      this.log.warn({ err, repoId }, "could not read the repository's tooling files");
+      return null;
+    }
+  }
+
+  /**
+   * Runs the inspector on the listing. It has its own try/catch, so a failure never reaches the analysis. The outcome
+   * is recorded against the clone's commit, which is what limits a failing inspection to a retry per head.
+   */
+  private async inspect(
+    inspector: CloneInspector,
+    clone: Checkout,
+    repoId: number,
+    listing: () => Promise<Listing | null>,
+  ): Promise<void> {
+    const { reader } = this;
+    if (!reader) return;
+    try {
+      const listed = await listing();
+      if (listed === null) return this.recordInspection(repoId, clone.commitSha, LISTING_FAILURE);
+      await inspector.inspect({
+        repoId,
+        commitSha: clone.commitSha,
+        paths: listed.paths,
+        listingComplete: listed.complete,
+        read: (path, maxBytes) => reader.read(clone.dir, path, maxBytes),
+      });
+      this.recordInspection(repoId, clone.commitSha, null);
+    } catch (err) {
+      // A bug in the inspection or a failure of the store is not one the person can act on, so it stands out in the log.
+      if (err instanceof AppError) this.log.warn({ err, repoId }, "could not inspect the clone");
+      else this.log.error({ err, repoId }, "could not inspect the clone unexpectedly");
+      this.recordInspection(repoId, clone.commitSha, INSPECTION_FAILURE);
+    }
+  }
+
+  private recordCloneFailure(repoId: number): void {
+    try {
+      this.inspector?.fail(repoId, CLONE_FAILURE);
+    } catch (err) {
+      this.log.warn({ err, repoId }, "could not record the failed clone");
+    }
   }
 
   /** Clones the branch, measures it and reads its tooling, and removes the clone whatever happens. */
   private async analyseClone(token: string, repo: Repo, checkout: SourceCheckout, analyser: CodeAnalyser): Promise<CodeSnapshot> {
-    const clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    let clone: Checkout;
     try {
+      clone = await checkout.checkout(token, repo.owner, repo.name, repo.deployBranch);
+    } catch (err) {
+      // The failure reaches the code snapshot as before, but the security page must not go on showing the previous
+      // commit's workflow and lockfile facts as read with no warning.
+      this.recordCloneFailure(repo.id);
+      throw err;
+    }
+    try {
+      const listing = this.listing(clone.dir, repo.id);
+      if (this.inspector) await this.inspect(this.inspector, clone, repo.id, listing);
       const { functions, partlyMeasured, unmeasuredFiles } = await analyser.analyse(clone.dir);
       if (unmeasuredFiles > 0) {
         this.log.warn(
@@ -139,7 +317,7 @@ export class CodeHealthService {
           "some source files were left unmeasured because their analysis tool was not found",
         );
       }
-      const { tooling, files, layout } = await this.readClone(clone.dir, repo.id);
+      const { tooling, files, layout } = await this.readClone(clone.dir, repo.id, (await listing())?.paths ?? null);
       return {
         commitSha: clone.commitSha,
         analysedAt: this.now().toISOString(),
@@ -158,20 +336,13 @@ export class CodeHealthService {
   }
 
   /**
-   * Lists the clone once and reads configuration files only: the tooling candidates and the root files that declare
-   * workspaces. A listing that fails costs the grade and the areas, not the complexity figures; a file that cannot be
-   * read costs only what it would have told us.
+   * Reads configuration files only, from the listing taken once for the clone: the tooling candidates and the root
+   * files that declare workspaces. A listing that fails costs the grade and the areas, not the complexity figures; a
+   * file that cannot be read costs only what it would have told us.
    */
-  private async readClone(dir: string, repoId: number): Promise<CloneFacts> {
+  private async readClone(dir: string, repoId: number, paths: string[] | null): Promise<CloneFacts> {
     const { reader } = this;
-    if (!reader) return { tooling: null };
-    let paths: string[];
-    try {
-      paths = await reader.list(dir);
-    } catch (err) {
-      this.log.warn({ err, repoId }, "could not read the repository's tooling files");
-      return { tooling: null };
-    }
+    if (!reader || paths === null) return { tooling: null };
     const files = paths.filter(isCodeFile).sort().slice(0, MAX_FILES);
     const manifests = paths.filter(isManifest).sort().slice(0, MAX_MANIFESTS);
     const present = new Set(paths);

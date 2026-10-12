@@ -2,6 +2,445 @@
  * Every user-facing string in the application. Components read from here and never write copy inline,
  * so wording can be reviewed in one place. Functions are used where a sentence carries a value.
  */
+import type { CloseReason, NotUsedReason, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
+
+/** The figures an action's sentence is written from. */
+export interface ActionFacts {
+  /** How many things the action covers. */
+  count: number;
+  /** The package, rule, workflow, secret type or source the action is about, or an empty text. */
+  name: string;
+  upgradeTo: string | null;
+  /** The severity in lower case words, or null. */
+  severity: string | null;
+  /** The limits the report used, or null where the page has only a summary, which carries none. */
+  thresholds: SecurityThresholds | null;
+}
+
+/** The two ways to upgrade a package when the source does not say whether the project names it, and a caution. */
+export interface UnknownWays {
+  /** What to do when the project names the package itself. */
+  direct: string;
+  /** What to do when another package brings it in. */
+  indirect: string;
+  note?: string;
+}
+
+/** The three answers every finding gives, in plain words. */
+export interface FixCopy {
+  /** What is wrong, in one sentence with the numbers. */
+  what: (facts: ActionFacts) => string;
+  /** Why it matters, in terms of what an attacker could do. */
+  why: string;
+  /** What to do, in order. */
+  steps: readonly string[];
+}
+
+/** " with the message "x"" for a failure that gave one, and nothing for one that gave none. */
+const withMessage = (message: string) => (message ? ` with the message "${message}"` : "");
+const unnamedPackage = "A package that GitHub did not name";
+const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
+const some = (count: number, noun: string, nouns = `${noun}s`) => `${count} ${plural(count, noun, nouns)}`;
+
+/** Where to switch a GitHub security feature on. GitHub keeps them together under Advanced Security. */
+const SETTINGS_PATH = "Open the repository's Settings and choose Advanced Security in the Security section of the sidebar";
+
+/** Scheduled updates come from Dependabot or from Renovate, and the file says which. */
+const updater = (file: string) =>
+  /renovate/i.test(file)
+    ? { subject: "Renovate is", keeps: "keeps" }
+    : { subject: "Dependabot version updates are", keeps: "keep" };
+
+const FIX = {
+  rotate_secret: {
+    what: ({ count, name }) =>
+      `GitHub found ${plural(count, "one exposed", `${count} exposed`)} ${name || "secret"} in this repository, and ${plural(count, "it", "they")} may still work.`,
+    why: "A secret that has been committed can be read by anyone who can see the repository or its history, and automated tools search for them within minutes of a push. Deleting the file does not help because the value stays in the history, so the safe response is to treat it as stolen.",
+    steps: [
+      "Create a replacement secret in the service that issued the old one and update the places that use it.",
+      "Revoke the exposed secret in that service so that it stops working, because this is the step that actually removes the risk.",
+      "Check the service's logs for use that you do not recognise, then close the alert on GitHub as revoked.",
+    ],
+  },
+  upgrade_dependency: {
+    what: ({ count, name, upgradeTo, severity }) =>
+      `${name || unnamedPackage} has ${some(count, `open ${severity ? `${severity} ` : ""}alert`)}, and version ${upgradeTo ?? "a newer one"} fixes ${plural(count, "it", "them")}.`,
+    why: "The version of this package that you use contains a flaw that has been published, so attackers know how to use it against every project that has not upgraded. Upgrading to the fixed version closes the gap, usually without any change to your own code.",
+    steps: [
+      "Run the upgrade command shown below, or merge the pull request that Dependabot has already raised for it if there is one.",
+      "Run your tests to check that nothing relies on behaviour that changed between the two versions.",
+      "Commit the updated lockfile together with the manifest so that everyone installs the same fixed version.",
+    ],
+  },
+  replace_dependency: {
+    what: ({ count, name }) =>
+      `${name || unnamedPackage} has ${some(count, "open alert")}, and its maintainers have not published a fixed version yet.`,
+    why: "No patched release exists, so upgrading cannot help. The flaw stays in your project until you replace the package, stop using the feature that is affected, or the maintainers publish a fix.",
+    steps: [
+      "Read the advisory linked below to see which feature of the package is affected and whether your code uses it.",
+      "Look for a maintained alternative, or a different version range that the advisory does not cover.",
+      "If you have to keep the package for now, dismiss the alert with a reason that explains why, so that the decision is visible to the whole team.",
+    ],
+  },
+  fix_code_alert: {
+    what: ({ count, name }) =>
+      `Code scanning found ${some(count, "open alert")} for ${name ? `the rule ${name}` : "a rule that GitHub did not name"}.`,
+    why: "Code scanning has found a pattern in your own code that is known to lead to a weakness, such as a database query built from text that a visitor typed, or a regular expression that a long input can keep busy. The weakness is in code you wrote, so only a change to that code closes it.",
+    steps: [
+      "Open each location listed below and read the alert's message and the rule's help on GitHub, which say what the scanner saw and how that kind of problem is fixed. The line numbers are those of the branch that was scanned, usually the default branch, so they may have moved on a newer branch.",
+      "Change the code as the rule's help describes. Checking or escaping outside text fixes most injection rules, but not every rule, so follow the help for this one.",
+      "Open a pull request with the change. Code scanning usually checks pull requests too and shows there whether the alerts are fixed, and they close once the change is merged.",
+    ],
+  },
+  fix_pr_head_checkout: {
+    what: ({ name }) => `The workflow ${name} runs code from a pull request while holding your secrets.`,
+    why: "Workflows started by pull_request_target or workflow_run run with write access and secrets, even for pull requests from strangers. Checking out and running the pull request's own code there lets anyone who opens a pull request run commands with your credentials.",
+    steps: [
+      "Open the workflow file and find the checkout step that names the pull request's head commit or branch.",
+      "Either change the trigger to pull_request, where pull requests from forks get no secrets and only a read-only token, or stop checking out the pull request's code in that workflow.",
+      "If you need both, split the work into one workflow that builds the untrusted code without secrets and a second one that only reads its results.",
+    ],
+  },
+  fix_script_injection: {
+    what: ({ name }) => `The workflow ${name} pastes text written by outsiders straight into a shell command.`,
+    why: "Titles, branch names and comments are chosen by whoever creates them. When a workflow pastes them into a command using the expression syntax, a title that contains a quote followed by a command is run as code, and these workflows usually hold secrets and write access.",
+    steps: [
+      "Find the run step that contains the expression listed below.",
+      "Move the value into an environment variable on that step and refer to it as an ordinary shell variable inside the script.",
+      "Check the other run steps in the same workflow for the same pattern, since it tends to be copied.",
+    ],
+  },
+  stop_self_hosted_public: {
+    what: ({ name }) => `The workflow ${name} runs pull requests from a public repository on a machine that you look after.`,
+    why: "Anyone can open a pull request on a public repository, and a workflow on a self hosted runner runs that person's code on your own machine, which may sit inside your network and may keep files between runs. That gives a stranger a foothold.",
+    steps: [
+      "Switch the job to a GitHub hosted runner, which is a fresh virtual machine for every run.",
+      "If you need your own machine, limit it to pull requests that someone from your organisation has approved first.",
+      "Make sure that any self hosted runner is cleaned between jobs so that nothing is left behind for the next one.",
+    ],
+  },
+  pin_actions: {
+    what: ({ count, name }) =>
+      `The workflow ${name} uses ${some(count, "action")} from other organisations that ${plural(count, "is", "are")} not pinned to a commit.`,
+    why: "A version tag such as v4 can be moved by the action's owner, or by anyone who takes over their account, so the code that runs in your pipeline can change without any change in your repository. A full commit identifier cannot be moved.",
+    steps: [
+      "Look up the commit identifier for the version you use with the command shown below.",
+      "Replace the tag with the full forty character identifier and keep the tag in a comment so that people can see which version it is.",
+      "Let Dependabot raise pull requests for pinned actions, so that pinning does not leave you on old versions.",
+    ],
+  },
+  restrict_permissions: {
+    what: ({ name }) => `The workflow ${name} does not limit what its automatic token is allowed to do.`,
+    why: "Every run receives a token that can act on your repository. Without a permissions block it may be able to write to your code, packages and pull requests, so a compromised step or action could change them. Granting read access only, and extra rights only where a job needs them, limits the damage.",
+    steps: [
+      "Add a permissions block at the top of the workflow that grants read access to the repository contents.",
+      "Run the workflow, and if a step fails with a permissions error, grant that one permission to that one job only.",
+      "Remove any setting of write-all, which gives every permission to every job.",
+    ],
+  },
+  remove_unsecure_commands: {
+    what: ({ name }) => `The workflow ${name} switches back on a feature that GitHub turned off for safety.`,
+    why: "Allowing unsecure commands lets any text printed by a step change the environment variables and the search path of the steps that follow, so an attacker who controls a little log output can take control of the whole job.",
+    steps: [
+      "Delete the ACTIONS_ALLOW_UNSECURE_COMMANDS setting from the workflow.",
+      "Replace any use of the old set-env and add-path commands with writes to the environment files that GitHub describes in its documentation.",
+      "Run the workflow again to check that it still passes without the setting.",
+    ],
+  },
+  remove_key_files: {
+    what: ({ count }) =>
+      `${some(count, "file")} that look${plural(count, "s", "")} like ${plural(count, "a private key or an environment file", "private keys or environment files")} ${plural(count, "is", "are")} stored in the repository.`,
+    why: "Files such as .env and private keys usually hold passwords and keys. Everyone who can read the repository, including everyone who has ever cloned it, has a copy, and removing the file later does not remove it from the history.",
+    steps: [
+      "Check whether each file listed below really holds a secret.",
+      "Treat every value in those files as leaked and rotate it, because anything that was ever committed stays in the history and cannot be taken back by deleting the file.",
+      "Stop tracking the files with the git rm --cached command shown below, add them to .gitignore and keep the real values in your secret store or your deployment settings.",
+    ],
+  },
+  protect_branch: {
+    what: ({ name }) => `The deploy branch ${name} has no protection rules.`,
+    why: "Without rules, anyone with write access can push straight to the branch that gets deployed, skip the checks, and rewrite its history. One mistake or one stolen token then reaches production directly.",
+    steps: [
+      "Open the branch settings of the repository and create a rule or a ruleset for the deploy branch.",
+      "Require a pull request and passing status checks before anything reaches the branch.",
+      "Block force pushes and deletion of the branch while you are there.",
+    ],
+  },
+  block_force_push: {
+    what: ({ name }) => `Force pushes are allowed on the deploy branch ${name}.`,
+    why: "A force push can replace the history of the branch, which can remove the evidence of what changed and discard other people's work without anyone being asked.",
+    steps: [
+      "Open the rule that protects the deploy branch.",
+      "Turn on the option that blocks force pushes.",
+      "Turn on the option that blocks deleting the branch as well.",
+    ],
+  },
+  enable_dependabot: {
+    what: () => "Dependabot alerts are switched off, so nobody is told when a package you use turns out to be vulnerable.",
+    why: "Most of the code in a modern project comes from packages that other people wrote. When a flaw is published in one of them, Dependabot is how you hear about it, and without it you could run a vulnerable version for months without knowing.",
+    steps: [
+      `${SETTINGS_PATH}, then switch on Dependabot alerts with its Enable button.`,
+      "Switch on Dependabot security updates as well, so that it raises pull requests containing the fixes.",
+      "Add the configuration file shown below so that it also keeps your dependencies up to date on a regular schedule.",
+    ],
+  },
+  pin_own_actions: {
+    what: ({ count, name }) =>
+      `The workflow ${name} uses ${some(count, "action")} from your own organisation that ${plural(count, "is", "are")} not pinned to a commit.`,
+    why: "Actions from your own organisation are trusted more, but a tag can still be moved by anyone who can write to that repository. This is advice and does not change the grade.",
+    steps: [
+      "Look up the commit identifier for the version you use with the command shown below.",
+      "Replace the tag with the full commit identifier and keep the tag in a comment.",
+      "Let Dependabot keep the pinned versions up to date for you.",
+    ],
+  },
+  add_update_config: {
+    what: () => "No Dependabot or Renovate configuration was found, so nothing schedules dependency updates for you.",
+    why: "Regular small updates keep you close to the latest fixes and make each upgrade easy to review, whereas leaving dependencies alone for a year turns every security fix into a large piece of work.",
+    steps: [
+      "Create .github/dependabot.yml with the content shown below, which covers the kinds of dependency this repository uses.",
+      "Commit it to the default branch and Dependabot will raise its first pull requests within a day.",
+      "Choose a regular time for the team to review and merge those pull requests.",
+    ],
+  },
+  add_lockfile: {
+    what: ({ count }) =>
+      `${some(count, "manifest")} ${plural(count, "has", "have")} no lockfile beside ${plural(count, "it", "them")}.`,
+    why: "A lockfile records the exact version of every package, so that everyone installs the same code. Without one, a new release of any dependency, including a malicious one, can reach your build the next time it runs.",
+    steps: [
+      "Run your package manager's install command in the folder listed below to create the lockfile.",
+      "Commit the lockfile alongside the manifest.",
+      "Use the lockfile based install command in your pipeline, such as npm ci, so that a build fails when the two disagree.",
+    ],
+  },
+  add_security_policy: {
+    what: () => "The repository has no security policy telling people how to report a problem.",
+    why: "Someone who finds a flaw needs to know how to tell you about it privately. Without a policy they may post it publicly, or decide not to report it at all.",
+    steps: [
+      "Create SECURITY.md in the root of the repository, or in .github or docs, using the starting text shown below.",
+      "Replace the parts in angle brackets. Point people to private vulnerability reporting only once it is switched on, because its Report a vulnerability button is not there until then, and give an address that your team reads otherwise.",
+      "Commit it to the default branch so that GitHub links to it from the repository.",
+    ],
+  },
+  review_weak_key_files: {
+    what: ({ count }) =>
+      `${some(count, "file")} with ${plural(count, "a name", "names")} such as .pem or .key ${plural(count, "is", "are")} stored in the repository.`,
+    why: "Files with these names are often public certificates, which are safe to share, but they can also be private keys, which are not. Only a person can tell the difference by opening them.",
+    steps: [
+      "Open each file listed below and check whether it contains a line that mentions a private key.",
+      "If it does, treat the key as leaked and replace it, because it stays in the history even after the file is deleted, and stop tracking the file with git rm --cached.",
+      "Public certificates can stay where they are, and this advice does not change the grade.",
+    ],
+  },
+  enable_code_scanning: {
+    what: () => "Code scanning is not switched on for this repository.",
+    why: "Code scanning reads your own code for patterns that lead to security flaws, so that you hear about them in a pull request and not from an attacker.",
+    steps: [
+      `${SETTINGS_PATH}, then choose to set up code scanning with the default setup. On a public repository this is free.`,
+      "On a private repository, code scanning needs GitHub Code Security, so check that your plan includes it.",
+      "The workflow shown below suits this repository. It is a CodeQL workflow where GitHub code scanning is available, and a Semgrep workflow, which runs in your own pipeline and uploads nothing to GitHub, where it is not.",
+    ],
+  },
+  check_secret_scanning: {
+    what: () => "The dashboard could not read secret scanning alerts for this repository.",
+    why: "Secret scanning finds passwords and keys that were committed by mistake. Without it, or without being able to read its alerts, you cannot tell whether one has leaked.",
+    steps: [
+      "Ask a repository administrator to check, under Settings and then Advanced Security, that secret scanning is switched on, and to look at its alerts.",
+      "On a private repository this needs GitHub Secret Protection, so check that your plan includes it.",
+      "Consider adding a secret scanner to your pipeline, such as the workflow shown below, while you wait.",
+    ],
+  },
+  grant_alert_access: {
+    what: ({ name }) => `GitHub refused the dashboard access to ${name || "some alerts"}, so the grade leaves them out.`,
+    why: "The sign in that the dashboard uses is not allowed to read this information, so the grade describes only the parts that could be read and may look better than the whole picture.",
+    steps: [
+      "Look at the sources section at the end of this page to see which source was refused and why.",
+      "Ask a repository administrator to give the account or token that the dashboard uses permission to read security alerts.",
+      "Crawl the repository again to read them.",
+    ],
+  },
+  turn_on_code_analysis: {
+    what: () => "Workflow and dependency checks are off because code analysis is switched off on this dashboard.",
+    why: "These checks read the files from a copy of your repository, and the dashboard only makes that copy when code analysis is on.",
+    steps: [
+      "Set CODE_ANALYSIS=on in the environment file of the dashboard.",
+      "Restart the API so that it reads the new setting.",
+      "Crawl the repository again to read its workflow files.",
+    ],
+  },
+  fix_low_alerts: {
+    what: ({ count, thresholds }) =>
+      `${some(count, "low severity alert")} ${plural(count, "has", "have")} been open for more than ${thresholds ? `${thresholds.lowAlertAdviceDays} days` : "the time a low severity alert is allowed"}.`,
+    why: "Low severity alerts rarely cause harm on their own, but they pile up, and attackers often combine several small flaws into a serious one.",
+    steps: [
+      "Start with the oldest low severity alerts, which the alerts table lists after the more severe ones. If the table is cut short, find the rest on GitHub's Security tab.",
+      "Fix the ones that are quick, such as upgrading a package, and dismiss the rest with a reason that says why they do not apply.",
+      "Set aside a little time each month so that the list does not grow back.",
+    ],
+  },
+  require_status_checks: {
+    what: () => "Merging does not wait for your tests and checks to pass.",
+    why: "Checks only protect you when a failing one blocks the merge. If they are advisory, a rushed change can reach production with a red build.",
+    steps: [
+      "Open the rule for the deploy branch and turn on required status checks.",
+      "Choose the checks that must pass, such as your tests and your linter.",
+      "Ask for branches to be up to date before merging, so that checks run against what will really be deployed.",
+    ],
+  },
+  require_signed_commits: {
+    what: () => "Commits to the deploy branch do not have to be signed.",
+    why: "A signature proves that a commit came from the person it claims to come from, so someone who steals a token cannot pass off their changes as a colleague's.",
+    steps: [
+      "Ask each contributor to set up commit signing with a key or with a hardware token.",
+      "Turn on the branch rule that requires signed commits once everyone is ready.",
+      "Remember that signing is optional advice here and does not change the grade.",
+    ],
+  },
+  enable_security_updates: {
+    what: () => "Dependabot security updates are switched off.",
+    why: "With security updates on, Dependabot opens a pull request with the fix as soon as an alert appears, which turns a warning into a change that you only have to review.",
+    steps: [
+      `${SETTINGS_PATH}.`,
+      "Switch on Dependabot security updates. It is a setting, so no file in the repository can switch it on.",
+      "Review and merge the pull requests that Dependabot opens.",
+    ],
+  },
+  enable_push_protection: {
+    what: () => "Push protection is switched off, so a committed secret is only noticed after the push.",
+    why: "Push protection stops a push that contains a recognised secret before it reaches the repository, which is far cheaper than rotating the secret afterwards.",
+    steps: [
+      `${SETTINGS_PATH}.`,
+      "Switch on push protection, which sits with secret scanning.",
+      "Tell the team what the warning looks like so that nobody bypasses it out of habit.",
+    ],
+  },
+  enable_private_reporting: {
+    what: () => "Private vulnerability reporting is switched off.",
+    why: "It gives people who find a flaw a private way to tell you, so that the report reaches you before it reaches the public.",
+    steps: [
+      `${SETTINGS_PATH}.`,
+      "Switch on private vulnerability reporting.",
+      "Mention it in your SECURITY.md so that people know to use it.",
+    ],
+  },
+  triage_advisories: {
+    what: ({ count }) =>
+      `${some(count, "security advisory", "security advisories")} ${plural(count, "is", "are")} waiting for you to look at ${plural(count, "it", "them")}.`,
+    why: "An advisory in triage or draft is a report that somebody has taken the trouble to send you, and the person who sent it is waiting to hear back.",
+    steps: [
+      "Open the security advisories of the repository.",
+      "Decide for each one whether it is a real problem, and reply to the person who reported it.",
+      "Publish a fix and an advisory for the real ones, and close the rest with an explanation.",
+    ],
+  },
+  add_dependency_review: {
+    what: () => "Pull requests are not checked for newly added vulnerable dependencies.",
+    why: "Dependency review warns in the pull request that adds a vulnerable package, which is the cheapest moment to choose a different one.",
+    steps: [
+      "Check that your plan allows it. Dependency review is free on public repositories, but on a private repository it needs GitHub Code Security.",
+      "Add the workflow shown below to .github/workflows, with the commit of the action's latest release in place of the placeholder, which the command below it looks up. It needs no checkout, because it compares the two commits through GitHub.",
+      "If the deploy branch is protected, make the check required so that it blocks a vulnerable addition. Without protection it shows as a failed check, and the pull request can still be merged.",
+    ],
+  },
+  add_secret_scanner_ci: {
+    what: () => "No secret scanner runs in your pipeline.",
+    why: "GitHub's own secret scanning is not available to you, so a scanner in your pipeline is the way to find a password or key that was committed by mistake.",
+    steps: [
+      "Add a scanner such as the workflow shown below to .github/workflows.",
+      "Run it once over the full history to find anything old.",
+      "Rotate anything it finds, because a committed secret must be treated as stolen.",
+    ],
+  },
+  add_static_analysis: {
+    what: () => "No code scanner runs in your pipeline.",
+    why: "GitHub's own code scanning is not available to you, so a scanner in your pipeline is the way to find insecure patterns in your own code before they are released.",
+    steps: [
+      "Add the workflow shown below to .github/workflows. It is a CodeQL workflow where GitHub code scanning is available, and a Semgrep workflow where it is not, because the CodeQL results are uploaded to GitHub code scanning, which a private repository can use only with GitHub Code Security.",
+      "Check the languages named in the workflow against those your repository uses.",
+      "Read the first results together as a team to decide how to handle them.",
+    ],
+  },
+  avoid_curl_pipe_shell: {
+    what: ({ count, name }) =>
+      `${some(count, "place")} download${plural(count, "s", "")} a script and run it straight away${name ? ` in ${name}` : ""}.`,
+    why: "Piping a download into a shell runs whatever the server sends at that moment, so anyone who can change that file, or who sits in the middle of the connection, can run commands in your pipeline or your image.",
+    steps: [
+      "Download the file to disk first.",
+      "Check it against a checksum that you have recorded, so that a change is noticed.",
+      "Run it only when the checksum matches.",
+    ],
+  },
+  avoid_secrets_inherit: {
+    what: ({ count, name }) =>
+      `${some(count, "call")} to another workflow pass${plural(count, "es", "")} on every secret${name ? ` in ${name}` : ""}.`,
+    why: "Passing every secret means the called workflow can read all of them, even those it does not need, so a flaw in it exposes more than it should.",
+    steps: [
+      "List the secrets that the called workflow really uses.",
+      "Replace the setting that passes everything with one line for each of those secrets.",
+      "Run the workflow again to check that nothing is missing.",
+    ],
+  },
+  disable_persist_credentials: {
+    what: ({ count, name }) =>
+      `${some(count, "checkout step")} keep${plural(count, "s", "")} the repository token on disk${name ? ` in ${name}` : ""} while later steps run.`,
+    why: "By default the checkout step leaves the token in the local git settings, where any later step, including a third party action, can read and reuse it.",
+    steps: [
+      "Add persist-credentials set to false to the checkout step.",
+      "Run the workflow, and if a later step really needs to push, give it the token explicitly.",
+      "Repeat for each workflow that checks out code.",
+    ],
+  },
+  pin_base_images: {
+    what: ({ count, name }) =>
+      `${some(count, "base image")} ${plural(count, "is", "are")} not pinned to a digest${name ? ` in ${name}` : ""}.`,
+    why: "A tag such as 22-slim moves as the image is rebuilt, so the same Dockerfile can produce different software next week. A digest always means exactly the same image.",
+    steps: [
+      "Look up the digest of the image you use with the command shown below.",
+      "Add it after the tag in the FROM line.",
+      "Let Dependabot update the digest so that you still receive new releases.",
+    ],
+  },
+  avoid_latest_images: {
+    what: ({ count, name }) =>
+      `${some(count, "base image")} use${plural(count, "s", "")} the latest tag or none${name ? ` in ${name}` : ""}.`,
+    why: "The latest tag points at whatever was published most recently, so your build can change without any change from you, including to a release that has not been tested with your code.",
+    steps: [
+      "Choose the version your application is tested with.",
+      "Write that version as the tag in the FROM line.",
+      "Pin the digest as well, using the example shown below.",
+    ],
+  },
+  run_as_non_root: {
+    what: ({ name }) => `The image built from ${name || "this Dockerfile"} runs as the root user.`,
+    why: "When a process runs as root, a flaw in the application gives an attacker full control of the container, and sometimes a way out of it. An ordinary user limits what they can reach.",
+    steps: [
+      "Create an unprivileged user in the Dockerfile.",
+      "Add a USER line for it before the command that starts the application.",
+      "Check that the application can still read and write the folders it needs.",
+    ],
+  },
+  avoid_remote_add: {
+    what: ({ count, name }) =>
+      `${some(count, "ADD instruction")} fetch${plural(count, "es", "")} a file from the internet${name ? ` in ${name}` : ""}.`,
+    why: "ADD with a web address downloads whatever is there at build time without checking it, so a changed file changes your image without anyone noticing.",
+    steps: [
+      "Replace it with a RUN step that downloads the file.",
+      "Check the file against a checksum that you have recorded.",
+      "Fail the build if the checksum does not match.",
+    ],
+  },
+  merge_dependency_updates: {
+    what: ({ count, thresholds }) =>
+      `${some(count, "dependency update pull request")} ${plural(count, "has", "have")} been waiting for more than ${thresholds ? `${thresholds.staleUpdateDays} days` : "the time an update should wait"}.`,
+    why: "An update that waits gets harder to merge as the code moves on, and if it carries a security fix, the fix is not reaching production while it waits.",
+    steps: [
+      "Open the oldest update pull request and check that the tests pass.",
+      "Merge it, or close it with a note if you have decided not to take that update.",
+      "Agree a regular time to deal with these pull requests so that they do not collect.",
+    ],
+  },
+} satisfies Record<SecurityActionKind, FixCopy>;
+
 export const copy = {
   appName: "Delivery Metrics",
   skipToContent: "Skip to main content",
@@ -74,7 +513,10 @@ export const copy = {
     reviewQueue: "Review queue",
     jira: "Jira",
     codeAnalysis: "Code analysis",
+    security: "Security",
     issues: "GitHub Issues",
+    menu: "Menu",
+    menuList: "Main menu",
   },
 
   repos: {
@@ -497,6 +939,34 @@ export const copy = {
     selfMergedHint: "Share of merged PRs merged by their author",
     perAuthorWeek: "Merged per author-week",
     perAuthorWeekHint: "Merged PRs divided by weekly active authors",
+    unreviewed: "Merged with no review",
+    unreviewedHint: (unreviewed: number, counted: number, exempt: number) =>
+      `${unreviewed} of ${counted} merged ${plural(counted, "pull request", "pull requests")} had no review at all; ${exempt} ${plural(exempt, "was", "were")} left out as reviewed elsewhere`,
+  },
+
+  reviewExemptions: {
+    open: "Change what counts as reviewed elsewhere",
+    close: "Hide the reviewed elsewhere rules",
+    title: "Pull requests reviewed elsewhere",
+    lede: "A merged pull request counts as having no review only when nobody reviewed it on GitHub. A review posted by Claude or any other tool under the author's own account counts as a review, because GitHub cannot tell it from the author's own comment. A pull request that copies code which was already reviewed in another repository, such as a sync, can be left out of the figure by a word in its title or by a label.",
+    titleWordsLabel: "Title words",
+    titleWordsHint:
+      "Whole words, separated by commas. Capitals and punctuation are ignored, so Sync: shared library matches sync.",
+    labelsLabel: "Labels",
+    labelsHint: "Label names, separated by commas. Capitals are ignored.",
+    defaultsLine: (words: string, labels: string) => `The defaults are the title words ${words} and the label ${labels}.`,
+    emptyNote: "A box left empty leaves nothing out for that kind. Use the reset button to return to the defaults.",
+    applyNote: "Changes apply to the figure straight away, with no crawl, because it is worked out when the report is built.",
+    save: "Save rules",
+    reset: "Reset to defaults",
+    saved: "Rules saved. The figure already uses them, so no crawl is needed.",
+    resetDone: "Rules reset to the defaults. The figure already uses them, so no crawl is needed.",
+    tooMany: (limit: number) => `Name at most ${limit} entries in each box.`,
+    tooLong: (limit: number) => `Each entry can have at most ${limit} characters.`,
+    control: "Entries cannot contain control characters, such as a tab or a line break.",
+    noWord: "Each title word needs at least one letter or digit, because titles are matched on whole words.",
+    unreadable: "The rules saved for this repository could not be read, so the defaults apply until you save them again.",
+    loadingDefaults: "Loading the default rules. Saving is available once they have loaded.",
   },
 
   charts: {
@@ -1094,6 +1564,7 @@ export const copy = {
     showPeopleHint: "Group the hygiene lists by assignee name. Names never appear in charts or tiles.",
     showAll: (count: number) => `Show all ${count}`,
     showFewer: "Show fewer",
+    printMore: (count: number) => `and ${count} more, listed on the page on screen`,
     openInJira: "(opens in Jira)",
 
     headline: {
@@ -1981,6 +2452,1349 @@ export const copy = {
       waitingOn: (names: string) => `waiting on ${names}`,
       by: (author: string) => `by ${author}`,
       footer: "Waiting time counts weekdays only.",
+    },
+  },
+
+  security: {
+    severity: { critical: "Critical", high: "High", medium: "Medium", low: "Low", unknown: "Not rated" },
+    severityTile: {
+      critical: "Critical alerts",
+      high: "High severity alerts",
+      medium: "Medium severity alerts",
+      low: "Low severity alerts",
+      unknown: "Alerts without a rating",
+    },
+    severityExplain: {
+      critical: (days: number) =>
+        `Critical means someone could take over the system or read private data with little effort. Fix within ${days} days.`,
+      high: (days: number) =>
+        `High means an attacker would need some conditions to be right, but the damage could be serious. Fix within ${days} days.`,
+      medium: (days: number) =>
+        `Medium means the problem is real but harder to use or limited in what it can do. Fix within ${days} days.`,
+      low: (days: number) =>
+        `Low means little can go wrong on its own, although it can help an attacker who has found something else. Fix within ${days} days.`,
+      unknown: (days: number) =>
+        `Not rated means the source published no severity, so it is treated like medium. Fix within ${days} days.`,
+    },
+    effort: { minutes: "A few minutes", hour: "Under an hour", code: "Needs a code change" },
+    tags: {
+      likelyExploited: "Likely to be exploited soon",
+      pastFix: "Past its fix-by date",
+      withinFix: "Within its fix-by date",
+      setsGrade: "Sets the grade",
+      setsPartGrade: "Limits its part only",
+      holdsGrade: (band: string) => `Holds the grade at ${band}`,
+      advice: "Advice only",
+      countsTowardsGrade: "Counts towards the grade",
+      selfMerged: "Merged by its own author",
+    },
+    likelyExploitedWhy: (share: string) =>
+      `The exploit prediction score (EPSS) estimates how likely it is that a flaw will be used in real attacks within the next month. At ${share} or more we say it is likely to be exploited soon, which puts it ahead of other alerts of the same severity that are equally past or within their fix-by date, but never changes its severity or your grade.`,
+    likelyExploitedTitle:
+      "Its exploit prediction score (EPSS) says this flaw is likely to be used in real attacks soon. It never changes the severity or the grade.",
+    cvss: (score: number) => `Score ${score.toFixed(1)} out of 10`,
+    fixed: "Fixed",
+    sourceNames: {
+      dependabot: "Dependabot alerts",
+      code_scanning: "Code scanning",
+      secret_scanning: "Secret scanning",
+      osv: "OSV.dev lookup",
+    },
+    parts: {
+      vulnerabilities: "Known vulnerabilities and secrets",
+      supplyChain: "Workflows and supply chain",
+      changeControl: "Branch protection",
+    },
+    partDefinitions: {
+      vulnerabilities: "Open alerts for your dependencies, your code and exposed secrets, judged by how long each has waited.",
+      supplyChain: "How safely your automated workflows, actions and files are set up.",
+      changeControl: "Whether the deploy branch is protected from direct pushes, history rewrites and deletion.",
+    },
+    notMeasured: "Not measured",
+    unmeasured: {
+      dependencies: "Dependency alerts could not be read, so known vulnerabilities in your packages are not part of the grade.",
+      code: "Code scanning alerts could not be read, so they are not part of the grade.",
+      secrets: "Secret scanning alerts could not be read, so exposed secrets are not part of the grade.",
+      supplyChain: "Workflow and dependency files have not been read, so the supply chain checks are not part of the grade.",
+      changeControl: "The branch settings could not be read, so branch protection is not part of the grade.",
+    },
+
+    list: {
+      title: "Security",
+      lede: "A grade and a short list of things to fix for every repository, worst first, from GitHub's own alerts, the workflow files in each repository and how the deploy branch is protected. Choose a repository to see what is wrong, why it matters and how to fix it.",
+      reportLabel: "security summary",
+      reportSubject: "all repositories",
+      loading: "Loading security summaries",
+      emptyTitle: "No repository has been added yet",
+      emptyBody: "Add a repository and let its first crawl finish, and its security grade will appear here.",
+      toRepos: "Go to repositories",
+      tiles: {
+        critical: "Critical alerts",
+        criticalHint: "Open critical alerts across the repositories that have been read.",
+        readFrom: (read: number, total: number) =>
+          `From ${read} of ${total} ${total === 1 ? "repository" : "repositories"} read.`,
+        pastFix: "Past their fix-by date",
+        pastFixHint: (count: number) =>
+          count > 0
+            ? "Open alerts that have waited longer than their fix-by date allows, so these are the ones to look at first."
+            : "No open alert has waited longer than its fix-by date allows in the repositories that have been read.",
+        notGraded: "Not graded yet",
+        notGradedHint: "Repositories where nothing could be measured so far.",
+      },
+      gradedTitle: "Graded, worst first",
+      gradedLede: "The repositories with a grade, with the ones that need the most attention at the top.",
+      notGradedTitle: "Not graded yet",
+      notGradedLede: "These repositories have no grade yet, and each one says why.",
+      noneGraded: "No repository has a grade yet.",
+      open: (name: string) => `Open the security report for ${name}`,
+      facts: {
+        grade: "Grade",
+        notGraded: "Not graded",
+        open: "Open alerts",
+        pastFix: "Past fix-by date",
+        actions: "Things that move the grade",
+        read: "Last read",
+        neverRead: "Not read yet",
+        scorecard: "OpenSSF Scorecard",
+        scorecardValue: (score: number) => `${score.toFixed(1)} out of 10`,
+      },
+      noOpen: "No open alerts",
+      notReadRow: "Not read yet",
+      notUsedRow: "Not measured",
+      startWith: "Start with",
+      gradeMissing: {
+        not_crawled: "This repository has not been crawled yet, so there is nothing to grade.",
+        nothing_measured: "Nothing could be measured yet. Open the report to see which sources could not be read.",
+      },
+      failedTitle: "Some sources failed the last time they were read",
+      failedBody: (names: string) =>
+        `The last attempt to read alerts, branch settings or workflow files failed for ${names}. Where there was an earlier read the figures use it and may be out of date, and a source with no earlier read is left out of them.`,
+      osvOff:
+        "Dependencies are not being looked up in OSV.dev, which is an optional extra that covers repositories where Dependabot alerts are off. Set OSV_LOOKUP=on in the environment file of the dashboard to switch it on.",
+      coverage: {
+        none: "Nothing has been read yet.",
+        noneUsable: "No alert source could be used, so open the repository to see why.",
+        read: (read: string) => `Read ${read}.`,
+        readAndMissing: (read: string, missing: string) => `Read ${read}. Not read ${missing}.`,
+        sources: {
+          dependabot: "Dependabot alerts",
+          code_scanning: "code scanning",
+          secret_scanning: "secret scanning",
+          osv: "the OSV.dev lookup",
+        },
+        supplyChain: "workflow and dependency files",
+      },
+    },
+
+    page: {
+      title: "Security",
+      lede: "What is wrong, why it matters and how to fix it, written for people who do not think about security every day. The grade and the open alerts describe the repository as it is now, and the date range only changes the charts, the time to fix, the dependency update counts and the security issues closed in the range. The PDF report shows the page as it is on screen, so open the explanations you want in it, and use the buttons to show the longer lists, before you download it.",
+      backToRepo: "Back to the repository",
+      reportLabel: "security report",
+      loading: "Loading the security report",
+      notFoundTitle: "That repository could not be found",
+      notFoundBody: "Check the address, or choose a repository from the list.",
+      toList: "Back to security",
+      invalidAddress: "This address does not name a repository.",
+      alertsRead: (when: string) => `Alerts read on ${when}`,
+      alertsNotRead: "Alerts have not been read yet",
+      alertsStale: (when: string) =>
+        `Some alerts are from an earlier read because a later one failed, and the oldest was read on ${when}`,
+      gradeLine: "Security grade",
+      gradeNone: "No security grade yet",
+      rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
+      crawlInProgress: "A crawl is in progress, so these figures may still change.",
+      partlyRead: {
+        title: "Part of this page could not be read",
+        body: (names: string) =>
+          `The dashboard could not read ${names}, so the grade leaves them out and the page may look better than the whole picture.`,
+        link: "See how each source is read",
+      },
+    },
+
+    start: {
+      title: "Start here",
+      lede: "The quickest way to a safer repository.",
+      gradeIs: "Your security grade is",
+      raise: (count: number, from: string, to: string) =>
+        count === 1
+          ? `Do this one thing to move from ${from} to ${to}.`
+          : `Do these ${count} things to move from ${from} to ${to}.`,
+      nothingToRaise: (band: string) => `Nothing found so far stops this repository from holding the ${band} band.`,
+      good: "Nothing that needs fixing was found in what the dashboard could read, and that is a good place to be. Keep Dependabot and your branch rules switched on so that it stays that way.",
+      more: (count: number) => `and ${count} more.`,
+      seeAll: "See everything to fix",
+      missing: {
+        not_crawled: "This repository has not been crawled yet. Crawl it and the first grade will appear here.",
+        nothing_measured:
+          "Nothing could be measured yet. The sources section at the end of this page explains what was not read and how to switch each source on.",
+      },
+      advice: (count: number) =>
+        count === 1
+          ? "There is also one piece of advice that does not change the grade."
+          : `There are also ${count} pieces of advice that do not change the grade.`,
+    },
+
+    grade: {
+      title: "Security grade",
+      definition: "Security is graded in four bands, the lowest of the three parts below.",
+      lowestPart: (part: string, limit: string) => `The lowest part is ${part}, which is held back because ${limit}`,
+      allPass: "Nothing found so far holds the grade back.",
+      partsTitle: "The three parts",
+      limitedBy: (limit: string) => `Held back because ${limit}`,
+      nothingLimits: "Nothing holds this part back.",
+      goodTitle: "What is going well",
+      goodEmpty: "Nothing was measured as good yet.",
+      improveTitle: "What to improve",
+      improveHint:
+        "Starting with the check that sets the grade. A check that only limits its own part, not the overall grade, is marked as such.",
+      improveEmpty: "Nothing needs improving in what was measured.",
+      unmeasuredTitle: "What the grade does not cover",
+    },
+
+    checks: {
+      secretExposed: {
+        good: "No secrets were found that are active or have been made public.",
+        bad: (count: number) =>
+          `${count} exposed ${count === 1 ? "secret is still active or has" : "secrets are still active or have"} been made public.`,
+      },
+      criticalPastFix: {
+        good: (days: number) => `No critical alert has waited longer than its ${days} day fix-by date.`,
+        bad: (count: number, days: number, oldest: number | null) =>
+          `${count} critical ${count === 1 ? "alert has" : "alerts have"} waited longer than the ${days} day fix-by date${oldest === null ? "" : `, the oldest for ${oldest} days`}.`,
+      },
+      criticalOpen: {
+        good: "No critical alerts are open.",
+        bad: (count: number, days: number) =>
+          `${count} critical ${count === 1 ? "alert is" : "alerts are"} open, still inside the ${days} day fix-by date.`,
+      },
+      highPastFix: {
+        good: (days: number) => `No high severity alert has waited longer than its ${days} day fix-by date.`,
+        bad: (count: number, days: number, oldest: number | null) =>
+          `${count} high severity ${count === 1 ? "alert has" : "alerts have"} waited longer than the ${days} day fix-by date${oldest === null ? "" : `, the oldest for ${oldest} days`}.`,
+      },
+      dependenciesUnwatched: {
+        good: "Dependabot alerts were not found to be switched off.",
+        bad: "Nothing is watching your dependencies for known vulnerabilities, because Dependabot alerts are switched off.",
+      },
+      highOpen: {
+        good: "No high severity alerts are open.",
+        bad: (count: number, days: number) =>
+          `${count} high severity ${count === 1 ? "alert is" : "alerts are"} open, still inside the ${days} day fix-by date.`,
+      },
+      mediumPastFix: {
+        good: (days: number) => `No medium or unrated alert has waited longer than its ${days} day fix-by date.`,
+        bad: (count: number, days: number, oldest: number | null) =>
+          `${count} medium or unrated ${count === 1 ? "alert has" : "alerts have"} waited longer than the ${days} day fix-by date${oldest === null ? "" : `, the oldest for ${oldest} days`}.`,
+      },
+      prHeadCheckout: {
+        good: "No workflow runs a pull request's own code while holding secrets.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "workflow runs" : "workflows run"} a pull request's own code while holding secrets.`,
+      },
+      scriptInjection: {
+        good: "No workflow pastes text written by outsiders into a shell command.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "workflow pastes" : "workflows paste"} text written by outsiders into a shell command.`,
+      },
+      selfHostedPublic: {
+        good: "No public repository runs pull requests on a self hosted machine.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "workflow runs" : "workflows run"} pull requests from a public repository on a self hosted machine.`,
+      },
+      unpinnedActions: {
+        good: "Every action from another organisation is pinned to a commit.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "action from another organisation is" : "actions from other organisations are"} not pinned to a commit.`,
+      },
+      workflowPermissions: {
+        good: "Every workflow limits what its automatic token can do.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "workflow does" : "workflows do"} not limit what ${count === 1 ? "its" : "their"} automatic token can do.`,
+      },
+      unsecureCommands: {
+        good: "No workflow switches back on the deprecated unsecure commands.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "workflow switches" : "workflows switch"} back on the deprecated unsecure commands.`,
+      },
+      keyFiles: {
+        good: "No private key or environment file is stored in the repository.",
+        bad: (count: number) =>
+          `${count} ${count === 1 ? "file that looks like a private key or an environment file is" : "files that look like private keys or environment files are"} stored in the repository.`,
+      },
+      branchUnprotected: {
+        good: "The deploy branch is protected by rules.",
+        bad: "The deploy branch has no protection rules.",
+      },
+      forcePushAllowed: {
+        good: "Force pushes to the deploy branch are blocked.",
+        bad: "Force pushes to the deploy branch are allowed.",
+      },
+    },
+
+    fix: FIX,
+    dependabotAlerts: {
+      what: (file: string) =>
+        `${updater(file).subject} set up in ${file} and ${updater(file).keeps} your packages current, but Dependabot alerts, which warn you when a package you use has a known vulnerability, are switched off.`,
+      source: (file: string) =>
+        `${updater(file).subject} set up in ${file} and ${updater(file).keeps} packages current, but Dependabot alerts, which warn you when a package you use has a known vulnerability, are switched off. Switch them on under the repository's Settings, then Advanced Security.`,
+      why: "Version updates raise pull requests so that packages stay recent, but they do not tell you when a package you use has a published flaw. Alerts do, and they work on the versions you have today, so the two features complement each other.",
+      steps: [
+        "Open the repository's Settings and choose Advanced Security in the Security section of the sidebar.",
+        "Switch on Dependabot alerts, and Dependabot security updates as well if you want fixes raised as pull requests straight away.",
+        "Keep your existing configuration file, because it carries on raising the regular version updates.",
+      ],
+    },
+    securityUpdates: {
+      /** Says what is already on, so the sentence never seems to contradict GitHub's Security tab. */
+      what: ({ file, alertsOn }: { file: string | null; alertsOn: boolean }) => {
+        const on = [
+          alertsOn ? "Dependabot alerts are on" : null,
+          file ? `${updater(file).subject} set up in ${file}` : null,
+        ].filter((part): part is string => part !== null);
+        const lead = on.length > 0 ? `${on.join(" and ")}, but ` : "";
+        return `${lead}Dependabot security updates are a separate switch and are off, so nobody raises the fix when an alert appears.`;
+      },
+      why: "Dependabot has three separate switches. Alerts tell you that a package you use has a known flaw, version updates keep your packages recent on a schedule, and security updates raise a pull request with the fix as soon as an alert appears. GitHub's Security tab lists only the alerts, so it can say Enabled while security updates are still off.",
+      steps: [
+        "Open the repository's Settings and choose Advanced Security in the Security section of the sidebar. The Security tab does not show this switch.",
+        "In the Dependabot part of that page, find Dependabot security updates and select Enable. No file in the repository can switch it on, so a configuration file does not change it.",
+        "Crawl again so that this page sees the change, then review and merge the pull requests that Dependabot opens.",
+      ],
+    },
+    notRead: {
+      title: "Security has not been read for this repository yet",
+      body: "Security alerts are read during a crawl, and this repository has not been crawled since security was added. The figures that would normally appear here are left out, because zeros would look like an all clear when nothing has been measured yet.",
+      crawl: "Crawl now",
+      crawling: "Crawling now, this page updates when it finishes",
+      failed: "The crawl could not be started. Try again in a moment.",
+      refused: {
+        title: "No alerts could be used for this repository",
+        body: "The dashboard asked GitHub, but none of the alert sources could be used, so the figures that would normally appear here are left out, because zeros would look like an all clear when nothing has been measured. Each source says below what happened and what to do.",
+        retry: "Where a source failed, crawling again tries it once more.",
+      },
+    },
+    fixTitle: "How to fix",
+    why: "Why it matters",
+    steps: "What to do",
+    learnMore: "Learn more on GitHub",
+    affected: "Where to look",
+    printMore: (count: number) => `and ${count} more, listed on the security page`,
+
+    actions: {
+      title: "What to fix first",
+      lede: "The things to do, with the ones that lift the grade first. Each one explains what is wrong, why it matters and how to fix it, and you can open the explanation with the button beside it.",
+      none: "Nothing needs fixing in what the dashboard could read.",
+      counting: (count: number) => (count === 1 ? "One thing to fix" : `${count} things to fix`),
+    },
+
+    snippetNotes: {
+      semgrep:
+        "Semgrep Community Edition runs inside your own pipeline, so it needs no GitHub Code Security plan. Before you use it, replace <digest> in the image line with the digest that the command in the comment above it finds, because the workflow cannot pull the image until you do. The auto setting fetches its rules from the Semgrep registry and shares usage figures with Semgrep, so check that this suits a private repository, or choose a rule set of your own. Findings fail the run, and they appear in the job log, not on GitHub's Security tab.",
+      codeql:
+        "CodeQL uploads its results to GitHub code scanning. That is free on a public repository, but on a private repository it needs GitHub Code Security.",
+      dependencyReview:
+        "Dependency review is free on public repositories. On a private repository it needs GitHub Code Security, and the action fails without it.",
+      securityPolicyAddress:
+        "Private vulnerability reporting is not switched on, so this asks for an address. Once you switch it on, you can point people to its Report a vulnerability button instead.",
+    },
+
+    /** Advice for the most common code scanning rules, shown after the steps when the rule is one of them. */
+    codeAlertAdvice: {
+      slowRegex:
+        "This rule finds a regular expression that a long, specially made input can keep busy for seconds or minutes, which stalls the server. Rewrite it so that no character can be read by two repeats next to each other, such as \\s*(.*) where both can take a space, anchor it to the start of the text, or limit how long the text can be before it is matched.",
+      sqlInjection:
+        "This rule finds a database query built from outside text. Pass the text to the query as a parameter instead, so that it can never be read as part of the query.",
+      xss: "This rule finds outside text written into a page as HTML. Let your framework insert it as text, or escape it for the place where it is written, so that it can never run as script.",
+      commandInjection:
+        "This rule finds a shell command built from outside text. Pass the arguments as a list to a call that does not start a shell, so that the text can never be read as a command.",
+      pathInjection:
+        "This rule finds a file path built from outside text. Resolve the path and check that it is still inside the folder it should be in before you open the file.",
+    },
+
+    snippets: {
+      upgrade: "Upgrade command",
+      upgradeInPlace: "Try updating it in place first",
+      npmOverrides: "Force the fixed version with an override in package.json, then run npm install",
+      yarnResolutions: "Force the fixed version with a resolution in package.json, then run yarn install",
+      pnpmOverrides: "Force the fixed version with an override in package.json, then run pnpm install",
+      permissions: "Limit the token to reading",
+      pinnedUses: "Pin an action to a commit",
+      shaLookup: "Look up the commit for a version",
+      scriptInjection: "Pass the value through a variable",
+      pullRequestTrigger: "Run on pull_request, which is safe for code from forks",
+      pullRequestTarget: "If you really need pull_request_target, never run the pull request's code in it",
+      dependabot: "Dependabot configuration for this repository",
+      securityPolicy: "A starting SECURITY.md",
+      gitignore: "Lines for .gitignore",
+      untrack: "Stop tracking the file, which stays in the history",
+      persistCredentials: "Do not keep the token on disk",
+      nonRoot: "Run as an ordinary user",
+      digest: "Pin a base image to a digest",
+      remoteAdd: "Download and check, instead of ADD",
+      curlPipe: "Download, check, then run",
+      secretsInherit: "Pass only the secrets that are needed",
+      dependencyReview: "A dependency review workflow",
+      secretScanner: "A secret scanning workflow",
+      codeql: "A CodeQL workflow that uploads its results to GitHub code scanning",
+      semgrep: "A Semgrep workflow that uploads nothing to GitHub",
+      selfHosted: "Run on a GitHub hosted machine",
+      analysisOn: "Switch code analysis on",
+    },
+    upgradeText: {
+      folder: (name: string, version: string) =>
+        `Upgrade ${name} to ${version} with your package manager, in the folder that holds the file named in the table.`,
+      yarn: (name: string, version: string) =>
+        `Change ${name} to ${version} in package.json, then run yarn install. The command differs between Yarn versions, so this works for both.`,
+      requirements: (name: string, version: string, file: string) =>
+        `Set ${name}==${version} in ${file}, then install the requirements again.`,
+      build: (name: string, version: string) =>
+        `Raise ${name} to ${version} in your build file, which is pom.xml for Maven or build.gradle for Gradle, then build again.`,
+      pip: (name: string, version: string) =>
+        `${name} comes in through another package. Update the package that depends on it, or add ${name}==${version} to your requirements so that the fixed version is installed.`,
+      transitive: (name: string, version: string, mechanism: string) =>
+        `${name} comes in through another package, so installing it yourself would add a dependency you do not otherwise use. Update the package that depends on it, and if that is not enough, force version ${version} with ${mechanism}.`,
+      mixed: (name: string, version: string, mechanism: string) =>
+        `${name} is a direct dependency in some places and comes in through other packages in others. Use version ${version} where you depend on it directly, and force the same version everywhere else with ${mechanism}.`,
+      /**
+       * For a source that does not say how the package comes in, such as OSV.dev, which reads only the lockfile. It
+       * names every command and file itself, because the upgrades table shows it without the blocks that follow it in
+       * the fix guide.
+       */
+      unknown: (name: string, version: string, ways: UnknownWays, tryFirst: string | null) =>
+        `The alert does not say whether your project names ${name} or another package brings it in.${tryFirst ? ` Run ${tryFirst} first, which stays within the versions already allowed.` : ""} If ${tryFirst ? "that leaves it" : "it is"} older than ${version}, ${ways.direct} when your project names it, or ${ways.indirect} when another package brings it in, since installing it yourself would add a dependency that your project does not otherwise use.${ways.note ? ` ${ways.note}` : ""}`,
+      unknownWays: {
+        npm: (name: string, version: string): UnknownWays => ({
+          direct: `run npm install ${name}@${version}`,
+          indirect: "add an override in package.json",
+        }),
+        yarn: (name: string, version: string): UnknownWays => ({
+          direct: `change ${name} to ${version} in package.json and run yarn install`,
+          indirect: "add a resolution in package.json",
+        }),
+        pnpm: (name: string, version: string): UnknownWays => ({
+          direct: `run pnpm update ${name}@${version}`,
+          indirect: "add an override under pnpm in package.json",
+        }),
+        poetry: (name: string, version: string): UnknownWays => ({
+          direct: `run poetry add ${name}@^${version}`,
+          indirect: "update the package that depends on it",
+          note: "If it is a development dependency, add --group dev to poetry add.",
+        }),
+        pipenv: (name: string, version: string): UnknownWays => ({
+          direct: `run pipenv install ${name}==${version}`,
+          indirect: "update the package that depends on it",
+          note: "If it is a development dependency, add --dev to pipenv install.",
+        }),
+      },
+      mechanism: {
+        npm: "an override in package.json",
+        yarn: "a resolution in package.json",
+        pnpm: "an override under pnpm in package.json",
+      },
+      notes: {
+        poetryDev: "If it is a development dependency, add --group dev to the command.",
+        poetryUpdate:
+          "This stays within the version ranges that the packages depending on it allow. If it will not reach the fixed version, update the package that depends on it.",
+        pipenvDev: "If it is a development dependency, add --dev to the command.",
+        cargo: "If Cargo.toml asks for an older range, raise it there first, because the command cannot go outside it.",
+        bundler: "If the Gemfile pins an older version, raise that constraint first, because the command cannot go outside it.",
+        composer: "If composer.json does not allow that version, raise the constraint there first.",
+        nugetTransitive:
+          "This adds a direct reference to the fixed version, which takes the place of the version that the other package brings.",
+      },
+    },
+    copyButton: "Copy",
+    copyLabel: (label: string) => `Copy ${label}`,
+    copied: "Copied",
+    copyFailed: "The text could not be copied. Select it above and copy it yourself.",
+    copyUnavailable: "This browser does not let the page copy text. Select it above and copy it yourself.",
+    insteadOf: "Instead of this",
+    settingsLink: "Open the repository's Advanced Security settings",
+    branchSettingsLink: "Open the repository's branch settings",
+
+    open: {
+      title: "Open alerts",
+      lede: "Alerts that are still open now, from every source that was read, with how long each severity is allowed to wait.",
+      pastFix: (count: number) => `${count} past the fix-by date`,
+      withinFix: "None past the fix-by date",
+      none: "No open alerts in the sources that were read. Well done.",
+      noneButUnread: "No open alerts were found, although some sources could not be read.",
+      likelyTitle: "Likely to be exploited soon",
+      likelyHint: (share: string) => `Open alerts whose exploit prediction score is ${share} or more.`,
+      total: (count: number, sources: string) =>
+        sources ? `${count} open in all, made up of ${sources}.` : `${count} open in all.`,
+      fromSource: (count: number, name: string) => `${count} from ${name}`,
+    },
+
+    weekly: {
+      title: "Open alerts by week",
+      chartTitle: "Open alerts at the end of each week",
+      subtitle: "How many alerts were open at the end of each week, by severity.",
+      table: "Open at the end of the week",
+      total: "Total",
+      partWeek: {
+        current: (week: string) =>
+          `The week starting ${week} is not over yet, so its figures are marked so far. Its bars are drawn lighter inside an outline, because the week has not finished.`,
+        cut: (week: string, day: string) =>
+          `The range ends on ${day}, part way through the week starting ${week}, so that week's figures stop there. Its bars are drawn lighter inside an outline.`,
+      },
+      activity: "Opened, fixed and dismissed",
+    },
+
+    weaknesses: {
+      title: "What kind of problems",
+      chartTitle: "Weaknesses behind your alerts",
+      subtitle: "The kinds of weakness behind your alerts, by how many are open and how many were fixed in the date range.",
+      lede: "Knowing the kind of problem tells you what habit to change, because a few kinds cause most alerts.",
+      open: "Open",
+      fixed: "Fixed in range",
+      kind: "Kind of problem",
+      id: "Weakness id",
+      meaning: "What it means",
+      none: "No alerts carry a weakness type yet.",
+      unnamed: "No plain name yet",
+    },
+    cwe: {
+      "CWE-79": {
+        name: "Cross-site scripting",
+        meaning:
+          "A page shows text from a visitor as if it were part of the page, so that it can run scripts in other people's browsers.",
+      },
+      "CWE-89": {
+        name: "SQL injection",
+        meaning: "Text typed by a visitor ends up inside a database query and changes what the query does.",
+      },
+      "CWE-22": {
+        name: "Path traversal",
+        meaning: "A file name chosen by a visitor reaches outside the folder it should stay in and reads or writes other files.",
+      },
+      "CWE-78": {
+        name: "Operating system command injection",
+        meaning: "Text from outside is placed in a command that the server runs and changes what the command does.",
+      },
+      "CWE-94": { name: "Code injection", meaning: "Text from outside is run as code by the program." },
+      "CWE-77": {
+        name: "Command injection",
+        meaning: "Text from outside is placed in a command and changes what the command does.",
+      },
+      "CWE-352": {
+        name: "Cross-site request forgery",
+        meaning: "Another website tricks a signed in person's browser into sending a request they did not mean to make.",
+      },
+      "CWE-798": {
+        name: "Hard-coded credentials",
+        meaning: "A password or key is written into the code, so everyone who can read the code has it.",
+      },
+      "CWE-400": {
+        name: "Uncontrolled resource use",
+        meaning: "A request can make the program use so much time or memory that it stops serving anyone else.",
+      },
+      "CWE-770": {
+        name: "No limit on resources",
+        meaning: "The program lets one caller take as much as they like of something that is limited.",
+      },
+      "CWE-1321": {
+        name: "Prototype pollution",
+        meaning:
+          "An attacker changes the shared base object of a JavaScript program and so changes how all of its objects behave.",
+      },
+      "CWE-918": {
+        name: "Server-side request forgery",
+        meaning: "An attacker makes your server send requests to places that only the server can reach.",
+      },
+      "CWE-502": {
+        name: "Unsafe deserialisation",
+        meaning: "The program rebuilds objects from data that an attacker controls, which can run the attacker's code.",
+      },
+      "CWE-611": {
+        name: "External entity expansion",
+        meaning: "An XML file makes the parser read local files or contact other servers.",
+      },
+      "CWE-601": {
+        name: "Open redirect",
+        meaning: "A link on your site can be made to send visitors on to a site chosen by an attacker.",
+      },
+      "CWE-327": {
+        name: "Weak cryptography",
+        meaning: "An outdated or broken method is used to protect data, so the protection can be undone.",
+      },
+      "CWE-20": {
+        name: "Improper input checking",
+        meaning:
+          "The program does not check that what it receives is what it expects, which opens the door to many other problems.",
+      },
+      "CWE-200": {
+        name: "Exposure of sensitive information",
+        meaning: "Information is shown to someone who should not be able to see it.",
+      },
+      "CWE-287": { name: "Improper authentication", meaning: "The program can be convinced that someone is who they are not." },
+      "CWE-862": {
+        name: "Missing authorisation",
+        meaning: "The program does not check whether a signed in person is allowed to do what they ask.",
+      },
+      "CWE-863": {
+        name: "Incorrect authorisation",
+        meaning: "The program checks whether a person is allowed, but the check is wrong.",
+      },
+      "CWE-307": {
+        name: "Too many sign in attempts allowed",
+        meaning: "Nothing stops an attacker from guessing passwords again and again.",
+      },
+      "CWE-1333": {
+        name: "Slow regular expression",
+        meaning: "A pattern can be made to take a very long time on certain text, which stops the program serving others.",
+      },
+      "CWE-116": {
+        name: "Improper escaping of output",
+        meaning: "Text is not made safe before it is placed in another format, so it can change that format's meaning.",
+      },
+      "CWE-312": {
+        name: "Sensitive data stored in plain text",
+        meaning: "Passwords or personal data are stored without protection, so anyone who reaches the storage can read them.",
+      },
+      "CWE-319": {
+        name: "Sensitive data sent in plain text",
+        meaning: "Data travels without encryption, so anyone on the route can read it.",
+      },
+      "CWE-434": {
+        name: "Unrestricted file upload",
+        meaning: "People can upload files of a dangerous kind, which may then be run by the server.",
+      },
+      "CWE-532": {
+        name: "Sensitive data in logs",
+        meaning: "Passwords or personal data are written to log files that many people can read.",
+      },
+      "CWE-59": {
+        name: "Unsafe link following",
+        meaning: "The program follows a shortcut to a file that an attacker placed to reach something else.",
+      },
+      "CWE-285": {
+        name: "Improper authorisation",
+        meaning: "The program does not properly check what a person is allowed to do.",
+      },
+      "CWE-74": {
+        name: "Injection",
+        meaning:
+          "Text from outside is placed into something the program builds for another system, such as a query or a command, and changes what that system does.",
+      },
+      "CWE-113": {
+        name: "Header injection",
+        meaning:
+          "Text from outside is placed in a web response header with a line break, so an attacker can add headers or even a second response.",
+      },
+      "CWE-125": {
+        name: "Read past the end of a buffer",
+        meaning: "The program reads memory beyond the space it was given, which can leak other data or crash the program.",
+      },
+      "CWE-190": {
+        name: "Integer overflow",
+        meaning:
+          "A number grows past the largest value its type can hold and wraps round, so later size or length checks give the wrong answer.",
+      },
+      "CWE-248": {
+        name: "Uncaught exception",
+        meaning: "A failure is not handled anywhere, so one bad input can stop the whole program.",
+      },
+      "CWE-295": {
+        name: "Improper certificate validation",
+        meaning:
+          "The program does not properly check who it is talking to over a secure connection, so someone in the middle could pose as the other side.",
+      },
+      "CWE-311": {
+        name: "Missing encryption of sensitive data",
+        meaning: "Sensitive data is stored or sent without being encrypted, so anyone who reaches it can read it.",
+      },
+      "CWE-326": {
+        name: "Inadequate encryption strength",
+        meaning: "The encryption used is too weak, for example keys that are too short, so it can be broken with enough effort.",
+      },
+      "CWE-330": {
+        name: "Predictable random values",
+        meaning:
+          "Values that should be unguessable, such as tokens or session ids, come from a source that an attacker can predict.",
+      },
+      "CWE-345": {
+        name: "Data origin not verified",
+        meaning: "The program trusts data without checking that it really came from where it claims to have come from.",
+      },
+      "CWE-346": {
+        name: "Origin validation error",
+        meaning: "The program accepts a request or message without properly checking which site or system sent it.",
+      },
+      "CWE-347": {
+        name: "Signature not verified",
+        meaning: "A signature on data is not checked or is checked wrongly, so forged data is accepted as genuine.",
+      },
+      "CWE-362": {
+        name: "Race condition",
+        meaning:
+          "Two things happening at nearly the same time can interfere with each other and leave the program in a state nobody intended.",
+      },
+      "CWE-384": {
+        name: "Session fixation",
+        meaning: "An attacker can choose the session id a person will use, and so take over their session once they sign in.",
+      },
+      "CWE-401": {
+        name: "Memory not released",
+        meaning: "The program keeps taking memory and never gives it back, so it slows down and eventually stops.",
+      },
+      "CWE-407": {
+        name: "Inefficient algorithm (slow on crafted input)",
+        meaning:
+          "The program uses a method that is fast on normal input but becomes very slow on input crafted to make it struggle.",
+      },
+      "CWE-444": {
+        name: "HTTP request smuggling",
+        meaning:
+          "Two servers read the boundaries of the same web request differently, so an attacker can slip a hidden request past the first one.",
+      },
+      "CWE-476": {
+        name: "Null pointer dereference",
+        meaning: "The program uses a value that is missing as though it were there, which usually crashes it.",
+      },
+      "CWE-613": {
+        name: "Sessions last too long",
+        meaning:
+          "A sign in stays valid for too long or after sign out, so a stolen session can be used for far longer than it should.",
+      },
+      "CWE-639": {
+        name: "Access by changing an identifier",
+        meaning:
+          "A person can reach someone else's data just by changing an id in the request, because the program does not check who owns it.",
+      },
+      "CWE-668": {
+        name: "Resource exposed to the wrong people",
+        meaning:
+          "Something that should be private, such as a file, a port or a service, can be reached by people who should not reach it.",
+      },
+      "CWE-674": {
+        name: "Uncontrolled recursion",
+        meaning:
+          "A function can be made to call itself again and again without a limit, which uses up memory and crashes the program.",
+      },
+      "CWE-693": {
+        name: "Protection mechanism failure",
+        meaning: "A safeguard that should have protected the program is missing or does not work as intended.",
+      },
+      "CWE-732": {
+        name: "Wrong permissions on a resource",
+        meaning:
+          "A file or other resource is open to more people than it should be, so it can be read or changed by those who should not.",
+      },
+      "CWE-754": {
+        name: "Improper check for unusual conditions",
+        meaning:
+          "The program does not handle rare situations such as empty, missing or oversized input, so they cause crashes or odd behaviour.",
+      },
+      "CWE-776": {
+        name: "Entity expansion attack",
+        meaning:
+          "A small piece of XML is built to expand into a huge amount of data, which uses up memory and stops the program.",
+      },
+      "CWE-787": {
+        name: "Write past the end of a buffer",
+        meaning:
+          "The program writes memory beyond the space it was given, which can corrupt data or let an attacker run their own code.",
+      },
+      "CWE-829": {
+        name: "Code included from an untrusted source",
+        meaning:
+          "The program loads and runs code from a place that is not under its own control, so whoever controls that place controls the program.",
+      },
+      "CWE-835": {
+        name: "Infinite loop",
+        meaning:
+          "The program can be sent into a loop that never ends, so it uses all the processor time and stops serving anyone.",
+      },
+      "CWE-915": {
+        name: "Unsafe update of object fields",
+        meaning:
+          "Input from outside is allowed to set fields on an object that it should not be able to set, such as an admin flag.",
+      },
+      "CWE-1035": {
+        name: "Known vulnerable component",
+        meaning: "The code relies on a package or library that has a published flaw, so the flaw comes along with it.",
+      },
+      "CWE-1236": {
+        name: "Spreadsheet formula injection",
+        meaning:
+          "Text from outside is placed in a spreadsheet file and begins like a formula, so opening it can run commands on someone's computer.",
+      },
+      "CWE-1284": {
+        name: "Improper validation of a quantity",
+        meaning:
+          "A number such as a length, a count or a quantity is accepted without checking that it is within a sensible range.",
+      },
+    },
+
+    fixTime: {
+      title: "Time to fix",
+      lede: "How long alerts took to fix in the date range, and what was dismissed instead.",
+      fixed: "Fixed in this range",
+      fixedHint: "Alerts that were fixed, counted from the day each was raised.",
+      median: "Typical time to fix",
+      medianHint: (slowest: string, count: number) =>
+        count === 0
+          ? "No alert was fixed in this range."
+          : `Half of the alerts were fixed faster than this, and three quarters within ${slowest}.`,
+      slowest: "Slowest quarter",
+      slowestHint: "Three quarters of alerts were fixed within this time.",
+      dismissed: "Dismissed",
+      dismissedHint: (reasons: string) => (reasons ? `Closed without a fix, ${reasons}.` : "Closed without a fix."),
+      dismissedNone: "None were dismissed in this range.",
+      bySeverity: {
+        title: "Time to fix by severity",
+        severity: "Severity",
+        fixed: "Fixed",
+        median: "Typical",
+        slowest: "Slowest quarter",
+        allowed: "Allowed",
+        days: (count: number) => `${count} days`,
+      },
+      reasons: {
+        fixed: "fixed",
+        not_found: "no longer found",
+        unspecified: "no reason given",
+        fix_started: "a fix has been started",
+        inaccurate: "judged inaccurate",
+        no_bandwidth: "no time to fix",
+        not_used: "the code is not used",
+        tolerable_risk: "risk accepted",
+        false_positive: "a false alarm",
+        used_in_tests: "used in tests only",
+        wont_fix: "will not be fixed",
+        revoked: "revoked",
+        auto_dismissed: "closed automatically by GitHub",
+        pattern_deleted: "the pattern was deleted",
+        pattern_edited: "the pattern was edited",
+      } satisfies Record<CloseReason | "unspecified", string>,
+      pushProtection: (count: number) =>
+        `${count} ${count === 1 ? "secret was" : "secrets were"} pushed in this range after the person pushing chose to bypass push protection.`,
+    },
+
+    alerts: {
+      title: "The worst open alerts",
+      subtitle:
+        "The open alerts, worst first, up to the number the report carries, with where each is and how long it has been open.",
+      filterLabel: "Show alerts from",
+      filterAll: "Every source",
+      filterOption: (name: string, count: number) => `${name} (${count})`,
+      filterNote: (name: string) => `Only alerts from ${name} are listed here.`,
+      capped: (shown: number, total: number) => `Showing the ${shown} worst of ${total} open alerts.`,
+      noneInWorst: (name: string, shown: number) =>
+        `None of the ${shown} worst open alerts come from ${name}, though it has others further down the list.`,
+      partlyInWorst: (name: string, shown: number, total: number, listed: number) =>
+        `Showing ${shown} of the ${total} open alerts from ${name}, because only the ${listed} worst open alerts are listed.`,
+      none: "No open alerts match.",
+      severity: "Severity",
+      problem: "Problem",
+      where: "Where",
+      source: "Source",
+      age: "Open for",
+      fixBy: "Fix-by date",
+      weakness: "Kind of problem",
+      whereText: {
+        package: (name: string | null, version: string | null, manifest: string | null) =>
+          `${name ?? "A package GitHub did not name"}${version ? ` ${version}` : ""}${manifest ? ` in ${manifest}` : ""}`,
+        code: (path: string | null, line: number | null) =>
+          path ? (line === null ? path : `${path} line ${line}`) : "A location GitHub did not report",
+        secret: (type: string) => `A secret of the kind ${type}`,
+      },
+    },
+
+    upgrades: {
+      title: "Dependency upgrades",
+      lede: "The packages with open alerts, worst first, and the version that fixes each one.",
+      subtitle: "Packages with open alerts and the upgrade that fixes them.",
+      none: "No package has an open alert.",
+      package: "Package",
+      files: "Found in",
+      lockedAt: (versions: string) => `Locked at ${versions}`,
+      relationship: {
+        direct: "Direct dependency",
+        transitive: "Comes in through another package",
+        mixed: "Direct, and through other packages",
+      },
+      alerts: "Alerts",
+      worst: "Worst severity",
+      upgradeTo: "Upgrade to",
+      noFix: "No fixed version has been published yet",
+      several: (versions: string) => `Different fixes for different alerts, ${versions}`,
+      command: "Command",
+      noCommand: "No command is known for this package manager",
+      unnamed: "A package GitHub did not name",
+      noCommandUnnamed: "No command, because GitHub did not name the package",
+      noManifest: "Not reported",
+      nothingToInstall: "Nothing to install until a fix is published",
+      chooseVersion: "Choose one of the fixed versions first",
+      pastFix: "Past fix-by date",
+      pastFixCount: (count: number) => `${count} past`,
+      noneText: "None",
+    },
+
+    updates: {
+      title: "Keeping dependencies up to date",
+      lede: "Small regular updates are the cheapest protection there is, because the fix for a flaw then arrives as a pull request that is easy to review.",
+      opened: "Update pull requests opened",
+      merged: "Merged",
+      mergedHint: "Update pull requests that were merged in this range.",
+      closed: "Closed without merging",
+      openNow: "Open now",
+      timeToMerge: "Typical time to merge",
+      timeToMergeHint: (count: number) =>
+        count === 0
+          ? "No update pull request was merged in this range."
+          : `Across ${count} merged update ${count === 1 ? "pull request" : "pull requests"}.`,
+      oldest: "Oldest still open",
+      oldestNone: "None are open.",
+      openedHint: "Pull requests opened by Dependabot or Renovate in this range.",
+      good: "Updates are being raised and merged, which is exactly what keeps dependencies safe.",
+      noneYet: "No pull requests from Dependabot or Renovate were found in this range.",
+      filesTitle: "Setup",
+    },
+
+    chain: {
+      workflows: {
+        title: "Workflows and supply chain",
+        lede: "Your automated workflows run with access to your code and your secrets, so how they are set up matters as much as the code itself.",
+      },
+      tools: {
+        title: "Security tools in CI",
+        lede: "Scanners that run in your own pipeline catch problems before they are merged, and matter most where GitHub's own scanning is not available to you.",
+      },
+      images: {
+        title: "Container images",
+        lede: "The Dockerfiles in the repository, checked for the habits that most often cause trouble.",
+      },
+      files: { title: "Files that help", lede: "Small files that make security easier to look after." },
+      updates: {
+        title: "Dependency setup",
+        lede: "Whether dependency updates are scheduled and whether lockfiles pin what you install.",
+      },
+      none: {
+        analysis_off: "Workflow and dependency files are not read because code analysis is switched off on this dashboard.",
+        not_read: "Workflow and dependency files have not been read yet. They are read during the next crawl.",
+      },
+      readOn: (sha: string, when: string, count: number) =>
+        `Read from commit ${sha} on ${when}, covering ${count} ${count === 1 ? "workflow file" : "workflow files"}.`,
+      unread: (count: number) =>
+        `${count} workflow ${count === 1 ? "file was" : "files were"} not read, so ${count === 1 ? "it is" : "they are"} left out of the checks.`,
+      dockerfilesUnread: (count: number) =>
+        `${count} ${count === 1 ? "Dockerfile was" : "Dockerfiles were"} not read, so ${count === 1 ? "it is" : "they are"} left out of the checks.`,
+      /** For a repository with so many findings or action uses that the report kept only the first of each kind. */
+      dropped: (findings: number, actions: number) =>
+        `The lists below are incomplete, because ${[
+          findings > 0 ? `${findings} workflow ${findings === 1 ? "finding" : "findings"}` : null,
+          actions > 0 ? `${actions} ${actions === 1 ? "use of an action" : "uses of actions"}` : null,
+        ]
+          .filter((part) => part !== null)
+          .join(" and ")} ${findings + actions === 1 ? "was" : "were"} left out to keep the report a manageable size.`,
+      nothingFound: "There is nothing to check in this section.",
+      totalNote: (shown: number, total: number) => `Showing ${shown} of ${total}.`,
+      table: { check: "Check", result: "Result", detail: "What was found" },
+      line: (path: string, line: number | null) => (line === null ? path : `${path} line ${line}`),
+    },
+    supplyChain: {
+      prHeadCheckout: {
+        title: "Workflows that run a pull request's own code with secrets",
+        ok: "No workflow does this.",
+        found: (n: number) => `${n} ${n === 1 ? "place does" : "places do"} this.`,
+      },
+      scriptInjection: {
+        title: "Workflows that paste outsiders' text into a command",
+        ok: "No workflow does this.",
+        found: (n: number) => `${n} ${n === 1 ? "place does" : "places do"} this.`,
+      },
+      selfHostedPublic: {
+        title: "Pull requests on self hosted machines",
+        ok: "No public repository workflow does this.",
+        found: (n: number) => `${n} ${n === 1 ? "place does" : "places do"} this.`,
+      },
+      unpinnedActions: {
+        title: "Actions from other organisations pinned to a commit",
+        ok: "Every one is pinned.",
+        found: (n: number) => `${n} ${n === 1 ? "use of an action is" : "uses of actions are"} not pinned to a commit.`,
+      },
+      ownActionsUnpinned: {
+        title: "Your own organisation's actions pinned to a commit",
+        ok: "Every one is pinned.",
+        found: (n: number) => `${n} ${n === 1 ? "use of an action is" : "uses of actions are"} not pinned to a commit.`,
+      },
+      workflowPermissions: {
+        title: "Workflows that limit their token",
+        ok: "Every workflow sets limits.",
+        found: (n: number) => `${n} ${n === 1 ? "place sets" : "places set"} no limit on the token or allows everything.`,
+      },
+      unsecureCommands: {
+        title: "Deprecated unsecure commands",
+        ok: "No workflow switches them on.",
+        found: (n: number) => `${n} ${n === 1 ? "workflow switches" : "workflows switch"} them on.`,
+      },
+      keyFiles: {
+        title: "Private keys and environment files",
+        ok: "None are stored in the repository.",
+        found: (n: number) => `${n} ${n === 1 ? "file looks" : "files look"} like ${n === 1 ? "one" : "them"}.`,
+      },
+      weakKeyFiles: {
+        title: "Files that may be keys",
+        ok: "None found.",
+        found: (n: number) => `${n} ${n === 1 ? "file needs" : "files need"} a look.`,
+      },
+      curlPipeShell: {
+        title: "Downloads that are run without a check",
+        ok: "None found.",
+        found: (n: number) => `${n} ${n === 1 ? "place runs" : "places run"} a download straight away.`,
+      },
+      secretsInherit: {
+        title: "Workflows that pass on every secret",
+        ok: "None found.",
+        found: (n: number) => `${n} ${n === 1 ? "call passes" : "calls pass"} on every secret.`,
+      },
+      persistCredentials: {
+        title: "Checkouts that keep the token on disk",
+        ok: "None found.",
+        found: (n: number) => `${n} ${n === 1 ? "checkout keeps" : "checkouts keep"} it.`,
+      },
+      updateConfig: {
+        title: "Scheduled dependency updates",
+        ok: "Dependabot or Renovate is configured.",
+        found: () => "No configuration was found.",
+      },
+      lockfiles: {
+        title: "Lockfiles beside manifests",
+        ok: "Every manifest has a lockfile.",
+        found: (n: number) => `${n} ${n === 1 ? "manifest has" : "manifests have"} no lockfile.`,
+      },
+      securityPolicy: {
+        title: "A security policy",
+        ok: "A security policy is in place.",
+        found: () => "No security policy was found.",
+      },
+      dependencyReview: {
+        title: "Dependency review on pull requests",
+        ok: "A dependency review runs in your pipeline.",
+        found: () => "No dependency review was found.",
+      },
+      secretScanInCi: {
+        title: "A secret scanner in your pipeline",
+        ok: "A secret scanner runs in your pipeline.",
+        found: () => "No secret scanner was found.",
+      },
+      staticAnalysis: {
+        title: "A code scanner in your pipeline",
+        ok: "A code scanner runs in your pipeline.",
+        found: () => "No code scanner was found.",
+      },
+      baseImagesPinned: {
+        title: "Base images pinned to a digest",
+        ok: "Every base image is pinned.",
+        found: (n: number) =>
+          `${n} ${n === 1 ? "Dockerfile uses an image that is" : "Dockerfiles use images that are"} not pinned to a digest.`,
+      },
+      latestImages: {
+        title: "Base images on a fixed version",
+        ok: "No image uses the latest tag.",
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile uses" : "Dockerfiles use"} the latest tag or none.`,
+      },
+      nonRootImages: {
+        title: "Images that run as an ordinary user",
+        ok: "Every image runs as an ordinary user.",
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile runs its image" : "Dockerfiles run their images"} as the root user.`,
+      },
+      remoteAdd: {
+        title: "Files fetched with ADD",
+        ok: "No image fetches a file with ADD.",
+        found: (n: number) => `${n} ${n === 1 ? "Dockerfile fetches" : "Dockerfiles fetch"} a file with ADD.`,
+      },
+    },
+
+    failedSources: {
+      title: "Some sources failed the last time they were read",
+      body: (sources: string) =>
+        `The last attempt failed for ${sources}. The figures use the earlier read where there is one, so they may be out of date.`,
+      since: (name: string, when: string) => `${name}, last read on ${when}`,
+      never: (name: string) => `${name}, never read`,
+      link: "See how each source is read",
+    },
+
+    passFail: { met: "Met", unmet: "Not met", unseen: "Not visible" },
+
+    branch: {
+      title: "Branch protection and settings",
+      lede: "Rules on your deploy branch decide whether a mistake or a stolen account can push straight to production, and a few repository settings decide whether GitHub helps you.",
+      notRead: "Branch rules and settings have not been read yet. They are read during the next crawl.",
+      readOn: (when: string) => `Read on ${when}`,
+      failedKept: (message: string) =>
+        `The latest attempt to read the branch rules and settings failed${withMessage(message)}, so the facts below are from an earlier read.`,
+      failedNone: (message: string) =>
+        `The latest attempt to read the branch rules and settings failed${withMessage(message)}, so nothing has been read yet. It is tried again at the next crawl.`,
+      about: (branch: string, visibility: string | null, admin: boolean | null) =>
+        `The deploy branch is ${branch}${visibility ? ` in ${visibility} repository` : ""}. ${admin === true ? "The account the dashboard uses is an administrator, so it can read the branch rules and settings." : admin === false ? "The account the dashboard uses is not an administrator, so some settings are not visible." : "It is not known whether the account the dashboard uses is an administrator."}`,
+      visibility: { public: "a public", private: "a private", internal: "an internal" },
+      detail: {
+        full: "Both rulesets and classic branch protection could be read.",
+        rulesets_only: "Only rulesets could be read, because classic branch protection needs an administrator.",
+        none: "Neither rulesets nor branch protection could be read.",
+      },
+      notVisibleTitle: "Why some rules say not visible",
+      notVisible:
+        "Not visible means that the account the dashboard uses cannot see that setting, and most settings need a repository administrator. It does not mean the setting is off.",
+      rulesTitle: "Rules on the deploy branch",
+      settingsTitle: "Repository settings",
+      advisoriesTitle: "Security advisories",
+      advisories: (draft: number, triage: number, published: number, closed: number) =>
+        `${draft} in draft, ${triage} in triage, ${published} published and ${closed} closed.`,
+      advisoriesHidden: "Not visible, because advisories need administrator access.",
+      publicOnly: "Only for public repositories",
+      protectedLine: {
+        yes: "The branch is protected.",
+        no: "The branch is not protected.",
+        unseen: "Whether the branch is protected could not be seen.",
+      },
+      rules: {
+        requirePullRequest: "Changes need a pull request",
+        requireStatusChecks: "Checks must pass before merging",
+        blockForcePushes: "Force pushes are blocked",
+        blockDeletion: "The branch cannot be deleted",
+        requireSignedCommits: "Commits must be signed",
+      },
+      ruleHints: {
+        requirePullRequest: "Nobody can push straight to the branch.",
+        requireStatusChecks: "A red build blocks the merge.",
+        blockForcePushes: "History cannot be rewritten.",
+        blockDeletion: "The branch cannot be removed by accident.",
+        requireSignedCommits: "Each commit is proved to come from its author. This is advice only.",
+      },
+      settings: {
+        dependabotSecurityUpdates: "Dependabot security updates",
+        secretScanning: "Secret scanning",
+        pushProtection: "Push protection",
+        validityChecks: "Checks that a leaked secret still works",
+        privateVulnerabilityReporting: "Private vulnerability reporting",
+      },
+      settingHints: {
+        dependabotSecurityUpdates:
+          "Dependabot opens a pull request with the fix when an alert appears. This is a separate switch from Dependabot alerts, found under Settings, then Advanced Security.",
+        secretScanning: "GitHub looks for passwords and keys in the code.",
+        pushProtection: "A push that contains a secret is stopped before it lands.",
+        validityChecks: "GitHub tells you whether a leaked secret is still active.",
+        privateVulnerabilityReporting: "People can tell you about a flaw in private.",
+      },
+    },
+
+    issues: {
+      title: "Security issues",
+      lede: "Issues that your team has labelled as security problems, which are a good sign that people raise them and a prompt to close them.",
+      none: "This repository has no stored GitHub Issues, so security issues are not counted.",
+      open: "Open security issues",
+      openHint: "Issues classed as security problems that are still open.",
+      oldest: "Oldest still open",
+      oldestNone: "None are open.",
+      closed: "Closed in this range",
+      timeToClose: "Typical time to close",
+      timeToCloseHint: (count: number) =>
+        count === 0
+          ? "No security issue was closed in this range."
+          : `Across ${count} closed ${count === 1 ? "issue" : "issues"}.`,
+      link: "Open the GitHub Issues page for this repository",
+    },
+
+    scorecard: {
+      title: "OpenSSF Scorecard",
+      lede: "A public rating of how well an open source project follows security habits. It is shown for information and never changes the grade.",
+      only: "Only public projects in Scorecard's weekly scan have a score.",
+      score: "Scorecard",
+      scoreValue: (score: number) => `${score.toFixed(1)} out of 10`,
+      scoreHint: (date: string) => `Scanned on ${date}.`,
+      status: {
+        off: "The Scorecard lookup is switched off. Set SCORECARD_LOOKUP=on in the environment file of the dashboard to switch it on.",
+        not_public: "This repository is not public, so its name is never sent to Scorecard and it has no score.",
+        not_scanned: "Scorecard has not scanned this repository. Only public projects in its weekly scan have a score.",
+        not_read:
+          "Scorecard has not been asked about this repository yet. It is asked at the next crawl, once the lookup is switched on.",
+        error:
+          "The Scorecard lookup failed the last time it ran. Any earlier score is kept. The lookup is tried again at every full crawl, at other crawls once the last good read is more than a day old, and at every crawl while no score has been read.",
+      },
+      failedWith: (message: string, when: string) => `The lookup failed on ${when}${withMessage(message)}.`,
+      earlierScore: "The score and checks below are from the last lookup that worked.",
+      noEarlierScore: "No earlier score is held.",
+      check: "Check",
+      checkScore: "Score",
+      reason: "What it found",
+      notApplicable: "Not applicable",
+      checkValue: (score: number) => `${score} out of 10`,
+    },
+
+    sources: {
+      title: "How each source is read",
+      lede: "The grade is only as complete as what could be read. This section says what was read, what was not, and how to switch each one on.",
+      source: "Source",
+      state: "State",
+      howTo: "How to switch it on.",
+      readOn: (when: string) => `Read on ${when}`,
+      notYet: "Not read yet",
+      truncated:
+        "GitHub holds more alerts than the dashboard reads in one crawl, so the least recently updated were not read this time. Those stored by an earlier crawl are kept as they were, and any never read are left out of the figures and the grade.",
+      skipped: (count: number) => `${count} ${count === 1 ? "alert" : "alerts"} could not be read.`,
+      failed: (message: string) => `The last attempt failed${withMessage(message)}. Earlier results are kept.`,
+      failedNoEarlier: (message: string) =>
+        `The last attempt failed${withMessage(message)}. There is no earlier read to fall back on.`,
+      lastGoodOn: (when: string) => `Last read successfully on ${when}`,
+      status: {
+        ok: "Read",
+        off: "Switched off",
+        no_access: "No access",
+        not_used: "Not used",
+        error: "Failed",
+        not_read: "Not read yet",
+      },
+      notUsedLabel: {
+        lookup_off: "Switched off",
+        dependabot_ok: "Not needed",
+        no_inventory: "Nothing to look up",
+        all_withheld: "Nothing to send",
+      } satisfies Record<NotUsedReason, string>,
+      reasons: {
+        disabled: "It is switched off for this repository.",
+        not_set_up: "It has not been set up for this repository.",
+        needs_advanced_security:
+          "GitHub offers it on private repositories only with GitHub Code Security or GitHub Secret Protection.",
+        forbidden: "GitHub refused the dashboard's sign in access to it.",
+        admin_only_or_off: "Either it is switched off, or only a repository administrator can read it.",
+        lookup_off: "The lookup is switched off on this dashboard.",
+        dependabot_ok: "It is not needed while Dependabot alerts can be used.",
+        dependabot_failed:
+          "Dependabot's last read failed, so its earlier alerts are still graded and this lookup is not used in their place.",
+        no_inventory: "There were no lockfiles that prove where packages came from, so there was nothing to look up.",
+        all_withheld:
+          "Every lockfile was read in full, and every package they prove came from a public registry is in the repository owner's scope or one listed as private, so none was sent and there was nothing to look up.",
+      },
+      enable: {
+        dependabot:
+          "Open the repository's Settings, choose Advanced Security in the Security section of the sidebar, and switch on Dependabot alerts and Dependabot security updates.",
+        code_scanning:
+          "Open the repository's Settings, choose Advanced Security, and set up code scanning. On a private repository it needs GitHub Code Security.",
+        secret_scanning:
+          "Secret scanning alerts can only be read by a repository administrator. Open Settings, then Advanced Security, to switch it on, and note that on a private repository it needs GitHub Secret Protection.",
+        osv: "Set OSV_LOOKUP=on in the environment file of the dashboard and keep CODE_ANALYSIS on. Only package names and versions that a lockfile proves came from a public registry are sent, and never your repository name, a path or a token.",
+      },
+      names: {
+        supplyChain: "Workflow and dependency files",
+        posture: "Branch rules and settings",
+      },
+      supplyChain: {
+        ok: (sha: string, when: string) => `Read from commit ${sha} on ${when}.`,
+        analysis_off: "Code analysis is switched off on this dashboard.",
+        not_read: "These files have not been read yet.",
+        failed: (message: string) => `The last inspection failed${withMessage(message)}. Earlier results are kept.`,
+        failedNoEarlier: (message: string) =>
+          `The last inspection failed${withMessage(message)}. There is no earlier read to fall back on.`,
+        enable:
+          "Set CODE_ANALYSIS=on in the environment file of the dashboard and crawl again, so that the workflow files can be read.",
+      },
+      posture: {
+        ok: (when: string) => `Read on ${when}.`,
+        notRead: "They have not been read yet.",
+        failed: (message: string) => `The last attempt failed${withMessage(message)}. Earlier results are kept.`,
+        failedNoEarlier: (message: string) =>
+          `The last attempt failed${withMessage(message)}. There is no earlier read to fall back on.`,
+        enable: "Branch rules can be read with read access. Most repository settings need a repository administrator.",
+      },
+    },
+
+    glossary: {
+      title: "What these words mean",
+      summary: "Show the explanations",
+      lede: "Plain explanations of the terms used on this page.",
+      terms: [
+        {
+          term: "Dependabot",
+          meaning:
+            "A GitHub service with two separate parts. Dependabot alerts warn you when a package you use has a known vulnerability, and Dependabot version updates open pull requests that keep your packages current. Each is switched on on its own.",
+        },
+        {
+          term: "Code scanning",
+          meaning: "A GitHub feature that reads your own code for patterns that usually lead to security flaws.",
+        },
+        {
+          term: "Secret scanning",
+          meaning: "A GitHub feature that looks for passwords, keys and tokens that were committed by mistake.",
+        },
+        {
+          term: "Advisory",
+          meaning: "A public notice that a package has a flaw, saying which versions are affected and which version fixes it.",
+        },
+        {
+          term: "CVE",
+          meaning: "A catalogue number that identifies one published flaw, so that everyone can talk about the same one.",
+        },
+        {
+          term: "GHSA",
+          meaning: "The number GitHub gives an advisory in its own database, such as GHSA followed by letters and digits.",
+        },
+        {
+          term: "CWE",
+          meaning: "A catalogue of kinds of weakness, such as cross-site scripting, so that similar flaws can be grouped.",
+        },
+        {
+          term: "EPSS",
+          meaning:
+            "The exploit prediction scoring system, a figure from 0 to 100 percent for how likely a flaw is to be used in real attacks soon.",
+        },
+        {
+          term: "CVSS",
+          meaning:
+            "A score from 0 to 10 for how serious a flaw is in itself, which is higher when it is easier to use and does more damage.",
+        },
+        {
+          term: "Lockfile",
+          meaning: "A file that records the exact version of every package you install, so that everyone installs the same code.",
+        },
+        {
+          term: "Pinning to a commit SHA",
+          meaning: "Naming the exact commit of an action or image that you use, instead of a tag that its owner could move.",
+        },
+        {
+          term: "GITHUB_TOKEN permissions",
+          meaning: "What the automatic token given to each workflow run is allowed to do, which should be as little as possible.",
+        },
+        {
+          term: "pull_request_target",
+          meaning:
+            "A workflow trigger that runs with secrets and write access even for pull requests from strangers, so it must never run their code. The plainer pull_request trigger is safer, because pull requests from forks get no secrets and only a read-only token.",
+        },
+        {
+          term: "Branch protection",
+          meaning: "Rules on a branch, such as requiring a pull request and passing checks, that nobody can skip.",
+        },
+        {
+          term: "Push protection",
+          meaning: "A feature that stops a push containing a recognised secret before it reaches the repository.",
+        },
+      ],
+    },
+
+    section: {
+      title: "Security",
+      lede: "A short summary of this repository's security grade and what to do next.",
+      loading: "Loading security",
+      tiles: {
+        critical: "Critical alerts",
+        high: "High severity alerts",
+        pastFix: "Past their fix-by date",
+        actions: "Things to fix",
+      },
+      more: (count: number) => `and ${count} more.`,
+      partial: (names: string) => `The dashboard could not read ${names}, so these counts may be lower than the real ones.`,
+      topTitle: "Start with these",
+      none: "Nothing needs fixing in what the dashboard could read.",
+      link: "Security for this repository",
+      detail: "See the full security report",
+    },
+
+    verdict: {
+      grade: (band: string) => `Security grade ${band}`,
     },
   },
 

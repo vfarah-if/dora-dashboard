@@ -1,7 +1,8 @@
 import type { IssueCloseReason, IssueEvent, RepoIssue } from "@dora-dashboard/core";
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { IssuePage, IssuePageRequest, IssueProvider } from "../../interfaces/issue-provider.js";
-import { API, type Fetch, request, RETRYABLE } from "./github-http.js";
+import type { Fetch } from "../http/fetch.js";
+import { API, request, RETRYABLE } from "./github-http.js";
 
 /**
  * Every field here exists in GitHub's GraphQL schema. `stateReason(enableDuplicate: true)` is needed on an issue, as

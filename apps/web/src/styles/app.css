@@ -3325,3 +3325,460 @@ a:hover {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* Security */
+
+/* Seven tabs do not fit beside the brand and the user controls between about 600 and 1000px, so the tabs scroll
+ * along their own row instead of squeezing, and the lit tab is brought into view (see Header). */
+.app-nav {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.app-nav a {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* The row scrolls, so a ring drawn outside a tab would be clipped by it. Inside the tab it is always whole. */
+.app-nav a:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Below 561px the row of tabs is hidden, so a button opens the same links as a list under the header. */
+.nav-menu-button,
+.app-menu {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .nav-menu-button {
+    display: inline-flex;
+  }
+
+  .app-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px var(--gutter) 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+
+  .app-menu a {
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 10px 12px;
+    border-radius: var(--radius-small);
+    font-weight: 500;
+  }
+
+  .app-menu a:hover {
+    color: var(--text);
+    background: var(--surface-sunken);
+  }
+
+  .app-menu a.active {
+    color: var(--text);
+    background: var(--accent-soft);
+  }
+
+  .app-menu a:focus-visible {
+    outline-offset: -2px;
+  }
+}
+
+@media print {
+  .nav-menu-button,
+  .app-menu {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1100px) {
+  .app-header-inner {
+    gap: 12px;
+  }
+
+  .app-nav a {
+    padding: 6px 8px;
+  }
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-sunken);
+}
+
+.tag-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.tag-accent {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.severity-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.check-limit {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 650;
+  background: var(--accent-soft);
+}
+
+.hint-line {
+  display: block;
+}
+
+.hint-line + .hint-line {
+  margin-top: 4px;
+}
+
+.plain-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.start-here {
+  border-width: 2px;
+}
+
+.start-actions {
+  margin: 0;
+  padding-left: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.action-list {
+  list-style: decimal;
+  margin: 0;
+  padding-left: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.action-item {
+  padding-left: 4px;
+}
+
+.action-item::marker {
+  font-weight: 700;
+}
+
+.action-sentence {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.action-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.action-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+}
+
+.action-details summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.action-details summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.action-body {
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.action-heading {
+  font-size: 0.9375rem;
+  margin-top: 6px;
+}
+
+.action-steps,
+.action-refs {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-refs {
+  list-style: disc;
+  overflow-wrap: anywhere;
+}
+
+.action-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.copy-snippet {
+  margin: 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface-sunken);
+}
+
+.copy-snippet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.copy-snippet-code {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.copy-snippet-code:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.copy-snippet-note {
+  margin: 0;
+  padding: 6px 12px 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.copy-snippet-instead {
+  border-top: 1px dashed var(--border);
+}
+
+.copy-snippet-status {
+  margin: 0;
+  padding: 0 12px 6px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.copy-snippet-status:empty {
+  display: none;
+}
+
+.table-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.alert-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.cell-note {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.block {
+  display: block;
+}
+
+.inline-command {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.alerts-table td,
+.alerts-table th {
+  vertical-align: top;
+}
+
+.check-rows,
+.check-items,
+.source-list,
+.glossary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.check-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 8px 0 16px;
+}
+
+.card > .chart-title:not(:first-child) {
+  margin-top: 16px;
+}
+
+td > .tag,
+th > .tag {
+  margin-left: 8px;
+}
+
+.check-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.check-row-title {
+  font-weight: 600;
+}
+
+.check-row-text {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+}
+
+.check-items {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.source-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.glossary summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.glossary summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.glossary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.glossary-list dt {
+  font-weight: 650;
+}
+
+.glossary-list dd {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+@media print {
+  .copy-button,
+  .copy-snippet-status,
+  .table-filter {
+    display: none !important;
+  }
+
+  /* An item is kept whole while its explanation is closed. An opened one holds long code blocks, and keeping those
+     whole would leave most of a page empty before a long snippet, so an opened item and its snippets may break. */
+  .action-item:not(:has(.action-details[open])),
+  .check-row,
+  .source-row {
+    break-inside: avoid;
+  }
+
+  .action-heading,
+  .copy-snippet-head,
+  .copy-snippet-note {
+    break-after: avoid;
+  }
+
+  /* A block may break between its lines, but never leaves fewer than four lines behind the label or on a page of
+     their own, so the label always travels with the first lines of its code. */
+  .copy-snippet,
+  .copy-snippet-code {
+    break-inside: auto;
+    orphans: 4;
+    widows: 4;
+  }
+
+  .copy-snippet-code {
+    overflow: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The glossary is a disclosure like the explanations, and closed it has nothing to print but the word to press. */
+  #security-glossary:has(.glossary:not([open])) {
+    display: none;
+  }
+
+  .alerts-table {
+    table-layout: auto;
+    width: 100%;
+  }
+}

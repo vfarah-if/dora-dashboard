@@ -1,0 +1,11 @@
+# Runs every gate CI runs before a push leaves this machine (ADR 0038). `make quality` is formatting, lint, the private
+# name guard, typecheck and `make test-coverage`, which runs every suite with coverage and fails below the 90% floors.
+# Turbo replays the tests of a workspace that has not changed, so a push with nothing new to test spends about ten
+# seconds here. Skip it once with git push --no-verify.
+
+# The gates read the working tree rather than the commits being pushed, so say when the two differ. This only reads.
+if [ -n "$(git --no-optional-locks status --porcelain)" ]; then
+  echo "pre-push: the working tree has changes that are not committed, and the checks below include them."
+fi
+
+make quality

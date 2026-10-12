@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { groupFeatures, issueKeysOf, ticketKeysOf, type FeatureCandidate } from "../src/features.js";
 import type { OpenPullRequest, ReviewLane } from "../src/types.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 import { open } from "./openPr.js";
 
 const widgets = { id: 1, owner: "acme", name: "widgets" };
@@ -150,6 +151,30 @@ describe("groupFeatures", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]!.evidence).toEqual(["related"]);
     expect(groups[0]!.members).toHaveLength(4);
+  });
+
+  it("reads references with no space between them, after however many spaces follow the colon", () => {
+    const groups = groupFeatures([
+      candidate({ number: 1, body: `Related:${" ".repeat(50)}#2acme/gadgets#1` }),
+      candidate({ number: 2 }),
+      candidate({ number: 1, headRef: "g1" }, gadgets),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.members.map((m) => m.key)).toEqual(expect.arrayContaining(["1#1", "1#2", "2#1"]));
+  });
+
+  it("reads a Related line in time proportional to its length, however long its runs of spaces or name characters", () => {
+    // Neither line holds a reference. In the first, a lone \r survives the split into lines and ends the text early, so
+    // every way of reading the spaces used to be tried; in the second, the search used to read the rest of the run of
+    // name characters from each one. Four hundred pairs of lines make the small input take a couple of milliseconds,
+    // enough to time on a busy runner, and only the length of each run grows. Runs of 400 and 1,600 characters keep the
+    // work that read them again to about five seconds, so it fails in that time rather than running for half a minute.
+    const pair = (length: number) => `Related:${" ".repeat(length)}x\ry\nRelated: ${"-".repeat(length)}`;
+    const body = (length: number) => Array.from({ length: 400 }, () => pair(length)).join("\n");
+    const work = (text: string) => groupFeatures([candidate({ number: 1, body: text }), candidate({ number: 2 })]);
+
+    expect(work(body(1_600))).toEqual([]);
+    expect(growth(work, body(400), body(1_600))).toBeLessThan(PROPORTIONAL);
   });
 
   it("ignores a Related line naming a pull request that is not open, and text that is not on a Related line", () => {

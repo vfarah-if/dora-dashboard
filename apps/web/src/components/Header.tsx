@@ -1,4 +1,5 @@
-import { NavLink, useMatch } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink, useLocation, useMatch } from "react-router";
 import type { AuthState } from "../api/hooks";
 import { useHealth, useLogout, useRepos } from "../api/hooks";
 import { copy } from "../copy";
@@ -35,41 +36,157 @@ function ThemeToggle() {
   );
 }
 
+interface LinkProps {
+  onClick?: () => void;
+}
+
 /**
  * The link to the GitHub Issues page, offered only when some repository has issues or a failed read of them. It sits
  * inside the signed-in nav because the repositories list needs a session.
  */
-function IssuesNavLink() {
+function IssuesNavLink({ onClick }: LinkProps) {
   const repos = useRepos();
   if (!repos.data || !hasIssues(repos.data)) return null;
-  return <NavLink to="/issues">{copy.nav.issues}</NavLink>;
-}
-
-/** True on the code analysis page of any repository, which belongs to the Code analysis tab. */
-function useOnCodePage(): boolean {
-  return useMatch("/repos/:id/code") !== null;
-}
-
-/**
- * The Repositories tab covers the repository pages but not the code analysis page of a repository, which belongs to
- * the Code analysis tab. Otherwise two tabs would be lit at once.
- */
-function RepositoriesNavLink() {
-  const onCodePage = useOnCodePage();
   return (
-    <NavLink to="/repos" className={({ isActive }) => (isActive && !onCodePage ? "active" : undefined)}>
-      {copy.nav.repositories}
+    <NavLink to="/issues" onClick={onClick}>
+      {copy.nav.issues}
     </NavLink>
   );
 }
 
-/** Lit on the list at /code and on the code analysis page of any repository. */
-function CodeAnalysisNavLink() {
-  const onCodePage = useOnCodePage();
+/** Which sub page of a repository is open, or null on any other page. Each belongs to a tab of its own. */
+export function useRepoSubpage(): "code" | "security" | null {
+  const onCode = useMatch("/repos/:id/code") !== null;
+  const onSecurity = useMatch("/repos/:id/security") !== null;
+  if (onCode) return "code";
+  return onSecurity ? "security" : null;
+}
+
+/**
+ * A tab whose lit state is decided by the caller. NavLink derives `aria-current` from its own match, which would leave
+ * Repositories announced as the current page on a repository's code or security page, so the class and the attribute
+ * are both set here from the one decision and can never disagree.
+ */
+function Tab({ to, lit, onClick, children }: LinkProps & { to: string; lit: boolean; children: string }) {
   return (
-    <NavLink to="/code" className={({ isActive }) => (isActive || onCodePage ? "active" : undefined)}>
+    <Link to={to} onClick={onClick} className={lit ? "active" : undefined} aria-current={lit ? "page" : undefined}>
+      {children}
+    </Link>
+  );
+}
+
+/**
+ * The Repositories tab covers the repository pages but not the code analysis or security page of a repository, which
+ * belong to their own tabs. Otherwise two tabs would be lit at once.
+ */
+function RepositoriesNavLink({ onClick }: LinkProps) {
+  const subpage = useRepoSubpage();
+  const inRepos = useMatch({ path: "/repos", end: false }) !== null;
+  return (
+    <Tab to="/repos" onClick={onClick} lit={inRepos && subpage === null}>
+      {copy.nav.repositories}
+    </Tab>
+  );
+}
+
+/** Lit on the list at /code and on the code analysis page of any repository. */
+function CodeAnalysisNavLink({ onClick }: LinkProps) {
+  const subpage = useRepoSubpage();
+  const onList = useMatch({ path: "/code", end: false }) !== null;
+  return (
+    <Tab to="/code" onClick={onClick} lit={onList || subpage === "code"}>
       {copy.nav.codeAnalysis}
-    </NavLink>
+    </Tab>
+  );
+}
+
+/** Lit on the list at /security and on the security page of any repository. */
+function SecurityNavLink({ onClick }: LinkProps) {
+  const subpage = useRepoSubpage();
+  const onList = useMatch({ path: "/security", end: false }) !== null;
+  return (
+    <Tab to="/security" onClick={onClick} lit={onList || subpage === "security"}>
+      {copy.nav.security}
+    </Tab>
+  );
+}
+
+/** The tabs, in one place so that the row and the menu at narrow widths always list the same pages. */
+function NavItems({ jira, onNavigate }: { jira: boolean; onNavigate?: () => void }) {
+  return (
+    <>
+      <NavLink to="/" end onClick={onNavigate}>
+        {copy.nav.home}
+      </NavLink>
+      <RepositoriesNavLink onClick={onNavigate} />
+      <CodeAnalysisNavLink onClick={onNavigate} />
+      <SecurityNavLink onClick={onNavigate} />
+      {jira && (
+        <NavLink to="/spaces" onClick={onNavigate}>
+          {copy.nav.jira}
+        </NavLink>
+      )}
+      <IssuesNavLink onClick={onNavigate} />
+      <NavLink to="/review-queue" onClick={onNavigate}>
+        {copy.nav.reviewQueue}
+      </NavLink>
+    </>
+  );
+}
+
+/**
+ * Below 561px the row of tabs is hidden, so a button opens the same links as a list under the header. It closes when
+ * a link is followed, when the page changes and when Escape is pressed, which returns focus to the button.
+ */
+function NavMenu({ jira }: { jira: boolean }) {
+  // The menu is open for the page it was opened on, so going to another page closes it without an effect.
+  const { pathname } = useLocation();
+  const [openOn, setOpenOn] = useState<string | null>(null);
+  const open = openOn === pathname;
+  const button = useRef<HTMLButtonElement>(null);
+  const setOpen = (value: boolean) => setOpenOn(value ? pathname : null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpenOn(null);
+      button.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        className="icon-button nav-menu-button"
+        aria-expanded={open}
+        aria-controls="app-menu"
+        aria-label={copy.nav.menu}
+        title={copy.nav.menu}
+        onClick={() => setOpen(!open)}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          {open ? <path d="m6 6 12 12M18 6 6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+        </svg>
+      </button>
+      {open && (
+        <nav id="app-menu" aria-label={copy.nav.menuList} className="app-menu">
+          <NavItems jira={jira} onNavigate={() => setOpen(false)} />
+        </nav>
+      )}
+    </>
   );
 }
 
@@ -81,6 +198,12 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
   const logout = useLogout();
   const jira = useHealth().data?.jira === true;
   const user = auth?.user ?? null;
+  const nav = useRef<HTMLElement>(null);
+  const { pathname } = useLocation();
+  // Where the tabs scroll along their own row, the lit one is kept in view. Only the row moves, never the page.
+  useEffect(() => {
+    nav.current?.querySelector("a.active")?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+  }, [pathname, user, jira]);
   return (
     <header className="app-header">
       <div className="app-header-inner">
@@ -93,15 +216,8 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
           <span>{copy.appName}</span>
         </NavLink>
         {user && (
-          <nav aria-label={copy.nav.label} className="app-nav">
-            <NavLink to="/" end>
-              {copy.nav.home}
-            </NavLink>
-            <RepositoriesNavLink />
-            <CodeAnalysisNavLink />
-            {jira && <NavLink to="/spaces">{copy.nav.jira}</NavLink>}
-            <IssuesNavLink />
-            <NavLink to="/review-queue">{copy.nav.reviewQueue}</NavLink>
+          <nav ref={nav} aria-label={copy.nav.label} className="app-nav">
+            <NavItems jira={jira} />
           </nav>
         )}
         <div className="app-header-actions">
@@ -112,6 +228,7 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
             </span>
           )}
           <ThemeToggle />
+          {user && <NavMenu jira={jira} />}
           {user && canSignOut(auth) && (
             <button type="button" className="button button-ghost" onClick={() => logout.mutate()} disabled={logout.isPending}>
               {copy.auth.signOut}

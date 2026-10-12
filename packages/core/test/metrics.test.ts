@@ -10,7 +10,7 @@ import {
 } from "../src/dora.js";
 import { aiAssistance, aiCohorts, DEFAULT_AI_SIGNALS, type AiAssistance } from "../src/aiAssisted.js";
 import { DEFAULT_DORA_PROFILE, DORA_PROFILE_IDS, doraProfile, type DoraProfile } from "../src/doraProfiles.js";
-import { isBot, mergeDistribution, prTimings } from "../src/pullRequests.js";
+import { isBot, isUpdateBot, mergeDistribution, prTimings } from "../src/pullRequests.js";
 import { buildReport } from "../src/report.js";
 import { hoursBetween, median, percentile, weekRange, weekStart } from "../src/stats.js";
 import type { DeployRun, PullRequest, Repo } from "../src/types.js";
@@ -151,6 +151,40 @@ describe("prTimings", () => {
     const t = prTimings(pr({ number: 6, state: "OPEN", mergedAt: null, closedAt: null }));
     expect(t.openToMergeHours).toBeNull();
     expect(t.stages).toBeNull();
+  });
+});
+
+describe("isUpdateBot", () => {
+  it.each([
+    "dependabot",
+    "dependabot[bot]",
+    "dependabot-preview[bot]",
+    "renovate",
+    "renovate[bot]",
+    "renovate-bot",
+    "Dependabot[bot]",
+  ])("takes %s for an update bot", (login) => {
+    expect(isUpdateBot(login)).toBe(true);
+  });
+
+  it.each(["alice", "github-actions[bot]", "dependabot-fan", "renovated", "my-renovate", "", null])(
+    "does not take %j for one",
+    (login) => {
+      expect(isUpdateBot(login)).toBe(false);
+    },
+  );
+
+  it("agrees with isBot: every update bot is a bot", () => {
+    for (const login of [
+      "dependabot",
+      "dependabot[bot]",
+      "dependabot-preview[bot]",
+      "renovate",
+      "renovate[bot]",
+      "renovate-bot",
+    ]) {
+      expect(isBot({ author: login, authorIsBot: false })).toBe(true);
+    }
   });
 });
 

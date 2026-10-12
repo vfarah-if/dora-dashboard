@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  commandsByFile,
   detectTooling,
   isCodeFile,
   isTestPath,
@@ -8,6 +9,7 @@ import {
   toolingCandidates,
   type CandidateFile,
 } from "../src/codeTooling.js";
+import { PROPORTIONAL, growth } from "./growth.js";
 
 const file = (path: string, content: string): CandidateFile => ({ path, content });
 const workflow = (run: string) => file(".github/workflows/ci.yml", `jobs:\n  q:\n    steps:\n      - run: ${run}\n`);
@@ -336,16 +338,33 @@ describe("candidate crowding", () => {
 });
 
 describe("hostile input", () => {
-  it("scans a 250 KB line quickly, and cuts each line at 2,000 characters", () => {
-    const hostile = ["prettier ", "black ", "cargo fmt ", "mvn ", "gradle ", "ruff format "].map(
-      (word) => `      - run: ${word.repeat(40_000)}`,
-    );
-    const started = performance.now();
-    const facts = detectTooling([workflowOf(`steps:\n${hostile.join("\n")}\n`)]);
+  it("reads a 250 KB line in about the time of one at the 2,000 character cut", () => {
+    const lines = (length: number) =>
+      workflowOf(
+        `steps:\n${["prettier ", "black ", "cargo fmt ", "mvn ", "gradle ", "ruff format "].map((word) => `      - run: ${word.repeat(Math.ceil(length / word.length))}`).join("\n")}\n`,
+      );
+    const facts = detectTooling([lines(250_000)]);
 
-    expect(performance.now() - started).toBeLessThan(200);
     expect(facts.ciFormatChecks).toEqual([]);
     expect(facts.ciRunsTests).toBe(false);
+    // Past the cut every line costs the same. Reading the whole of each line takes dozens of times as long.
+    expect(growth((workflow) => detectTooling([workflow]), lines(2_000), lines(250_000))).toBeLessThan(4);
+  });
+
+  it("follows the 40,000 commands of a workflow in time proportional to their number", () => {
+    // Four short commands a line keep the work per command small and the file within the 20,000 lines that are read,
+    // so a queue that copies itself on every step, as `shift()` does once a list passes about 16,000 entries, is what
+    // would show.
+    const commands = (count: number) => [workflowOf(Array.from({ length: count / 4 }, () => "x; x; x; x").join("\n"))];
+    expect(commandsByFile(commands(40_000), []).get(".github/workflows/ci.yml")).toHaveLength(40_000);
+    expect(growth((workflows) => commandsByFile(workflows, []), commands(10_000), commands(40_000))).toBeLessThan(PROPORTIONAL);
+  });
+
+  it("follows the commands of a workflow's first 20,000 lines and no further", () => {
+    const lastLine = (count: number) =>
+      commandsByFile([workflowOf([...Array.from({ length: count - 1 }, () => ""), "gitleaks detect"].join("\n"))], []);
+    expect(lastLine(20_000).get(".github/workflows/ci.yml")).toEqual(["gitleaks detect"]);
+    expect(lastLine(20_001).get(".github/workflows/ci.yml")).toEqual([]);
   });
 
   it("does not see a flag pushed beyond the line cut", () => {
@@ -390,6 +409,26 @@ describe("hostile input", () => {
 
       expect(detectTooling([makefile, run]).ciFormatChecks).toEqual([]);
       expect(detectTooling([early, run]).ciFormatChecks).toEqual(["prettier"]);
+    });
+
+    it("reads variables after a long run of spaces in time proportional to the run", () => {
+      // A line break other than \n ends the value early, so the line is not a variable and every way of reading the
+      // spaces used to be tried before giving up. Four thousand lines make the small input take over a millisecond,
+      // enough to time on a busy runner, and only the run of spaces grows. Runs of 200 and 800 spaces keep the work that
+      // tried every way to about six seconds, so it fails in that time rather than running for half a minute.
+      const makefile = (spaces: number) =>
+        file("Makefile", Array.from({ length: 4_000 }, () => `A=${" ".repeat(spaces)}x\r`).join("\n"));
+      const run = workflowOf("steps:\n  - run: make lint\n");
+
+      expect(growth((m) => detectTooling([m, run]), makefile(200), makefile(800))).toBeLessThan(PROPORTIONAL);
+    });
+
+    it("stops a target's prerequisites at a comment", () => {
+      const makefile = file("Makefile", "quality: lint ## fmt\nlint:\n\teslint .\nfmt:\n\tprettier --check .\n");
+      const facts = detectTooling([makefile, workflowOf("steps:\n  - run: make quality\n")]);
+
+      expect(facts.ciLinters).toEqual(["eslint"]);
+      expect(facts.ciFormatChecks).toEqual([]);
     });
   });
 });

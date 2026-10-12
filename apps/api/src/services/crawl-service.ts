@@ -14,6 +14,26 @@ const UNEXPECTED_ISSUE_FAILURE = "Reading issues failed unexpectedly. See the AP
 type CrawledRepo = NonNullable<ReturnType<RepoStore["getRepo"]>>;
 
 /**
+ * The security step of a crawl: alerts, repository posture and the optional lookups. It stores its own failures per
+ * source; whatever it still throws is logged and the crawl goes on, except a rejected credential (ADR 0031).
+ */
+export interface SecurityStep {
+  read(token: string, repo: CrawledRepo, full: boolean): Promise<void>;
+}
+
+/**
+ * The optional steps after the pull requests and deploy runs. The crawl survives the failure of any of them, except a
+ * rejected credential, which fails it.
+ */
+export interface CrawlSteps {
+  codeHealth?: CodeHealthService;
+  issues?: IssueCrawlService;
+  security?: SecurityStep;
+  coverage?: CoverageService;
+  log?: Logger;
+}
+
+/**
  * Reads a repository's pull requests and deploy runs from its code host into the store.
  *
  * Incremental by default: the provider returns pages most recently updated first, so the crawl
@@ -23,15 +43,23 @@ type CrawledRepo = NonNullable<ReturnType<RepoStore["getRepo"]>>;
  */
 export class CrawlService {
   private readonly running = new Set<number>();
+  private readonly codeHealth: CodeHealthService | undefined;
+  private readonly issues: IssueCrawlService | undefined;
+  private readonly security: SecurityStep | undefined;
+  private readonly coverage: CoverageService | undefined;
+  private readonly log: Logger;
 
   constructor(
     private readonly store: RepoStore,
     private readonly provider: SourceProvider,
-    private readonly codeHealth?: CodeHealthService,
-    private readonly log: Logger = noopLogger,
-    private readonly issues?: IssueCrawlService,
-    private readonly coverage?: CoverageService,
-  ) {}
+    steps: CrawlSteps = {},
+  ) {
+    this.codeHealth = steps.codeHealth;
+    this.issues = steps.issues;
+    this.security = steps.security;
+    this.coverage = steps.coverage;
+    this.log = steps.log ?? noopLogger;
+  }
 
   isCrawling(repoId: number): boolean {
     return this.running.has(repoId);
@@ -45,6 +73,22 @@ export class CrawlService {
       await this.codeHealth.analyse(token, repoId, full);
     } catch (err) {
       this.log.warn({ err, repoId }, "code health step failed");
+    }
+  }
+
+  /**
+   * Security is a bonus too. The step stores what it could not read against each stage, so a failure that reaches here
+   * is one the step could not even record: it is logged as an error and the crawl finishes. A rejected credential fails
+   * the crawl, as for issues.
+   */
+  private async readSecurity(token: string, repo: CrawledRepo, full: boolean): Promise<void> {
+    if (!this.security) return;
+    try {
+      this.store.setCrawlState(repo.id, "crawling", "Reading security alerts");
+      await this.security.read(token, repo, full);
+    } catch (err) {
+      if (err instanceof UnauthorisedError) throw err;
+      this.log.error({ err, repoId: repo.id }, "security step failed, and the crawl went on");
     }
   }
 
@@ -93,6 +137,7 @@ export class CrawlService {
       await this.readDeployRuns(token, repoId, repo);
       await this.readIssues(token, repo, full);
       await this.analyseCode(token, repoId, full);
+      await this.readSecurity(token, repo, full);
       await this.readCoverage(token, repo, full);
       this.store.finishCrawl(repoId, newest);
     } catch (error) {

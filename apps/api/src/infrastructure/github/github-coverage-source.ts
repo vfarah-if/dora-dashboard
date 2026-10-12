@@ -2,7 +2,8 @@ import { isCoverageArtefactName, type CoverageArtefact } from "@dora-dashboard/c
 import { UpstreamError } from "../../core/errors.js";
 import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../../interfaces/coverage-source.js";
 import { readCoverageArchive } from "../coverage-reports/read-coverage-archive.js";
-import { API, download, type Fetch, request } from "./github-http.js";
+import type { Fetch } from "../http/fetch.js";
+import { API, download, request } from "./github-http.js";
 
 const PAGE_SIZE = 100;
 /** Three pages of 100 read exactly the newest 300 artefacts, of any name and branch. */

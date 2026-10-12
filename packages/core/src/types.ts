@@ -457,6 +457,38 @@ export interface IssueLabelDefaults extends IssueLabelLists {
   };
 }
 
+/** A repository's rules for leaving a merged pull request out of "merged with no review" (ADR 0036). */
+export interface ReviewExemptionRules {
+  /** Whole words that mark a title as code reviewed elsewhere, compared without case or punctuation. */
+  titleWords: string[];
+  /** Label names that mark a pull request as reviewed elsewhere, compared without case. */
+  labels: string[];
+}
+
+/** The rules that apply until a repository overrides them, and the limits an override must keep to. */
+export interface ReviewExemptionDefaults extends ReviewExemptionRules {
+  limits: {
+    /** The most title words an override may list. */
+    titleWords: number;
+    /** The most labels an override may list. */
+    labels: number;
+    /** The most characters one entry may have. */
+    length: number;
+  };
+}
+
+/**
+ * A repository's saved override of some defaults: none saved, so the defaults apply; one saved and read; or one saved
+ * that cannot be read (bad JSON or the wrong shape), so the defaults apply until it is saved again.
+ */
+export type SavedOverride<R> = { kind: "defaults" } | { kind: "override"; rules: R } | { kind: "unreadable" };
+
+/** A repository's saved issue label override (ADR 0028). */
+export type IssueLabelState = SavedOverride<IssueLabelRules>;
+
+/** A repository's saved review exemptions (ADR 0036). */
+export type ReviewExemptionState = SavedOverride<ReviewExemptionRules>;
+
 /** A pull request named in a finding or a list. */
 export interface PullRequestRef {
   /** "owner/name". */
@@ -474,10 +506,10 @@ export interface RepoListing extends Repo {
   issues: number;
   /** Whether the host reported issues switched on at the last crawl; null before issues were first read. */
   issuesEnabled: boolean | null;
-  /** The repository's label override; null when the defaults apply. */
-  issueLabels: IssueLabelRules | null;
-  /** True when an override was saved but cannot be read, so the defaults apply until it is saved again. */
-  issueLabelsUnreadable: boolean;
+  /** The repository's label override, or which defaults apply and why. */
+  issueLabels: IssueLabelState;
+  /** The repository's review exemptions, or which defaults apply and why. */
+  reviewExemptions: ReviewExemptionState;
   /** Why the last issue read failed; null when it succeeded or never ran. The rest of the crawl is unaffected. */
   issueError: string | null;
 }

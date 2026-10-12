@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link, useLocation, useParams } from "react-router";
-import type { RepoReport } from "@dora-dashboard/core";
+import type { RepoListing, RepoReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { isRecordId, useRepos, useReport, type ReportRange } from "../api/hooks";
 import { hasIssueStatus } from "../lib/issues";
@@ -13,9 +13,11 @@ import { CodeHealthSection } from "../components/CodeHealthSection";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DoraTile } from "../components/DoraTile";
 import { DownloadReportButton } from "../components/DownloadReportButton";
+import { ReviewExemptionsPanel } from "../components/ReviewExemptionsPanel";
 import { PrTable } from "../components/PrTable";
 import { ProfileLine } from "../components/ProfileLine";
 import { PartWeekNote, RepoCharts } from "../components/RepoCharts";
+import { SecuritySection } from "../components/SecuritySection";
 import { StatTile } from "../components/StatTile";
 import { ErrorState, Skeleton, SkeletonGrid } from "../components/States";
 import { StickyPanel } from "../components/StickyPanel";
@@ -43,6 +45,11 @@ function FlowTiles({ report }: { report: RepoReport }) {
       />
       <StatTile label={copy.flow.reviewed} value={formatPercent(totals.reviewedShare)} hint={copy.flow.reviewedHint} />
       <StatTile label={copy.flow.selfMerged} value={formatPercent(totals.selfMergedShare)} hint={copy.flow.selfMergedHint} />
+      <StatTile
+        label={copy.flow.unreviewed}
+        value={formatPercent(totals.unreviewedShare)}
+        hint={copy.flow.unreviewedHint(totals.unreviewedCount, totals.merged - totals.exemptCount, totals.exemptCount)}
+      />
       <StatTile
         label={copy.flow.perAuthorWeek}
         value={formatNumber(totals.mergedPerAuthorWeek, 2)}
@@ -74,9 +81,11 @@ interface ReportBodyProps {
   report: RepoReport;
   repoId: number;
   range: ReportRange;
+  /** This repository's row in the list, for the rules the no review figure follows. Absent until the list loads. */
+  listing: RepoListing | undefined;
 }
 
-function ReportBody({ report, repoId, range }: ReportBodyProps) {
+function ReportBody({ report, repoId, range, listing }: ReportBodyProps) {
   const { hash } = useLocation();
   // The report arrives after the page loads, so a link to a section has nothing to land on until now.
   useEffect(() => {
@@ -111,12 +120,15 @@ function ReportBody({ report, repoId, range }: ReportBodyProps) {
 
       <CodeHealthSection repoId={repoId} range={range} />
 
+      <SecuritySection repoId={repoId} range={range} />
+
       <section aria-labelledby="flow-title" className="section">
         <h2 id="flow-title" className="section-title">
           {copy.flow.title}
         </h2>
         <p className="section-lede">{copy.flow.lede}</p>
         <FlowTiles report={report} />
+        {listing && <ReviewExemptionsPanel repo={listing} />}
       </section>
 
       <section className="section">
@@ -160,10 +172,11 @@ interface ReportStateProps {
   query: UseQueryResult<RepoReport>;
   repoId: number;
   range: ReportRange;
+  listing: RepoListing | undefined;
 }
 
 /** The report's loading skeleton, error and body. The body stays while a refetch fails, as before. */
-function ReportState({ query, repoId, range }: ReportStateProps) {
+function ReportState({ query, repoId, range, listing }: ReportStateProps) {
   return (
     <>
       {query.isPending && (
@@ -175,7 +188,7 @@ function ReportState({ query, repoId, range }: ReportStateProps) {
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
       {query.data && (
         <div className={query.isPlaceholderData ? "is-refreshing" : undefined} aria-busy={query.isFetching}>
-          <ReportBody report={query.data} repoId={repoId} range={range} />
+          <ReportBody report={query.data} repoId={repoId} range={range} listing={listing} />
         </div>
       )}
     </>
@@ -225,6 +238,9 @@ function RepoView({ id }: { id: number }) {
           <Link to={{ pathname: `/repos/${id}/code`, search: searchForCodePage(search) }} className="button button-secondary">
             {copy.codeAnalysis.repoLink}
           </Link>
+          <Link to={{ pathname: `/repos/${id}/security`, search: searchForCodePage(search) }} className="button button-secondary">
+            {copy.security.section.link}
+          </Link>
           {showIssuesLink && (
             <Link to={`/issues/${id}`} className="button button-secondary">
               {copy.repo.issuesLink}
@@ -241,7 +257,7 @@ function RepoView({ id }: { id: number }) {
       {everyoneLeftOut(choices, leftOut) && <InfoNotice text={copy.authorFilter.noneChosen} />}
       {crawling && <InfoNotice text={copy.repo.crawlInProgress} />}
 
-      <ReportState query={report} repoId={id} range={range} />
+      <ReportState query={report} repoId={id} range={range} listing={listing} />
     </div>
   );
 }

@@ -148,8 +148,8 @@ describe("issues in the store", () => {
   });
 
   it("starts with nothing recorded about the issue crawl", () => {
-    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
-    expect(store.issueState(999)).toEqual({ enabled: null, cursor: null, labels: null, labelsUnreadable: false, error: null });
+    expect(store.issueState(repoId)).toEqual({ enabled: null, cursor: null, labels: { kind: "defaults" }, error: null });
+    expect(store.issueState(999)).toEqual({ enabled: null, cursor: null, labels: { kind: "defaults" }, error: null });
   });
 
   it("records a finished crawl, and keeps the cursor when finishing with none", () => {
@@ -173,24 +173,24 @@ describe("issues in the store", () => {
     const rules = { kinds: { bug: ["defect"] }, priorities: { P0: ["sev1"] } };
 
     store.setIssueLabels(repoId, rules);
-    expect(store.issueState(repoId).labels).toEqual(rules);
+    expect(store.issueState(repoId).labels).toEqual({ kind: "override", rules });
 
     store.setIssueLabels(repoId, null);
-    expect(store.issueState(repoId).labels).toBeNull();
+    expect(store.issueState(repoId).labels).toEqual({ kind: "defaults" });
   });
 
   it("says a saved override is unreadable until a good one is saved", () => {
     const db = (store as unknown as { db: DatabaseSync }).db;
-    expect(store.issueState(repoId).labelsUnreadable).toBe(false);
+    expect(store.issueState(repoId).labels.kind).toBe("defaults");
 
     db.prepare("UPDATE repos SET issue_labels = '{not json' WHERE id = ?").run(repoId);
-    expect(store.issueState(repoId)).toMatchObject({ labels: null, labelsUnreadable: true });
+    expect(store.issueState(repoId)).toMatchObject({ labels: { kind: "unreadable" } });
 
     db.prepare('UPDATE repos SET issue_labels = \'{"kinds":{"bug":"x"}}\' WHERE id = ?').run(repoId);
-    expect(store.issueState(repoId).labelsUnreadable).toBe(true);
+    expect(store.issueState(repoId).labels.kind).toBe("unreadable");
 
     store.setIssueLabels(repoId, { kinds: { bug: ["defect"] } });
-    expect(store.issueState(repoId)).toMatchObject({ labels: { kinds: { bug: ["defect"] } }, labelsUnreadable: false });
+    expect(store.issueState(repoId)).toMatchObject({ labels: { kind: "override", rules: { kinds: { bug: ["defect"] } } } });
   });
 
   it("reads labels that are not usable as no override, and logs which repository", () => {
@@ -202,7 +202,7 @@ describe("issues in the store", () => {
 
     for (const bad of ["{not json", "[1]", "7", "null"]) {
       db.prepare("UPDATE repos SET issue_labels = ? WHERE id = ?").run(bad, id);
-      expect(logged.issueState(id).labels).toBeNull();
+      expect(logged.issueState(id).labels).toEqual({ kind: "unreadable" });
     }
     expect(warnings).toEqual(expect.arrayContaining([expect.objectContaining({ repoId: id })]));
   });
@@ -235,16 +235,19 @@ describe("saved labels of the wrong shape", () => {
     const { store, id, save, warnings } = setup();
     save(bad);
 
-    expect(store.issueState(id).labels).toBeNull();
+    expect(store.issueState(id).labels).toEqual({ kind: "unreadable" });
     expect(warnings).toHaveLength(1);
   });
 
   it("accepts a valid override and an empty object", () => {
     const { store, id, save, warnings } = setup();
     save('{"kinds":{"epic":["epic"]},"priorities":{"P0":[]}}');
-    expect(store.issueState(id).labels).toEqual({ kinds: { epic: ["epic"] }, priorities: { P0: [] } });
+    expect(store.issueState(id).labels).toEqual({
+      kind: "override",
+      rules: { kinds: { epic: ["epic"] }, priorities: { P0: [] } },
+    });
     save("{}");
-    expect(store.issueState(id).labels).toEqual({});
+    expect(store.issueState(id).labels).toEqual({ kind: "override", rules: {} });
     expect(warnings).toEqual([]);
   });
 
@@ -315,8 +318,7 @@ describe("migrating a database made before issues were read", () => {
     expect(store.issueState(repo.id)).toEqual({
       enabled: null,
       cursor: null,
-      labels: null,
-      labelsUnreadable: false,
+      labels: { kind: "defaults" },
       error: null,
     });
     store.upsertIssues(repo.id, [issue({ number: 1 })]);
@@ -337,8 +339,7 @@ describe("migrating a database made before issues were read", () => {
     expect(again.issueState(id)).toEqual({
       enabled: true,
       cursor: "2026-09-01T00:00:00.000Z",
-      labels: { kinds: { bug: ["defect"] } },
-      labelsUnreadable: false,
+      labels: { kind: "override", rules: { kinds: { bug: ["defect"] } } },
       error: null,
     });
   });

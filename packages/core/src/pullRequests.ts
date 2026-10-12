@@ -29,8 +29,24 @@ export interface PrTimings {
 
 const BOT_LOGIN = /\[bot\]$|^dependabot|^renovate/i;
 
+/** Whether a login looks like a bot's, for when the host did not say whether the account is one. */
+export function isBotLogin(login: string | null): boolean {
+  return login !== null && BOT_LOGIN.test(login);
+}
+
+/**
+ * The accounts that open dependency update pull requests: Dependabot and Renovate, with or without the `[bot]` suffix.
+ * Dependabot's old `dependabot-preview[bot]` and Renovate's `renovate-bot` are included.
+ */
+const UPDATE_BOT = /^(?:dependabot(?:-preview)?|renovate(?:-bot)?)(?:\[bot\])?$/i;
+
+/** Whether a login is a dependency update bot. Null is not. */
+export function isUpdateBot(login: string | null): boolean {
+  return login !== null && UPDATE_BOT.test(login);
+}
+
 export function isBot(pr: Pick<PullRequest, "author" | "authorIsBot">): boolean {
-  return pr.authorIsBot || (pr.author !== null && BOT_LOGIN.test(pr.author));
+  return pr.authorIsBot || isBotLogin(pr.author);
 }
 
 const clamp = (h: number | null) => (h === null ? 0 : Math.max(0, h));

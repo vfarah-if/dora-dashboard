@@ -69,7 +69,9 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
   const defaults = defaultsQuery.data;
   const limits = defaults?.limits;
   const placeholders = defaults ? defaultInputs(defaults) : NO_PLACEHOLDERS;
-  const [inputs, setInputs] = useState<LabelInputs>(() => inputsFromRules(repo.issueLabels));
+  const [inputs, setInputs] = useState<LabelInputs>(() =>
+    inputsFromRules(repo.issueLabels.kind === "override" ? repo.issueLabels.rules : null),
+  );
   const [done, setDone] = useState<"saved" | "reset" | null>(null);
   const titleId = useId();
   const idBase = useId();
@@ -100,7 +102,7 @@ export function IssueLabelsPanel({ repo }: { repo: RepoListing }) {
         {text.title}
       </h3>
       <p className="field-hint">{text.lede}</p>
-      {repo.issueLabelsUnreadable && (
+      {repo.issueLabels.kind === "unreadable" && (
         <p className="notice notice-warning" role="alert">
           {text.unreadable}
         </p>

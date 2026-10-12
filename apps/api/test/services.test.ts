@@ -5,6 +5,7 @@ import { parseRepoRef } from "../src/services/repo-ref.js";
 import { RepoService } from "../src/services/repo-service.js";
 import { ReportService } from "../src/services/report-service.js";
 import { FakeProvider, pr } from "./fakes.js";
+import { growth } from "./growth.js";
 
 describe("parseRepoRef", () => {
   it.each([
@@ -19,6 +20,25 @@ describe("parseRepoRef", () => {
 
   it.each(["widgets", "", "acme/", "a b/c d"])("rejects %j", (input) => {
     expect(parseRepoRef(input)).toBeNull();
+  });
+
+  it("drops any number of trailing slashes, after the .git suffix is taken off", () => {
+    expect(parseRepoRef("https://github.com/acme/widgets///")).toEqual({ owner: "acme", name: "widgets" });
+    expect(parseRepoRef("https://github.com/acme/widgets.git/")).toEqual({ owner: "acme", name: "widgets.git" });
+  });
+
+  it("rejects a long run of slashes in time proportional to its length", () => {
+    const slashes = (count: number) => `a${"/".repeat(count)}b`;
+    expect(parseRepoRef(slashes(2_000))).toBeNull();
+    // Each measured run reads about two million characters, which takes a couple of milliseconds and so stands well above
+    // the microseconds of CPU time that timer noise can add on a busy runner. Only the length of each run of slashes
+    // changes, from 8,000 runs of 250 to 2,000 runs of 1,000, so work in proportion to the input takes about as long for
+    // both, while work that read the run again from each slash takes about four times as long for the longer runs. The
+    // input does not grow fourfold, so the bound is 2.5 rather than `PROPORTIONAL`, and holding the total fixed keeps that
+    // slow work to a few seconds, so it fails instead of running for hours.
+    const runs = (count: number, length: number) => Array.from({ length: count }, () => slashes(length));
+    const work = (inputs: string[]) => inputs.forEach((input) => parseRepoRef(input));
+    expect(growth(work, runs(8_000, 250), runs(2_000, 1_000))).toBeLessThan(2.5);
   });
 });
 
