@@ -42,6 +42,10 @@ make dev                                  # API on :8787, open http://localhost:
 
 Or add repositories from the web app by pasting `owner/name` or a GitHub URL.
 
+### Keeping it running (macOS)
+
+`make service-install` builds the dashboard and hands it to launchd, so the API and the web app start at every login and start again if either stops, with no terminal or editor open. Open http://localhost:5181 as usual. The service serves the build made at install rather than watching the source, so run `make service-install` again after pulling or changing code. It uses the same ports as `make dev`, which therefore stops with a reminder while the service runs, and `make service-stop` frees them until the next login or `make service-start`. `make service-status` and `make service-logs` show how it is doing, with the logs under `.run/`, and `make service-uninstall` removes it from login. Install from a terminal where `node`, `gh` and, if you use it, `lizard` are on the PATH, because the service keeps the PATH it was installed with.
+
 ### Code health (optional)
 
 Each crawl also clones the deploy branch, measures the complexity of every function and discards the clone (ADR 0011). The clone is made with `git`, so `git` must be on the machine that runs the API for code health in every language. JavaScript and TypeScript are then measured in process from a syntax tree (ADR 0025) and need nothing more. Every other language needs [lizard](https://github.com/terryyin/lizard), and a repository that holds only JavaScript and TypeScript does not need it at all.

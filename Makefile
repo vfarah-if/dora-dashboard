@@ -29,7 +29,8 @@ RESET := \033[0m
 
 .PHONY: help all install build typecheck test test-coverage test-coverage-force quality \
         fmt fmt-check lint lint-fix check-names dev dev-bg dev-stop dev-logs api web crawl crawl-full \
-        crawl-all env clean clean-data upgrade upgrade-check upgrade-root upgrade-core upgrade-api upgrade-web
+        crawl-all env clean clean-data upgrade upgrade-check upgrade-root upgrade-core upgrade-api upgrade-web \
+        service-install service-uninstall service-start service-stop service-status service-logs service-off
 
 # --- Getting started ----------------------------------------------------------
 
@@ -89,10 +90,10 @@ quality: fmt-check lint check-names typecheck test-coverage ## Every gate CI run
 
 # --- Running ------------------------------------------------------------------
 
-dev: env ## API and web together in the foreground (Ctrl+C stops both)
+dev: env service-off ## API and web together in the foreground (Ctrl+C stops both)
 	$(TURBO) run dev --filter=$(API_WS) --filter=$(WEB_WS)
 
-dev-bg: env ## API and web in the background, logs under .run/
+dev-bg: env service-off ## API and web in the background, logs under .run/
 	@mkdir -p $(RUN_DIR)
 	@$(TURBO) run build --filter=$(CORE_WS) > /dev/null
 	@nohup npm run dev -w $(API_WS) > $(RUN_DIR)/api.log 2>&1 & echo $$! > $(RUN_DIR)/api.pid
@@ -107,11 +108,37 @@ dev-stop: ## Stop servers started by dev-bg
 dev-logs: ## Follow the background servers' logs
 	tail -f $(RUN_DIR)/api.log $(RUN_DIR)/web.log
 
-api: env ## The API alone on :8787
+api: env service-off ## The API alone on :8787
 	$(TURBO) run build --filter=$(CORE_WS) > /dev/null && npm run dev -w $(API_WS)
 
-web: ## The web app alone on :5181 (expects the API running)
+web: service-off ## The web app alone on :5181 (expects the API running)
 	npm run dev -w $(WEB_WS)
+
+# The always-on service holds the same ports, so say so rather than let the dev servers fail on a busy port.
+service-off:
+	@if scripts/service.sh running 2> /dev/null; then \
+		printf '%b\n' "$(YELLOW)The always-on service holds :8787 and :5181. Run make service-stop first, and make service-start afterwards.$(RESET)"; exit 1; \
+	fi
+
+# --- Always on (macOS) --------------------------------------------------------
+
+service-install: env build ## Serve the current build at every login, restarting it if it stops; run again after changes
+	@scripts/service.sh install
+
+service-uninstall: ## Stop the always-on service and remove it from login
+	@scripts/service.sh uninstall
+
+service-start: ## Start the always-on service again after service-stop
+	@scripts/service.sh start
+
+service-stop: ## Stop the always-on service until the next login, for example to run make dev
+	@scripts/service.sh stop
+
+service-status: ## Show whether the always-on API and web app are running
+	@scripts/service.sh status
+
+service-logs: ## Follow the always-on service's logs
+	@scripts/service.sh logs
 
 # --- Crawling -----------------------------------------------------------------
 
