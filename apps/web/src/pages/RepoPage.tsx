@@ -59,11 +59,20 @@ function FlowTiles({ report }: { report: RepoReport }) {
   );
 }
 
-function RepoHeader({ report, leftOut }: { report: RepoReport | undefined; leftOut: string[] }) {
+interface RepoHeaderProps {
+  report: RepoReport | undefined;
+  /** The repository's row in the list, which names it while the report is loading or has failed. */
+  listing: RepoListing | undefined;
+  failed: boolean;
+  leftOut: string[];
+}
+
+function RepoHeader({ report, listing, failed, leftOut }: RepoHeaderProps) {
+  const known = report?.repo ?? listing;
   return (
     <header className="page-header page-header-row">
       <div className="page-header">
-        <h1>{report ? repoName(report.repo) : copy.repo.loadingTitle}</h1>
+        <h1>{known ? repoName(known) : failed ? copy.repo.failedTitle : copy.repo.loadingTitle}</h1>
         {report && (
           <p className="lede">
             {copy.repo.rangeSummary(formatDate(report.range.from), formatDate(report.range.to))}
@@ -182,7 +191,7 @@ function ReportState({ query, repoId, range, listing }: ReportStateProps) {
       {query.isPending && (
         <>
           <SkeletonGrid count={4} height={150} />
-          <Skeleton height={320} />
+          <Skeleton height={320} decorative />
         </>
       )}
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
@@ -233,7 +242,7 @@ function RepoView({ id }: { id: number }) {
         <Link to="/repos" className="back-link">
           {copy.common.backToRepos}
         </Link>
-        <RepoHeader report={report.data} leftOut={leftOut} />
+        <RepoHeader report={report.data} listing={listing} failed={report.isError} leftOut={leftOut} />
         <p className="button-row">
           <Link to={{ pathname: `/repos/${id}/code`, search: searchForCodePage(search) }} className="button button-secondary">
             {copy.codeAnalysis.repoLink}

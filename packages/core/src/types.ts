@@ -163,6 +163,8 @@ export interface RepoQueueSummary {
   bands: Record<WaitBand, number>;
   /** Lane counts over every open pull request. */
   lanes: Record<ReviewLane, number>;
+  /** When this repository's pull requests were read from the host, as the caller reported it (never worked out here). */
+  fetchedAt: string;
 }
 
 export interface FeatureMember {

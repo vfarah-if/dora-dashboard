@@ -10,7 +10,9 @@ import {
   initialsOf,
   metaParts,
   lanesLine,
+  refreshScope,
   reviewerNames,
+  shownFetchedAt,
   summaryText,
   tilesFor,
   isIdle,
@@ -225,5 +227,59 @@ describe("metaParts", () => {
     const parts = metaParts(stale, false);
     expect(parts.some((p) => p.startsWith("Waiting"))).toBe(false);
     expect(parts.at(-1)).toBe("Idle 20 days");
+  });
+});
+
+describe("refreshScope", () => {
+  const base = reviewQueue();
+  const queue = {
+    ...base,
+    repos: [base.repos[0]!, { ...base.repos[0]!, repoId: 2, repo: "acme/gadgets" }],
+    errors: [{ repoId: 3, repo: "acme/broken", message: "GitHub answered 502" }],
+  };
+
+  it("names the ticked repositories the queue knows, read or failed", () => {
+    expect(refreshScope(queue, [2, 3])).toEqual([2, 3]);
+    expect(refreshScope(queue, [2, 99])).toEqual([2]);
+  });
+
+  it("is empty when none is ticked, or none ticked is known", () => {
+    expect(refreshScope(queue, [])).toEqual([]);
+    expect(refreshScope(queue, [99])).toEqual([]);
+  });
+});
+
+describe("shownFetchedAt", () => {
+  const base = reviewQueue();
+  const queue = {
+    ...base,
+    fetchedAt: "2026-03-09T09:50:00Z",
+    repos: [
+      { ...base.repos[0]!, repoId: 1, fetchedAt: "2026-03-09T09:59:00Z" },
+      { ...base.repos[0]!, repoId: 2, fetchedAt: "2026-03-09T09:58:00Z" },
+      { ...base.repos[0]!, repoId: 3, fetchedAt: "2026-03-09T09:50:00Z" },
+    ],
+  };
+
+  it("is the oldest read among the ticked repositories", () => {
+    expect(shownFetchedAt(queue, [1])).toBe("2026-03-09T09:59:00Z");
+    expect(shownFetchedAt(queue, [1, 2])).toBe("2026-03-09T09:58:00Z");
+  });
+
+  it("compares the reads as times, so a form with milliseconds sorts by when it was", () => {
+    const mixed = {
+      ...queue,
+      repos: [
+        { ...base.repos[0]!, repoId: 1, fetchedAt: "2026-03-09T09:58:00.500Z" },
+        { ...base.repos[0]!, repoId: 2, fetchedAt: "2026-03-09T09:58:00Z" },
+      ],
+    };
+    // As text, "09:58:00.500Z" sorts before "09:58:00Z", though it is half a second later.
+    expect(shownFetchedAt(mixed, [1, 2])).toBe("2026-03-09T09:58:00Z");
+  });
+
+  it("is the queue's own oldest read when none ticked is known", () => {
+    expect(shownFetchedAt(queue, [])).toBe("2026-03-09T09:50:00Z");
+    expect(shownFetchedAt(queue, [99])).toBe("2026-03-09T09:50:00Z");
   });
 });

@@ -2,7 +2,7 @@ import { Link, useParams } from "react-router";
 import type { BoardAccess, SpaceReport } from "@dora-dashboard/core";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
-import { isRecordId, useSpaceReport } from "../api/hooks";
+import { isRecordId, useSpaceReport, useSpaces } from "../api/hooks";
 import { copy } from "../copy";
 import { DateRangeControls } from "../components/DateRangeControls";
 import { DownloadReportButton } from "../components/DownloadReportButton";
@@ -16,12 +16,22 @@ import { formatDate, formatDateTime, formatDuration, formatNumber, formatPercent
 import { shareOf } from "../lib/space";
 import { useFlagParam, useRangeParams } from "../lib/urlState";
 
-function SpaceHeader({ report }: { report: SpaceReport | undefined }) {
+interface SpaceHeaderProps {
+  report: SpaceReport | undefined;
+  /**
+   * The space's name from the list, used until the report arrives. A list already cached names the space while the
+   * report loads, but the list is only fetched once the report has failed.
+   */
+  name: string | undefined;
+  failed: boolean;
+}
+
+function SpaceHeader({ report, name, failed }: SpaceHeaderProps) {
   const text = copy.space;
   return (
     <header className="page-header page-header-row">
       <div className="page-header">
-        <h1>{report ? report.space.name : text.loadingTitle}</h1>
+        <h1>{report?.space.name ?? name ?? (failed ? text.failedTitle : text.loadingTitle)}</h1>
         {report && (
           <p className="lede">
             {text.rangeSummary(formatDate(report.range.from), formatDate(report.range.to))}
@@ -180,7 +190,7 @@ function ReportState({ query, people }: { query: UseQueryResult<SpaceReport>; pe
       {query.isPending && (
         <>
           <SkeletonGrid count={4} height={150} />
-          <Skeleton height={320} />
+          <Skeleton height={320} decorative />
         </>
       )}
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
@@ -214,6 +224,8 @@ function SpaceView({ id }: { id: number }) {
   const [range, setRange] = useRangeParams();
   const [people, setPeople] = useFlagParam("people");
   const report = useSpaceReport(id, { from: range.from, to: range.to }, people);
+  // The list is only read to name the space when its report has failed.
+  const name = useSpaces(report.isError).data?.find((space) => space.id === id)?.name;
 
   return (
     <div className="page">
@@ -221,7 +233,7 @@ function SpaceView({ id }: { id: number }) {
         <Link to="/spaces" className="back-link">
           {copy.common.backToSpaces}
         </Link>
-        <SpaceHeader report={report.data} />
+        <SpaceHeader report={report.data} name={name} failed={report.isError} />
         <div className="controls-bar">
           <DateRangeControls value={range} onChange={setRange} showBots={false} />
           <Toggle label={copy.space.showPeople} hint={copy.space.showPeopleHint} checked={people} onChange={setPeople} />

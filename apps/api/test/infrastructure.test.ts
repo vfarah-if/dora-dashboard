@@ -851,6 +851,124 @@ describe("GitHubProvider open pull requests", () => {
     await expect(broken.fetchOpenPullRequests("t", "acme", "widgets")).rejects.toBeInstanceOf(UpstreamError);
   });
 
+  describe("GraphQL errors when reading open pull requests", () => {
+    const reading = (body: unknown) =>
+      new GitHubProvider(vi.fn(async () => json(body))).fetchOpenPullRequests("t", "acme", "widgets");
+
+    it("reports a NOT_FOUND on the repository path with no repository as not found, so lost access is noticed", async () => {
+      await expect(
+        reading({
+          data: { repository: null },
+          errors: [
+            {
+              type: "NOT_FOUND",
+              path: ["repository"],
+              message: "Could not resolve to a Repository with the name 'acme/widgets'.",
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        name: "NotFoundError",
+        message: "acme/widgets was not found, or your GitHub account cannot see it",
+      });
+    });
+
+    it("does not take a NOT_FOUND on another path, or with a repository present, for a missing repository", async () => {
+      const elsewhere = await reading({
+        data: { repository: null },
+        errors: [{ type: "NOT_FOUND", path: ["viewer"], message: "Could not resolve user 4242" }],
+      }).catch((e: unknown) => e);
+      expect(elsewhere).toBeInstanceOf(UpstreamError);
+      const present = await reading({
+        ...connection([]),
+        errors: [{ type: "NOT_FOUND", path: ["repository"], message: "Could not resolve" }],
+      }).catch((e: unknown) => e);
+      expect(present).toBeInstanceOf(UpstreamError);
+    });
+
+    it("reports FORBIDDEN as a refusal of this credential, not as GitHub's text", async () => {
+      const error = await reading({
+        data: { repository: null },
+        errors: [{ type: "FORBIDDEN", message: "Resource protected by organization SAML enforcement for user 4242." }],
+      }).catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        name: "AccessRefusedError",
+        message: "GitHub refused this credential access to acme/widgets",
+      });
+      expect((error as Error).message).not.toContain("4242");
+    });
+
+    it("marks RATE_LIMITED as a rate limit without repeating GitHub's text, which can name an account", async () => {
+      const error = await reading({
+        data: { repository: null },
+        errors: [{ type: "RATE_LIMITED", message: "API rate limit already exceeded for user ID 4242." }],
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UpstreamError);
+      expect(error).toMatchObject({
+        status: 429,
+        rateLimited: true,
+        message: "GitHub's rate limit for this token was reached; try again later",
+      });
+    });
+
+    it("shows a fixed sentence for any other error and keeps the raw text only as the cause", async () => {
+      const error = (await reading({ ...connection([]), errors: [{ message: "Something odd happened for user ID 4242" }] }).catch(
+        (e: unknown) => e,
+      )) as UpstreamError;
+      expect(error).toBeInstanceOf(UpstreamError);
+      expect(error.message).toBe("GitHub reported an error reading acme/widgets");
+      expect(error.rateLimited).toBe(false);
+      expect((error.cause as Error).message).toBe("Something odd happened for user ID 4242");
+    });
+
+    it("adds only the known phrase from GitHub to the fixed sentence, not the words around it", async () => {
+      const error = (await reading({
+        ...connection([]),
+        errors: [{ message: "odd" }, { message: "Resource not accessible by integration 4242" }],
+      }).catch((e: unknown) => e)) as UpstreamError;
+      expect(error.message).toBe("GitHub reported an error reading acme/widgets: Resource not accessible");
+    });
+
+    it("does not take a FORBIDDEN on one field of a repository that came back for lost access", async () => {
+      const error = await reading({
+        ...connection([]),
+        errors: [{ type: "FORBIDDEN", path: ["repository", "pullRequests", "nodes", 0, "author"], message: "Forbidden" }],
+      }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(UpstreamError);
+      expect(error).toMatchObject({ status: 200, rateLimited: false, message: "GitHub reported an error reading acme/widgets" });
+    });
+
+    it("takes a FORBIDDEN on the repository itself for a refusal, even when GitHub sent the repository", async () => {
+      await expect(
+        reading({ ...connection([]), errors: [{ type: "FORBIDDEN", path: ["repository"], message: "Forbidden" }] }),
+      ).rejects.toMatchObject({ name: "AccessRefusedError" });
+    });
+
+    it("prefers a rate limit to a refusal in the same reply, so a passing limit never drops what was read", async () => {
+      await expect(
+        reading({
+          data: { repository: null },
+          errors: [
+            { type: "FORBIDDEN", message: "Forbidden" },
+            { type: "RATE_LIMITED", message: "API rate limit exceeded" },
+          ],
+        }),
+      ).rejects.toMatchObject({ status: 429, rateLimited: true });
+    });
+
+    it.each([
+      ["API rate limit already exceeded for user ID 4242."],
+      ["You have triggered an abuse detection mechanism for user ID 4242."],
+    ])("marks an untyped error that says it is a rate limit (%s), without repeating it", async (message) => {
+      const error = await reading({ data: { repository: null }, errors: [{ message }] }).catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        status: 429,
+        rateLimited: true,
+        message: "GitHub's rate limit for this token was reached; try again later",
+      });
+    });
+  });
+
   it("reports a rate limit that arrives with a null pull request page as an upstream error, not as not found", async () => {
     const limited = new GitHubProvider(
       vi.fn(async () => json({ data: { repository: null }, errors: [{ message: "API rate limit exceeded" }] })),
@@ -872,13 +990,14 @@ describe("GitHubProvider open pull requests", () => {
     await expect(gone.fetchPullRequestPage("t", "acme", "widgets", null)).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("reports a rate limit that arrives with a null repository as an upstream error, not as not found", async () => {
+  it("reports a rate limit that arrives with a null repository as a marked rate limit, not as not found", async () => {
     const limited = new GitHubProvider(
       vi.fn(async () => json({ data: { repository: null }, errors: [{ message: "API rate limit exceeded" }] })),
     );
     await expect(limited.fetchOpenPullRequests("t", "acme", "widgets")).rejects.toMatchObject({
       name: "UpstreamError",
-      message: "API rate limit exceeded",
+      status: 429,
+      rateLimited: true,
     });
   });
 });

@@ -57,7 +57,7 @@ function LeastCovered({ view }: { view: OkCoverage }) {
         <p className="chart-empty">{c.empty}</p>
       ) : (
         <>
-          <ShowAllList total={files.length}>
+          <ShowAllList total={files.length} what={c.what}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table coverage-table">
@@ -108,7 +108,7 @@ function NotInReport({ view }: { view: OkCoverage }) {
         <p className="chart-empty">{c.empty}</p>
       ) : (
         <>
-          <ShowAllList total={files.length}>
+          <ShowAllList total={files.length} what={c.what}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table coverage-table">
@@ -159,7 +159,7 @@ function Untested({ view, warn }: { view: OkCoverage; warn: number }) {
       <OtherCommitNote view={view} />
       {view.lineDetail ? (
         <>
-          <ShowAllList total={rows.length}>
+          <ShowAllList total={rows.length} what={c.what}>
             {(limit) => (
               <FunctionTable
                 rows={rows.slice(0, limit)}

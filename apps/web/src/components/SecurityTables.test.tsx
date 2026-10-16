@@ -380,7 +380,7 @@ describe("AlertsTable", () => {
     const alerts = Array.from({ length: 12 }, (_, i) => securityAlert({ key: String(i), title: `Alert ${i}` }));
     show(securityReport({ openAlerts: alerts, openAlertTotal: 12 }));
     expect(bodyRows()).toHaveLength(10);
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(12, copy.security.alerts.what) }));
     expect(bodyRows()).toHaveLength(12);
   });
 });
@@ -516,7 +516,7 @@ describe("DependencyTable", () => {
     const groups = Array.from({ length: 11 }, (_, i) => ({ ...dependencyGroups[1]!, name: `pkg-${i}` }));
     render(<DependencyTable groups={groups} />);
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(11);
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(11) }));
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(11, copy.security.upgrades.what) }));
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(12);
   });
 });

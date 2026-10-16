@@ -69,6 +69,7 @@ function weeklyAxis(series: readonly SeriesMeta[], aligned: boolean): WeeklyAxis
 
 function tableFromRows(rows: readonly ChartRow[], axis: WeeklyAxis, formatY: (v: number) => string): TableData {
   return {
+    seriesColumns: true,
     columns: [axis.xLabel, ...axis.series.map((s) => s.label)],
     rows: rows.map((row) => [
       axis.formatX(row.x),
@@ -164,6 +165,7 @@ function DistributionCard({ reports, series }: SeriesProps) {
       xLabel={copy.charts.distribution.bucket}
       empty={reports.every((r) => r.totals.merged === 0)}
       table={{
+        seriesColumns: true,
         columns: [copy.charts.distribution.bucket, ...series.map((s) => s.label)],
         rows: buckets.map((bucket, b) => [bucket.label, ...reports.map((r) => formatPercent(r.distribution[b]?.share ?? null))]),
       }}
@@ -213,6 +215,7 @@ function CompositionCard({ reports, series }: SeriesProps) {
       legend={<SeriesLegend items={STAGE_LEGEND} />}
       empty={!rows.some((row) => row.coding !== null)}
       table={{
+        seriesColumns: true,
         columns: [copy.charts.stages.stage, ...series.map((s) => s.label)],
         rows: STAGE_KEYS.map((key) => [STAGE_LABEL[key], ...rows.map((row) => stageCell(row, key))]),
       }}
@@ -275,6 +278,7 @@ function BatchCard({ reports, series }: SeriesProps) {
       className="chart-card-wide"
       note={<p className="caveat">{text.caveat}</p>}
       table={{
+        seriesColumns: true,
         columns: [copy.compare.headline.metric, ...series.map((s) => s.label)],
         rows: [
           [text.linesPerAuthorWeek, ...reports.map((r) => formatNumber(r.totals.linesPerAuthorWeek, 0))],

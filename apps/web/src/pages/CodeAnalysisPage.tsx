@@ -83,7 +83,7 @@ function ScopeFunctions({ detail }: { detail: CodeDetailReport }) {
       </h3>
       <p className="chart-subtitle">{f.subtitle}</p>
       {detail.coverage.status === "ok" && <OtherCommitNote view={detail.coverage} />}
-      <ShowAllList total={rows.length}>
+      <ShowAllList total={rows.length} what={f.what}>
         {(limit) => (
           <FunctionTable
             rows={rows.slice(0, limit)}

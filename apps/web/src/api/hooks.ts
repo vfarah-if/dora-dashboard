@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CodeDetailResponse,
@@ -291,44 +291,81 @@ export interface ReviewQueueOptions {
   names?: boolean;
 }
 
-const queuePath = (ids: readonly number[], names: boolean, refresh: boolean) => {
+/** The most repository ids one request may name, as the API's `ids` and `refreshIds` allow. */
+const MOST_IDS_PER_REQUEST = 50;
+
+/**
+ * What a review queue request asks the API to read again. Absent means nothing: the answer may come from the API's
+ * cache. "all" sends `refresh=1`. `only` sends `refreshIds`, which the API refuses when empty or over the limit, so
+ * callers name only a list that is neither.
+ */
+type RefreshScope = "all" | { only: readonly number[] } | undefined;
+
+const queuePath = (ids: readonly number[], names: boolean, scope: RefreshScope) => {
   const params = new URLSearchParams();
   if (ids.length) params.set("ids", ids.join(","));
   if (names) params.set("names", "1");
-  if (refresh) params.set("refresh", "1");
+  if (scope === "all") params.set("refresh", "1");
+  else if (scope) params.set("refreshIds", scope.only.join(","));
   return withQuery("/api/review-queue", params.toString());
 };
 
+/** An absent list, an empty one or one longer than a request may name means every repository. */
+const scopeOf = (only: readonly number[] | undefined): RefreshScope =>
+  only && only.length > 0 && only.length <= MOST_IDS_PER_REQUEST ? { only } : "all";
+
+/** What one refresh was asked, kept with it so an answer lands under the key it was asked for, not the latest render's. */
+interface RefreshRequest {
+  key: ReturnType<typeof queryKeys.reviewQueue>;
+  ids: readonly number[];
+  names: boolean;
+  only: readonly number[] | undefined;
+}
+
+interface RefreshFailure {
+  at: number;
+  /** The query key as text, so a failure for one setting is not reported against another. */
+  key: string;
+  error: unknown;
+}
+
 /**
- * The live review queue, polled every minute. `refresh()` asks the API to skip its cache and replaces the
- * shown data with the answer, while the previous data stays on screen. Names are only requested when asked for.
+ * The live review queue, polled every minute. `refresh(only)` asks the API to skip its cache for the repositories in
+ * `only`, or for every one when it is absent, empty or too long to name in one request. The answer is written into
+ * the query, and the data already on screen stays until it arrives. Names are only requested when asked for.
+ * `refreshFailed` holds from a failed refresh until the next answer, from a poll or a refresh, arrives, and
+ * `refreshError` is that failure. A poll landing during a refresh does not end it.
  */
 export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions = {}) {
   const client = useQueryClient();
   const key = queryKeys.reviewQueue(ids, names);
+  const keyText = JSON.stringify(key);
   const query = useQuery({
     queryKey: key,
-    queryFn: ({ signal }) => apiRequest<ReviewQueue>(queuePath(ids, names, false), { signal }),
+    queryFn: ({ signal }) => apiRequest<ReviewQueue>(queuePath(ids, names, undefined), { signal }),
     refetchInterval: REVIEW_QUEUE_POLL_MS,
     placeholderData: keepPreviousData,
   });
+  // Kept here, not read from the mutation, because resetting a mutation detaches it from the request still running.
+  const [failure, setFailure] = useState<RefreshFailure | null>(null);
   const refresh = useMutation({
     // A poll still in flight must not land after, and overwrite, the fresher answer.
-    onMutate: () => client.cancelQueries({ queryKey: key }),
-    mutationFn: () => apiRequest<ReviewQueue>(queuePath(ids, names, true)),
-    onSuccess: (data) => client.setQueryData(key, data),
+    onMutate: (request: RefreshRequest) => {
+      setFailure(null);
+      return client.cancelQueries({ queryKey: request.key });
+    },
+    mutationFn: (request: RefreshRequest) =>
+      apiRequest<ReviewQueue>(queuePath(request.ids, request.names, scopeOf(request.only))),
+    onSuccess: (data, request) => client.setQueryData(request.key, data),
+    onError: (error, request) => setFailure({ at: Date.now(), key: JSON.stringify(request.key), error }),
   });
-  const { reset } = refresh;
-  const { dataUpdatedAt } = query;
-  // A failed refresh is only news until the next good answer arrives.
-  useEffect(() => {
-    if (dataUpdatedAt) reset();
-  }, [dataUpdatedAt, reset]);
+  const failed = failure !== null && failure.key === keyText && failure.at > query.dataUpdatedAt;
   return {
     ...query,
-    refresh: () => refresh.mutate(),
+    refresh: (only?: readonly number[]) => refresh.mutate({ key, ids, names, only }),
     refreshing: refresh.isPending,
-    refreshFailed: refresh.isError,
+    refreshFailed: failed,
+    refreshError: failed ? failure.error : null,
   };
 }
 
@@ -347,7 +384,10 @@ export function useHealth() {
     queryKey: queryKeys.health,
     queryFn: () => apiRequest<Health>("/api/health"),
     staleTime: 60_000,
+    // No retries, so a page waiting on health shows its error at once. The header never remounts, so a failed probe is
+    // asked again every 30 seconds until it answers, at one request each.
     retry: false,
+    refetchInterval: (query) => (query.state.status === "error" ? 30_000 : false),
   });
 }
 

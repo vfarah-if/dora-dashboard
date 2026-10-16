@@ -38,6 +38,7 @@ export interface FixCopy {
 
 /** " with the message "x"" for a failure that gave one, and nothing for one that gave none. */
 const withMessage = (message: string) => (message ? ` with the message "${message}"` : "");
+const prCount = (count: number) => some(count, "PR");
 const unnamedPackage = "A package that GitHub did not name";
 const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
 const some = (count: number, noun: string, nouns = `${noun}s`) => `${count} ${plural(count, noun, nouns)}`;
@@ -462,6 +463,7 @@ export const copy = {
     requestFailed: (status: number) => `The request failed with status ${status}.`,
     networkFailed: "The dashboard could not reach its API. Check that the API is running and try again.",
     errorTitle: "Something went wrong",
+    pageFailed: "This page could not be shown because of an unexpected problem. Try again, or choose another page from the menu.",
     opensInNewTab: "(opens in a new tab)",
   },
 
@@ -1065,7 +1067,9 @@ export const copy = {
     all: "All authors",
     none: "No authors",
     legend: "Authors to include",
-    opened: (count: number) => (count === 1 ? "1 PR" : `${count} PRs`),
+    opened: prCount,
+    /** The checkbox's accessible name. It begins with the visible login, and the comma keeps the count from running into it. */
+    optionName: (author: string, count: number) => `${author}, ${prCount(count)}`,
     noneChosen: "Every author is left out, so there is nothing to measure. Choose at least one author from the authors menu.",
   },
 
@@ -1355,6 +1359,8 @@ export const copy = {
     areas: {
       packagesTitle: "Packages",
       foldersTitle: "Folders",
+      packagesWhat: "packages",
+      foldersWhat: "folders",
       none: "No area",
       root: "Files at the repository root",
       wholeRepository: "Whole repository",
@@ -1413,6 +1419,7 @@ export const copy = {
 
     functions: {
       title: "Functions in this scope",
+      what: "functions in this scope",
       subtitle:
         "Source functions with the most complex first, with the area each one sits in and, when coverage was read, how much of it ran.",
       area: "Area",
@@ -1487,6 +1494,7 @@ export const copy = {
       },
       least: {
         title: "Least covered files",
+        what: "least covered files",
         subtitle: "The files with the most lines that no test ran, with the line ranges that were not run.",
         file: "File",
         covered: "Lines run",
@@ -1497,6 +1505,7 @@ export const copy = {
       },
       notInReport: {
         title: "Files not in the coverage report",
+        what: "files not in the coverage report",
         subtitle: "Source files with functions that the report does not mention, which usually means no test loads them.",
         file: "File",
         functions: "Functions",
@@ -1508,6 +1517,7 @@ export const copy = {
       },
       untested: {
         title: "Complex functions with no coverage",
+        what: "complex functions with no coverage",
         subtitle: (warn: number) =>
           `Functions with a complexity above ${warn} where none of the lines that can run were run, so the riskiest code has no test behind it.`,
         empty: "No complex function in the code this report covers is entirely uncovered.",
@@ -1519,6 +1529,7 @@ export const copy = {
 
   repo: {
     loadingTitle: "Loading repository",
+    failedTitle: "Repository unavailable",
     lastCrawled: (when: string) => `Last crawled ${when}`,
     rangeSummary: (from: string, to: string) => `Showing ${from} to ${to}`,
     excludingAuthors: (logins: readonly string[]) =>
@@ -1552,6 +1563,7 @@ export const copy = {
 
   space: {
     loadingTitle: "Loading space",
+    failedTitle: "Jira space unavailable",
     notFoundTitle: "This space could not be found",
     notFoundBody: "It may have been unlinked, or Jira may not be switched on for this dashboard.",
     toSpaces: "Go to Jira spaces",
@@ -1564,6 +1576,11 @@ export const copy = {
     showPeopleHint: "Group the hygiene lists by assignee name. Names never appear in charts or tiles.",
     showAll: (count: number) => `Show all ${count}`,
     showFewer: "Show fewer",
+    /** The button's accessible name, which begins with its visible text and then says what the list holds. */
+    showAllOf: (count: number, what: string) => `Show all ${count} ${what}`,
+    showFewerOf: (what: string) => `Show fewer ${what}`,
+    /** Says which check a list belongs to, so each check's button has a name of its own ("Show all 12 for Stale work in progress"). */
+    forCheck: (check: string) => `for ${check}`,
     printMore: (count: number) => `and ${count} more, listed on the page on screen`,
     openInJira: "(opens in Jira)",
 
@@ -1604,6 +1621,7 @@ export const copy = {
       },
       ageing: {
         title: "Ageing work",
+        what: "ageing work items",
         subtitle: "Items in progress now, oldest first, with the time since they started.",
         key: "Issue",
         summary: "Summary",
@@ -1647,6 +1665,7 @@ export const copy = {
 
     hygiene: {
       title: "Jira hygiene",
+      batchesWhat: "batches of items moved together",
       lede: "Prompts to tidy the board so the figures above can be trusted. They are not a score, and some work genuinely needs no code.",
       checkThese: "Check these",
       none: "Nothing to check here.",
@@ -1711,6 +1730,7 @@ export const copy = {
 
   issue: {
     loadingTitle: "Loading repository",
+    failedTitle: "Repository issues unavailable",
     /** Names the kind of report in the file name offered when the page is saved as a PDF. */
     reportLabel: "github issues report",
     notFoundTitle: "This repository could not be found",
@@ -1831,6 +1851,7 @@ export const copy = {
 
     ageing: {
       title: "Ageing issues",
+      what: "ageing issues",
       subtitle: "Issues open at the end of the range, oldest first, with how long each had been open when the range ends.",
       number: "Issue",
       issueTitle: "Title",
@@ -2313,6 +2334,7 @@ export const copy = {
     refresh: "Refresh",
     refreshing: "Refreshing",
     refreshFailed: "The queue could not be refreshed. The figures shown are the last ones received.",
+    pollFailed: (time: string) => `The queue could not be updated. The figures shown were read at ${time}.`,
     copySummary: "Copy summary",
     /** Joins the title in the suggested PDF file name, as in review-queue-report-2026-09-30. */
     pdfLabel: "report",
@@ -2783,6 +2805,7 @@ export const copy = {
 
     actions: {
       title: "What to fix first",
+      what: "things to fix",
       lede: "The things to do, with the ones that lift the grade first. Each one explains what is wrong, why it matters and how to fix it, and you can open the explanation with the button beside it.",
       none: "Nothing needs fixing in what the dashboard could read.",
       counting: (count: number) => (count === 1 ? "One thing to fix" : `${count} things to fix`),
@@ -3275,6 +3298,7 @@ export const copy = {
 
     alerts: {
       title: "The worst open alerts",
+      what: "worst open alerts",
       subtitle:
         "The open alerts, worst first, up to the number the report carries, with where each is and how long it has been open.",
       filterLabel: "Show alerts from",
@@ -3305,6 +3329,7 @@ export const copy = {
 
     upgrades: {
       title: "Dependency upgrades",
+      what: "dependency upgrades",
       lede: "The packages with open alerts, worst first, and the version that fixes each one.",
       subtitle: "Packages with open alerts and the upgrade that fixes them.",
       none: "No package has an open alert.",
@@ -3355,6 +3380,8 @@ export const copy = {
     },
 
     chain: {
+      workflowsUnreadWhat: "workflow files that were not read",
+      dockerfilesUnreadWhat: "Dockerfiles that were not read",
       workflows: {
         title: "Workflows and supply chain",
         lede: "Your automated workflows run with access to your code and your secrets, so how they are set up matters as much as the code itself.",

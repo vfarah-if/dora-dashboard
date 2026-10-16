@@ -76,6 +76,24 @@ describe("SpacePage", () => {
     expect(within(rows[0]!).getByText("In review")).toBeInTheDocument();
   });
 
+  it("collapses a long ageing list and names its button for the ageing work, apart from the hygiene lists on the page", async () => {
+    const user = userEvent.setup();
+    const base = spaceReport();
+    const many = Array.from({ length: 12 }, (_, i) => ({ ...base.ageing[0]!, key: `WID-${100 + i}` }));
+    mockFetch({ "GET /api/spaces/7/report": { body: { ...base, ageing: many } } });
+    renderRoute(<SpacePage />, route());
+    const ageing = await screen.findByRole("region", { name: copy.space.flow.ageing.title });
+    expect(within(ageing).getAllByRole("row")).toHaveLength(11); // the header and ten items
+    await user.click(within(ageing).getByRole("button", { name: copy.space.showAllOf(12, copy.space.flow.ageing.what) }));
+    expect(within(ageing).getAllByRole("row")).toHaveLength(13);
+    expect(within(ageing).getByRole("button", { name: copy.space.showFewerOf(copy.space.flow.ageing.what) })).toBeInTheDocument();
+
+    // Another list on the same page, with its own name, so no two buttons are announced alike.
+    const names = screen.getAllByRole("button", { name: /^Show (all|fewer)/ }).map((b) => b.getAttribute("aria-label"));
+    expect(names).toContain(copy.space.showAllOf(12, copy.space.forCheck(copy.space.hygiene.checks.stale_in_progress.title)));
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it("shows time per column as a stacked bar with mean, median and items in the table", async () => {
     const user = userEvent.setup();
     mockReport();
@@ -146,11 +164,15 @@ describe("SpacePage", () => {
     const stale = await screen.findByRole("region", { name: copy.space.hygiene.checks.stale_in_progress.title });
     expect(within(stale).getAllByRole("link")).toHaveLength(10);
     // The label says what pressing does, so the button carries no expanded state that would repeat it.
-    const button = within(stale).getByRole("button", { name: copy.space.showAll(12) });
+    const button = within(stale).getByRole("button", {
+      name: copy.space.showAllOf(12, copy.space.forCheck(copy.space.hygiene.checks.stale_in_progress.title)),
+    });
     expect(button).not.toHaveAttribute("aria-expanded");
     await user.click(button);
     expect(within(stale).getAllByRole("link")).toHaveLength(12);
-    const fewer = within(stale).getByRole("button", { name: copy.space.showFewer });
+    const fewer = within(stale).getByRole("button", {
+      name: copy.space.showFewerOf(copy.space.forCheck(copy.space.hygiene.checks.stale_in_progress.title)),
+    });
     expect(fewer).not.toHaveAttribute("aria-expanded");
     await user.click(fewer);
     expect(within(stale).getAllByRole("link")).toHaveLength(10);
@@ -168,7 +190,11 @@ describe("SpacePage", () => {
 
     act(() => void window.dispatchEvent(new Event("afterprint")));
     expect(within(stale).getAllByRole("link")).toHaveLength(10);
-    expect(within(stale).getByRole("button", { name: copy.space.showAll(12) })).toBeInTheDocument();
+    expect(
+      within(stale).getByRole("button", {
+        name: copy.space.showAllOf(12, copy.space.forCheck(copy.space.hygiene.checks.stale_in_progress.title)),
+      }),
+    ).toBeInTheDocument();
   });
 
   it("leaves names out by default and does not ask for them", async () => {
@@ -349,6 +375,44 @@ describe("SpacePage", () => {
     renderRoute(<SpacePage />, route());
     expect(await screen.findByText("boom")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
+  });
+
+  it("names the space from the list when its report fails", async () => {
+    mockFetch({
+      "GET /api/spaces/7/report": { status: 500, body: { error: "boom" } },
+      "GET /api/spaces": { body: [spaceReport().space] },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: spaceReport().space.name })).toBeInTheDocument();
+  });
+
+  it("asks for the spaces list only after the report has failed", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/spaces/7/report": { status: 500, body: { error: "boom" } },
+      "GET /api/spaces": { body: [spaceReport().space] },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0]), "http://localhost").pathname)).toEqual([
+      "/api/spaces/7/report",
+      "/api/spaces",
+    ]);
+  });
+
+  it("does not ask for the spaces list while the report loads or when it arrives", async () => {
+    const fetchMock = mockReport();
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByRole("heading", { level: 1, name: "Widgets" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0]), "http://localhost").pathname)).toEqual(["/api/spaces/7/report"]);
+  });
+
+  it("uses a neutral heading when the report fails and no list names the space", async () => {
+    mockFetch({ "GET /api/spaces/7/report": { status: 500, body: { error: "boom" } }, "GET /api/spaces": { body: [] } });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: copy.space.failedTitle })).toBeInTheDocument();
   });
 
   it("says there is nothing to chart when a range holds no finished work", async () => {

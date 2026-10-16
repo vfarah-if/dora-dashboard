@@ -28,12 +28,20 @@ import { shareOf } from "../lib/space";
 import { useFlagParam, useRangeParams } from "../lib/urlState";
 import { partWeek } from "../lib/weekly";
 
-function IssueHeader({ report }: { report: IssueReport | undefined }) {
+interface IssueHeaderProps {
+  report: IssueReport | undefined;
+  /** The repository's row in the list, which names it while the report is loading or has failed. */
+  listing: RepoListing | undefined;
+  failed: boolean;
+}
+
+function IssueHeader({ report, listing, failed }: IssueHeaderProps) {
   const text = copy.issue;
+  const known = report?.repo ?? listing;
   return (
     <header className="page-header page-header-row">
       <div className="page-header">
-        <h1>{report ? repoName(report.repo) : text.loadingTitle}</h1>
+        <h1>{known ? repoName(known) : failed ? text.failedTitle : text.loadingTitle}</h1>
         {report && (
           <p className="lede">
             {text.rangeSummary(formatDate(report.range.from), formatDate(report.range.to))}
@@ -207,7 +215,7 @@ function ReportState({ query, people }: { query: UseQueryResult<IssueReport>; pe
       {query.isPending && (
         <>
           <SkeletonGrid count={4} height={150} />
-          <Skeleton height={320} />
+          <Skeleton height={320} decorative />
         </>
       )}
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
@@ -250,7 +258,7 @@ function IssueView({ id }: { id: number }) {
         <Link to="/issues" className="back-link">
           {copy.common.backToIssues}
         </Link>
-        <IssueHeader report={report.data} />
+        <IssueHeader report={report.data} listing={listing} failed={report.isError} />
         <div className="controls-bar">
           <DateRangeControls value={range} onChange={setRange} showBots={false} />
           <Toggle label={copy.issue.showPeople} hint={copy.issue.showPeopleHint} checked={people} onChange={setPeople} />

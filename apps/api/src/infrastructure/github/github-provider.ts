@@ -2,7 +2,7 @@ import type { DeployRun, OpenPullRequest, PullRequest, RequestedReviewer, Review
 import { NotFoundError, UpstreamError } from "../../core/errors.js";
 import type { OpenPullRequestsResult, PullRequestPage, SourceProvider, Viewer } from "../../interfaces/source-provider.js";
 import type { Fetch } from "../http/fetch.js";
-import { API, request, RETRYABLE } from "./github-http.js";
+import { API, graphqlFailure, request, RETRYABLE } from "./github-http.js";
 
 const PULL_REQUESTS_QUERY = `
 query ($owner: String!, $name: String!, $cursor: String, $first: Int!) {
@@ -310,7 +310,7 @@ export class GitHubProvider implements SourceProvider {
     for (let page = 0; page < MAX_OPEN_PAGES; page++) {
       const result: GqlPage<GqlOpenPullRequest> = await this.openPage(token, owner, name, cursor);
       // Errors first: a rate limit arrives with a null repository and must not be reported as not found.
-      if (result.errors?.length) throw new UpstreamError(result.errors.map((e) => e.message).join("; "), 200);
+      if (result.errors?.length) throw graphqlFailure(result.errors, result.data?.repository, owner, name);
       const connection = result.data?.repository?.pullRequests;
       if (!connection) throw new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
       found.push(...connection.nodes.map((node) => toOpenPullRequest(owner, name, node)));

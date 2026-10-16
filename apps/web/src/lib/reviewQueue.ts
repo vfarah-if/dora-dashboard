@@ -168,6 +168,23 @@ export function visibleFeatures(features: readonly FeatureGroup[], visible: read
     .filter((feature) => feature.members.length >= 2);
 }
 
+/** The ticked repositories the queue knows, read or failed, in the order ticked. Empty when none is ticked or known. */
+export function refreshScope(queue: Pick<ReviewQueue, "repos" | "errors">, repoIds: readonly number[]): number[] {
+  const known = new Set([...queue.repos, ...queue.errors].map((r) => r.repoId));
+  return repoIds.filter((id) => known.has(id));
+}
+
+/**
+ * When the repositories shown were read: the oldest read among those ticked, so a refresh of the ticked repositories
+ * is not reported as older than it is. It is the queue's own oldest read when none is ticked, or when no ticked
+ * repository was read, as one that failed has no read time.
+ */
+export function shownFetchedAt(queue: Pick<ReviewQueue, "repos" | "fetchedAt">, repoIds: readonly number[]): string {
+  const ticked = queue.repos.filter((r) => repoIds.includes(r.repoId)).map((r) => r.fetchedAt);
+  // Compared as times, not text, because text order puts "09:58:00.500Z" before "09:58:00Z", though it is half a second later.
+  return ticked.sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? queue.fetchedAt;
+}
+
 /**
  * The plain text copied by "Copy summary". With names hidden it carries no author and no reviewer.
  * `entries` are the ones currently shown, so the copy matches the page.

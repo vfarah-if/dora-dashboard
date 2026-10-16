@@ -222,7 +222,7 @@ function registerRoutes(
   registerReviewExemptionRoutes(app, { guard: requireSession(auth), config: deps.config, repos });
   registerReviewQueueRoutes(app, {
     guard: requireSession(auth),
-    queue: new ReviewQueueService(deps.store, deps.provider, deps.clock),
+    queue: new ReviewQueueService(deps.store, deps.provider, deps.clock, app.log),
   });
   registerSecurityRoutes(app, {
     guard: requireSession(auth),

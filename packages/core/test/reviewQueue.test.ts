@@ -240,9 +240,10 @@ describe("buildReviewQueue", () => {
 
   const queue = buildReviewQueue(
     [
-      { repo: widgets, pullRequests: [prs.friday, prs.old, prs.fresh, prs.draft, prs.red] },
+      { repo: widgets, pullRequests: [prs.friday, prs.old, prs.fresh, prs.draft, prs.red], fetchedAt: now },
       {
         repo: gadgets,
+        fetchedAt: now,
         pullRequests: [
           open({
             number: 1,
@@ -285,6 +286,7 @@ describe("buildReviewQueue", () => {
       [
         {
           repo: widgets,
+          fetchedAt: now,
           pullRequests: [
             prs.old,
             open({ number: 9, publishedAt: "2026-09-22T12:00:00Z", createdAt: "2026-09-22T12:00:00Z" }),
@@ -325,6 +327,7 @@ describe("buildReviewQueue", () => {
       open: 5,
       bands: { fresh: 1, ageing: 0, overdue: 1, stale: 1 },
       lanes: { held: 1, with_author: 1, approved: 0, awaiting_review: 2, no_reviewer: 1 },
+      fetchedAt: now,
     });
     expect(queue.repos[1]).toMatchObject({ repo: "acme/gadgets", open: 1, bands: { fresh: 0, ageing: 1, overdue: 0, stale: 0 } });
   });
@@ -353,9 +356,44 @@ describe("buildReviewQueue", () => {
     expect(q.tiles.pastDay).toEqual({ count: 0, longestHours: null });
   });
 
+  it("gives each repository the fetch time it was handed, whatever the time now is", () => {
+    const q = buildReviewQueue(
+      [
+        { repo: widgets, pullRequests: [], fetchedAt: "2026-09-30T11:59:30Z" },
+        { repo: gadgets, pullRequests: [], fetchedAt: "2026-09-30T11:40:00.250Z" },
+      ],
+      { now },
+    );
+    expect(q.repos.map((r) => [r.repo, r.fetchedAt])).toEqual([
+      ["acme/widgets", "2026-09-30T11:59:30Z"],
+      ["acme/gadgets", "2026-09-30T11:40:00.250Z"],
+    ]);
+    expect(q.fetchedAt).toBe("2026-09-30T11:40:00.250Z");
+  });
+
+  it("compares fetch times as instants, so differing precision does not change which is oldest", () => {
+    // As text "09:58:00.500Z" sorts before "09:58:00Z" ('.' is below 'Z'), yet 500 ms past 09:58:00 is the later instant.
+    const q = buildReviewQueue(
+      [
+        { repo: widgets, pullRequests: [], fetchedAt: "2026-09-30T09:58:00.500Z" },
+        { repo: gadgets, pullRequests: [], fetchedAt: "2026-09-30T09:58:00Z" },
+      ],
+      { now },
+    );
+    expect(q.fetchedAt).toBe("2026-09-30T09:58:00Z");
+    const reversed = buildReviewQueue(
+      [
+        { repo: gadgets, pullRequests: [], fetchedAt: "2026-09-30T09:58:00Z" },
+        { repo: widgets, pullRequests: [], fetchedAt: "2026-09-30T09:58:00.500Z" },
+      ],
+      { now },
+    );
+    expect(reversed.fetchedAt).toBe("2026-09-30T09:58:00Z");
+  });
+
   it("marks a bot by its login when the host did not flag it", () => {
     const dependabot = open({ number: 9, author: "dependabot", authorIsBot: false });
-    const q = buildReviewQueue([{ repo: widgets, pullRequests: [dependabot] }], { now });
+    const q = buildReviewQueue([{ repo: widgets, pullRequests: [dependabot], fetchedAt: now }], { now });
     expect(q.entries[0]?.authorIsBot).toBe(true);
   });
 
@@ -368,6 +406,7 @@ describe("buildReviewQueue", () => {
       [
         {
           repo: widgets,
+          fetchedAt: now,
           pullRequests: [open({ number: 1, publishedAt: "2026-10-05T08:00:00Z", updatedAt: "2026-10-05T08:00:00Z" })],
         },
       ],

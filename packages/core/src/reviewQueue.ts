@@ -91,8 +91,8 @@ const emptyBands = (): Record<WaitBand, number> => ({ fresh: 0, ageing: 0, overd
 export interface ReviewQueueInput {
   repo: Pick<Repo, "id" | "owner" | "name">;
   pullRequests: OpenPullRequest[];
-  /** When these were read from the host; the queue reports the oldest. Defaults to `now`. */
-  fetchedAt?: string;
+  /** When these were read from the host, as an ISO time; the queue reports the oldest. Required, so a read is never shown as newer than it is. */
+  fetchedAt: string;
 }
 
 function entryOf(repo: ReviewQueueInput["repo"], pr: OpenPullRequest, now: string): QueueEntry {
@@ -166,7 +166,14 @@ function summaryOf(input: ReviewQueueInput, entries: QueueEntry[]): RepoQueueSum
     lanes[entry.lane]++;
     if (isWaiting(entry.lane)) bands[entry.band]++;
   }
-  return { repoId: input.repo.id, repo: `${input.repo.owner}/${input.repo.name}`, open: mine.length, bands, lanes };
+  return {
+    repoId: input.repo.id,
+    repo: `${input.repo.owner}/${input.repo.name}`,
+    open: mine.length,
+    bands,
+    lanes,
+    fetchedAt: input.fetchedAt,
+  };
 }
 
 /**
@@ -185,9 +192,11 @@ export function buildReviewQueue(inputs: ReviewQueueInput[], options: { now: str
     })
     .sort((a, b) => a.rank - b.rank || byWait(a.entry, b.entry))
     .map((x) => x.entry.key);
-  const fetched = inputs.map((i) => i.fetchedAt ?? now).sort();
+  // Compared as instants: times of differing precision ("09:58:00.500Z" and "09:58:00Z") do not sort correctly as text.
+  const fetched = inputs.map((i) => i.fetchedAt).sort((a, b) => Date.parse(a) - Date.parse(b));
   return {
     now,
+    // With no repositories there is no read to report, so the time the queue was worked out at stands.
     fetchedAt: fetched[0] ?? now,
     entries,
     tiles: tilesOf(entries),

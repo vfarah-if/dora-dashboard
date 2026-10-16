@@ -12,11 +12,22 @@ interface FindingProps {
   people: boolean;
 }
 
-function IssueList({ items, siteUrl, people }: { items: readonly ItemRef[]; siteUrl: string; people: boolean }) {
+function IssueList({
+  items,
+  siteUrl,
+  people,
+  what,
+}: {
+  items: readonly ItemRef[];
+  siteUrl: string;
+  people: boolean;
+  what: string;
+}) {
   return (
     <GroupedItemList
       items={items}
       people={people}
+      what={what}
       itemKey={(item) => item.key}
       renderItem={(item) => <HygieneLine href={browseUrl(siteUrl, item.key)} label={item.key} summary={item.summary} />}
     />
@@ -25,7 +36,7 @@ function IssueList({ items, siteUrl, people }: { items: readonly ItemRef[]; site
 
 function BatchList({ batches, siteUrl }: { batches: SpaceHygieneBulkMoveFinding["batches"]; siteUrl: string }) {
   return (
-    <ShowAllList total={batches.length}>
+    <ShowAllList total={batches.length} what={copy.space.hygiene.batchesWhat}>
       {(limit) => (
         <ul className="hygiene-list">
           {batches.slice(0, limit).map((batch) => (
@@ -49,14 +60,14 @@ function BatchList({ batches, siteUrl }: { batches: SpaceHygieneBulkMoveFinding[
 }
 
 /** The list a finding carries, chosen by its check: pull requests, batches of moves, or delivery items. */
-function FindingList({ finding, siteUrl, people }: FindingProps) {
+function FindingList({ finding, siteUrl, people, what }: FindingProps & { what: string }) {
   switch (finding.check) {
     case "pr_without_key":
-      return <PullRequestList pullRequests={finding.pullRequests} />;
+      return <PullRequestList pullRequests={finding.pullRequests} what={what} />;
     case "bulk_move":
       return <BatchList batches={finding.batches} siteUrl={siteUrl} />;
     default:
-      return <IssueList items={finding.items} siteUrl={siteUrl} people={people} />;
+      return <IssueList items={finding.items} siteUrl={siteUrl} people={people} what={what} />;
   }
 }
 
@@ -78,7 +89,7 @@ function Finding({ finding, siteUrl, people }: FindingProps) {
       {hasList && (
         <div className="hygiene-body">
           <p className="hygiene-heading">{text.checkThese}</p>
-          <FindingList finding={finding} siteUrl={siteUrl} people={people} />
+          <FindingList finding={finding} siteUrl={siteUrl} people={people} what={copy.space.forCheck(title)} />
         </div>
       )}
     </section>

@@ -178,7 +178,7 @@ describe("IssuePage", () => {
     renderRoute(<IssuePage />, route());
     const ageing = await screen.findByRole("region", { name: copy.issue.ageing.title });
     expect(within(ageing).getAllByRole("link")).toHaveLength(10);
-    await user.click(within(ageing).getByRole("button", { name: copy.space.showAll(12) }));
+    await user.click(within(ageing).getByRole("button", { name: copy.space.showAllOf(12, copy.issue.ageing.what) }));
     expect(within(ageing).getAllByRole("link")).toHaveLength(12);
   });
 
@@ -333,6 +333,23 @@ describe("IssuePage", () => {
     expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
   });
 
+  it("keeps the repository's name in the heading when the report fails", async () => {
+    mockFetch({
+      "GET /api/repos": { body: [repo({ issues: 21 })] },
+      "GET /api/repos/1/issues/report": { status: 400, body: { error: "from must not be after to" } },
+    });
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText("from must not be after to")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "acme/widgets" })).toBeInTheDocument();
+  });
+
+  it("uses a neutral heading when the report fails and the list does not name the repository", async () => {
+    mockFetch({ "GET /api/repos": { body: [] }, "GET /api/repos/1/issues/report": { status: 500, body: { error: "boom" } } });
+    renderRoute(<IssuePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: copy.issue.failedTitle })).toBeInTheDocument();
+  });
+
   it("says issues are switched off on GitHub when the repositories list reports it", async () => {
     mockReport(repo({ issues: 21, issuesEnabled: false }));
     renderRoute(<IssuePage />, route());
@@ -412,7 +429,8 @@ describe("IssuePage", () => {
 
     await user.click(screen.getByRole("link", { name: "Next repository" }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: copy.issue.loadingTitle })).toBeInTheDocument();
+    // The list already names the next repository, so its own name stands in until the report arrives.
+    expect(await screen.findByRole("heading", { level: 1, name: "acme/gadgets" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { level: 1, name: "acme/widgets" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: copy.issue.headline.title })).not.toBeInTheDocument();
     release({ body: gadgets });

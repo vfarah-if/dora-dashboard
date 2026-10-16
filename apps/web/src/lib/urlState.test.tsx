@@ -24,6 +24,11 @@ describe("useRangeParams", () => {
     expect(screen.getByText(`${today} to ${today}`)).toBeInTheDocument();
   });
 
+  it("swaps a from that is after the to", () => {
+    renderRoute(<Probe />, { route: "/?from=2026-03-01&to=2026-01-01" });
+    expect(screen.getByText("2026-01-01 to 2026-03-01")).toBeInTheDocument();
+  });
+
   it("ignores a malformed date", () => {
     renderRoute(<Probe />, { route: "/?from=tomorrow" });
     expect(screen.getByText("none to none")).toBeInTheDocument();

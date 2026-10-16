@@ -99,7 +99,7 @@ export function AgeingTable({ items, siteUrl }: { items: readonly AgeingItem[]; 
       {items.length === 0 ? (
         <p className="chart-empty">{text.empty}</p>
       ) : (
-        <ShowAllList total={items.length}>
+        <ShowAllList total={items.length} what={text.what}>
           {(limit) => (
             <div className="table-scroll">
               <table className="data-table">

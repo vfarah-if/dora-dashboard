@@ -401,7 +401,7 @@ describe("CodeHealthSection", () => {
   });
 
   it("shows the request failure and offers a retry", async () => {
-    show({ error: "Unknown repository" }, 404);
+    show({ error: "Unknown repository" }, 502);
     expect(await screen.findByText("Unknown repository")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
   });

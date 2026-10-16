@@ -73,7 +73,7 @@ export function DependencyTable({ groups }: { groups: SecurityReport["dependency
         {groups.length === 0 ? (
           <p className="chart-empty">{c.none}</p>
         ) : (
-          <SecurityList total={groups.length}>
+          <SecurityList total={groups.length} what={c.what}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table">

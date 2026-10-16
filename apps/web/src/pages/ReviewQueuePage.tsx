@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { QueueEntry, ReviewLane, ReviewQueue } from "@dora-dashboard/core";
+import { errorText } from "../api/client";
 import { useReviewQueue } from "../api/hooks";
 import { copy } from "../copy";
 import { DownloadReportButton } from "../components/DownloadReportButton";
@@ -17,7 +18,9 @@ import {
   filterEntries,
   formatWait,
   groupByLane,
+  refreshScope,
   reviewerNames,
+  shownFetchedAt,
   summaryText,
   tilesFor,
   visibleFeatures,
@@ -88,7 +91,14 @@ function useQueueView() {
 type QueueView = ReturnType<typeof useQueueView>;
 type QueueQuery = ReturnType<typeof useReviewQueue>;
 
-function QueueActions({ queue, visible, showNames }: { queue: QueueQuery; visible: QueueEntry[]; showNames: boolean }) {
+interface QueueActionsProps {
+  queue: QueueQuery;
+  visible: QueueEntry[];
+  showNames: boolean;
+  repoIds: readonly number[];
+}
+
+function QueueActions({ queue, visible, showNames, repoIds }: QueueActionsProps) {
   const [copied, setCopied] = useState<"done" | "failed" | null>(null);
   const data = queue.data;
 
@@ -107,7 +117,15 @@ function QueueActions({ queue, visible, showNames }: { queue: QueueQuery; visibl
       <button type="button" className="button button-secondary" disabled={!data} onClick={() => void copySummary()}>
         {text.copySummary}
       </button>
-      <button type="button" className="button button-secondary" disabled={queue.refreshing} onClick={queue.refresh}>
+      <button
+        type="button"
+        className="button button-secondary"
+        disabled={queue.refreshing}
+        // Only the ticked repositories are read again. The others are served as the minute's poll would be, normally
+        // from the API's cache, so the wait does not grow with every repository added.
+        onClick={() => queue.refresh(data && refreshScope(data, repoIds))}
+      >
+        {queue.refreshing && <span className="spinner" aria-hidden="true" />}
         {queue.refreshing ? text.refreshing : text.refresh}
       </button>
       {data && <DownloadReportButton subject={text.title} label={text.pdfLabel} />}
@@ -193,12 +211,26 @@ function QueueControls({ data, view }: { data: ReviewQueue | undefined; view: Qu
   );
 }
 
-function QueueNotices({ data, refreshFailed }: { data: ReviewQueue; refreshFailed: boolean }) {
+interface QueueNoticesProps {
+  data: ReviewQueue;
+  refreshFailed: boolean;
+  refreshError: unknown;
+  /** When the figures shown were read, set only when the latest poll failed, so the page does not look live. */
+  staleSince: string | null;
+}
+
+function QueueNotices({ data, refreshFailed, refreshError, staleSince }: QueueNoticesProps) {
   return (
     <>
+      {staleSince !== null && (
+        <p className="notice notice-warning" role="alert">
+          {text.pollFailed(formatTime(staleSince))}
+        </p>
+      )}
       {data.errors.map((error) => (
         <div key={error.repoId} className="notice notice-warning" role="alert">
           <p className="notice-title">{text.readErrorTitle(error.repo)}</p>
+          <p>{error.message}</p>
           <p>{text.readErrorBody}</p>
         </div>
       ))}
@@ -209,9 +241,10 @@ function QueueNotices({ data, refreshFailed }: { data: ReviewQueue; refreshFaile
         </div>
       ))}
       {refreshFailed && (
-        <p className="notice notice-warning" role="alert">
-          {text.refreshFailed}
-        </p>
+        <div className="notice notice-warning" role="alert">
+          <p>{text.refreshFailed}</p>
+          <p>{errorText(refreshError)}</p>
+        </div>
       )}
     </>
   );
@@ -333,17 +366,25 @@ function QueueBody({ queue, visible, view }: { queue: QueueQuery; visible: Queue
     return (
       <>
         <SkeletonGrid count={6} height={96} label={text.loading} />
-        <Skeleton height={160} label={text.loading} />
+        <Skeleton height={160} decorative />
       </>
     );
   }
   if (queue.isError && !queue.data) return <ErrorState error={queue.error} onRetry={() => void queue.refetch()} />;
   if (!queue.data) return null;
+  // The figures stay readable while new ones load, dimmed so it is plain they are about to change. The minute's poll
+  // does not dim them, or the page would flicker every minute.
+  const busy = queue.refreshing || queue.isPlaceholderData;
   return (
-    <>
-      <QueueNotices data={queue.data} refreshFailed={queue.refreshFailed} />
+    <div className={busy ? "queue-body is-refreshing" : "queue-body"} aria-busy={busy}>
+      <QueueNotices
+        data={queue.data}
+        refreshFailed={queue.refreshFailed}
+        refreshError={queue.refreshError}
+        staleSince={queue.isError ? shownFetchedAt(queue.data, view.repoIds) : null}
+      />
       <QueueContent data={queue.data} visible={visible} view={view} />
-    </>
+    </div>
   );
 }
 
@@ -365,9 +406,9 @@ export function ReviewQueuePage() {
           <div className="page-header">
             <h1>{text.title}</h1>
             <p className="lede">{text.lede}</p>
-            {data && <p className="chart-subtitle">{text.updated(formatTime(data.fetchedAt))}</p>}
+            {data && <p className="chart-subtitle">{text.updated(formatTime(shownFetchedAt(data, repoIds)))}</p>}
           </div>
-          <QueueActions queue={queue} visible={visible} showNames={showNames} />
+          <QueueActions queue={queue} visible={visible} showNames={showNames} repoIds={repoIds} />
         </header>
         <QueueControls data={data} view={view} />
       </StickyPanel>

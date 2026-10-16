@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { AppError, NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
+import { AccessRefusedError, AppError, NotFoundError, UnauthorisedError, UpstreamError } from "../../core/errors.js";
 import { parseJsonValue, readCappedText } from "../http/capped-text.js";
 import type { Fetch } from "../http/fetch.js";
 
@@ -29,16 +29,24 @@ const isRateLimited = (response: Response): boolean =>
   response.status === 429 ||
   (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")));
 
+/**
+ * GitHub's wording for a rate limit. "Abuse detection" is the wording older GitHub Enterprise Server releases use for a
+ * secondary limit, and without it that refusal would be read as lost access.
+ */
+const RATE_LIMIT_WORDING = /rate limit|abuse detection/i;
+
 /** Whether a 403 or 429 message is GitHub describing a rate limit, whatever headers came with it. */
 const saysRateLimited = (response: Response, message: string): boolean =>
-  (response.status === 403 || response.status === 429) && /rate limit/i.test(message);
+  (response.status === 403 || response.status === 429) && RATE_LIMIT_WORDING.test(message);
 
 /** The start of the message for a rate limit, so a caller can tell it from another 403. */
 export const RATE_LIMIT_MESSAGE = "GitHub's rate limit for this token was reached";
 
 function rateLimitError(response: Response): UpstreamError {
   const when = resetTime(response);
-  return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status);
+  return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status, {
+    rateLimited: true,
+  });
 }
 
 /** The most of an error reply that is read. GitHub's reasons are a sentence; a page of markup is not wanted. */
@@ -64,6 +72,43 @@ const KNOWN_MESSAGE =
 
 /** `message` when it is one of the known phrases, else an empty string. */
 export const knownMessage = (message: string): string => (KNOWN_MESSAGE.test(message) ? message : "");
+
+/** One entry of a GraphQL reply's `errors`. */
+export interface GraphqlError {
+  message: string;
+  type?: string;
+  path?: (string | number)[];
+}
+
+/**
+ * The error for a GraphQL reply that came back with `errors` while its `repository` was `repository`, classified so no
+ * reader shows GitHub's free text (it can carry an account's numeric id) and each is told apart the way lost access
+ * needs: a NOT_FOUND on the `repository` path with no repository is `NotFoundError`, a rate limit is a marked 429, a
+ * FORBIDDEN that refused the repository itself is `AccessRefusedError`, and anything else is a fixed sentence plus the
+ * known phrase GitHub's text matched, with the raw text kept only as the `cause` for the log.
+ *
+ * NOT_FOUND is checked first because the other kinds can also leave the repository null, and a rate limit must not be
+ * taken for a missing repository. A rate limit comes before a refusal so that a passing limit never drops what was read
+ * earlier; GitHub does not always type it, so its wording counts too. A FORBIDDEN on one field of a repository that did
+ * come back is a partial reply, not lost access, so it falls through to the fixed sentence.
+ */
+export function graphqlFailure(errors: readonly GraphqlError[], repository: unknown, owner: string, name: string): AppError {
+  if (!repository && errors.some((e) => e.type === "NOT_FOUND" && e.path?.[0] === "repository")) {
+    return new NotFoundError(`${owner}/${name} was not found, or your GitHub account cannot see it`);
+  }
+  if (errors.some((e) => e.type === "RATE_LIMITED" || RATE_LIMIT_WORDING.test(e.message))) {
+    return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again later`, 429, { rateLimited: true });
+  }
+  const onRepository = (e: GraphqlError) => e.path?.length === 1 && e.path[0] === "repository";
+  if (errors.some((e) => e.type === "FORBIDDEN" && (!repository || onRepository(e)))) {
+    return new AccessRefusedError(`GitHub refused this credential access to ${owner}/${name}`);
+  }
+  // Only the phrase itself is shown, never the rest of GitHub's sentence around it.
+  const known = errors.map((e) => KNOWN_MESSAGE.exec(e.message)?.[0]).find((phrase) => phrase !== undefined);
+  return new UpstreamError(`GitHub reported an error reading ${owner}/${name}${known ? `: ${known}` : ""}`, 200, {
+    cause: new Error(errors.map((e) => e.message).join("; ")),
+  });
+}
 
 /** Raises the error for a response that is not a success, and returns for one that is. */
 export async function throwForStatus(response: Response): Promise<void> {

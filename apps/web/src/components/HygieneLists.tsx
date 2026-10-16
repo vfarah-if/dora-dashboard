@@ -22,14 +22,17 @@ export function GroupedItemList<T extends Pick<ItemRef, "assigned" | "assignee">
   people,
   itemKey,
   renderItem,
+  what,
 }: {
   items: readonly T[];
   people: boolean;
   itemKey: (item: T) => string | number;
   renderItem: (item: T) => ReactNode;
+  /** Names the list for its button, as a plural noun phrase or which check it belongs to, as `copy.space.forCheck` gives it. */
+  what: string;
 }) {
   return (
-    <ShowAllList total={items.length}>
+    <ShowAllList total={items.length} what={what}>
       {(limit) => {
         const all = { id: "all", name: null, assigned: false, items: [...items] };
         const groups = limitGroups(people ? groupByAssignee(items) : [all], limit);
@@ -49,9 +52,9 @@ export function GroupedItemList<T extends Pick<ItemRef, "assigned" | "assignee">
 }
 
 /** Pull requests with no linked item, each as a qualified reference and its title. */
-export function PullRequestList({ pullRequests }: { pullRequests: readonly PullRequestRef[] }) {
+export function PullRequestList({ pullRequests, what }: { pullRequests: readonly PullRequestRef[]; what: string }) {
   return (
-    <ShowAllList total={pullRequests.length}>
+    <ShowAllList total={pullRequests.length} what={what}>
       {(limit) => (
         <ul className="hygiene-list">
           {pullRequests.slice(0, limit).map((pr) => (

@@ -168,6 +168,7 @@ export class GitHubIssueProvider implements IssueProvider {
       throw new UpstreamError(
         "GitHub's rate limit for this token was reached, so issues could not be read. Crawl again once it resets",
         429,
+        { rateLimited: true },
       );
     }
     // A field error can null its whole issue through fields GitHub declares non-null. Dropping that issue would let a
