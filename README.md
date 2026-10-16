@@ -15,6 +15,32 @@ The dashboard rests on a small number of principles, which the home page of the 
 - **Code quality shows up in the four keys.** Complex, untested code leads to larger and riskier changes, slower reviews and more failed deploys, which in turn create pressure to cut corners. Simple, tested code runs the same circle the other way.
 - **Measure the system, not the person.** Figures describe a team's way of working. Per-person views are off by default (ADR 0008), trends matter more than targets, and repositories should be compared only with the fairness options switched on.
 
+![image-20261016020113610](/Users/vincentfarah/dev/wba/dora-dashboard/assets/repositories.png)
+
+
+
+![image-20261016015905257](/Users/vincentfarah/dev/wba/dora-dashboard/assets/repository.png)
+
+
+
+![image-20261016020242863](/Users/vincentfarah/dev/wba/dora-dashboard/assets/code-analysis.png)
+
+
+
+![image-20261016020412746](/Users/vincentfarah/dev/wba/dora-dashboard/assets/security.png)
+
+
+
+![image-20261016020631042](/Users/vincentfarah/dev/wba/dora-dashboard/assets/jira.png)
+
+
+
+![image-20261016020754773](/Users/vincentfarah/dev/wba/dora-dashboard/assets/git-issues.png)
+
+
+
+![image-20261016020903590](/Users/vincentfarah/dev/wba/dora-dashboard/assets/review-queues.png)
+
 ## Quick start
 
 Requires Node 22.13 or later and, for the default sign-in, the [GitHub CLI](https://cli.github.com) signed in with `gh auth login`.
