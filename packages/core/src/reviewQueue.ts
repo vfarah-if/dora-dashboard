@@ -158,7 +158,7 @@ function tilesOf(entries: QueueEntry[]): ReviewQueueTiles {
   };
 }
 
-function summaryOf(input: ReviewQueueInput, entries: QueueEntry[]): RepoQueueSummary {
+function summaryOf(input: ReviewQueueInput, entries: QueueEntry[], now: string): RepoQueueSummary {
   const mine = entries.filter((e) => e.repoId === input.repo.id);
   const bands = emptyBands();
   const lanes = emptyLanes();
@@ -166,7 +166,14 @@ function summaryOf(input: ReviewQueueInput, entries: QueueEntry[]): RepoQueueSum
     lanes[entry.lane]++;
     if (isWaiting(entry.lane)) bands[entry.band]++;
   }
-  return { repoId: input.repo.id, repo: `${input.repo.owner}/${input.repo.name}`, open: mine.length, bands, lanes };
+  return {
+    repoId: input.repo.id,
+    repo: `${input.repo.owner}/${input.repo.name}`,
+    open: mine.length,
+    bands,
+    lanes,
+    fetchedAt: input.fetchedAt ?? now,
+  };
 }
 
 /**
@@ -191,7 +198,7 @@ export function buildReviewQueue(inputs: ReviewQueueInput[], options: { now: str
     fetchedAt: fetched[0] ?? now,
     entries,
     tiles: tilesOf(entries),
-    repos: inputs.map((input) => summaryOf(input, entries)),
+    repos: inputs.map((input) => summaryOf(input, entries, now)),
     needsAttention,
     features: groupFeatures(pairs.map((p) => ({ repo: p.input.repo, pr: p.pr, entry: p.entry }))),
     errors: [],

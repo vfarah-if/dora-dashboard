@@ -291,17 +291,20 @@ export interface ReviewQueueOptions {
   names?: boolean;
 }
 
-const queuePath = (ids: readonly number[], names: boolean, refresh: boolean) => {
+/** `refresh` reads every repository again when true, or only those listed. */
+const queuePath = (ids: readonly number[], names: boolean, refresh: boolean | readonly number[]) => {
   const params = new URLSearchParams();
   if (ids.length) params.set("ids", ids.join(","));
   if (names) params.set("names", "1");
-  if (refresh) params.set("refresh", "1");
+  if (refresh === true) params.set("refresh", "1");
+  else if (refresh) params.set("refreshIds", refresh.join(","));
   return withQuery("/api/review-queue", params.toString());
 };
 
 /**
- * The live review queue, polled every minute. `refresh()` asks the API to skip its cache and replaces the
- * shown data with the answer, while the previous data stays on screen. Names are only requested when asked for.
+ * The live review queue, polled every minute. `refresh(only)` asks the API to skip its cache, for the repositories in
+ * `only` or for every one when it is absent or empty, and replaces the shown data with the answer while the previous
+ * data stays on screen. Names are only requested when asked for.
  */
 export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions = {}) {
   const client = useQueryClient();
@@ -315,7 +318,8 @@ export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions =
   const refresh = useMutation({
     // A poll still in flight must not land after, and overwrite, the fresher answer.
     onMutate: () => client.cancelQueries({ queryKey: key }),
-    mutationFn: () => apiRequest<ReviewQueue>(queuePath(ids, names, true)),
+    mutationFn: (only: readonly number[] | undefined) =>
+      apiRequest<ReviewQueue>(queuePath(ids, names, only?.length ? only : true)),
     onSuccess: (data) => client.setQueryData(key, data),
   });
   const { reset } = refresh;
@@ -326,7 +330,7 @@ export function useReviewQueue({ ids = [], names = false }: ReviewQueueOptions =
   }, [dataUpdatedAt, reset]);
   return {
     ...query,
-    refresh: () => refresh.mutate(),
+    refresh: (only?: readonly number[]) => refresh.mutate(only),
     refreshing: refresh.isPending,
     refreshFailed: refresh.isError,
   };

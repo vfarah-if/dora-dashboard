@@ -325,6 +325,7 @@ describe("buildReviewQueue", () => {
       open: 5,
       bands: { fresh: 1, ageing: 0, overdue: 1, stale: 1 },
       lanes: { held: 1, with_author: 1, approved: 0, awaiting_review: 2, no_reviewer: 1 },
+      fetchedAt: now,
     });
     expect(queue.repos[1]).toMatchObject({ repo: "acme/gadgets", open: 1, bands: { fresh: 0, ageing: 1, overdue: 0, stale: 0 } });
   });
@@ -351,6 +352,20 @@ describe("buildReviewQueue", () => {
       needsAttention: [],
     });
     expect(q.tiles.pastDay).toEqual({ count: 0, longestHours: null });
+  });
+
+  it("gives each repository its own fetch time, defaulting to now", () => {
+    const q = buildReviewQueue(
+      [
+        { repo: widgets, pullRequests: [], fetchedAt: "2026-09-30T11:59:30Z" },
+        { repo: gadgets, pullRequests: [] },
+      ],
+      { now },
+    );
+    expect(q.repos.map((r) => [r.repo, r.fetchedAt])).toEqual([
+      ["acme/widgets", "2026-09-30T11:59:30Z"],
+      ["acme/gadgets", now],
+    ]);
   });
 
   it("marks a bot by its login when the host did not flag it", () => {

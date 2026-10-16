@@ -104,6 +104,45 @@ describe("ReviewQueueService", () => {
     expect(provider.openFetches).toBe(2);
   });
 
+  it("reads again only the repositories a refresh lists, and serves the rest from the cache", async () => {
+    await service.queue("token", [widgets, gadgets]);
+    clock.advance(5);
+    const queue = await service.queue("token", [widgets, gadgets], { refresh: [gadgets] });
+    expect(provider.openFetches).toBe(3);
+    expect(queue.repos.map((r) => [r.repo, r.fetchedAt])).toEqual([
+      ["acme/widgets", "2026-09-30T12:00:00.000Z"],
+      ["acme/gadgets", "2026-09-30T12:00:05.000Z"],
+    ]);
+  });
+
+  it("serves a stale repository a refresh does not list at once, and reads it again in the background", async () => {
+    await service.queue("token", [widgets, gadgets]);
+    clock.advance(90);
+    const queue = await service.queue("token", [widgets, gadgets], { refresh: [gadgets] });
+    expect(queue.repos.map((r) => [r.repo, r.fetchedAt])).toEqual([
+      ["acme/widgets", "2026-09-30T12:00:00.000Z"],
+      ["acme/gadgets", "2026-09-30T12:01:30.000Z"],
+    ]);
+    expect(provider.openFetches).toBe(4);
+    await settle();
+    const after = await service.queue("token", [widgets]);
+    expect(after.repos[0]?.fetchedAt).toBe("2026-09-30T12:01:30.000Z");
+  });
+
+  it("reads nothing again for an empty refresh list", async () => {
+    await service.queue("token", [widgets, gadgets]);
+    clock.advance(5);
+    await service.queue("token", [widgets, gadgets], { refresh: [] });
+    expect(provider.openFetches).toBe(2);
+  });
+
+  it("ignores a listed refresh of a repository that is not being read", async () => {
+    await service.queue("token", [widgets]);
+    clock.advance(5);
+    await service.queue("token", [widgets], { refresh: [gadgets] });
+    expect(provider.openFetches).toBe(1);
+  });
+
   it("ignores a refresh of something read under five seconds ago", async () => {
     await service.queue("token", [widgets]);
     clock.advance(4);
@@ -774,6 +813,20 @@ describe("GET /api/review-queue", () => {
     expect(provider.openFetches).toBe(2);
   });
 
+  it("reads again only the repositories named in refreshIds, and refresh=1 still reads them all", async () => {
+    await app.inject("/api/review-queue");
+    clock.advance(5);
+    const some = await app.inject(`/api/review-queue?refreshIds=${ids[1]}`);
+    expect(provider.openFetches).toBe(3);
+    expect(some.json().repos.map((r: { fetchedAt: string }) => r.fetchedAt)).toEqual([
+      "2026-09-30T12:00:00.000Z",
+      "2026-09-30T12:00:05.000Z",
+    ]);
+    clock.advance(5);
+    await app.inject(`/api/review-queue?refresh=1&refreshIds=${ids[1]}`);
+    expect(provider.openFetches).toBe(5);
+  });
+
   it("hides names by default and shows them only with names=1", async () => {
     provider.seed("acme/gadgets", {
       openPrs: [openPr({ number: 7, author: "alice", requestedReviewers: [{ name: "bob", isTeam: false }] })],
@@ -811,7 +864,16 @@ describe("GET /api/review-queue", () => {
     expect((await app.inject("/api/review-queue")).statusCode).toBe(401);
   });
 
-  it.each(["ids=1;DROP", "ids=", "ids=abc", "refresh=yes", `ids=${Array(51).fill(1).join(",")}`])("rejects %s", async (query) => {
+  it.each([
+    "ids=1;DROP",
+    "ids=",
+    "ids=abc",
+    "refresh=yes",
+    `ids=${Array(51).fill(1).join(",")}`,
+    "refreshIds=",
+    "refreshIds=abc",
+    `refreshIds=${Array(51).fill(1).join(",")}`,
+  ])("rejects %s", async (query) => {
     expect((await app.inject(`/api/review-queue?${query}`)).statusCode).toBe(400);
   });
 });

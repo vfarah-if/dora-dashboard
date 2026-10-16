@@ -168,6 +168,30 @@ export function visibleFeatures(features: readonly FeatureGroup[], visible: read
     .filter((feature) => feature.members.length >= 2);
 }
 
+/** The most repository ids one request may name, as the API's `ids` and `refreshIds` allow. */
+const MOST_IDS_PER_REQUEST = 50;
+
+/**
+ * The repositories Refresh reads again: the ticked ones the queue knows, read or failed. Undefined means every
+ * repository, for when none is ticked or more are ticked than one request may name.
+ */
+export function refreshScope(queue: Pick<ReviewQueue, "repos" | "errors">, repoIds: readonly number[]): number[] | undefined {
+  const known = new Set([...queue.repos, ...queue.errors].map((r) => r.repoId));
+  const ticked = repoIds.filter((id) => known.has(id));
+  return ticked.length && ticked.length <= MOST_IDS_PER_REQUEST ? ticked : undefined;
+}
+
+/**
+ * When the repositories shown were read: the oldest read among those ticked, so a refresh of the ticked repositories
+ * is not reported as older than it is. It is the queue's own oldest read when none is ticked, or when no ticked
+ * repository was read, as one that failed has no read time.
+ */
+export function shownFetchedAt(queue: Pick<ReviewQueue, "repos" | "fetchedAt">, repoIds: readonly number[]): string {
+  const ticked = queue.repos.filter((r) => repoIds.includes(r.repoId)).map((r) => r.fetchedAt);
+  // Compared as times, not text, so "09:58:00Z" and "09:58:00.000Z" are the same moment.
+  return ticked.sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? queue.fetchedAt;
+}
+
 /**
  * The plain text copied by "Copy summary". With names hidden it carries no author and no reviewer.
  * `entries` are the ones currently shown, so the copy matches the page.

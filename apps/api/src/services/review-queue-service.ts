@@ -48,8 +48,11 @@ interface Cached {
 }
 
 export interface ReviewQueueOptions {
-  /** Read again even if the cache is fresh (ignored for a read under 5 seconds old). */
-  refresh?: boolean;
+  /**
+   * Read again even if the cache is fresh (ignored for a read under 5 seconds old): every repository when true, or only
+   * those listed, the rest served as an ordinary request would be. A listed id that is not being read is ignored.
+   */
+  refresh?: boolean | readonly number[];
   /** Include author logins and reviewer names. Off by default (ADR 0008). */
   names?: boolean;
 }
@@ -105,8 +108,9 @@ export class ReviewQueueService {
   }
 
   /** Every repository is started at once; the limiter holds the host reads, awaited or background, to CONCURRENCY. */
-  private readAll(token: string, repos: Repo[], refresh: boolean): Promise<Read[]> {
-    return Promise.all(repos.map((repo) => this.read(token, repo, refresh)));
+  private readAll(token: string, repos: Repo[], refresh: boolean | readonly number[]): Promise<Read[]> {
+    const again = (repo: Repo) => (typeof refresh === "boolean" ? refresh : refresh.includes(repo.id));
+    return Promise.all(repos.map((repo) => this.read(token, repo, again(repo))));
   }
 
   private key(token: string, repo: Repo): string {

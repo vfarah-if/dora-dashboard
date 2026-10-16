@@ -5,6 +5,7 @@ import { ReviewQueuePage } from "./ReviewQueuePage";
 import { mockFetch, renderRoute } from "../test/render";
 import { queueEntry, reviewQueue } from "../test/fixtures";
 import { copy } from "../copy";
+import { formatTime } from "../lib/format";
 
 const text = copy.reviewQueue;
 
@@ -197,12 +198,95 @@ describe("ReviewQueuePage", () => {
     expect(await screen.findByText(text.copyFailed)).toBeInTheDocument();
   });
 
-  it("refreshes with refresh=1", async () => {
+  it("refreshes every repository with refresh=1 when none is ticked", async () => {
     const user = userEvent.setup();
     const { fetchMock } = renderQueue();
     await screen.findByText(text.tiles.waiting);
     await user.click(screen.getByRole("button", { name: text.refresh }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refresh=1"))).toBe(true));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refreshIds"))).toBe(false);
+  });
+
+  it("refreshes only the ticked repositories, and says when those were read", async () => {
+    const user = userEvent.setup();
+    const base = reviewQueue();
+    const { fetchMock } = renderQueue(
+      {
+        ...base,
+        fetchedAt: "2026-03-09T09:30:00Z",
+        repos: [base.repos[0]!, { ...base.repos[0]!, repoId: 2, repo: "acme/gadgets", fetchedAt: "2026-03-09T09:30:00Z" }],
+      },
+      "/review-queue?repos=1",
+    );
+    expect(await screen.findByText(text.updated(formatTime("2026-03-09T09:58:00Z")))).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refreshIds=1"))).toBe(true));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refresh=1"))).toBe(false);
+  });
+
+  it("keeps the figures on screen, dimmed and busy, with a spinner on the button while a refresh runs", async () => {
+    const user = userEvent.setup();
+    let finish = () => undefined as void;
+    mockFetch({
+      "GET /api/review-queue": (url) =>
+        url.searchParams.has("refresh")
+          ? new Promise((resolve) => (finish = () => resolve({ body: reviewQueue() })))
+          : { body: reviewQueue() },
+    });
+    renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    const body = document.querySelector(".queue-body")!;
+    expect(body).toHaveAttribute("aria-busy", "false");
+    expect(body).not.toHaveClass("is-refreshing");
+
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    const button = await screen.findByRole("button", { name: text.refreshing });
+    expect(button).toBeDisabled();
+    expect(button.querySelector(".spinner")).toHaveAttribute("aria-hidden", "true");
+    expect(body).toHaveClass("is-refreshing");
+    expect(body).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText(text.tiles.waiting)).toBeInTheDocument();
+
+    finish();
+    await waitFor(() => expect(body).not.toHaveClass("is-refreshing"));
+    expect(body).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("button", { name: text.refresh }).querySelector(".spinner")).toBeNull();
+  });
+
+  it("dims the figures shown while the queue with names loads", async () => {
+    const user = userEvent.setup();
+    let finish = () => undefined as void;
+    mockFetch({
+      "GET /api/review-queue": (url) =>
+        url.searchParams.has("names")
+          ? new Promise((resolve) => (finish = () => resolve({ body: reviewQueue() })))
+          : { body: reviewQueue() },
+    });
+    renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    const body = document.querySelector(".queue-body")!;
+    await user.click(screen.getByRole("switch", { name: text.controls.names }));
+    await waitFor(() => expect(body).toHaveClass("is-refreshing"));
+    finish();
+    await waitFor(() => expect(body).not.toHaveClass("is-refreshing"));
+  });
+
+  it("does not dim the figures for the minute's poll", async () => {
+    let hold = false;
+    let finish = () => undefined as void;
+    const fetchMock = mockFetch({
+      "GET /api/review-queue": () =>
+        hold ? new Promise((resolve) => (finish = () => resolve({ body: reviewQueue() }))) : { body: reviewQueue() },
+    });
+    const { client } = renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    hold = true;
+    void client.refetchQueries({ queryKey: ["review-queue"] });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const body = document.querySelector(".queue-body")!;
+    expect(body).not.toHaveClass("is-refreshing");
+    expect(body).toHaveAttribute("aria-busy", "false");
+    finish();
   });
 
   it("asks for names only when Show names is on", async () => {

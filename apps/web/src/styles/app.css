@@ -562,8 +562,12 @@ a:hover {
   transition: opacity 150ms ease;
 }
 
-/** The body of the code analysis page, which keeps the page's spacing and dims while another area loads. */
-.detail-body {
+/**
+ * The body of the code analysis page and of the review queue, which keeps the page's spacing and dims while new data
+ * loads.
+ */
+.detail-body,
+.queue-body {
   display: flex;
   flex-direction: column;
   gap: 20px;

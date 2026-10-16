@@ -328,6 +328,7 @@ export function reviewQueue(overrides: Partial<ReviewQueue> = {}): ReviewQueue {
         open: 6,
         bands: { fresh: 0, ageing: 1, overdue: 1, stale: 1 },
         lanes: { ...zeroLanes, no_reviewer: 1, awaiting_review: 2, approved: 1, held: 1, with_author: 1 },
+        fetchedAt: "2026-03-09T09:58:00Z",
       },
     ],
     needsAttention: ["1#10", "1#11"],

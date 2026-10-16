@@ -17,7 +17,9 @@ import {
   filterEntries,
   formatWait,
   groupByLane,
+  refreshScope,
   reviewerNames,
+  shownFetchedAt,
   summaryText,
   tilesFor,
   visibleFeatures,
@@ -88,7 +90,14 @@ function useQueueView() {
 type QueueView = ReturnType<typeof useQueueView>;
 type QueueQuery = ReturnType<typeof useReviewQueue>;
 
-function QueueActions({ queue, visible, showNames }: { queue: QueueQuery; visible: QueueEntry[]; showNames: boolean }) {
+interface QueueActionsProps {
+  queue: QueueQuery;
+  visible: QueueEntry[];
+  showNames: boolean;
+  repoIds: readonly number[];
+}
+
+function QueueActions({ queue, visible, showNames, repoIds }: QueueActionsProps) {
   const [copied, setCopied] = useState<"done" | "failed" | null>(null);
   const data = queue.data;
 
@@ -107,7 +116,15 @@ function QueueActions({ queue, visible, showNames }: { queue: QueueQuery; visibl
       <button type="button" className="button button-secondary" disabled={!data} onClick={() => void copySummary()}>
         {text.copySummary}
       </button>
-      <button type="button" className="button button-secondary" disabled={queue.refreshing} onClick={queue.refresh}>
+      <button
+        type="button"
+        className="button button-secondary"
+        disabled={queue.refreshing}
+        // Only the ticked repositories are read again; the rest come from the API's cache, so the wait does not grow
+        // with every repository added.
+        onClick={() => queue.refresh(data && refreshScope(data, repoIds))}
+      >
+        {queue.refreshing && <span className="spinner" aria-hidden="true" />}
         {queue.refreshing ? text.refreshing : text.refresh}
       </button>
       {data && <DownloadReportButton subject={text.title} label={text.pdfLabel} />}
@@ -339,11 +356,14 @@ function QueueBody({ queue, visible, view }: { queue: QueueQuery; visible: Queue
   }
   if (queue.isError && !queue.data) return <ErrorState error={queue.error} onRetry={() => void queue.refetch()} />;
   if (!queue.data) return null;
+  // The figures stay readable while new ones load, dimmed so it is plain they are about to change. The minute's poll
+  // does not dim them, or the page would flicker every minute.
+  const busy = queue.refreshing || queue.isPlaceholderData;
   return (
-    <>
+    <div className={busy ? "queue-body is-refreshing" : "queue-body"} aria-busy={busy}>
       <QueueNotices data={queue.data} refreshFailed={queue.refreshFailed} />
       <QueueContent data={queue.data} visible={visible} view={view} />
-    </>
+    </div>
   );
 }
 
@@ -365,9 +385,9 @@ export function ReviewQueuePage() {
           <div className="page-header">
             <h1>{text.title}</h1>
             <p className="lede">{text.lede}</p>
-            {data && <p className="chart-subtitle">{text.updated(formatTime(data.fetchedAt))}</p>}
+            {data && <p className="chart-subtitle">{text.updated(formatTime(shownFetchedAt(data, repoIds)))}</p>}
           </div>
-          <QueueActions queue={queue} visible={visible} showNames={showNames} />
+          <QueueActions queue={queue} visible={visible} showNames={showNames} repoIds={repoIds} />
         </header>
         <QueueControls data={data} view={view} />
       </StickyPanel>
