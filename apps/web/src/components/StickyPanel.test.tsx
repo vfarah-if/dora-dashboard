@@ -6,6 +6,7 @@ import { StickyPanel } from "./StickyPanel";
 let panelHeight = 200;
 const PINNED_EXTRA = 29;
 let observed: (() => void)[] = [];
+let observedTargets: Element[] = [];
 const originalHeight = window.innerHeight;
 
 beforeEach(() => {
@@ -18,13 +19,16 @@ beforeEach(() => {
     return 0;
   });
   observed = [];
+  observedTargets = [];
   vi.stubGlobal(
     "ResizeObserver",
     class {
       constructor(callback: () => void) {
         observed.push(callback);
       }
-      observe() {}
+      observe(target: Element) {
+        observedTargets.push(target);
+      }
       disconnect() {}
     },
   );
@@ -94,6 +98,21 @@ describe("StickyPanel", () => {
       expect(panel).toHaveClass("sticky-panel-pinned");
     }
     expect(page.style.getPropertyValue("--sticky-panel-height")).toBe("349px");
+  });
+
+  it("watches its body, and is re-judged as the body grows past its share and shrinks back", () => {
+    const { page, panel } = renderPanel();
+    expect(observedTargets).toEqual([panel.querySelector(".sticky-panel-body")]);
+
+    panelHeight = 400; // Half of 800, over the share.
+    act(() => observed.forEach((callback) => callback()));
+    expect(panel).not.toHaveClass("sticky-panel-pinned");
+    expect(page.style.getPropertyValue("--sticky-panel-height")).toBe("");
+
+    panelHeight = 200;
+    act(() => observed.forEach((callback) => callback()));
+    expect(panel).toHaveClass("sticky-panel-pinned");
+    expect(page.style.getPropertyValue("--sticky-panel-height")).toBe("229px");
   });
 
   it("clears the property and stops listening to the window when it goes", () => {

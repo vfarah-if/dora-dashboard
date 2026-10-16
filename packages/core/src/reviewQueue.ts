@@ -91,8 +91,8 @@ const emptyBands = (): Record<WaitBand, number> => ({ fresh: 0, ageing: 0, overd
 export interface ReviewQueueInput {
   repo: Pick<Repo, "id" | "owner" | "name">;
   pullRequests: OpenPullRequest[];
-  /** When these were read from the host; the queue reports the oldest. Defaults to `now`. */
-  fetchedAt?: string;
+  /** When these were read from the host, as an ISO time; the queue reports the oldest. Required, so a read is never shown as newer than it is. */
+  fetchedAt: string;
 }
 
 function entryOf(repo: ReviewQueueInput["repo"], pr: OpenPullRequest, now: string): QueueEntry {
@@ -158,7 +158,7 @@ function tilesOf(entries: QueueEntry[]): ReviewQueueTiles {
   };
 }
 
-function summaryOf(input: ReviewQueueInput, entries: QueueEntry[], now: string): RepoQueueSummary {
+function summaryOf(input: ReviewQueueInput, entries: QueueEntry[]): RepoQueueSummary {
   const mine = entries.filter((e) => e.repoId === input.repo.id);
   const bands = emptyBands();
   const lanes = emptyLanes();
@@ -172,7 +172,7 @@ function summaryOf(input: ReviewQueueInput, entries: QueueEntry[], now: string):
     open: mine.length,
     bands,
     lanes,
-    fetchedAt: input.fetchedAt ?? now,
+    fetchedAt: input.fetchedAt,
   };
 }
 
@@ -192,13 +192,15 @@ export function buildReviewQueue(inputs: ReviewQueueInput[], options: { now: str
     })
     .sort((a, b) => a.rank - b.rank || byWait(a.entry, b.entry))
     .map((x) => x.entry.key);
-  const fetched = inputs.map((i) => i.fetchedAt ?? now).sort();
+  // Compared as instants: times of differing precision ("09:58:00.500Z" and "09:58:00Z") do not sort correctly as text.
+  const fetched = inputs.map((i) => i.fetchedAt).sort((a, b) => Date.parse(a) - Date.parse(b));
   return {
     now,
+    // With no repositories there is no read to report, so the time the queue was worked out at stands.
     fetchedAt: fetched[0] ?? now,
     entries,
     tiles: tilesOf(entries),
-    repos: inputs.map((input) => summaryOf(input, entries, now)),
+    repos: inputs.map((input) => summaryOf(input, entries)),
     needsAttention,
     features: groupFeatures(pairs.map((p) => ({ repo: p.input.repo, pr: p.pr, entry: p.entry }))),
     errors: [],

@@ -42,13 +42,15 @@ interface DateFieldProps {
   onChange: (next: string | null) => void;
 }
 
-/** A browser reports a date a keystroke at a time while the year is typed (0002, 0020, 0202, 2026). Only a four-digit year is a date. */
+/** A browser reports a date a keystroke at a time while the year is typed (0002, 0020, 0202, 2026). A year of 1000 or later is a date. */
 const isCompleteDate = (typed: string) => Number(typed.slice(0, typed.indexOf("-"))) >= 1000;
 
 function DateField({ label, value, min, max, limit, onChange }: DateFieldProps) {
   const id = useId();
   // What is typed, held here until it is a whole date, so a half-typed year never reaches the range or the address.
   const [draft, setDraft] = useState(value ?? "");
+  // When the range changes from outside, such as a preset or the other field clearing this one, what was typed no
+  // longer describes it, so the draft is reset to the new value during render rather than in an effect.
   const [seen, setSeen] = useState(value);
   if (seen !== value) {
     setSeen(value);
@@ -99,7 +101,7 @@ export function DateRangeControls({ value, onChange, now, extraPresets = [], sho
           limit={today}
           onChange={(next) => {
             const from = clamp(next);
-            // The end just typed into wins, so an end the other date now passes is cleared.
+            // The end typed into wins. When the new start passes the end, the end is cleared rather than the typed start refused.
             onChange(from && value.to && from > value.to ? { ...value, from, to: null } : { ...value, from });
           }}
         />
@@ -111,6 +113,7 @@ export function DateRangeControls({ value, onChange, now, extraPresets = [], sho
           limit={today}
           onChange={(next) => {
             const to = clamp(next);
+            // To does the same: a typed end before the start clears the start.
             onChange(to && value.from && to < value.from ? { ...value, from: null, to } : { ...value, to });
           }}
         />

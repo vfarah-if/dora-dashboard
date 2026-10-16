@@ -18,7 +18,10 @@ import { useFlagParam, useRangeParams } from "../lib/urlState";
 
 interface SpaceHeaderProps {
   report: SpaceReport | undefined;
-  /** The space's name from the list, used when the report has failed. */
+  /**
+   * The space's name from the list, used until the report arrives. A list already cached names the space while the
+   * report loads, but the list is only fetched once the report has failed.
+   */
   name: string | undefined;
   failed: boolean;
 }

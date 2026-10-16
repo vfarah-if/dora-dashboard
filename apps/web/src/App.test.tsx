@@ -98,6 +98,28 @@ describe("App sign-in gate", () => {
       expect(await screen.findByRole("link", { name: copy.nav.jira })).toBeInTheDocument();
     });
 
+    it("stops asking for health once the API answers", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let calls = 0;
+      mockFetch({
+        "GET /api/auth/me": signedIn,
+        "GET /api/health": () => (++calls === 1 ? { status: 500, body: { error: "down" } } : { body: { jira: true } }),
+        "GET /api/repos": { body: [] },
+      });
+      renderApp();
+      await screen.findByText("ada");
+      await vi.waitFor(() => expect(calls).toBe(1));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      await screen.findByRole("link", { name: copy.nav.jira });
+      expect(calls).toBe(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120_000);
+      });
+      expect(calls).toBe(2);
+    });
+
     it("leaves the link out when Jira is off", async () => {
       mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": { body: { jira: false } }, "GET /api/repos": { body: [] } });
       renderApp();

@@ -18,12 +18,12 @@ describe("ShowAllList", () => {
   it("shows the limit and the rest behind a button", async () => {
     const user = userEvent.setup();
     render(
-      <ShowAllList total={7} limit={3}>
+      <ShowAllList total={7} limit={3} what="files">
         {items}
       </ShowAllList>,
     );
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(7) }));
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(7, "files") }));
     expect(screen.getAllByRole("listitem")).toHaveLength(7);
   });
 
@@ -42,18 +42,9 @@ describe("ShowAllList", () => {
     expect(fewer).toHaveTextContent(copy.space.showFewer);
   });
 
-  it("names the button by its visible text alone when it is not told what the list holds", () => {
-    render(
-      <ShowAllList total={12} limit={3}>
-        {items}
-      </ShowAllList>,
-    );
-    expect(screen.getByRole("button")).not.toHaveAttribute("aria-label");
-  });
-
   it("prints every entry by default, as the other pages do", () => {
     render(
-      <ShowAllList total={7} limit={3}>
+      <ShowAllList total={7} limit={3} what="files">
         {items}
       </ShowAllList>,
     );
@@ -64,7 +55,7 @@ describe("ShowAllList", () => {
 
   it("prints only what the screen shows when told not to print everything, with a line for the rest", () => {
     render(
-      <ShowAllList total={7} limit={3} printAll={false}>
+      <ShowAllList total={7} limit={3} what="files" printAll={false}>
         {items}
       </ShowAllList>,
     );
@@ -75,7 +66,7 @@ describe("ShowAllList", () => {
 
   it("uses the note it is given for the printed line", () => {
     render(
-      <ShowAllList total={7} limit={3} printAll={false} printNote={(n) => `${n} left`}>
+      <ShowAllList total={7} limit={3} what="files" printAll={false} printNote={(n) => `${n} left`}>
         {items}
       </ShowAllList>,
     );
@@ -84,7 +75,7 @@ describe("ShowAllList", () => {
 
   it("prints no line when the whole list fits", () => {
     render(
-      <ShowAllList total={3} limit={3} printAll={false}>
+      <ShowAllList total={3} limit={3} what="files" printAll={false}>
         {items}
       </ShowAllList>,
     );

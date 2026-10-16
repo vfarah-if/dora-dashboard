@@ -27,7 +27,8 @@ export class UnauthorisedError extends AppError {
 
 /**
  * The code host answered, but not with what we asked for. `rateLimited` marks a refusal that is only the host's rate
- * limit, so a caller can tell it from another refusal with the same status without reading the message.
+ * limit, so a caller can tell it from another refusal with the same status without reading the message. Only HTTP
+ * refusals and GraphQL rate limits are marked; a rate limit met any other way is not.
  */
 export class UpstreamError extends AppError {
   override readonly name = "UpstreamError";
@@ -37,7 +38,7 @@ export class UpstreamError extends AppError {
     readonly status: number,
     options?: { cause?: unknown; rateLimited?: boolean },
   ) {
-    super(message, options && "cause" in options ? { cause: options.cause } : undefined);
+    super(message, options);
     this.rateLimited = options?.rateLimited ?? false;
   }
 }

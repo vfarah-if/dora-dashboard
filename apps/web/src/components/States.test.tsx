@@ -11,7 +11,7 @@ describe("ErrorState", () => {
     expect(screen.queryByRole("button", { name: copy.common.retry })).not.toBeInTheDocument();
   });
 
-  it.each([408, 429, 502, 0])("offers Try again for a %s", (status) => {
+  it.each([401, 408, 429, 502, 0])("offers Try again for a %s", (status) => {
     render(<ErrorState error={new ApiError(status, "later")} onRetry={vi.fn()} />);
     expect(screen.getByRole("button", { name: copy.common.retry })).toBeInTheDocument();
   });

@@ -1579,7 +1579,7 @@ export const copy = {
     /** The button's accessible name, which begins with its visible text and then says what the list holds. */
     showAllOf: (count: number, what: string) => `Show all ${count} ${what}`,
     showFewerOf: (what: string) => `Show fewer ${what}`,
-    /** Says which check a list belongs to, so each check's button has a name of its own ("Show all 12 for Stale items"). */
+    /** Says which check a list belongs to, so each check's button has a name of its own ("Show all 12 for Stale work in progress"). */
     forCheck: (check: string) => `for ${check}`,
     printMore: (count: number) => `and ${count} more, listed on the page on screen`,
     openInJira: "(opens in Jira)",
@@ -2334,6 +2334,7 @@ export const copy = {
     refresh: "Refresh",
     refreshing: "Refreshing",
     refreshFailed: "The queue could not be refreshed. The figures shown are the last ones received.",
+    pollFailed: (time: string) => `The queue could not be updated. The figures shown were read at ${time}.`,
     copySummary: "Copy summary",
     /** Joins the title in the suggested PDF file name, as in review-queue-report-2026-09-30. */
     pdfLabel: "report",

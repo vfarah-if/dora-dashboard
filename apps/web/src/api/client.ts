@@ -77,9 +77,12 @@ export function errorText(error: unknown): string {
   return copy.common.errorTitle;
 }
 
-/** Whether asking again could change the answer. A 4xx other than a timeout or a rate limit means the request itself is wrong. */
+/**
+ * Whether asking again could change the answer. A 4xx other than a timeout, a rate limit or a 401 means the request
+ * itself is wrong. A 401 can clear once the person signs in again, in another tab or with `gh auth login`.
+ */
 export function canRetry(error: unknown): boolean {
   if (!(error instanceof ApiError)) return true;
   const { status } = error;
-  return !(status >= 400 && status < 500 && status !== 408 && status !== 429);
+  return !(status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429);
 }

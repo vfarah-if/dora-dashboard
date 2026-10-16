@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { QueueEntry, ReviewLane, ReviewQueue } from "@dora-dashboard/core";
+import { errorText } from "../api/client";
 import { useReviewQueue } from "../api/hooks";
 import { copy } from "../copy";
 import { DownloadReportButton } from "../components/DownloadReportButton";
@@ -120,8 +121,8 @@ function QueueActions({ queue, visible, showNames, repoIds }: QueueActionsProps)
         type="button"
         className="button button-secondary"
         disabled={queue.refreshing}
-        // Only the ticked repositories are read again; the rest come from the API's cache, so the wait does not grow
-        // with every repository added.
+        // Only the ticked repositories are read again. The others are served as the minute's poll would be, normally
+        // from the API's cache, so the wait does not grow with every repository added.
         onClick={() => queue.refresh(data && refreshScope(data, repoIds))}
       >
         {queue.refreshing && <span className="spinner" aria-hidden="true" />}
@@ -210,12 +211,26 @@ function QueueControls({ data, view }: { data: ReviewQueue | undefined; view: Qu
   );
 }
 
-function QueueNotices({ data, refreshFailed }: { data: ReviewQueue; refreshFailed: boolean }) {
+interface QueueNoticesProps {
+  data: ReviewQueue;
+  refreshFailed: boolean;
+  refreshError: unknown;
+  /** When the figures shown were read, set only when the latest poll failed, so the page does not look live. */
+  staleSince: string | null;
+}
+
+function QueueNotices({ data, refreshFailed, refreshError, staleSince }: QueueNoticesProps) {
   return (
     <>
+      {staleSince !== null && (
+        <p className="notice notice-warning" role="alert">
+          {text.pollFailed(formatTime(staleSince))}
+        </p>
+      )}
       {data.errors.map((error) => (
         <div key={error.repoId} className="notice notice-warning" role="alert">
           <p className="notice-title">{text.readErrorTitle(error.repo)}</p>
+          <p>{error.message}</p>
           <p>{text.readErrorBody}</p>
         </div>
       ))}
@@ -226,9 +241,10 @@ function QueueNotices({ data, refreshFailed }: { data: ReviewQueue; refreshFaile
         </div>
       ))}
       {refreshFailed && (
-        <p className="notice notice-warning" role="alert">
-          {text.refreshFailed}
-        </p>
+        <div className="notice notice-warning" role="alert">
+          <p>{text.refreshFailed}</p>
+          <p>{errorText(refreshError)}</p>
+        </div>
       )}
     </>
   );
@@ -361,7 +377,12 @@ function QueueBody({ queue, visible, view }: { queue: QueueQuery; visible: Queue
   const busy = queue.refreshing || queue.isPlaceholderData;
   return (
     <div className={busy ? "queue-body is-refreshing" : "queue-body"} aria-busy={busy}>
-      <QueueNotices data={queue.data} refreshFailed={queue.refreshFailed} />
+      <QueueNotices
+        data={queue.data}
+        refreshFailed={queue.refreshFailed}
+        refreshError={queue.refreshError}
+        staleSince={queue.isError ? shownFetchedAt(queue.data, view.repoIds) : null}
+      />
       <QueueContent data={queue.data} visible={visible} view={view} />
     </div>
   );

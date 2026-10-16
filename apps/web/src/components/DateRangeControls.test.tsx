@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { DateRangeControls } from "./DateRangeControls";
+import type { ReportRange } from "../api/hooks";
+import { DateRangeControls, type DateRangeControlsProps } from "./DateRangeControls";
 import { copy } from "../copy";
 
 const value = { from: null, to: null, includeBots: false };
@@ -66,6 +68,32 @@ describe("DateRangeControls", () => {
     render(<DateRangeControls value={{ ...value, from: "2026-09-10", to: "2026-09-20" }} onChange={onChange} now={now} />);
     fireEvent.change(screen.getByLabelText(copy.range.to), { target: { value: "2026-09-01" } });
     expect(onChange).toHaveBeenLastCalledWith({ ...value, from: null, to: "2026-09-01" });
+  });
+
+  it("keeps the end when the start typed in is the same day", () => {
+    const onChange = vi.fn();
+    render(<DateRangeControls value={{ ...value, from: "2026-09-01", to: "2026-09-20" }} onChange={onChange} now={now} />);
+    fireEvent.change(screen.getByLabelText(copy.range.from), { target: { value: "2026-09-20" } });
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, from: "2026-09-20", to: "2026-09-20" });
+  });
+
+  it("keeps the start when the end typed in is the same day", () => {
+    const onChange = vi.fn();
+    render(<DateRangeControls value={{ ...value, from: "2026-09-10", to: "2026-09-20" }} onChange={onChange} now={now} />);
+    fireEvent.change(screen.getByLabelText(copy.range.to), { target: { value: "2026-09-10" } });
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, from: "2026-09-10", to: "2026-09-10" });
+  });
+
+  it("shows the typed start and an empty end when the start passes the end", () => {
+    // The value lives in state, as on a page, so the fields show what the range became.
+    function Harness(props: Pick<DateRangeControlsProps, "now">) {
+      const [range, setRange] = useState<ReportRange>({ ...value, from: "2026-09-01", to: "2026-09-20" });
+      return <DateRangeControls value={range} onChange={setRange} {...props} />;
+    }
+    render(<Harness now={now} />);
+    fireEvent.change(screen.getByLabelText(copy.range.from), { target: { value: "2026-09-25" } });
+    expect((screen.getByLabelText(copy.range.from) as HTMLInputElement).value).toBe("2026-09-25");
+    expect((screen.getByLabelText(copy.range.to) as HTMLInputElement).value).toBe("");
   });
 
   it("passes on a date that is not in the future, and a cleared one", () => {

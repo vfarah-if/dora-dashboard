@@ -6,9 +6,10 @@ const PIN_SHARE = 0.4;
 /**
  * The top of a page (back link, title, actions and controls) held under the app header while the rest of
  * the page scrolls beneath it, so long as it leaves most of the window for the content. A panel that would
- * take more than `PIN_SHARE` of the window's height stays in the flow. While held, its height is published as
- * `--sticky-panel-height` on the page, so anything else that sticks further down (the fairness panel on
- * Compare) can sit below it instead of under it; otherwise the property is absent and that offset is zero.
+ * take more than `PIN_SHARE` of the window's height stays in the flow. Whenever the body fits, the panel's height is
+ * published as `--sticky-panel-height` on the page, so anything else that sticks further down (the fairness panel on
+ * Compare) can sit below it instead of under it; otherwise the property is absent and that offset is zero. The
+ * stylesheet holds the panel in place only from 720px wide, so on a phone the property is set but nothing sticks.
  */
 export function StickyPanel({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);

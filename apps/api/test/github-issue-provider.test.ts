@@ -280,6 +280,8 @@ describe("GitHubIssueProvider", () => {
       expect(failure).toBeInstanceOf(UpstreamError);
       expect((failure as Error).message).toMatch(/rate limit for this token was reached.*Crawl again once it resets/);
       expect((failure as Error).message).not.toContain("user ID");
+      // The marker is how the review queue tells a rate limit from lost access, so the 429 must carry it.
+      expect((failure as UpstreamError).rateLimited).toBe(true);
     }
   });
 

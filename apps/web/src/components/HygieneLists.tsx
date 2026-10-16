@@ -28,7 +28,7 @@ export function GroupedItemList<T extends Pick<ItemRef, "assigned" | "assignee">
   people: boolean;
   itemKey: (item: T) => string | number;
   renderItem: (item: T) => ReactNode;
-  /** What the list holds, for the name of its button. */
+  /** Names the list for its button, as a plural noun phrase or which check it belongs to, as `copy.space.forCheck` gives it. */
   what: string;
 }) {
   return (

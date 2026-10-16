@@ -168,17 +168,10 @@ export function visibleFeatures(features: readonly FeatureGroup[], visible: read
     .filter((feature) => feature.members.length >= 2);
 }
 
-/** The most repository ids one request may name, as the API's `ids` and `refreshIds` allow. */
-const MOST_IDS_PER_REQUEST = 50;
-
-/**
- * The repositories Refresh reads again: the ticked ones the queue knows, read or failed. Undefined means every
- * repository, for when none is ticked or more are ticked than one request may name.
- */
-export function refreshScope(queue: Pick<ReviewQueue, "repos" | "errors">, repoIds: readonly number[]): number[] | undefined {
+/** The ticked repositories the queue knows, read or failed, in the order ticked. Empty when none is ticked or known. */
+export function refreshScope(queue: Pick<ReviewQueue, "repos" | "errors">, repoIds: readonly number[]): number[] {
   const known = new Set([...queue.repos, ...queue.errors].map((r) => r.repoId));
-  const ticked = repoIds.filter((id) => known.has(id));
-  return ticked.length && ticked.length <= MOST_IDS_PER_REQUEST ? ticked : undefined;
+  return repoIds.filter((id) => known.has(id));
 }
 
 /**
@@ -188,7 +181,7 @@ export function refreshScope(queue: Pick<ReviewQueue, "repos" | "errors">, repoI
  */
 export function shownFetchedAt(queue: Pick<ReviewQueue, "repos" | "fetchedAt">, repoIds: readonly number[]): string {
   const ticked = queue.repos.filter((r) => repoIds.includes(r.repoId)).map((r) => r.fetchedAt);
-  // Compared as times, not text, so "09:58:00Z" and "09:58:00.000Z" are the same moment.
+  // Compared as times, not text, because text order puts "09:58:00.500Z" before "09:58:00Z", though it is half a second later.
   return ticked.sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? queue.fetchedAt;
 }
 

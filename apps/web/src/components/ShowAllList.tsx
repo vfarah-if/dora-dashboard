@@ -17,10 +17,11 @@ interface ShowAllListProps {
   /** The printed line saying how many entries are left out, given that number. Only used when `printAll` is false. */
   printNote?: (hidden: number) => string;
   /**
-   * A plural noun phrase for what the list holds, such as "least covered files". The button then takes an accessible
-   * name that starts with its visible text and goes on to say what it opens, as a person speaking to it would.
+   * Names the list, either as a plural noun phrase for what it holds, such as "least covered files", or as which check
+   * it belongs to, as `copy.space.forCheck` gives it. The button's accessible name begins with its visible text and goes
+   * on to name the list, so a person using voice control can say what they see (WCAG 2.5.3 Label in Name).
    */
-  what?: string;
+  what: string;
 }
 
 /**
@@ -50,7 +51,7 @@ export function ShowAllList({
         <button
           type="button"
           className="button button-ghost screen-only"
-          aria-label={what === undefined ? undefined : all ? copy.space.showFewerOf(what) : copy.space.showAllOf(total, what)}
+          aria-label={all ? copy.space.showFewerOf(what) : copy.space.showAllOf(total, what)}
           onClick={() => setAll((value) => !value)}
         >
           {all ? copy.space.showFewer : copy.space.showAll(total)}

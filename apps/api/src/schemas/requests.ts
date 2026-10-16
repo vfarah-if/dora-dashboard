@@ -99,7 +99,7 @@ export const reviewQueueQuery = {
   properties: {
     ids: { type: "string", pattern: "^\\d+(,\\d+){0,49}$" },
     refresh: { type: "string", enum: ["0", "1"] },
-    /** Read only these repositories again and serve the rest from the cache; ignored when `refresh=1`. */
+    /** Read only these repositories again and serve the rest as an ordinary request would; ignored when `refresh=1`. */
     refreshIds: { type: "string", pattern: "^\\d+(,\\d+){0,49}$" },
     names: { type: "string", enum: ["0", "1"] },
   },

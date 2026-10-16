@@ -199,6 +199,15 @@ describe("error replies", () => {
     expect(error.rateLimited).toBe(true);
   });
 
+  it.each(["You have triggered an abuse detection mechanism.", "ABUSE DETECTION triggered; wait a few minutes"])(
+    "reads a 403 that mentions abuse detection, the older Enterprise Server wording, as a rate limit: %s",
+    async (message) => {
+      const error = await failed(json({ message }, 403));
+      expect(error.message).toContain(RATE_LIMIT_MESSAGE);
+      expect(error.rateLimited).toBe(true);
+    },
+  );
+
   it("marks a rate limit from the headers, and leaves another 403 unmarked", async () => {
     expect((await failed(json({ message: "limit" }, 403, { "x-ratelimit-remaining": "0" }))).rateLimited).toBe(true);
     expect((await failed(new Response(null, { status: 429 }))).rateLimited).toBe(true);

@@ -28,23 +28,26 @@ export function App() {
   else if (me.isError) content = <ErrorState error={me.error} onRetry={() => void me.refetch()} />;
   else if (!me.data.user) content = <SignIn auth={me.data} />;
   else
+    // The boundary wraps only these routes, so signing out unmounts it and a failed page cannot hide the sign-in form.
     content = (
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/repos" element={<ReposPage />} />
-        <Route path="/repos/:id" element={<RepoPage />} />
-        <Route path="/repos/:id/code" element={<CodeAnalysisPage />} />
-        <Route path="/code" element={<CodeAnalysisListPage />} />
-        <Route path="/repos/:id/security" element={<SecurityPage />} />
-        <Route path="/security" element={<SecurityListPage />} />
-        <Route path="/compare" element={<ComparePage />} />
-        <Route path="/spaces" element={<SpacesPage />} />
-        <Route path="/spaces/:id" element={<SpacePage />} />
-        <Route path="/issues" element={<IssuesPage />} />
-        <Route path="/issues/:id" element={<IssuePage />} />
-        <Route path="/review-queue" element={<ReviewQueuePage />} />
-        <Route path="*" element={<ReposPage />} />
-      </Routes>
+      <ErrorBoundary resetKey={pathname + search}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/repos" element={<ReposPage />} />
+          <Route path="/repos/:id" element={<RepoPage />} />
+          <Route path="/repos/:id/code" element={<CodeAnalysisPage />} />
+          <Route path="/code" element={<CodeAnalysisListPage />} />
+          <Route path="/repos/:id/security" element={<SecurityPage />} />
+          <Route path="/security" element={<SecurityListPage />} />
+          <Route path="/compare" element={<ComparePage />} />
+          <Route path="/spaces" element={<SpacesPage />} />
+          <Route path="/spaces/:id" element={<SpacePage />} />
+          <Route path="/issues" element={<IssuesPage />} />
+          <Route path="/issues/:id" element={<IssuePage />} />
+          <Route path="/review-queue" element={<ReviewQueuePage />} />
+          <Route path="*" element={<ReposPage />} />
+        </Routes>
+      </ErrorBoundary>
     );
 
   return (
@@ -54,7 +57,7 @@ export function App() {
       </a>
       <Header auth={me.data} />
       <main id="main" className="app-main" tabIndex={-1}>
-        <ErrorBoundary resetKey={pathname + search}>{content}</ErrorBoundary>
+        {content}
       </main>
     </>
   );

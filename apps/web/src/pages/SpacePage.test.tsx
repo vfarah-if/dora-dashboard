@@ -387,6 +387,27 @@ describe("SpacePage", () => {
     expect(await screen.findByRole("heading", { level: 1, name: spaceReport().space.name })).toBeInTheDocument();
   });
 
+  it("asks for the spaces list only after the report has failed", async () => {
+    const fetchMock = mockFetch({
+      "GET /api/spaces/7/report": { status: 500, body: { error: "boom" } },
+      "GET /api/spaces": { body: [spaceReport().space] },
+    });
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByText("boom")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0]), "http://localhost").pathname)).toEqual([
+      "/api/spaces/7/report",
+      "/api/spaces",
+    ]);
+  });
+
+  it("does not ask for the spaces list while the report loads or when it arrives", async () => {
+    const fetchMock = mockReport();
+    renderRoute(<SpacePage />, route());
+    expect(await screen.findByRole("heading", { level: 1, name: "Widgets" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map((c) => new URL(String(c[0]), "http://localhost").pathname)).toEqual(["/api/spaces/7/report"]);
+  });
+
   it("uses a neutral heading when the report fails and no list names the space", async () => {
     mockFetch({ "GET /api/spaces/7/report": { status: 500, body: { error: "boom" } }, "GET /api/spaces": { body: [] } });
     renderRoute(<SpacePage />, route());

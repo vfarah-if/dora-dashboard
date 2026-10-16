@@ -43,4 +43,32 @@ describe("App page failures", () => {
     expect(await screen.findByRole("heading", { level: 1, name: copy.home.title })).toBeInTheDocument();
     expect(screen.queryByText(copy.common.pageFailed)).not.toBeInTheDocument();
   });
+
+  it("shows the sign-in form after signing out from a page that failed", async () => {
+    const user = userEvent.setup();
+    let signedIn = true;
+    mockFetch({
+      "GET /api/auth/me": () => ({
+        body: { mode: "oauth", user: signedIn ? { login: "ada", avatarUrl: "" } : null, error: null },
+      }),
+      "POST /api/auth/logout": () => {
+        signedIn = false;
+        return { status: 204 };
+      },
+      "GET /api/health": { body: { jira: false } },
+      "GET /api/repos": { body: [] },
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/repos"]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText(copy.common.pageFailed)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: copy.auth.signOut }));
+    expect(await screen.findByRole("link", { name: copy.auth.signInButton })).toBeInTheDocument();
+    expect(screen.queryByText(copy.common.pageFailed)).not.toBeInTheDocument();
+  });
 });

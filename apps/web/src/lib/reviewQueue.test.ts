@@ -243,16 +243,9 @@ describe("refreshScope", () => {
     expect(refreshScope(queue, [2, 99])).toEqual([2]);
   });
 
-  it("reads every repository when none is ticked, or none ticked is known", () => {
-    expect(refreshScope(queue, [])).toBeUndefined();
-    expect(refreshScope(queue, [99])).toBeUndefined();
-  });
-
-  it("reads every repository when more are ticked than one request may name", () => {
-    const many = Array.from({ length: 51 }, (_, i) => i + 1);
-    const wide = { ...queue, repos: many.map((repoId) => ({ ...base.repos[0]!, repoId })) };
-    expect(refreshScope(wide, many.slice(0, 50))).toHaveLength(50);
-    expect(refreshScope(wide, many)).toBeUndefined();
+  it("is empty when none is ticked, or none ticked is known", () => {
+    expect(refreshScope(queue, [])).toEqual([]);
+    expect(refreshScope(queue, [99])).toEqual([]);
   });
 });
 

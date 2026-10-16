@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReviewQueue } from "@dora-dashboard/core";
 import { ReviewQueuePage } from "./ReviewQueuePage";
 import { mockFetch, renderRoute } from "../test/render";
 import { queueEntry, reviewQueue } from "../test/fixtures";
@@ -16,6 +17,10 @@ function renderQueue(queue = reviewQueue(), route = "/review-queue") {
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+/** The query string of every review queue request made so far, in order. */
+const queueQueries = (fetchMock: ReturnType<typeof mockFetch>) =>
+  fetchMock.mock.calls.map(([url]) => new URL(String(url), "http://localhost").searchParams);
 
 describe("ReviewQueuePage", () => {
   it("announces the loading message once while the queue loads", () => {
@@ -203,8 +208,8 @@ describe("ReviewQueuePage", () => {
     const { fetchMock } = renderQueue();
     await screen.findByText(text.tiles.waiting);
     await user.click(screen.getByRole("button", { name: text.refresh }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refresh=1"))).toBe(true));
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refreshIds"))).toBe(false);
+    await waitFor(() => expect(queueQueries(fetchMock).some((q) => q.get("refresh") === "1")).toBe(true));
+    expect(queueQueries(fetchMock).some((q) => q.has("refreshIds"))).toBe(false);
   });
 
   it("refreshes only the ticked repositories, and says when those were read", async () => {
@@ -220,8 +225,79 @@ describe("ReviewQueuePage", () => {
     );
     expect(await screen.findByText(text.updated(formatTime("2026-03-09T09:58:00Z")))).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: text.refresh }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refreshIds=1"))).toBe(true));
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("refresh=1"))).toBe(false);
+    await waitFor(() => expect(queueQueries(fetchMock).some((q) => q.has("refreshIds"))).toBe(true));
+    const refresh = queueQueries(fetchMock).find((q) => q.has("refreshIds"))!;
+    // Exactly "1", so a request for repository 12 would not pass, and no `refresh`, which would read every repository.
+    expect(refresh.get("refreshIds")).toBe("1");
+    expect(refresh.has("refresh")).toBe(false);
+  });
+
+  it("names both repositories to read again when two are ticked", async () => {
+    const user = userEvent.setup();
+    const base = reviewQueue();
+    const { fetchMock } = renderQueue(
+      { ...base, repos: [base.repos[0]!, { ...base.repos[0]!, repoId: 2, repo: "acme/gadgets" }] },
+      "/review-queue?repos=1,2",
+    );
+    await screen.findByText(text.tiles.waiting);
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    await waitFor(() => expect(queueQueries(fetchMock).some((q) => q.has("refreshIds"))).toBe(true));
+    const refresh = queueQueries(fetchMock).find((q) => q.has("refreshIds"))!;
+    expect(refresh.get("refreshIds")).toBe("1,2");
+    expect(refresh.has("refresh")).toBe(false);
+  });
+
+  it("keeps the button busy and the figures dimmed when the minute's poll lands mid-refresh, and still announces a failure after it", async () => {
+    const user = userEvent.setup();
+    let failRefresh = () => undefined as void;
+    const fetchMock = mockFetch({
+      "GET /api/review-queue": (url) =>
+        url.searchParams.has("refresh")
+          ? new Promise((resolve) => (failRefresh = () => resolve({ status: 502, body: { error: "GitHub is down" } })))
+          : { body: reviewQueue() },
+    });
+    const { client } = renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    const body = document.querySelector(".queue-body")!;
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    await screen.findByRole("button", { name: text.refreshing });
+
+    const before = fetchMock.mock.calls.length;
+    await client.refetchQueries({ queryKey: ["review-queue"] });
+    expect(fetchMock.mock.calls.length).toBe(before + 1);
+    expect(screen.getByRole("button", { name: text.refreshing })).toBeDisabled();
+    expect(body).toHaveClass("is-refreshing");
+    expect(body).toHaveAttribute("aria-busy", "true");
+
+    // A failure is only news if it is later than the poll's answer, which is stamped to the millisecond.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    failRefresh();
+    expect(await screen.findByText(text.refreshFailed)).toBeInTheDocument();
+    expect(screen.getByText("GitHub is down")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: text.refresh })).toBeEnabled();
+  });
+
+  it("does not put the answer for one Show names setting under the other when it is toggled mid-refresh", async () => {
+    const user = userEvent.setup();
+    const refreshed = reviewQueue({ fetchedAt: "2026-03-09T11:11:00Z" });
+    let finish = () => undefined as void;
+    mockFetch({
+      "GET /api/review-queue": (url) =>
+        url.searchParams.has("refresh")
+          ? new Promise((resolve) => (finish = () => resolve({ body: refreshed })))
+          : { body: reviewQueue() },
+    });
+    const { client } = renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    await screen.findByRole("button", { name: text.refreshing });
+    await user.click(screen.getByRole("switch", { name: text.controls.names }));
+    await waitFor(() => expect(client.getQueryData<ReviewQueue>(["review-queue", [], true])).toBeDefined());
+
+    finish();
+    await waitFor(() => expect(screen.getByRole("button", { name: text.refresh })).toBeEnabled());
+    expect(client.getQueryData<ReviewQueue>(["review-queue", [], false])?.fetchedAt).toBe(refreshed.fetchedAt);
+    expect(client.getQueryData<ReviewQueue>(["review-queue", [], true])?.fetchedAt).not.toBe(refreshed.fetchedAt);
   });
 
   it("keeps the figures on screen, dimmed and busy, with a spinner on the button while a refresh runs", async () => {
@@ -338,6 +414,45 @@ describe("ReviewQueuePage", () => {
     await client.refetchQueries({ queryKey: ["review-queue"] });
     await waitFor(() => expect(screen.queryByText(text.refreshFailed)).not.toBeInTheDocument());
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("gives the reason each repository could not be read, beneath its title", async () => {
+    renderQueue(reviewQueue({ errors: [{ repoId: 2, repo: "acme/gadgets", message: "GitHub answered 502" }] }));
+    const title = await screen.findByText(text.readErrorTitle("acme/gadgets"));
+    const notice = title.closest(".notice")!;
+    expect(within(notice as HTMLElement).getByText("GitHub answered 502")).toBeInTheDocument();
+    expect(within(notice as HTMLElement).getByText(text.readErrorBody)).toBeInTheDocument();
+  });
+
+  it("gives the reason a refresh failed", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      "GET /api/review-queue": (url) =>
+        url.searchParams.has("refresh") ? { status: 502, body: { error: "GitHub answered 502" } } : { body: reviewQueue() },
+    });
+    renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    await user.click(screen.getByRole("button", { name: text.refresh }));
+    expect(await screen.findByText(text.refreshFailed)).toBeInTheDocument();
+    expect(screen.getByText("GitHub answered 502")).toBeInTheDocument();
+  });
+
+  it("warns that the queue could not be updated, with when the figures were read, when a poll fails", async () => {
+    let fail = false;
+    mockFetch({
+      "GET /api/review-queue": () => (fail ? { status: 500, body: { error: "no" } } : { body: reviewQueue() }),
+    });
+    const { client } = renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    await screen.findByText(text.tiles.waiting);
+    expect(screen.queryByText(text.pollFailed(formatTime(reviewQueue().fetchedAt)))).not.toBeInTheDocument();
+    fail = true;
+    await client.refetchQueries({ queryKey: ["review-queue"] });
+    expect(await screen.findByText(text.pollFailed(formatTime(reviewQueue().fetchedAt)))).toBeInTheDocument();
+    expect(screen.getByText(text.tiles.waiting)).toBeInTheDocument();
+
+    fail = false;
+    await client.refetchQueries({ queryKey: ["review-queue"] });
+    await waitFor(() => expect(screen.queryByText(/could not be updated/)).not.toBeInTheDocument());
   });
 
   it("shows an empty state when nothing is open", async () => {

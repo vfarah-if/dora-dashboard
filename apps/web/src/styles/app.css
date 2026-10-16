@@ -230,8 +230,9 @@ a:hover {
 
 /* The top of the page (back link, title, actions and controls) stays under the app header while the
  * content scrolls beneath it. It bleeds into the gutter so scrolled content does not show at its edges.
- * StickyPanel adds `sticky-panel-pinned` only while the panel takes no more than 40% of the window's height,
- * so a tall one on a short window, or on a phone, is left in the flow where it would take most of the view.
+ * StickyPanel adds `sticky-panel-pinned` only while the panel takes no more than its PIN_SHARE of the window's
+ * height, so a tall one on a short window is left in the flow where it would take most of the view. Phones are kept
+ * in the flow by the min-width 720px query below, not by that height rule.
  * The decision is made on `.sticky-panel-body`, whose height does not change with the padding and border
  * the pinned panel gains, so the two states cannot keep tipping one another over. */
 .sticky-panel-body {
@@ -563,8 +564,8 @@ a:hover {
 }
 
 /**
- * The body of the code analysis page and of the review queue, which keeps the page's spacing and dims while new data
- * loads.
+ * The body of the code analysis page and of the review queue, which keeps the page's spacing. The dimming while new
+ * data loads comes from `.is-refreshing`, which the pages add beside it.
  */
 .detail-body,
 .queue-body {
