@@ -388,8 +388,30 @@ describe("ReviewQueuePage", () => {
     expect(tile()).toHaveTextContent("1");
     expect(tile()).toHaveClass("tile-danger");
     await user.type(screen.getByLabelText(text.controls.search), "export");
-    expect(tile()).toHaveTextContent(text.tiles.staleHint(text.tiles.none));
+    expect(tile()).toHaveTextContent(text.tiles.staleNone);
+    expect(tile()).not.toHaveTextContent(/Longest wait/);
     expect(tile()).not.toHaveClass("tile-danger");
+  });
+
+  it("says plainly when no pull request is in a tile", async () => {
+    const user = userEvent.setup();
+    renderQueue();
+    await screen.findByText(text.tiles.waiting);
+    await user.type(screen.getByLabelText(text.controls.search), "zzzz-no-match");
+    const tile = (label: string) => screen.getByRole("heading", { name: label }).closest("article")!;
+    expect(tile(text.tiles.pastDay)).toHaveTextContent(text.tiles.pastDayNone);
+    expect(tile(text.tiles.noReviewer)).toHaveTextContent(text.tiles.noReviewerNone);
+    expect(tile(text.tiles.stale)).toHaveTextContent(text.tiles.staleNone);
+  });
+
+  it("names each pull request link with the bracketed new tab note used across the app", async () => {
+    renderQueue();
+    const section = (await screen.findByRole("heading", { name: text.attention.title })).closest("section")!;
+    expect(within(section).getAllByRole("link")[0]).toHaveTextContent(/Rework billing \(opens in a new tab\)$/);
+    const board = screen.getByRole("region", { name: text.lanes.boardLabel });
+    for (const link of within(board).getAllByRole("link")) {
+      expect(link).toHaveTextContent(new RegExp(`${copy.common.opensInNewTab.replace(/[()]/g, "\\$&")}$`));
+    }
   });
 
   it("shows a notice for partly read repositories", async () => {

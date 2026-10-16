@@ -17,7 +17,7 @@ export function PrQueueCard({ entry, showNames }: { entry: QueueEntry; showNames
         {label && <span className="pr-card-label">{label}</span>}
         <a className="pr-card-title" href={entry.url} target="_blank" rel="noreferrer">
           {entry.title}
-          <span className="visually-hidden"> {text.card.opensInNewTab}</span>
+          <span className="visually-hidden"> {copy.common.opensInNewTab}</span>
         </a>
       </div>
       <div className="pr-card-ref">

@@ -153,10 +153,10 @@ export function bandSegments(summary: Pick<RepoQueueSummary, "bands">): BandSegm
 export const waitingCount = (summary: Pick<RepoQueueSummary, "bands">): number =>
   BAND_ORDER.reduce((sum, band) => sum + summary.bands[band], 0);
 
-/** A one-line breakdown of a repository's open pull requests by lane, such as "2 no reviewer, 1 approved". */
+/** A one-line breakdown of a repository's open pull requests by lane, such as "2 with no reviewer, 1 approved". */
 export function lanesLine(summary: Pick<RepoQueueSummary, "lanes">): string {
   return LANE_ORDER.filter((lane) => summary.lanes[lane] > 0)
-    .map((lane) => `${summary.lanes[lane]} ${text.lanes[lane].title.toLowerCase()}`)
+    .map((lane) => text.repos.laneCounts[lane](summary.lanes[lane]))
     .join(", ");
 }
 

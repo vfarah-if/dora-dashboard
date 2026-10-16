@@ -128,6 +128,7 @@ describe("CodeAnalysisPage", () => {
       expect(card).toHaveTextContent(c.areas.chart.subtitle(10));
       const table = within(card).getByRole("table", { name: c.areas.chart.title });
       expect(within(table).getByRole("row", { name: /apps\/api/ })).toHaveTextContent("41");
+      expect(within(table).getByRole("columnheader", { name: c.areas.chart.tableColumn })).toBeInTheDocument();
     });
 
     it("draws the areas chart at the printed page's width while printing, and only then", async () => {

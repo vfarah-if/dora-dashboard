@@ -52,7 +52,7 @@ export function AreasChart({ detail }: { detail: CodeDetailReport }) {
       empty={all.every((row) => row.lines === 0)}
       xLabel={c.x}
       note={all.length > bars.length ? <p>{c.capped(bars.length, all.length)}</p> : undefined}
-      table={{ columns: [copy.codeAnalysis.areas.table.area, c.series], rows: all.map((row) => [row.label, row.lines]) }}
+      table={{ columns: [copy.codeAnalysis.areas.table.area, c.tableColumn], rows: all.map((row) => [row.label, row.lines]) }}
     >
       <AreaBars rows={bars} />
     </ChartCard>

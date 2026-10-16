@@ -1383,6 +1383,9 @@ a:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 /* Tables */
@@ -2710,6 +2713,9 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 .attention-row {
@@ -2797,11 +2803,20 @@ a:hover {
   border: 1px solid var(--stale);
 }
 
+.band-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .band-legend-list {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 20px;
   font-size: 0.875rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 .band-legend-list li {
@@ -2823,11 +2838,16 @@ a:hover {
   gap: 2px 14px;
   font-size: 0.8125rem;
   color: var(--text-muted);
+  list-style: none;
+  padding: 0;
+  margin: 0;
 }
 
 /* The lanes share the page width, so every lane is in view on a laptop or wider. Below five lanes of 220px
-   the board scrolls sideways inside itself rather than squeezing the cards. */
+   the board scrolls sideways inside itself rather than squeezing the cards. It is positioned so the lanes'
+   visually hidden text is clipped by its scroll box rather than widening the page. */
 .queue-board {
+  position: relative;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(220px, 1fr);

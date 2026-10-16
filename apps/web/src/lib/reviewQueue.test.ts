@@ -125,7 +125,16 @@ describe("grouping helpers", () => {
 
   it("describes lanes in one line", () => {
     expect(lanesLine({ lanes: { held: 0, with_author: 0, approved: 1, awaiting_review: 0, no_reviewer: 2 } })).toBe(
-      "2 no reviewer, 1 approved",
+      "2 with no reviewer, 1 approved",
+    );
+  });
+
+  it("counts drafts and on hold as one or many", () => {
+    expect(lanesLine({ lanes: { held: 1, with_author: 0, approved: 0, awaiting_review: 0, no_reviewer: 0 } })).toBe(
+      "1 draft or on hold",
+    );
+    expect(lanesLine({ lanes: { held: 3, with_author: 1, approved: 0, awaiting_review: 2, no_reviewer: 0 } })).toBe(
+      "2 awaiting review, 1 with the author, 3 drafts or on hold",
     );
   });
 

@@ -1375,6 +1375,7 @@ export const copy = {
         subtitle: (warn: number) =>
           `Source lines inside functions with a complexity above ${warn}, for the areas with the most, so the best places to simplify stand out.`,
         series: "Lines above the warning complexity",
+        tableColumn: "Complex lines",
         x: "Source lines in complex functions",
         capped: (shown: number, total: number) =>
           `The chart shows the ${shown} areas with the most. The table lists all ${total}.`,
@@ -2369,15 +2370,17 @@ export const copy = {
         `Across ${repos} ${repos === 1 ? "repository" : "repositories"}, with ${held} held back by failing checks`,
       pastDay: "Waiting over 24h",
       pastDayHint: (longest: string) => `Longest wait ${longest}`,
+      pastDayNone: "Nothing has waited this long",
       noReviewer: "No reviewer requested",
       noReviewerHint: (oldest: string) => `Oldest has waited ${oldest}`,
+      noReviewerNone: "Every waiting pull request has a reviewer",
       stale: "Stale, 5 weekdays or more",
       staleHint: (longest: string) => `Longest wait ${longest}`,
+      staleNone: "Nothing has waited this long",
       fastLane: "Fast lane",
       fastLaneHint: "Waiting and under 400 changed lines across fewer than 10 files",
       idle: "Idle for 14 days or more",
       idleHint: "Open pull requests nobody has touched for two weeks",
-      none: "None waiting",
     },
 
     attention: {
@@ -2424,6 +2427,13 @@ export const copy = {
       tableBand: "Band",
       tableCount: "Waiting pull requests",
       lanesLine: (parts: string) => `Open now, ${parts}`,
+      laneCounts: {
+        no_reviewer: (n: number) => `${n} with no reviewer`,
+        awaiting_review: (n: number) => `${n} awaiting review`,
+        with_author: (n: number) => `${n} with the author`,
+        approved: (n: number) => `${n} approved`,
+        held: (n: number) => (n === 1 ? "1 draft or on hold" : `${n} drafts or on hold`),
+      },
     },
 
     bands: {
@@ -2444,7 +2454,6 @@ export const copy = {
     },
 
     card: {
-      opensInNewTab: "opens in a new tab",
       by: (author: string) => `by ${author}`,
       waitingSince: (wait: string) => `Waiting ${wait}`,
       waitingOn: (names: string) => `Waiting on ${names}`,

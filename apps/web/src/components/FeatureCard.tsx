@@ -24,7 +24,7 @@ export function FeatureCard({ feature }: { feature: FeatureGroup }) {
           <li key={member.key}>
             <a href={member.url} target="_blank" rel="noreferrer">
               {member.repo}#{member.number} {member.title}
-              <span className="visually-hidden"> {text.card.opensInNewTab}</span>
+              <span className="visually-hidden"> {copy.common.opensInNewTab}</span>
             </a>
             <span className="feature-member-meta">
               {text.lanes[member.lane].title}, {formatWait(member.waitHours)}

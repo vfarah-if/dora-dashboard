@@ -31,7 +31,9 @@ import { useFlagParam, useListParam } from "../lib/urlState";
 const text = copy.reviewQueue;
 
 function Tiles({ tiles }: { tiles: ReviewQueue["tiles"] }) {
-  const wait = (hours: number | null) => (hours === null ? text.tiles.none : formatWait(hours));
+  // A tile with nothing in it says so plainly rather than quoting a wait it does not have.
+  const hint = (hours: number | null, some: (wait: string) => string, none: string) =>
+    hours === null ? none : some(formatWait(hours));
   return (
     <div className="tile-grid">
       <StatTile
@@ -42,17 +44,17 @@ function Tiles({ tiles }: { tiles: ReviewQueue["tiles"] }) {
       <StatTile
         label={text.tiles.pastDay}
         value={String(tiles.pastDay.count)}
-        hint={text.tiles.pastDayHint(wait(tiles.pastDay.longestHours))}
+        hint={hint(tiles.pastDay.longestHours, text.tiles.pastDayHint, text.tiles.pastDayNone)}
       />
       <StatTile
         label={text.tiles.noReviewer}
         value={String(tiles.noReviewer.count)}
-        hint={text.tiles.noReviewerHint(wait(tiles.noReviewer.oldestHours))}
+        hint={hint(tiles.noReviewer.oldestHours, text.tiles.noReviewerHint, text.tiles.noReviewerNone)}
       />
       <StatTile
         label={text.tiles.stale}
         value={String(tiles.stale.count)}
-        hint={text.tiles.staleHint(wait(tiles.stale.longestHours))}
+        hint={hint(tiles.stale.longestHours, text.tiles.staleHint, text.tiles.staleNone)}
         tone={tiles.stale.count > 0 ? "danger" : undefined}
       />
       <StatTile label={text.tiles.fastLane} value={String(tiles.fastLane.count)} hint={text.tiles.fastLaneHint} />
@@ -266,7 +268,7 @@ function AttentionSection({ urgent, showNames }: { urgent: QueueEntry[]; showNam
               <ReviewFlag entry={entry} />
               <a href={entry.url} target="_blank" rel="noreferrer">
                 {entry.repo}#{entry.number} {entry.title}
-                <span className="visually-hidden"> {text.card.opensInNewTab}</span>
+                <span className="visually-hidden"> {copy.common.opensInNewTab}</span>
               </a>
               {showNames && entry.author && <span className="pr-card-meta">{text.card.by(entry.author)}</span>}
             </li>
