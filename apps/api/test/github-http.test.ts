@@ -196,6 +196,13 @@ describe("error replies", () => {
     const error = await failed(json({ message: "You have exceeded a secondary rate limit." }, 403));
     expect(error.message).toContain(RATE_LIMIT_MESSAGE);
     expect(error.status).toBe(403);
+    expect(error.rateLimited).toBe(true);
+  });
+
+  it("marks a rate limit from the headers, and leaves another 403 unmarked", async () => {
+    expect((await failed(json({ message: "limit" }, 403, { "x-ratelimit-remaining": "0" }))).rateLimited).toBe(true);
+    expect((await failed(new Response(null, { status: 429 }))).rateLimited).toBe(true);
+    expect((await failed(json({ message: "Resource not accessible by integration" }, 403))).rateLimited).toBe(false);
   });
 });
 

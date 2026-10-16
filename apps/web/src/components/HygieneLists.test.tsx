@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import { copy } from "../copy";
 import { LIST_LIMIT } from "../lib/space";
 import { GroupedItemList, HygieneLine, PullRequestList } from "./HygieneLists";
 
@@ -11,6 +12,7 @@ function renderList(items: ReturnType<typeof item>[], people: boolean) {
     <GroupedItemList
       items={items}
       people={people}
+      what="things to check"
       itemKey={(i) => i.n}
       renderItem={(i) => <HygieneLine href={`https://example.test/${i.n}`} label={`#${i.n}`} summary={`Item ${i.n}`} />}
     />,
@@ -36,7 +38,7 @@ describe("GroupedItemList", () => {
       false,
     );
     expect(screen.getAllByRole("listitem")).toHaveLength(LIST_LIMIT);
-    await userEvent.click(screen.getByRole("button"));
+    await userEvent.click(screen.getByRole("button", { name: copy.space.showAllOf(LIST_LIMIT + 3, "things to check") }));
     expect(screen.getAllByRole("listitem")).toHaveLength(LIST_LIMIT + 3);
   });
 });
@@ -44,7 +46,10 @@ describe("GroupedItemList", () => {
 describe("PullRequestList", () => {
   it("links each pull request by its qualified reference", () => {
     render(
-      <PullRequestList pullRequests={[{ repo: "acme/widgets", number: 7, title: "Fix it", url: "https://example.test/pr/7" }]} />,
+      <PullRequestList
+        pullRequests={[{ repo: "acme/widgets", number: 7, title: "Fix it", url: "https://example.test/pr/7" }]}
+        what="pull requests"
+      />,
     );
     expect(screen.getByRole("link", { name: /acme\/widgets#7/ })).toHaveAttribute("href", "https://example.test/pr/7");
     expect(screen.getByText("Fix it")).toBeInTheDocument();

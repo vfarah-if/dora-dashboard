@@ -141,7 +141,7 @@ export function SecurityActions({ report }: { report: SecurityReport }) {
       ) : (
         <>
           <p className="chart-subtitle">{c.actions.counting(actions.length)}</p>
-          <SecurityList total={actions.length} limit={10}>
+          <SecurityList total={actions.length} limit={10} what={c.actions.what}>
             {(limit) => (
               <ol className="action-list">
                 {actions.slice(0, limit).map((action, index) => (

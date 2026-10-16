@@ -69,10 +69,11 @@ export function AuthorFilter({ choices, excluded, onChange }: AuthorFilterProps)
             <label key={choice.author} className="author-filter-option">
               <input
                 type="checkbox"
+                aria-label={copy.authorFilter.optionName(choice.author, choice.opened)}
                 checked={!excluded.includes(choice.author)}
                 onChange={(event) => onChange(toggleAuthor(excluded, choice.author, event.target.checked))}
               />
-              <span className="mono">{choice.author}</span>
+              <span className="mono">{choice.author}</span>{" "}
               <span className="author-filter-count">{copy.authorFilter.opened(choice.opened)}</span>
             </label>
           ))}

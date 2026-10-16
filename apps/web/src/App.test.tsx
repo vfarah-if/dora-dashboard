@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -18,6 +18,8 @@ function renderApp(route = "/") {
     </QueryClientProvider>,
   );
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("App sign-in gate", () => {
   it("offers GitHub sign-in in OAuth mode", async () => {
@@ -76,6 +78,24 @@ describe("App sign-in gate", () => {
       mockFetch({ "GET /api/auth/me": signedIn, "GET /api/health": { body: { jira: true } }, "GET /api/repos": { body: [] } });
       renderApp();
       expect(await screen.findByRole("link", { name: copy.nav.jira })).toHaveAttribute("href", "/spaces");
+    });
+
+    it("shows the link once a failed health probe is asked again and answers", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let calls = 0;
+      mockFetch({
+        "GET /api/auth/me": signedIn,
+        "GET /api/health": () => (++calls === 1 ? { status: 500, body: { error: "down" } } : { body: { jira: true } }),
+        "GET /api/repos": { body: [] },
+      });
+      renderApp();
+      await screen.findByText("ada");
+      await vi.waitFor(() => expect(calls).toBe(1));
+      expect(screen.queryByRole("link", { name: copy.nav.jira })).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(await screen.findByRole("link", { name: copy.nav.jira })).toBeInTheDocument();
     });
 
     it("leaves the link out when Jira is off", async () => {

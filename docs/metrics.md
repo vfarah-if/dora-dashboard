@@ -115,7 +115,7 @@ The 2023 Accelerate State of DevOps Report renamed the restore measure **failed 
 
 ## Review queue
 
-The review queue reads open pull requests live from the code host (cached for about a minute) rather than from the last crawl, so it shows the state of the repositories now. Nothing on it is stored. The decision is recorded in ADR 0017.
+The review queue reads open pull requests live from the code host (kept in memory for up to ten minutes, and read again in the background once it is a minute old) rather than from the last crawl, so it shows the state of the repositories now. Nothing on it is stored. The decision is recorded in ADR 0017.
 
 | Figure      | Rule                                                                                                                                                                                                                                                            |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

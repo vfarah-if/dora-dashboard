@@ -1,6 +1,7 @@
-import { Route, Routes } from "react-router";
+import { Route, Routes, useLocation } from "react-router";
 import { useMe } from "./api/hooks";
 import { copy } from "./copy";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Header } from "./components/Header";
 import { SignIn } from "./components/SignIn";
 import { ErrorState, Skeleton } from "./components/States";
@@ -20,6 +21,7 @@ import { SecurityPage } from "./pages/SecurityPage";
 
 export function App() {
   const me = useMe();
+  const { pathname, search } = useLocation();
 
   let content;
   if (me.isPending) content = <Skeleton height={200} label={copy.auth.checking} />;
@@ -52,7 +54,7 @@ export function App() {
       </a>
       <Header auth={me.data} />
       <main id="main" className="app-main" tabIndex={-1}>
-        {content}
+        <ErrorBoundary resetKey={pathname + search}>{content}</ErrorBoundary>
       </main>
     </>
   );

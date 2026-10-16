@@ -108,7 +108,7 @@ describe("SupplyChainCard", () => {
     expect(screen.getByText("svc4/Dockerfile")).toBeInTheDocument();
     expect(screen.queryByText("svc5/Dockerfile")).not.toBeInTheDocument();
     expect(screen.getByText("Showing 7 of 250.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(7) }));
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(7, copy.security.chain.dockerfilesUnreadWhat) }));
     expect(screen.getByText("svc6/Dockerfile")).toBeInTheDocument();
   });
 
@@ -135,7 +135,11 @@ describe("SupplyChainCard", () => {
     render(<SupplyChainCard report={securityReport({ supplyChain: { ...chain, lines: [line] } })} group="workflows" />);
     expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/)).toHaveLength(5);
     expect(screen.getByText("Showing 7 of 60.")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(7) }));
+    await user.click(
+      screen.getByRole("button", {
+        name: copy.space.showAllOf(7, copy.space.forCheck(copy.security.supplyChain.unpinnedActions.title)),
+      }),
+    );
     expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/)).toHaveLength(7);
   });
 

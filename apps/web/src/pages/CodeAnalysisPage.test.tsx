@@ -84,7 +84,7 @@ describe("CodeAnalysisPage", () => {
 
   it("shows the request failure and asks again when retry is pressed", async () => {
     const user = userEvent.setup();
-    const { fetchMock } = show({ error: "Unknown repository" }, { status: 404 });
+    const { fetchMock } = show({ error: "Unknown repository" }, { status: 502 });
     expect(await screen.findByText("Unknown repository")).toBeInTheDocument();
     expect(detailUrls(fetchMock)).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: copy.common.retry }));
@@ -621,6 +621,68 @@ describe("CodeAnalysisPage", () => {
     crawling = false;
     await client.invalidateQueries({ queryKey: ["repos"] });
     await waitFor(() => expect(calls).toBe(2));
+  });
+});
+
+describe("CodeAnalysisPage long lists", () => {
+  const MANY = 11; // one more than the ten a list shows before it offers the rest
+
+  const longReport = (mode: "workspace" | "folder" = "workspace") => {
+    const base = codeDetailReport({ mode });
+    const area = base.areas.items[0]!;
+    const fn = base.functions.items[0]!;
+    const ok = coverageOk() as Extract<CodeDetailReport["coverage"], { status: "ok" }>;
+    const file = ok.leastCovered.items[0]!;
+    const orphan = ok.notInReport.items[0]!;
+    const many = <T,>(make: (i: number) => T) => Array.from({ length: MANY }, (_, i) => make(i));
+    return {
+      ...base,
+      areas: { total: MANY, items: many((i) => ({ ...area, path: `apps/area-${i}` })) },
+      functions: { total: MANY, items: many((i) => ({ ...fn, name: `scoped${i}`, startLine: 10 + i })) },
+      coverage: {
+        ...ok,
+        leastCovered: { total: MANY, items: many((i) => ({ ...file, path: `src/least-${i}.ts` })) },
+        notInReport: { total: MANY, items: many((i) => ({ ...orphan, path: `src/orphan-${i}.ts` })) },
+        untestedComplex: { total: MANY, items: many((i) => ({ ...fn, name: `untested${i}`, startLine: 10 + i, coverage: 0 })) },
+      },
+    } as CodeDetailReport;
+  };
+
+  const showAllButtons = () => screen.getAllByRole("button", { name: /^Show all/ });
+
+  it("gives each of the five long lists a name of its own, so a screen reader can tell the buttons apart", async () => {
+    show(longReport());
+    await screen.findByRole("heading", { name: c.areas.packagesTitle });
+    const names = showAllButtons().map((button) => button.getAttribute("aria-label"));
+    expect(names).toEqual([
+      copy.space.showAllOf(MANY, c.areas.packagesWhat),
+      copy.space.showAllOf(MANY, c.functions.what),
+      copy.space.showAllOf(MANY, c.coverage.least.what),
+      copy.space.showAllOf(MANY, c.coverage.notInReport.what),
+      copy.space.showAllOf(MANY, c.coverage.untested.what),
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("names the areas list for folders when the repository is not a monorepo", async () => {
+    show(longReport("folder"));
+    await screen.findByRole("heading", { name: c.areas.foldersTitle });
+    expect(screen.getAllByRole("button", { name: copy.space.showAllOf(MANY, c.areas.foldersWhat) })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: copy.space.showAllOf(MANY, c.areas.packagesWhat) })).not.toBeInTheDocument();
+  });
+
+  it("keeps each button's name to its own list after it is pressed", async () => {
+    const user = userEvent.setup();
+    show(longReport());
+    await screen.findByRole("heading", { name: c.areas.packagesTitle });
+    const least = screen.getByRole("region", { name: c.coverage.least.title });
+    await user.click(within(least).getByRole("button", { name: copy.space.showAllOf(MANY, c.coverage.least.what) }));
+    expect(within(least).getByRole("button", { name: copy.space.showFewerOf(c.coverage.least.what) })).toHaveTextContent(
+      copy.space.showFewer,
+    );
+    expect(within(least).getAllByRole("row")).toHaveLength(MANY + 1);
+    // the other four lists are still collapsed, each under its own name
+    expect(showAllButtons()).toHaveLength(4);
   });
 });
 

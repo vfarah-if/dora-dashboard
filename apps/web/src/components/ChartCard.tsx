@@ -4,6 +4,8 @@ import { copy } from "../copy";
 export interface TableData {
   columns: readonly string[];
   rows: readonly (readonly (string | number)[])[];
+  /** True where every column after the first is a repository, so each heading takes the series heading style. */
+  seriesColumns?: boolean;
 }
 
 export interface ChartCardProps {
@@ -20,16 +22,16 @@ export interface ChartCardProps {
   className?: string;
 }
 
-export function DataTable({ columns, rows, caption }: TableData & { caption?: string }) {
+export function DataTable({ columns, rows, caption, seriesColumns }: TableData & { caption?: string }) {
   return (
     <div className="table-scroll">
       <table className="data-table">
         {caption && <caption className="visually-hidden">{caption}</caption>}
         <thead>
           <tr>
-            {columns.map((column) => (
+            {columns.map((column, i) => (
               <th key={column} scope="col">
-                {column}
+                {seriesColumns && i > 0 ? <span className="series-heading">{column}</span> : column}
               </th>
             ))}
           </tr>

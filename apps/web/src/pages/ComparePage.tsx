@@ -277,7 +277,7 @@ function CompareStatus({ compare, missing }: { compare: ReturnType<typeof useCom
     <>
       {compare.isPending && (
         <>
-          <Skeleton height={360} />
+          <Skeleton height={360} decorative />
           <SkeletonGrid count={2} height={300} />
         </>
       )}

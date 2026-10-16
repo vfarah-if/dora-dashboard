@@ -109,7 +109,11 @@ describe("IssueHygiene", () => {
     render(<IssueHygiene staleUrgentDays={14} findings={findings} people={false} />);
     const unclassified = card(copy.issue.hygiene.checks.unclassified.title);
     expect(within(unclassified).getAllByRole("link")).toHaveLength(10);
-    await user.click(within(unclassified).getByRole("button", { name: copy.space.showAll(12) }));
+    await user.click(
+      within(unclassified).getByRole("button", {
+        name: copy.space.showAllOf(12, copy.space.forCheck(copy.issue.hygiene.checks.unclassified.title)),
+      }),
+    );
     expect(within(unclassified).getAllByRole("link")).toHaveLength(12);
   });
 
@@ -130,7 +134,11 @@ describe("IssueHygiene", () => {
     );
     const prs = card(copy.issue.hygiene.checks.pr_without_issue.title);
     expect(within(prs).getAllByRole("link")).toHaveLength(10);
-    await user.click(within(prs).getByRole("button", { name: copy.space.showAll(11) }));
+    await user.click(
+      within(prs).getByRole("button", {
+        name: copy.space.showAllOf(11, copy.space.forCheck(copy.issue.hygiene.checks.pr_without_issue.title)),
+      }),
+    );
     expect(within(prs).getAllByRole("link")).toHaveLength(11);
   });
 

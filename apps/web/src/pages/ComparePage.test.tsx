@@ -39,6 +39,37 @@ describe("ComparePage", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("ids=1%2C2");
   });
 
+  it("styles a repository's heading in a chart's data table as a series heading, and not the first column's", async () => {
+    renderCompare();
+    const table = await screen.findByRole("table", { name: copy.compare.distribution.title });
+    const heading = within(table).getByRole("columnheader", { name: "acme/widgets" });
+    expect(heading.querySelector(".series-heading")).not.toBeNull();
+    expect(
+      within(table).getByRole("columnheader", { name: copy.charts.distribution.bucket }).querySelector(".series-heading"),
+    ).toBeNull();
+  });
+
+  it("styles the repository headings of every chart's data table as series headings, whichever chart it sits behind", async () => {
+    renderCompare();
+    await screen.findByRole("table", { name: copy.compare.distribution.title });
+    // The weekly charts share one table builder, and the distribution, composition and batch cards build their own.
+    for (const title of [copy.compare.distribution.title, copy.compare.composition.title, copy.compare.batch.title]) {
+      const table = screen.getByRole("table", { name: title });
+      const headers = within(table).getAllByRole("columnheader");
+      expect(headers.map((h) => h.textContent)).toEqual([headers[0]!.textContent, "acme/widgets", "acme/gadgets"]);
+      expect(headers[0]!.querySelector(".series-heading")).toBeNull();
+      for (const header of headers.slice(1)) expect(header.querySelector(".series-heading")).not.toBeNull();
+    }
+    const charted = screen.getAllByRole("table").filter((t) => t.closest(".chart-card") !== null);
+    expect(charted.length).toBeGreaterThan(3);
+    for (const table of charted) {
+      const [first, ...repositories] = within(table).getAllByRole("columnheader");
+      expect(first!.querySelector(".series-heading")).toBeNull();
+      expect(repositories.length).toBeGreaterThan(0);
+      for (const header of repositories) expect(header.querySelector(".series-heading")).not.toBeNull();
+    }
+  });
+
   it("links each repository's column to the DORA section of its own page, carrying the range", async () => {
     renderCompare("/compare?ids=1,2&from=2026-01-05&to=2026-01-25&bots=1");
     const table = await screen.findByRole("table", { name: copy.compare.headline.title });

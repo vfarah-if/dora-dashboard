@@ -16,6 +16,11 @@ interface ShowAllListProps {
   printAll?: boolean;
   /** The printed line saying how many entries are left out, given that number. Only used when `printAll` is false. */
   printNote?: (hidden: number) => string;
+  /**
+   * A plural noun phrase for what the list holds, such as "least covered files". The button then takes an accessible
+   * name that starts with its visible text and goes on to say what it opens, as a person speaking to it would.
+   */
+  what?: string;
 }
 
 /**
@@ -30,6 +35,7 @@ export function ShowAllList({
   limit = LIST_LIMIT,
   printAll = true,
   printNote = copy.space.printMore,
+  what,
 }: ShowAllListProps) {
   const [all, setAll] = useState(false);
   const printing = usePrinting();
@@ -41,7 +47,12 @@ export function ShowAllList({
     <>
       {children(expanded ? total : limit)}
       {collapsible && (
-        <button type="button" className="button button-ghost screen-only" onClick={() => setAll((value) => !value)}>
+        <button
+          type="button"
+          className="button button-ghost screen-only"
+          aria-label={what === undefined ? undefined : all ? copy.space.showFewerOf(what) : copy.space.showAllOf(total, what)}
+          onClick={() => setAll((value) => !value)}
+        >
           {all ? copy.space.showFewer : copy.space.showAll(total)}
         </button>
       )}

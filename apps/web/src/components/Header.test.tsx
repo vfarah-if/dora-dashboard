@@ -32,6 +32,15 @@ const announced = (root: HTMLElement = document.body) =>
     .filter((link) => link.getAttribute("aria-current") === "page" && link.closest("nav"))
     .map((link) => link.textContent);
 
+describe("Header brand link", () => {
+  it("does not light up on the home page beside the Why it matters tab", () => {
+    show("/");
+    const current = [...document.querySelectorAll('[aria-current="page"]')];
+    expect(current).toHaveLength(1);
+    expect(screen.getByRole("link", { name: copy.appName })).not.toHaveAttribute("aria-current");
+  });
+});
+
 describe("Header code analysis tab", () => {
   it("offers the tab between Repositories and Review queue, pointing at the list", () => {
     show("/repos");

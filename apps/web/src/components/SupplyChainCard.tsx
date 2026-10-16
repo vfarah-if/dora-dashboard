@@ -11,10 +11,11 @@ const c = copy.security.chain;
 const ITEM_LIMIT = 5;
 
 function Items({ line }: { line: SupplyChainLine }) {
+  const what = copy.space.forCheck(supplyChainTitle[line.check]);
   if (line.items.length === 0) return null;
   return (
     <>
-      <SecurityList total={line.items.length} limit={ITEM_LIMIT}>
+      <SecurityList total={line.items.length} limit={ITEM_LIMIT} what={what}>
         {(limit) => (
           <ul className="check-items mono">
             {line.items.slice(0, limit).map((item, i) => (
@@ -35,11 +36,21 @@ function Items({ line }: { line: SupplyChainLine }) {
  * A quiet note that some files were listed in the repository but not read, with the paths behind a button. `total` can
  * exceed the paths when core cut the list, and the note says so.
  */
-function UnreadNote({ sentence, paths, total }: { sentence: string; paths: readonly string[]; total: number }) {
+function UnreadNote({
+  sentence,
+  paths,
+  total,
+  what,
+}: {
+  sentence: string;
+  paths: readonly string[];
+  total: number;
+  what: string;
+}) {
   return (
     <div>
       <p className="chart-subtitle">{sentence}</p>
-      <SecurityList total={paths.length} limit={ITEM_LIMIT}>
+      <SecurityList total={paths.length} limit={ITEM_LIMIT} what={what}>
         {(limit) => (
           <ul className="check-items mono">
             {paths.slice(0, limit).map((path) => (
@@ -104,6 +115,7 @@ export function SupplyChainCard({ report, group }: { report: SecurityReport; gro
           sentence={c.unread(chain.workflowsUnread.length)}
           paths={chain.workflowsUnread}
           total={chain.workflowsUnread.length}
+          what={c.workflowsUnreadWhat}
         />
       )}
       {group === "images" && chain.status === "ok" && chain.dockerfilesUnreadTotal > 0 && (
@@ -111,6 +123,7 @@ export function SupplyChainCard({ report, group }: { report: SecurityReport; gro
           sentence={c.dockerfilesUnread(chain.dockerfilesUnreadTotal)}
           paths={chain.dockerfilesUnread}
           total={chain.dockerfilesUnreadTotal}
+          what={c.dockerfilesUnreadWhat}
         />
       )}
       <div className="card">

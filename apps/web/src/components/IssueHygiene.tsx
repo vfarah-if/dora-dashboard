@@ -5,11 +5,12 @@ import { orderedFindings } from "../lib/issues";
 import { shareOf } from "../lib/space";
 import { GroupedItemList, HygieneLine, PullRequestList } from "./HygieneLists";
 
-function IssueList({ items, people }: { items: readonly IssueRef[]; people: boolean }) {
+function IssueList({ items, people, what }: { items: readonly IssueRef[]; people: boolean; what: string }) {
   return (
     <GroupedItemList
       items={items}
       people={people}
+      what={what}
       itemKey={(item) => item.number}
       renderItem={(item) => <HygieneLine href={item.url} label={`#${item.number}`} summary={item.title} />}
     />
@@ -48,9 +49,9 @@ function Finding({
         <div className="hygiene-body">
           <p className="hygiene-heading">{text.checkThese}</p>
           {finding.check === "pr_without_issue" ? (
-            <PullRequestList pullRequests={finding.pullRequests} />
+            <PullRequestList pullRequests={finding.pullRequests} what={copy.space.forCheck(title)} />
           ) : (
-            <IssueList items={finding.items} people={people} />
+            <IssueList items={finding.items} people={people} what={copy.space.forCheck(title)} />
           )}
         </div>
       )}

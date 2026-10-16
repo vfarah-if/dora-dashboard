@@ -38,7 +38,9 @@ export const RATE_LIMIT_MESSAGE = "GitHub's rate limit for this token was reache
 
 function rateLimitError(response: Response): UpstreamError {
   const when = resetTime(response);
-  return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status);
+  return new UpstreamError(`${RATE_LIMIT_MESSAGE}; try again ${when === null ? "later" : `after ${when}`}`, response.status, {
+    rateLimited: true,
+  });
 }
 
 /** The most of an error reply that is read. GitHub's reasons are a sentence; a page of markup is not wanted. */

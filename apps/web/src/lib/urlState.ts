@@ -12,8 +12,12 @@ export function useRangeParams(): [ReportRange, (next: ReportRange) => void] {
   // The API refuses a range that starts after today, so a later date in a shared link becomes today.
   const today = isoDaysAgo(0);
   const notFuture = (value: string | null) => (value !== null && value > today ? today : value);
-  const from = notFuture(validDate(params.get("from")));
-  const to = notFuture(validDate(params.get("to")));
+  const first = notFuture(validDate(params.get("from")));
+  const second = notFuture(validDate(params.get("to")));
+  // A link with the dates the wrong way round is read as the range between them.
+  const swapped = first !== null && second !== null && first > second;
+  const from = swapped ? second : first;
+  const to = swapped ? first : second;
   const includeBots = params.get("bots") === "1";
   const profile = params.get("profile") || null;
   const range = useMemo(() => ({ from, to, includeBots, profile }), [from, to, includeBots, profile]);

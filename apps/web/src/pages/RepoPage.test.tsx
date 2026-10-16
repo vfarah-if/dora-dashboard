@@ -35,6 +35,39 @@ describe("RepoPage", () => {
     else delete (Element.prototype as Partial<Element>).scrollIntoView;
   });
 
+  it("announces the loading message once while the report loads", () => {
+    mockFetch({
+      "GET /api/repos/1/report": () => new Promise(() => undefined),
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    expect(screen.getAllByRole("status").filter((el) => el.textContent === copy.common.loading)).toHaveLength(1);
+  });
+
+  it("keeps the repository's name in the heading when the report is refused for its range", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { status: 400, body: { error: "from must not be after to" } },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [repo()] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    expect(await screen.findByText("from must not be after to")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "acme/widgets" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: copy.common.retry })).not.toBeInTheDocument();
+  });
+
+  it("uses a neutral heading, not a loading one, when the report fails and the list does not name the repository", async () => {
+    mockFetch({
+      "GET /api/repos/1/report": { status: 400, body: { error: "from must not be after to" } },
+      "GET /api/repos/1/code-health": noHealth,
+      "GET /api/repos": { body: [] },
+    });
+    renderRoute(<RepoPage />, { path: "/repos/:id", route: "/repos/1" });
+    expect(await screen.findByText("from must not be after to")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: copy.repo.failedTitle })).toBeInTheDocument();
+  });
+
   it("offers a PDF report named after the repository once the report has loaded", async () => {
     const user = userEvent.setup();
     let printedAs = "";
@@ -475,7 +508,8 @@ describe("RepoPage", () => {
       within(list)
         .getAllByRole("checkbox")
         .map((box) => box.closest("label")?.textContent),
-    ).toEqual([`bea${copy.authorFilter.opened(20)}`, `ade${copy.authorFilter.opened(5)}`]);
+    ).toEqual([`bea ${copy.authorFilter.opened(20)}`, `ade ${copy.authorFilter.opened(5)}`]);
+    expect(within(list).getByRole("checkbox", { name: /^bea/ })).toHaveAccessibleName(copy.authorFilter.optionName("bea", 20));
 
     await user.click(within(list).getByRole("checkbox", { name: /^bea/ }));
     expect(await screen.findByText(copy.repo.excludingAuthors(["bea"]))).toBeInTheDocument();

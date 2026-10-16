@@ -43,6 +43,13 @@ p {
   margin: 0;
 }
 
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
+}
+
 a {
   color: var(--accent);
   text-underline-offset: 2px;
@@ -223,15 +230,18 @@ a:hover {
 
 /* The top of the page (back link, title, actions and controls) stays under the app header while the
  * content scrolls beneath it. It bleeds into the gutter so scrolled content does not show at its edges.
- * Left in the flow on short or narrow screens, where it would take most of the view. */
-.sticky-panel {
+ * StickyPanel adds `sticky-panel-pinned` only while the panel takes no more than 40% of the window's height,
+ * so a tall one on a short window, or on a phone, is left in the flow where it would take most of the view.
+ * The decision is made on `.sticky-panel-body`, whose height does not change with the padding and border
+ * the pinned panel gains, so the two states cannot keep tipping one another over. */
+.sticky-panel-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-@media (min-width: 720px) and (min-height: 720px) {
-  .sticky-panel {
+@media (min-width: 720px) {
+  .sticky-panel.sticky-panel-pinned {
     position: sticky;
     top: var(--app-header-height);
     z-index: 5;
@@ -1140,6 +1150,7 @@ a:hover {
 .chart-subtitle {
   font-size: 0.875rem;
   color: var(--text-muted);
+  max-width: 72ch;
 }
 
 .chart-subheading {
@@ -1202,6 +1213,7 @@ a:hover {
   color: var(--text);
   border-radius: 0 var(--radius-small) var(--radius-small) 0;
   font-size: 0.875rem;
+  max-width: 72ch;
 }
 
 .axis-caption {
@@ -1559,7 +1571,7 @@ a:hover {
   grid-template-columns: minmax(0, 1fr);
 }
 
-:root.is-printing .sticky-panel {
+:root.is-printing .sticky-panel.sticky-panel-pinned {
   position: static;
   margin: 0;
   padding: 0;
@@ -1567,7 +1579,7 @@ a:hover {
 }
 
 @media print {
-  .sticky-panel {
+  .sticky-panel.sticky-panel-pinned {
     position: static;
     margin: 0;
     padding: 0;
@@ -2331,6 +2343,13 @@ a:hover {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+/* Running text keeps to a readable line length however wide its card is. */
+.rule-body > p,
+.notice > p,
+.install-help p {
+  max-width: 72ch;
 }
 
 .rule-body h3 {
@@ -3529,6 +3548,12 @@ a:hover {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+.action-sentence,
+.action-body > p,
+.action-steps {
+  max-width: 72ch;
 }
 
 .action-heading {

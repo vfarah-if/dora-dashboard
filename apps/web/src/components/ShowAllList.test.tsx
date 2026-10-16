@@ -27,6 +27,30 @@ describe("ShowAllList", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(7);
   });
 
+  it("keeps the visible text and gives the button a longer name beginning with it when told what the list holds", async () => {
+    const user = userEvent.setup();
+    render(
+      <ShowAllList total={12} limit={3} what="least covered files">
+        {items}
+      </ShowAllList>,
+    );
+    const button = screen.getByRole("button", { name: "Show all 12 least covered files" });
+    expect(button).toHaveTextContent(copy.space.showAll(12));
+    expect(button).toHaveAccessibleName(expect.stringMatching(new RegExp(`^${copy.space.showAll(12)}`)));
+    await user.click(button);
+    const fewer = screen.getByRole("button", { name: "Show fewer least covered files" });
+    expect(fewer).toHaveTextContent(copy.space.showFewer);
+  });
+
+  it("names the button by its visible text alone when it is not told what the list holds", () => {
+    render(
+      <ShowAllList total={12} limit={3}>
+        {items}
+      </ShowAllList>,
+    );
+    expect(screen.getByRole("button")).not.toHaveAttribute("aria-label");
+  });
+
   it("prints every entry by default, as the other pages do", () => {
     render(
       <ShowAllList total={7} limit={3}>

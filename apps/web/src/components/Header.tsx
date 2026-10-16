@@ -207,14 +207,14 @@ export function Header({ auth }: { auth: AuthState | undefined }) {
   return (
     <header className="app-header">
       <div className="app-header-inner">
-        <NavLink to="/" className="brand">
+        <Link to="/" className="brand">
           <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <rect x="3" y="12" width="4" height="9" rx="1.5" fill="var(--series-1)" />
             <rect x="10" y="7" width="4" height="14" rx="1.5" fill="var(--series-3)" />
             <rect x="17" y="3" width="4" height="18" rx="1.5" fill="var(--series-2)" />
           </svg>
           <span>{copy.appName}</span>
-        </NavLink>
+        </Link>
         {user && (
           <nav ref={nav} aria-label={copy.nav.label} className="app-nav">
             <NavItems jira={jira} />

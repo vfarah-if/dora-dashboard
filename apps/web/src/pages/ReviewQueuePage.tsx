@@ -333,7 +333,7 @@ function QueueBody({ queue, visible, view }: { queue: QueueQuery; visible: Queue
     return (
       <>
         <SkeletonGrid count={6} height={96} label={text.loading} />
-        <Skeleton height={160} label={text.loading} />
+        <Skeleton height={160} decorative />
       </>
     );
   }

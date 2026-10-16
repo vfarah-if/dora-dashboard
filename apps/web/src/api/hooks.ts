@@ -347,7 +347,8 @@ export function useHealth() {
     queryKey: queryKeys.health,
     queryFn: () => apiRequest<Health>("/api/health"),
     staleTime: 60_000,
-    retry: false,
+    // Header never remounts, so a failed probe is asked again until it answers.
+    refetchInterval: (query) => (query.state.status === "error" ? 30_000 : false),
   });
 }
 

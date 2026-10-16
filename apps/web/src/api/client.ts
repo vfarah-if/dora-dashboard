@@ -76,3 +76,10 @@ export function errorText(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return copy.common.errorTitle;
 }
+
+/** Whether asking again could change the answer. A 4xx other than a timeout or a rate limit means the request itself is wrong. */
+export function canRetry(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true;
+  const { status } = error;
+  return !(status >= 400 && status < 500 && status !== 408 && status !== 429);
+}

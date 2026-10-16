@@ -32,6 +32,11 @@ description: >
 - Durations go through the one formatter in `src/lib/format.ts`.
 - Comparisons follow ADR 0008: per-person views are off by default; the fairness panel stays on screen.
 
+## Layout
+
+- Body prose is capped at 72ch, as `.lede`, `.section-lede` and `.home-lede` are. A new paragraph class follows suit.
+- A page shows at most one live region for a given loading message. A second skeleton beside a labelled one is decorative: `<Skeleton decorative />`.
+
 ## Accessibility
 
 - Visible keyboard focus everywhere; every control reachable by keyboard.

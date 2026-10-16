@@ -692,9 +692,9 @@ describe("SecurityActions", () => {
     const user = userEvent.setup();
     renderRoute(<SecurityActions report={many(12)} />);
     expect(actionItems()).toHaveLength(10);
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(12, copy.security.actions.what) }));
     expect(actionItems()).toHaveLength(12);
-    expect(screen.getByRole("button", { name: copy.space.showFewer })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: copy.space.showFewerOf(copy.security.actions.what) })).toBeInTheDocument();
   });
 
   it("prints what the screen shows, with the explanations as they are and a line for the actions left out", async () => {
@@ -713,8 +713,8 @@ describe("SecurityActions", () => {
   it("hides the show all button from the printed copy, and prints no note once everything is shown", async () => {
     const user = userEvent.setup();
     renderRoute(<SecurityActions report={many(12)} />);
-    expect(screen.getByRole("button", { name: copy.space.showAll(12) })).toHaveClass("screen-only");
-    await user.click(screen.getByRole("button", { name: copy.space.showAll(12) }));
+    expect(screen.getByRole("button", { name: copy.space.showAllOf(12, copy.security.actions.what) })).toHaveClass("screen-only");
+    await user.click(screen.getByRole("button", { name: copy.space.showAllOf(12, copy.security.actions.what) }));
     expect(actionItems()).toHaveLength(12);
     expect(screen.queryByText(copy.security.printMore(2))).not.toBeInTheDocument();
   });

@@ -67,7 +67,7 @@ function AreaTable({ detail }: { detail: CodeDetailReport }) {
   const areas = detail.areas.items;
   return (
     <>
-      <ShowAllList total={areas.length}>
+      <ShowAllList total={areas.length} what={detail.mode === "workspace" ? c.packagesWhat : c.foldersWhat}>
         {(limit) => (
           <div className="table-scroll">
             <table className="data-table area-table">

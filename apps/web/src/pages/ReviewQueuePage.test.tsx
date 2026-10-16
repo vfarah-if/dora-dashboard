@@ -17,6 +17,12 @@ function renderQueue(queue = reviewQueue(), route = "/review-queue") {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ReviewQueuePage", () => {
+  it("announces the loading message once while the queue loads", () => {
+    mockFetch({ "GET /api/review-queue": () => new Promise(() => undefined) });
+    renderRoute(<ReviewQueuePage />, { path: "/review-queue", route: "/review-queue" });
+    expect(screen.getAllByRole("status").filter((el) => el.textContent === text.loading)).toHaveLength(1);
+  });
+
   it("shows the tiles, the updated time and four lanes by default", async () => {
     renderQueue();
     expect(await screen.findByText(text.tiles.waiting)).toBeInTheDocument();

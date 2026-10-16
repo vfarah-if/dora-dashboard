@@ -86,7 +86,7 @@ export function AlertsTable({ report }: { report: SecurityReport }) {
               : c.none}
           </p>
         ) : (
-          <SecurityList total={alerts.length}>
+          <SecurityList total={alerts.length} what={c.what}>
             {(limit) => (
               <div className="table-scroll">
                 <table className="data-table alerts-table">
