@@ -2,6 +2,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+// The always-on service passes the address it answers on (scripts/service.sh), and preview refuses any other name.
+const servedAt = process.env.WEB_ORIGIN ? [new URL(process.env.WEB_ORIGIN).hostname] : [];
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -9,7 +12,7 @@ export default defineConfig({
     strictPort: true,
     proxy: { "/api": { target: "http://127.0.0.1:8787", changeOrigin: false } },
   },
-  preview: { port: 5181, strictPort: true },
+  preview: { port: 5181, strictPort: true, allowedHosts: servedAt },
   build: {
     rolldownOptions: {
       output: {

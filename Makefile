@@ -30,7 +30,7 @@ RESET := \033[0m
 .PHONY: help all install build typecheck test test-coverage test-coverage-force quality \
         fmt fmt-check lint lint-fix check-names dev dev-bg dev-stop dev-logs api web crawl crawl-full \
         crawl-all env clean clean-data upgrade upgrade-check upgrade-root upgrade-core upgrade-api upgrade-web \
-        service-install service-uninstall service-start service-stop service-status service-logs service-off
+        service-install service-uninstall service-start service-stop service-status service-logs service-host-install service-host-uninstall service-off
 
 # --- Getting started ----------------------------------------------------------
 
@@ -139,6 +139,12 @@ service-status: ## Show whether the always-on API and web app are running
 
 service-logs: ## Follow the always-on service's logs
 	@scripts/service.sh logs
+
+service-host-install: env build ## Answer on http://SERVICE_HOST from .env through a hosts entry and a port 80 redirect (sudo)
+	@scripts/service.sh host-install
+
+service-host-uninstall: ## Remove that hosts entry and port 80 redirect again (sudo)
+	@scripts/service.sh host-uninstall
 
 # --- Crawling -----------------------------------------------------------------
 
