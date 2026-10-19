@@ -7,13 +7,28 @@ import {
   type SecurityActionKind,
   type WorkflowFinding,
 } from "../src/securityTypes.js";
-import { allOk, codeAlert, daysAgo, depAlert, facts, noAccess, off, posture, record, secretAlert } from "./security.js";
+import { fingerprintOfFinding, fingerprintOfUse } from "../src/securityAcceptance.js";
+import {
+  acceptance,
+  allOk,
+  codeAlert,
+  daysAgo,
+  depAlert,
+  facts,
+  noAccess,
+  off,
+  posture,
+  record,
+  secretAlert,
+} from "./security.js";
 
 const finding = (risk: WorkflowFinding["risk"], file = ".github/workflows/ci.yml", line: number | null = 4): WorkflowFinding => ({
   file,
   line,
   risk,
   evidence: "x",
+  lineHash: "00112233aabbccdd",
+  reachHash: "8899aabbccddeeff",
 });
 const actions = (overrides: Parameters<typeof facts>[0] = {}, staleUpdates = 0): SecurityAction[] => {
   const f = facts(overrides);
@@ -48,7 +63,7 @@ const FIXTURES: Record<SecurityActionKind, { overrides?: Parameters<typeof facts
   },
   restrict_permissions: { overrides: { supplyChain: record({ findings: [finding("noPermissions")] }) } },
   remove_unsecure_commands: { overrides: { supplyChain: record({ findings: [finding("unsecureCommands")] }) } },
-  remove_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: ".env", strength: "strong" }] }) } },
+  remove_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: ".env", blob: null, strength: "strong" }] }) } },
   protect_branch: { overrides: { posture: posture({ branch: { protected: false, rules: { ...unprotectedRules() } } }) } },
   block_force_push: { overrides: { posture: loose({ blockForcePushes: false }) } },
   enable_dependabot: { overrides: { sources: { ...allOk(), dependabot: off("disabled") } } },
@@ -64,7 +79,7 @@ const FIXTURES: Record<SecurityActionKind, { overrides?: Parameters<typeof facts
   add_security_policy: {
     overrides: { supplyChain: record({ securityPolicy: null }), posture: posture({ visibility: "public" }) },
   },
-  review_weak_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: "a.pem", strength: "weak" }] }) } },
+  review_weak_key_files: { overrides: { supplyChain: record({ keyFiles: [{ path: "a.pem", blob: null, strength: "weak" }] }) } },
   enable_code_scanning: { overrides: { sources: { ...allOk(), code_scanning: off("not_set_up") } } },
   check_secret_scanning: { overrides: { sources: { ...allOk(), secret_scanning: noAccess("admin_only_or_off") } } },
   grant_alert_access: { overrides: { sources: { ...allOk(), dependabot: noAccess("forbidden") } } },
@@ -111,6 +126,7 @@ function docker(overrides: Partial<ReturnType<typeof dockerBase>> = {}) {
 function dockerBase() {
   return {
     path: "Dockerfile",
+    blob: null,
     images: 3,
     unpinnedImages: 0,
     latestImages: 0,
@@ -383,9 +399,9 @@ describe("what each action describes", () => {
   it("lists strong key files in one action and weak ones as advice", () => {
     const supplyChain = record({
       keyFiles: [
-        { path: ".env", strength: "strong" },
-        { path: "deploy/id_rsa", strength: "strong" },
-        { path: "cert.pem", strength: "weak" },
+        { path: ".env", blob: null, strength: "strong" },
+        { path: "deploy/id_rsa", blob: null, strength: "strong" },
+        { path: "cert.pem", blob: null, strength: "weak" },
       ],
     });
     const list = actions({ supplyChain });
@@ -904,5 +920,151 @@ describe("securityPlan", () => {
     // The package in the first manifest is on the path (band low through `late`), and upgrading it clears `fresh` too.
     // The other manifest's alert is a separate, medium action that is not on the path.
     expect(plan.onPathAlerts.map((a) => a.key).sort()).toEqual(["fresh", "late"]);
+  });
+});
+
+describe("links in references", () => {
+  const link = (path: string, line: number | null) => `https://host.test/${path}${line === null ? "" : `#L${line}`}`;
+  const plan = (overrides: Parameters<typeof facts>[0], withLink = true) => {
+    const f = facts(overrides);
+    return securityPlan({
+      facts: f,
+      overall: gradeSecurity(f).grade?.overall.band ?? null,
+      staleUpdates: 0,
+      ...(withLink ? { link } : {}),
+    }).actions;
+  };
+
+  it("carries a link on a finding ref, an action use ref and a key file ref", () => {
+    const list = plan({
+      supplyChain: record({
+        findings: [finding("prHeadCheckout", "a.yml", 3), finding("noPermissions", "b.yml", null)],
+        actions: [{ file: "c.yml", line: 6, action: "zed/tool", ref: "v1", pinned: false, kind: "other" }],
+        keyFiles: [
+          { path: ".env", blob: null, strength: "strong" },
+          { path: "cert.pem", blob: null, strength: "weak" },
+        ],
+        missingLockfiles: ["web/package.json"],
+        dockerfiles: [
+          {
+            path: "Dockerfile",
+            blob: null,
+            images: 1,
+            unpinnedImages: 1,
+            latestImages: 0,
+            runsAsRoot: false,
+            addsRemote: false,
+            curlPipeShell: false,
+          },
+        ],
+      }),
+    });
+    const refs = (kind: SecurityActionKind) => of(list, kind)[0]!.refs;
+    expect(refs("fix_pr_head_checkout")).toEqual([{ label: "a.yml:3", url: "https://host.test/a.yml#L3" }]);
+    expect(refs("restrict_permissions")).toEqual([{ label: "b.yml", url: "https://host.test/b.yml" }]);
+    expect(refs("pin_actions")).toEqual([{ label: "zed/tool@v1", url: "https://host.test/c.yml#L6" }]);
+    expect(refs("remove_key_files")).toEqual([{ label: ".env", url: "https://host.test/.env" }]);
+    expect(refs("review_weak_key_files")).toEqual([{ label: "cert.pem", url: "https://host.test/cert.pem" }]);
+    expect(refs("add_lockfile")).toEqual([{ label: "web/package.json", url: "https://host.test/web/package.json" }]);
+    expect(refs("pin_base_images")).toEqual([{ label: "Dockerfile", url: "https://host.test/Dockerfile" }]);
+  });
+
+  it("carries no link without one, and keeps a code alert's own address", () => {
+    const list = plan(
+      { supplyChain: record({ findings: [finding("prHeadCheckout")] }), alerts: [codeAlert({ key: "q1" })] },
+      false,
+    );
+    expect(of(list, "fix_pr_head_checkout")[0]!.refs[0]!.url).toBeNull();
+    expect(of(list, "fix_code_alert")[0]!.refs[0]!.url).toBe("https://github.com/acme/widgets/security/code-scanning/q1");
+  });
+});
+
+describe("accepted findings", () => {
+  const checkout = finding("prHeadCheckout", ".github/workflows/db.yml", 31);
+  const accept = (f: WorkflowFinding, check: Parameters<typeof acceptance>[0] = {}) =>
+    acceptance({ check: "prHeadCheckout", path: f.file, line: f.line, fingerprint: fingerprintOfFinding(f), ...check });
+
+  it("produce no action, and no reference to the line, once accepted", () => {
+    const overrides = { supplyChain: record({ findings: [checkout] }) };
+    expect(of(actions(overrides), "fix_pr_head_checkout")).toHaveLength(1);
+    expect(actions({ ...overrides, acceptances: [accept(checkout)] }).map((a) => a.kind)).not.toContain("fix_pr_head_checkout");
+  });
+
+  it("come back as an action when the reach of the accepted line changes, though the line itself does not", () => {
+    const rerouted = { ...checkout, reachHash: "0000000000000000" };
+    const list = actions({ supplyChain: record({ findings: [rerouted] }), acceptances: [accept(checkout)] });
+    expect(of(list, "fix_pr_head_checkout")).toEqual([
+      expect.objectContaining({ count: 1, refs: [{ label: ".github/workflows/db.yml:31", url: null }] }),
+    ]);
+  });
+
+  it("leave the rest of a file's findings as actions, listing only the open ones", () => {
+    const second = finding("prHeadCheckout", ".github/workflows/db.yml", 80);
+    const list = actions({
+      supplyChain: record({ findings: [checkout, { ...second, evidence: "y" }] }),
+      acceptances: [accept(checkout)],
+    });
+    expect(of(list, "fix_pr_head_checkout")).toEqual([
+      expect.objectContaining({ count: 1, refs: [{ label: ".github/workflows/db.yml:80", url: null }] }),
+    ]);
+  });
+
+  it("drop add_dependency_review when its absence is accepted, and leave the advice about other tools", () => {
+    const missing = record({ securityTools: [] });
+    const sources = { ...allOk(), code_scanning: off() };
+    expect(actions({ supplyChain: missing, sources }).map((a) => a.kind)).toContain("add_dependency_review");
+    const kinds = actions({ supplyChain: missing, sources, acceptances: [acceptance({ check: "dependencyReview" })] }).map(
+      (a) => a.kind,
+    );
+    expect(kinds).not.toContain("add_dependency_review");
+    expect(kinds).toContain("add_static_analysis");
+  });
+
+  it("drop the update configuration, security policy and lockfile advice that is accepted", () => {
+    const sc = record({ updateConfig: null, securityPolicy: null, missingLockfiles: ["web/package.json"] });
+    const overrides = { supplyChain: sc, posture: posture({ visibility: "public" }) };
+    const kinds = (acceptances: ReturnType<typeof acceptance>[]) => actions({ ...overrides, acceptances }).map((a) => a.kind);
+    expect(kinds([])).toEqual(expect.arrayContaining(["add_update_config", "add_security_policy", "add_lockfile"]));
+    const accepted = kinds([
+      acceptance({ id: 1, check: "updateConfig" }),
+      acceptance({ id: 2, check: "securityPolicy" }),
+      acceptance({ id: 3, check: "lockfiles", path: "web/package.json", fingerprint: "p1:" }),
+    ]);
+    expect(accepted).not.toContain("add_update_config");
+    expect(accepted).not.toContain("add_security_policy");
+    expect(accepted).not.toContain("add_lockfile");
+  });
+
+  it("drop an accepted Dockerfile from the image advice and keep the others", () => {
+    const blob = (c: string) => c.repeat(40);
+    const sc = record({
+      dockerfiles: [
+        { ...docker({ path: "Dockerfile", unpinnedImages: 1, curlPipeShell: true }), blob: blob("a") },
+        { ...docker({ path: "api/Dockerfile", unpinnedImages: 2 }), blob: blob("b") },
+      ],
+    });
+    const accepted = [
+      acceptance({ id: 1, check: "baseImagesPinned", path: "Dockerfile", fingerprint: `b:${blob("a")}` }),
+      acceptance({ id: 2, check: "curlPipeShell", path: "Dockerfile", fingerprint: `b:${blob("a")}` }),
+    ];
+    const list = actions({ supplyChain: sc, acceptances: accepted });
+    expect(of(list, "pin_base_images")).toEqual([
+      expect.objectContaining({ count: 2, refs: [{ label: "api/Dockerfile", url: null }] }),
+    ]);
+    expect(of(list, "avoid_curl_pipe_shell")).toEqual([]);
+  });
+
+  it("drop an accepted own-organisation action from the advice to pin it", () => {
+    const own = { file: "ci.yml", line: 2, action: "acme/shared", ref: "v1", pinned: false, kind: "other" as const };
+    expect(of(actions({ supplyChain: record({ actions: [own] }) }), "pin_own_actions")).toHaveLength(1);
+    const held = acceptance({ check: "ownActionsUnpinned", path: "ci.yml", fingerprint: fingerprintOfUse(own) });
+    expect(of(actions({ supplyChain: record({ actions: [own] }), acceptances: [held] }), "pin_own_actions")).toEqual([]);
+  });
+
+  it("move the grade's path with them, so an accepted finding is never on it", () => {
+    const f = facts({ supplyChain: record({ findings: [checkout] }), acceptances: [accept(checkout)] });
+    const overall = gradeSecurity(f).grade!.overall.band;
+    expect(overall).toBe("elite");
+    expect(securityActions({ facts: f, overall, staleUpdates: 0 }).filter((a) => a.onPath)).toEqual([]);
   });
 });

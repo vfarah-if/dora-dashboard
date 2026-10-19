@@ -49,7 +49,7 @@ export const INSPECTION_FAILURE = "The workflows and dependencies of the clone c
  * Two attempts in all for one head, counting the first, and then no more by `inspectIfStale` until the head moves. A crawl
  * that analyses the code inspects the clone whatever the count.
  */
-const MAX_INSPECTION_ATTEMPTS = 2;
+export const MAX_INSPECTION_ATTEMPTS = 2;
 
 /** Clones a repository's deploy branch, measures its functions, keeps the result and discards the clone. */
 export class CodeHealthService {
@@ -168,6 +168,11 @@ export class CodeHealthService {
     return failed?.head === head && failed.attempts >= MAX_INSPECTION_ATTEMPTS;
   }
 
+  private countFailedAttempt(repoId: number, head: string): void {
+    const before = this.failedInspections.get(repoId);
+    this.failedInspections.set(repoId, { head, attempts: before?.head === head ? before.attempts + 1 : 1 });
+  }
+
   /**
    * Notes the outcome of an inspection for `head`. A failure is counted, so it is not attempted more than
    * `MAX_INSPECTION_ATTEMPTS` times for one head, and recorded beside the supply chain facts with a message that names no
@@ -179,8 +184,7 @@ export class CodeHealthService {
       this.failedInspections.delete(repoId);
       return;
     }
-    const before = this.failedInspections.get(repoId);
-    this.failedInspections.set(repoId, { head, attempts: before?.head === head ? before.attempts + 1 : 1 });
+    this.countFailedAttempt(repoId, head);
     try {
       this.inspector?.fail(repoId, failure);
     } catch (err) {
@@ -272,14 +276,17 @@ export class CodeHealthService {
     try {
       const listed = await listing();
       if (listed === null) return this.recordInspection(repoId, clone.commitSha, LISTING_FAILURE);
-      await inspector.inspect({
+      const outcome = await inspector.inspect({
         repoId,
         commitSha: clone.commitSha,
         paths: listed.paths,
         listingComplete: listed.complete,
         read: (path, maxBytes) => reader.read(clone.dir, path, maxBytes),
+        blobIds: (paths) => clone.blobIds(paths),
       });
-      this.recordInspection(repoId, clone.commitSha, null);
+      // A partial inspection saved facts the page can use, so it stores no failure, but it counts as an attempt for the head.
+      if (outcome === "partial") this.countFailedAttempt(repoId, clone.commitSha);
+      else this.recordInspection(repoId, clone.commitSha, null);
     } catch (err) {
       // A bug in the inspection or a failure of the store is not one the person can act on, so it stands out in the log.
       if (err instanceof AppError) this.log.warn({ err, repoId }, "could not inspect the clone");

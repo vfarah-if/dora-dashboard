@@ -370,6 +370,16 @@ export class GitHubSecurityAlertSource implements SecurityAlertSource {
     return `${this.web}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/settings/security_analysis`;
   }
 
+  fileUrl(owner: string, name: string, commitSha: string, path: string, line: number | null): string | null {
+    if (!/^[0-9a-f]{7,64}$/i.test(commitSha) || path === "") return null;
+    const parts = path.split("/");
+    // A dot segment would be resolved by the browser, so the link could leave the commit's tree.
+    if (parts.includes(".") || parts.includes("..")) return null;
+    const segments = parts.map(encodeURIComponent).join("/");
+    const place = `${this.web}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/blob/${commitSha}/${segments}`;
+    return line === null ? place : `${place}#L${line}`;
+  }
+
   dependencyAlerts(token: string, owner: string, name: string): Promise<AlertRead<"dependabot">> {
     return this.readAlerts("dependabot", token, owner, name, "dependabot/alerts", "Dependabot", dependabotAlert, (refusal) => {
       if (refusal.status === 403 && /dependabot alerts are disabled/i.test(refusal.message)) {

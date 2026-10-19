@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { SecurityActionKind } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { securityAction } from "../test/fixtures";
-import { ACTION_EFFORT } from "./security";
+import { chainItem, securityAction } from "../test/fixtures";
+import { ACTION_EFFORT, SUPPLY_CHAIN_CHECK_IDS } from "./security";
 import {
   BRANCH_KINDS,
+  actionRefOf,
+  clearingStep,
+  forkGuard,
+  workflowRunGuard,
   LEARN_MORE,
   SETTINGS_KINDS,
   SNIPPETS,
@@ -865,5 +869,123 @@ describe("code alert advice", () => {
 
   it("writes every piece of advice without a dash", () => {
     for (const text of Object.values(copy.security.codeAlertAdvice)) expect(text).not.toMatch(NO_DASH);
+  });
+});
+
+describe("clearingStep", () => {
+  const runRoute = (job: string | null, file = ".github/workflows/deploy.yml") => ({
+    trigger: "workflow_run",
+    via: [{ file, job }],
+  });
+  const checkout = (routes: ReturnType<typeof runRoute>[] | { trigger: string | null; via: null | [] }[]) =>
+    chainItem(".github/workflows/db-migrate.yml", 231, "github.event.workflow_run.head_sha", {
+      risk: "prHeadCheckout",
+      routes,
+    });
+
+  it("names the job and the file that start a checkout under workflow_run, with the condition to copy", () => {
+    const step = clearingStep("prHeadCheckout", checkout([runRoute("deploy-db")]));
+    expect(step.steps).toEqual([
+      "Add this condition to job deploy-db in .github/workflows/deploy.yml, or to the job in this file, so that a run started by a pull request is skipped.",
+    ]);
+    expect(step.snippet?.code).toBe("if: github.event.workflow_run.event == 'push'");
+    expect(workflowRunGuard()).toBe("if: github.event.workflow_run.event == 'push'");
+    expect(step.snippet?.label).toBe(copy.security.snippets.workflowRunPush);
+  });
+
+  it.each([
+    ["a job name with a space", "deploy db", ".github/workflows/deploy.yml"],
+    ["a job name with a quote", "deploy'db", ".github/workflows/deploy.yml"],
+    ["a job name with an expression", "${{ x }}", ".github/workflows/deploy.yml"],
+    ["a job name with markup", "<b>x</b>", ".github/workflows/deploy.yml"],
+    ["a null job, as in a composite action", null, ".github/workflows/deploy.yml"],
+    ["a path that is not safe", "deploy-db", ".github/workflows/dep loy.yml"],
+    ["a path that climbs out", "deploy-db", "../deploy.yml"],
+  ])("falls back to general wording for %s, and never puts it in the text", (_name, job, file) => {
+    const step = clearingStep("prHeadCheckout", checkout([runRoute(job, file)]));
+    expect(step.steps).toEqual([copy.security.findingDetail.clear.workflowRunHere]);
+    expect(step.steps.join(" ")).not.toContain("deploy-db");
+    expect(step.steps.join(" ")).not.toContain("${{");
+    expect(step.snippet?.code).toBe("if: github.event.workflow_run.event == 'push'");
+  });
+
+  it("falls back to general wording for an overflow route, which names no job", () => {
+    const step = clearingStep("prHeadCheckout", checkout([{ trigger: "workflow_run", via: null }]));
+    expect(step.steps).toEqual([copy.security.findingDetail.clear.workflowRunHere]);
+  });
+
+  it("names the first call, which is the file the event arrives in", () => {
+    const route = {
+      trigger: "workflow_run",
+      via: [
+        { file: ".github/workflows/deploy.yml", job: "first" },
+        { file: ".github/workflows/mid.yml", job: "second" },
+      ],
+    };
+    expect(clearingStep("prHeadCheckout", checkout([route])).steps[0]).toContain("job first in .github/workflows/deploy.yml");
+  });
+
+  it("gives the fork guard for pull_request_target", () => {
+    const step = clearingStep("prHeadCheckout", checkout([{ trigger: "pull_request_target", via: [] }]));
+    expect(step.steps).toEqual([copy.security.findingDetail.clear.fork]);
+    expect(step.snippet?.code).toBe("if: github.event.pull_request.head.repo.full_name == github.repository");
+    expect(forkGuard()).toBe(step.snippet?.code);
+  });
+
+  it("prefers the workflow_run step when both triggers reach the line", () => {
+    const step = clearingStep("prHeadCheckout", checkout([{ trigger: "pull_request_target", via: [] }, runRoute("deploy-db")]));
+    expect(step.snippet?.code).toBe("if: github.event.workflow_run.event == 'push'");
+  });
+
+  it("gives the generic steps for a checkout with no route that has a guard to offer", () => {
+    const step = clearingStep("prHeadCheckout", checkout([{ trigger: "push", via: [] }]));
+    expect(step.steps).toEqual(copy.security.fix.fix_pr_head_checkout.steps);
+    expect(step.snippet).toBeNull();
+  });
+
+  it("points script injection to the environment variable pattern, with the risky form shown beside it", () => {
+    const step = clearingStep("scriptInjection", chainItem("a.yml", 3, "github.event.issue.title"));
+    expect(step.steps).toEqual([copy.security.findingDetail.clear.injection]);
+    expect(step.snippet?.code).toBe(scriptInjectionSnippet());
+    expect(step.snippet?.instead).toBe(scriptInjectionRisky());
+  });
+
+  it("pins an unpinned action by name when the reference is safe, and gives the placeholder when it is not", () => {
+    const safe = clearingStep("unpinnedActions", chainItem("ci.yml", 12, "acme-tools/setup@v2"));
+    expect(safe.snippet?.code).toBe("- uses: acme-tools/setup@<full 40 character commit sha> # v2");
+    expect(safe.steps).toEqual(copy.security.fix.pin_actions.steps);
+    const unsafe = clearingStep("ownActionsUnpinned", chainItem("ci.yml", 12, "acme/tools@$(rm-rf)"));
+    expect(unsafe.snippet?.code).toBe("- uses: acme/tools@<full 40 character commit sha> # <version tag>");
+    const none = clearingStep("unpinnedActions", chainItem("ci.yml", 12, "not an action"));
+    expect(none.snippet).toBeNull();
+  });
+
+  it("gives the generic steps and a block for the checks that have one, and steps alone for the rest", () => {
+    expect(clearingStep("workflowPermissions", chainItem("ci.yml")).snippet?.code).toBe(permissionsSnippet());
+    expect(clearingStep("baseImagesPinned", chainItem("Dockerfile")).snippet?.code).toBe(digestSnippet());
+    const keys = clearingStep("keyFiles", chainItem(".env.production"));
+    expect(keys.steps).toEqual(copy.security.fix.remove_key_files.steps);
+    expect(keys.snippet).toBeNull();
+  });
+
+  it.each(SUPPLY_CHAIN_CHECK_IDS)("gives %s at least one step", (check) => {
+    expect(clearingStep(check, chainItem("a", 1)).steps.length).toBeGreaterThan(0);
+  });
+});
+
+describe("actionRefOf", () => {
+  it("reads an owner, a repository and a safe reference", () => {
+    expect(actionRefOf("acme-tools/setup@v2")).toEqual({ repo: "acme-tools/setup", ref: "v2" });
+    expect(actionRefOf("acme/tools/sub/dir@v1.2")).toEqual({ repo: "acme/tools", ref: "v1.2" });
+  });
+
+  it("keeps the repository but drops a reference that is not safe", () => {
+    expect(actionRefOf("acme/tools@a..b")).toEqual({ repo: "acme/tools", ref: null });
+  });
+
+  it("refuses a label that is not an action", () => {
+    expect(actionRefOf("./local")).toBeNull();
+    expect(actionRefOf("docker://alpine@sha256:abc")).toBeNull();
+    expect(actionRefOf("a b/c@v1")).toBeNull();
   });
 });

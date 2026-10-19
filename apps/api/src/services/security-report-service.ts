@@ -40,6 +40,11 @@ export interface SecurityReportOptions {
    * when no source is wired, so the report names no host it knows nothing about and the page shows no link.
    */
   settingsUrl: (owner: string, name: string) => string;
+  /**
+   * The host's page for a file at the commit the clone was read from, from the alert source's own port. Null when no
+   * source is wired or the host builds none, so a finding is shown without a link.
+   */
+  fileUrl: (owner: string, name: string, commitSha: string, path: string, line: number | null) => string | null;
 }
 
 /**
@@ -112,6 +117,7 @@ export class SecurityReportService {
     const posture = securityStore.posture(repo.id);
     const scorecard = securityStore.scorecard(repo.id);
     const { alerts, unreadable } = securityStore.securityAlertScan(repo.id);
+    const held = securityStore.acceptanceScan(repo.id);
     const sources = withUnreadable(securityStore.sourceStates(repo.id), unreadable);
     const shown = this.scorecardOf(posture?.value.visibility ?? null, scorecard);
     return securityReport(
@@ -124,6 +130,9 @@ export class SecurityReportService {
           : { supplyChain: null, supplyChainMissing: options.codeAnalysis ? "not_read" : "analysis_off" }),
         pullRequests,
         settingsUrl: options.settingsUrl(repo.owner, repo.name),
+        fileUrl: (commitSha, path, line) => options.fileUrl(repo.owner, repo.name, commitSha, path, line),
+        acceptances: held.acceptances,
+        unreadableAcceptances: held.unreadable,
         posture,
         postureFailure: securityStore.postureFailure(repo.id),
         supplyChainFailure: securityStore.supplyChainFailure(repo.id),

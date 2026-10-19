@@ -1,11 +1,12 @@
 import type { SecurityAlertRef, SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { formatDuration } from "../lib/format";
+import { formatDate, formatDuration } from "../lib/format";
 import {
   ALERT_SOURCES,
   SEVERITY_COLOUR,
   alertWhere,
   filterAlerts,
+  fixByText,
   parseAlertSource,
   sourceName,
   safeHttpUrl,
@@ -34,14 +35,21 @@ function Row({ alert }: { alert: SecurityAlertRef }) {
             <Tag key={cwe}>{weaknessName(cwe)}</Tag>
           ))}
         </span>
+        {alert.where.kind === "code" && alert.where.ruleId && <span className="cell-note">{c.rule(alert.where.ruleId)}</span>}
       </td>
       <td className="mono">
         <PathText text={alertWhere(alert.where)} />
       </td>
-      <td>{sourceName(alert.source)}</td>
+      <td>
+        {sourceName(alert.source)}
+        {alert.where.kind === "code" && <span className="cell-note">{c.reportedBy(alert.where.tool)}</span>}
+      </td>
       <td className="numeric">{formatDuration(alert.ageHours)}</td>
       <td>
         {alert.pastFix ? <Tag tone="danger">{copy.security.tags.pastFix}</Tag> : <span>{copy.security.tags.withinFix}</span>}
+        <span className="cell-note">
+          {formatDate(alert.fixByAt)}, {fixByText(alert.daysLeft)}
+        </span>
       </td>
     </tr>
   );

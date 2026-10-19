@@ -3832,3 +3832,205 @@ th > .tag {
     width: 100%;
   }
 }
+
+.check-found-by {
+  margin: 2px 0 0;
+}
+
+.check-files {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.check-see-places {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.8125rem;
+}
+
+/* Explaining and accepting a finding */
+
+.section-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+
+.tile-note,
+.grade-note {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.grade-note {
+  margin-left: 8px;
+}
+
+.checks-accepted {
+  color: var(--text-muted);
+}
+
+.finding-rows {
+  gap: 10px;
+}
+
+.finding-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.finding-place {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  max-width: 100%;
+}
+
+.finding-evidence {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+.finding-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.finding-facts dd {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 72ch;
+  min-width: 0;
+}
+
+.finding-facts dd > p {
+  margin: 0;
+}
+
+.finding-facts .action-heading {
+  font-weight: 700;
+}
+
+.finding-details {
+  align-self: stretch;
+  font-size: 0.875rem;
+}
+
+.accept-finding {
+  max-width: 100%;
+}
+
+.accept-form {
+  margin-top: 8px;
+}
+
+.accept-reasons {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.accept-reasons legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.accept-reason .field-hint {
+  margin: 0 0 0 26px;
+  max-width: 60ch;
+}
+
+.accept-problem {
+  color: var(--danger);
+  margin: 0;
+}
+
+.accept-note {
+  resize: vertical;
+}
+
+.accepted-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.accepted-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.accepted-place {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+}
+
+.accepted-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  font-size: 0.875rem;
+}
+
+.accepted-facts dt {
+  color: var(--text-muted);
+}
+
+.accepted-facts dd {
+  margin: 0;
+}
+
+.accepted-note {
+  overflow-wrap: anywhere;
+  max-width: 72ch;
+}
+
+.accepted-entry p {
+  margin: 0;
+  max-width: 72ch;
+}
+
+.accepted-status {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+@media print {
+  /* With nothing accepted the section has only a line saying so, which has no place in a printed report. */
+  #security-accepted:has(.accepted-empty) {
+    display: none;
+  }
+
+  .accepted-entry {
+    break-inside: avoid;
+  }
+}

@@ -49,7 +49,13 @@ function Refs({ refs }: { refs: SecurityAction["refs"] }) {
           const url = safeHttpUrl(ref.url);
           return (
             <li key={`${ref.label}-${i}`} className="mono">
-              {url ? <ExternalLink href={url}>{ref.label}</ExternalLink> : <PathText text={ref.label} />}
+              {url ? (
+                <ExternalLink href={url}>
+                  <PathText text={ref.label} />
+                </ExternalLink>
+              ) : (
+                <PathText text={ref.label} />
+              )}
             </li>
           );
         })}

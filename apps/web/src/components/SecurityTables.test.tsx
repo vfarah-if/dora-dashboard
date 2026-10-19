@@ -520,3 +520,47 @@ describe("DependencyTable", () => {
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(12);
   });
 });
+
+describe("AlertsTable alert rows", () => {
+  const show = (alerts = securityReport().openAlerts) =>
+    renderRoute(<AlertsTable report={securityReport({ openAlerts: alerts, openAlertTotal: alerts.length })} />, {
+      path: "/repos/:id/security",
+      route: "/repos/1/security",
+    });
+  const bodyRows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
+
+  it("shows the rule id and the tool for a code alert, and neither for a package alert", () => {
+    show();
+    const [pkg, code] = bodyRows();
+    expect(code).toHaveTextContent("Rule js/sql-injection");
+    expect(code).toHaveTextContent("Reported by CodeQL");
+    expect(pkg).not.toHaveTextContent("Rule ");
+    expect(pkg).not.toHaveTextContent("Reported by");
+  });
+
+  it("leaves out the rule line when a code alert has no rule id", () => {
+    show([securityAlert({ where: { kind: "code", path: null, line: null, ruleId: null, tool: "Semgrep" } })]);
+    const [row] = bodyRows();
+    expect(row).not.toHaveTextContent("Rule ");
+    expect(row).toHaveTextContent("Reported by Semgrep");
+  });
+
+  it.each([
+    [12, false, "20 Mar 2026, 12 days left"],
+    [0, false, "20 Mar 2026, Due today"],
+    [-1, true, "20 Mar 2026, 1 day past"],
+    [-3, true, "20 Mar 2026, 3 days past"],
+  ])("writes the fix-by date and %i days left with the tag when past", (daysLeft, pastFix, text) => {
+    show([securityAlert({ fixByAt: "2026-03-20T10:00:00Z", daysLeft, pastFix })]);
+    const [row] = bodyRows();
+    expect(row).toHaveTextContent(text);
+    // The tag is there when past, so colour is never the only signal.
+    if (pastFix) expect(row).toHaveTextContent(copy.security.tags.pastFix);
+    else expect(row).toHaveTextContent(copy.security.tags.withinFix);
+  });
+
+  it("says in the lede that GitHub's alerts are triaged on GitHub", () => {
+    show();
+    expect(screen.getByText(/a false positive is dismissed there, and only open alerts count here/)).toBeInTheDocument();
+  });
+});

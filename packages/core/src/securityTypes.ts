@@ -304,7 +304,7 @@ export interface Vulnerability {
 // --- Supply chain facts from the clone ------------------------------------------------------------------------------
 
 /** Raised when what the clone is read for changes, so every repository's facts are read again (ADR 0032). */
-export const SUPPLY_CHAIN_VERSION = 3;
+export const SUPPLY_CHAIN_VERSION = 5;
 
 export interface ActionUse {
   file: string;
@@ -331,6 +331,32 @@ export type WorkflowRisk =
   | "persistCredentials"
   | "selfHosted";
 
+/** One call from a workflow or composite action to another by local path: the calling file and its job, null in a composite action. */
+export interface WorkflowHop {
+  file: string;
+  job: string | null;
+}
+
+/**
+ * One way an event reaches a flagged line: the trigger of the file at the start of the chain (null when its triggers
+ * could not be read), and the calls from there to the flagged file. `via` is empty when the file's own trigger starts it,
+ * and null for the stand-in that covers routes past the caps (ADR 0039).
+ */
+export interface WorkflowRoute {
+  trigger: string | null;
+  via: WorkflowHop[] | null;
+}
+
+/** An `if:` that stands between an outsider's event and a flagged line, and did not rule it out. */
+export interface WorkflowCondition {
+  file: string;
+  line: number;
+  /** The `if:` with its literals blanked, an unclosed or escaped quote and a `#` comment cut, whitespace collapsed, at most 200 characters. */
+  text: string;
+  /** holds: true for an outsider's event. unknown: names something not knowable. unreadable: could not be parsed. */
+  verdict: "holds" | "unknown" | "unreadable";
+}
+
 export interface WorkflowFinding {
   file: string;
   line: number | null;
@@ -338,11 +364,38 @@ export interface WorkflowFinding {
   /** The expression, key or command fragment, at most 200 characters, never a whole run script. */
   evidence: string;
   /**
-   * Set on `selfHosted` findings only. True when the workflow also runs on `pull_request` or `pull_request_target`, or
-   * when its triggers could not be read, which `triggersOf` treats as possibly privileged. A reusable workflow called
-   * by such a workflow in the same repository takes it from its caller.
+   * Set on `selfHosted` findings only. True when a pull request from a fork can reach the job: the workflow runs on
+   * `pull_request`, `pull_request_target`, `pull_request_review` or `pull_request_review_comment` and no condition rules
+   * it out, or its triggers could not be read, which `triggersOf` treats as possibly privileged. A reusable workflow
+   * called by such a workflow in the same repository takes it from its caller, through the calling jobs whose conditions
+   * leave a pull request open.
    */
   onPullRequest?: boolean;
+  /**
+   * How an event reaches the line, at most three, the stand-in for routes past the caps first, for display. Set on
+   * `prHeadCheckout`, `scriptInjection` and `persistCredentials`, and on `selfHosted` when `onPullRequest` is true.
+   */
+  routes?: WorkflowRoute[];
+  /** How many more routes reached the line than are listed. Present only when above zero. */
+  routesDropped?: number;
+  /** The conditions on the way that did not rule the event out, nearest first, at most three. Present with `routes`. */
+  conditions?: WorkflowCondition[];
+  /** How many more such conditions there were. Present only when above zero. */
+  conditionsDropped?: number;
+  /**
+   * A hash of the whole flagged line, quoted text included, with whitespace collapsed, so an edit above the line does not
+   * change it and an edit to the line, a literal in it too, does. For a finding with no line it hashes the sorted ids of
+   * the jobs concerned. 16 lower-case hex characters, never the text.
+   */
+  lineHash: string;
+  /**
+   * A hash of how an event reaches the line: every route that reaches it, as its trigger and its calls, and every
+   * condition consulted on the way, as the hash of its text as written and its verdict, all before the caps of three on
+   * what is shown and with no line numbers. A caller added or taken away, a guard changed or deleted, or a changed
+   * verdict changes it, and an edit above the line does not. A finding that reads no route, such as `curlPipeShell`,
+   * has the fixed hash of no reach. 16 lower-case hex characters, never the text.
+   */
+  reachHash: string;
 }
 
 export type SecurityToolCategory =
@@ -356,6 +409,11 @@ export interface SecurityTool {
 
 export interface DockerfileFacts {
   path: string;
+  /**
+   * The git blob id of the file at the commit, read from the commit's tree without opening the file (ADR 0032), or null
+   * when it was not read. It tells an acceptance whether the Dockerfile has changed since.
+   */
+  blob: string | null;
   images: number;
   unpinnedImages: number;
   latestImages: number;
@@ -366,6 +424,8 @@ export interface DockerfileFacts {
 
 export interface KeyFile {
   path: string;
+  /** The git blob id at the commit, read from the tree and never from the file; null when it was not read. */
+  blob: string | null;
   /** `strong` names almost always hold a key or secret; `weak` ones (`*.pem`, `*.key`) are often public certificates. */
   strength: "strong" | "weak";
 }
@@ -410,6 +470,13 @@ export interface SupplyChainFacts {
    * OSV alerts must not be closed as deleted.
    */
   listingComplete: boolean;
+  /**
+   * False when the blob ids of the key files and Dockerfiles could not be looked up, which leaves every one of them with a
+   * null blob that no acceptance can match. True when the lookup worked or nothing needed one, so a listed path that the
+   * commit's tree does not hold as a regular file, which has no blob of its own, is not a failure. A record where it is
+   * false is read again at the same commit. `supplyChainFacts` sets it from whether its input's `blobs` is null.
+   */
+  blobsRead: boolean;
 }
 
 export interface SupplyChainRecord {
@@ -499,6 +566,21 @@ export interface HeldPosture {
 /** Days an open alert of each severity may stay open before it is past its fix-by date. Unknown uses medium's. */
 export const FIX_WITHIN_DAYS = { critical: 7, high: 30, medium: 90, low: 180 } as const;
 
+/**
+ * The supply chain checks that count towards the grade, in the order a tie is named. It is written down here only:
+ * `SECURITY_CHECKS.supplyChain`, `GRADED_SUPPLY_CHAIN_CHECKS` and the `graded` flag of every report line are built from it,
+ * so a check cannot be graded in one place and advice in another.
+ */
+const GRADED_SUPPLY_CHAIN = [
+  "prHeadCheckout",
+  "scriptInjection",
+  "selfHostedPublic",
+  "unpinnedActions",
+  "workflowPermissions",
+  "unsecureCommands",
+  "keyFiles",
+] as const satisfies readonly SupplyChainCheckId[];
+
 /** Stable names for each part's checks, in the order a tie is named. `all` means nothing held the part back. */
 export const SECURITY_CHECKS = {
   vulnerabilities: [
@@ -511,16 +593,7 @@ export const SECURITY_CHECKS = {
     "mediumPastFix",
     "all",
   ],
-  supplyChain: [
-    "prHeadCheckout",
-    "scriptInjection",
-    "selfHostedPublic",
-    "unpinnedActions",
-    "workflowPermissions",
-    "unsecureCommands",
-    "keyFiles",
-    "all",
-  ],
+  supplyChain: [...GRADED_SUPPLY_CHAIN, "all"],
   changeControl: ["branchUnprotected", "forcePushAllowed", "all"],
 } as const;
 
@@ -544,6 +617,8 @@ export interface SecurityCheck {
   total?: number;
   oldestDays?: number;
   detail?: string[];
+  /** How many findings of this check an acceptance covers; present only when above zero. They are not in `count`. */
+  accepted?: number;
   /** True for the one check that set its part's band. */
   limits: boolean;
 }
@@ -652,44 +727,165 @@ export type SecurityAction = SecurityActionFacts &
 
 // --- The report -----------------------------------------------------------------------------------------------------
 
-export type SupplyChainCheckId =
-  | "prHeadCheckout"
-  | "scriptInjection"
-  | "selfHostedPublic"
-  | "unpinnedActions"
-  | "ownActionsUnpinned"
-  | "workflowPermissions"
-  | "unsecureCommands"
-  | "keyFiles"
-  | "weakKeyFiles"
-  | "curlPipeShell"
-  | "secretsInherit"
-  | "persistCredentials"
-  | "updateConfig"
-  | "lockfiles"
-  | "securityPolicy"
-  | "dependencyReview"
-  | "secretScanInCi"
-  | "staticAnalysis"
-  | "baseImagesPinned"
-  | "latestImages"
-  | "nonRootImages"
-  | "remoteAdd";
+export const SUPPLY_CHAIN_CHECK_IDS = [
+  "prHeadCheckout",
+  "scriptInjection",
+  "selfHostedPublic",
+  "unpinnedActions",
+  "ownActionsUnpinned",
+  "workflowPermissions",
+  "unsecureCommands",
+  "keyFiles",
+  "weakKeyFiles",
+  "curlPipeShell",
+  "secretsInherit",
+  "persistCredentials",
+  "updateConfig",
+  "lockfiles",
+  "securityPolicy",
+  "dependencyReview",
+  "secretScanInCi",
+  "staticAnalysis",
+  "baseImagesPinned",
+  "latestImages",
+  "nonRootImages",
+  "remoteAdd",
+] as const;
+export type SupplyChainCheckId = (typeof SUPPLY_CHAIN_CHECK_IDS)[number];
+
+/** The checks that count towards the grade, the same list as `SECURITY_CHECKS.supplyChain`; every other check is advice. */
+export const GRADED_SUPPLY_CHAIN_CHECKS: readonly SupplyChainCheckId[] = GRADED_SUPPLY_CHAIN;
+
+/** One place a supply chain line points at. */
+export interface SupplyChainItem {
+  path: string;
+  line: number | null;
+  /** An action reference, an expression, an image count or a tool name; null when the path says it all. */
+  detail: string | null;
+  /** The file at the commit the clone was read from, on the host; null when the host builds none. */
+  url: string | null;
+  /** The finding's risk for a workflow finding; null for everything else, such as an action use or a key file. */
+  risk: WorkflowRisk | null;
+  /**
+   * What an acceptance of this finding is matched on (ADR 0040), or null when it cannot be accepted, such as a key file
+   * whose blob id was not read.
+   */
+  fingerprint: string | null;
+  /** How an event reaches the line, copied from the workflow finding; empty for anything else. */
+  routes: WorkflowRoute[];
+  routesDropped: number;
+  /** The conditions on the way that did not rule the event out, copied from the finding; empty for anything else. */
+  conditions: WorkflowCondition[];
+  conditionsDropped: number;
+}
 
 export interface SupplyChainLine {
   check: SupplyChainCheckId;
+  /** For a line about something that should not be there, true when no open item is left; for one about something that should be there, true when it is. */
   met: boolean;
   /** True when the check counts towards the grade; false for advice. */
   graded: boolean;
-  /** Up to 50: a path, its line, and a short structured detail such as an action reference or an expression. */
-  items: { path: string; line: number | null; detail: string | null }[];
+  /** Up to 50 open items, each a path, its line and a short structured detail such as an action reference or an expression. */
+  items: SupplyChainItem[];
+  /** The open items, of which `items` lists the first 50. */
   total: number;
+  /** Items an acceptance covers now. They are in neither `items` nor `total`. */
+  accepted: number;
+  /**
+   * Set on a line about something that should be there when it is missing and not accepted: what an acceptance of its
+   * absence is matched on. Null when it is there, or when its absence is accepted, which `accepted` then says.
+   */
+  absence: { fingerprint: string } | null;
+}
+
+// --- Accepting a finding (ADR 0040) ----------------------------------------------------------------------------------
+
+export const ACCEPTANCE_REASONS = ["false_positive", "guarded_elsewhere", "public_by_design", "risk_accepted"] as const;
+export type AcceptanceReason = (typeof ACCEPTANCE_REASONS)[number];
+
+/** The longest note, and the most acceptances one repository may hold. */
+export const ACCEPTANCE_LIMITS = { note: 280, perRepository: 500 } as const;
+
+/**
+ * The versioned prefixes a fingerprint is made with, so a change to how one kind is made reopens every acceptance of that
+ * kind instead of matching nothing quietly: `w2` a workflow finding, `a1` an action use, `b` a git blob id, `p1` a missing
+ * lockfile and `n1` the absence of a file or tool.
+ */
+export const FINGERPRINT_KINDS = ["w2", "a1", "b", "p1", "n1"] as const;
+export type FingerprintKind = (typeof FINGERPRINT_KINDS)[number];
+
+/**
+ * Prefixes no fingerprint is made with any more. A stored acceptance carrying one still loads, and reads as reopened while
+ * its check still finds something in its file, rather than vanishing as unreadable, but nothing new is accepted under it.
+ * `w1` hashed only the routes kept for display and no condition.
+ */
+export const RETIRED_FINGERPRINT_KINDS = ["w1"] as const;
+type RetiredFingerprintKind = (typeof RETIRED_FINGERPRINT_KINDS)[number];
+
+/** What follows each prefix: 16 hex digits of a hash, a git blob id of either length, or nothing. */
+const FINGERPRINT_BODY: Record<FingerprintKind | RetiredFingerprintKind, string> = {
+  w2: "[0-9a-f]{16}",
+  a1: "[0-9a-f]{16}",
+  b: "(?:[0-9a-f]{40}|[0-9a-f]{64})",
+  p1: "",
+  n1: "",
+  w1: "[0-9a-f]{16}",
+};
+
+const fingerprintPattern = (kinds: readonly (FingerprintKind | RetiredFingerprintKind)[]): RegExp =>
+  new RegExp(`^(?:${kinds.map((kind) => `${kind}:${FINGERPRINT_BODY[kind]}`).join("|")})$`);
+
+/** A fingerprint a stored acceptance may carry: a current kind, or a retired one so that its row still loads. */
+export const ACCEPTANCE_FINGERPRINT = fingerprintPattern([...FINGERPRINT_KINDS, ...RETIRED_FINGERPRINT_KINDS]);
+
+/** A fingerprint something may be accepted under now: a current kind only. */
+export const CURRENT_FINGERPRINT = fingerprintPattern(FINGERPRINT_KINDS);
+
+/**
+ * A finding a person has accepted. It holds what was accepted, why, a note of at most 280 characters written in the
+ * dashboard, and when. It never holds who: no login or session value is stored (ADR 0008, ADR 0031).
+ */
+export interface FindingAcceptance {
+  id: number;
+  check: SupplyChainCheckId;
+  /** The file the finding is in; null only for the absence of a file or tool. */
+  path: string | null;
+  /** Where the finding was when accepted, taken from the finding by the server; null when it has no line. */
+  line: number | null;
+  fingerprint: string;
+  reason: AcceptanceReason;
+  note: string;
+  /** ISO. */
+  acceptedAt: string;
+}
+
+/** What a person sends to accept a finding; the server adds the id, the line and the time. */
+export type AcceptanceRequest = Pick<FindingAcceptance, "check" | "path" | "fingerprint" | "reason" | "note">;
+
+/**
+ * Whether an acceptance still holds. `applies` matched a finding of the latest read. `reopened` did not, though an open
+ * finding of the same check is in the same file, so what was accepted has changed. `gone` matched nothing because no open
+ * finding of that check is left in that file, such as an absence that has since been filled. `unchecked` means the latest
+ * read could not check it: there is no supply chain record, the git blob id of its key file or Dockerfile was not read,
+ * or it accepts a self-hosted runner or the absence of a security policy while the repository is not known to be public.
+ */
+export type AcceptanceStatus = "applies" | "reopened" | "gone" | "unchecked";
+
+export interface AcceptanceView {
+  acceptance: FindingAcceptance;
+  status: AcceptanceStatus;
+  /** True when the check counts towards the grade. */
+  graded: boolean;
+  /** How many places it covers now; identical lines with the same route share one acceptance. 0 unless it applies. */
+  covers: number;
+  /** Up to 50 of those places, empty unless it applies and for an absence, which has no place. */
+  items: SupplyChainItem[];
 }
 
 /** Where an alert is. A package or rule the host did not name is null. */
 export type AlertWhere =
   | { kind: "package"; ecosystem: string | null; name: string | null; version: string | null; manifestPath: string | null }
-  | { kind: "code"; path: string | null; line: number | null; ruleId: string | null }
+  | { kind: "code"; path: string | null; line: number | null; ruleId: string | null; tool: string }
   | { kind: "secret"; type: string };
 
 export interface SecurityAlertRef {
@@ -701,6 +897,10 @@ export interface SecurityAlertRef {
   createdAt: string;
   ageHours: number;
   pastFix: boolean;
+  /** When the alert is due, its creation plus the days its severity allows (ISO). */
+  fixByAt: string;
+  /** Whole days until `fixByAt`, 0 on the last day; -1 or lower exactly when `pastFix` is true. */
+  daysLeft: number;
   likelyExploited: boolean;
   epss: number | null;
   cvssScore: number | null;
@@ -812,6 +1012,18 @@ interface SecurityReportFields {
    */
   dependabotVersionUpdates: string | null;
   checks: SecurityCheck[];
+  /** Every acceptance the repository holds, with whether it still holds. */
+  acceptances: AcceptanceView[];
+  /**
+   * Stored acceptance rows the store could not read, which are left out of `acceptances`, so the findings they covered
+   * count again. 0 when every row was read.
+   */
+  acceptancesUnreadable: number;
+  /**
+   * What acceptances changed: the findings they take out of the graded checks and out of the advice, and the band before
+   * them, which is null when nothing matched or there is no grade.
+   */
+  accepted: { graded: number; advice: number; bandBefore: Band | null; supplyChainBefore: Band | null };
   /** The band reached if every action on the path were done, and how many actions that is (those with `onPath` set). */
   raiseGrade: { to: Band; actions: number } | null;
   /** Open alerts that count now; `openAlertTotal` is their number. */
@@ -863,6 +1075,8 @@ interface SecuritySummaryFields {
   actions: number;
   /** The band reached by the actions on the path, and how many they are; null when elite or ungraded. */
   raiseGrade: { to: Band; actions: number } | null;
+  /** Graded findings acceptances take out of the grade, and the band before them (null when nothing matched). */
+  accepted: { graded: number; bandBefore: Band | null };
   /**
    * True when the alerts of any source are in use, so a row of zeros is a finding and not an absence of data. A source
    * that was attempted but cannot be used, such as one without access, does not count.

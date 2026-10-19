@@ -26,6 +26,7 @@ import { registerJiraRoutes } from "./routes/jira.js";
 import { registerRepoRoutes } from "./routes/repos.js";
 import { registerReviewExemptionRoutes } from "./routes/review-exemptions.js";
 import { registerReviewQueueRoutes } from "./routes/review-queue.js";
+import { registerSecurityAcceptanceRoutes } from "./routes/security-acceptances.js";
 import { registerSecurityRoutes } from "./routes/security.js";
 import { DeviceSignInService } from "./services/device-sign-in-service.js";
 import { CodeHealthService } from "./services/code-health-service.js";
@@ -38,6 +39,7 @@ import { JiraAuthService } from "./services/jira-auth-service.js";
 import { RepoService } from "./services/repo-service.js";
 import { ReportService } from "./services/report-service.js";
 import { ReviewQueueService } from "./services/review-queue-service.js";
+import { SecurityAcceptanceService } from "./services/security-acceptance-service.js";
 import { SecurityCrawlService } from "./services/security-crawl-service.js";
 import { SecurityReportService } from "./services/security-report-service.js";
 import { SpaceReportService } from "./services/space-report-service.js";
@@ -122,7 +124,7 @@ const scorecardOf = (deps: AppDeps): ScorecardSource | null => (deps.config.scor
 
 function createCodeHealth(deps: AppDeps, app: FastifyInstance): CodeHealthService {
   // The supply chain facts are read from the clone code analysis makes, so they exist only when analysis is on.
-  const inspector = deps.config.codeAnalysis ? new SupplyChainService(deps.store, deps.clock) : null;
+  const inspector = deps.config.codeAnalysis ? new SupplyChainService(deps.store, deps.clock, app.log) : null;
   return new CodeHealthService(
     deps.store,
     deps.checkout ?? null,
@@ -233,10 +235,17 @@ function registerRoutes(
         codeAnalysis: deps.config.codeAnalysis,
         scorecardLookup: scorecardOf(deps) !== null,
         settingsUrl: (owner: string, name: string) => deps.securityAlerts?.settingsUrl(owner, name) ?? "",
+        fileUrl: (owner: string, name: string, commitSha: string, path: string, line: number | null) =>
+          deps.securityAlerts?.fileUrl(owner, name, commitSha, path, line) ?? null,
       },
       deps.clock,
       app.log,
     ),
+  });
+  registerSecurityAcceptanceRoutes(app, {
+    guard: requireSession(auth),
+    config: deps.config,
+    acceptances: new SecurityAcceptanceService(deps.store, deps.store, deps.clock),
   });
   const workItemCrawler = jira && jiraAuth && registerJira(app, deps, requireSession(auth), jira, jiraAuth);
   app.get("/api/health", async () => ({

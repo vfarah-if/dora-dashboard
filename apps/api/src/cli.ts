@@ -77,7 +77,7 @@ try {
         log,
         reader,
         // Workflow, dependency and container facts are read from the same clone.
-        new SupplyChainService(store),
+        new SupplyChainService(store, undefined, log),
       )
     : undefined;
   // Coverage is read alongside the analysis, so switching analysis off switches it off too.
@@ -108,6 +108,7 @@ try {
       codeAnalysis: config.codeAnalysis,
       scorecardLookup: config.scorecardLookup,
       settingsUrl: (owner, name) => alertSource.settingsUrl(owner, name),
+      fileUrl: (owner, name, commitSha, path, line) => alertSource.fileUrl(owner, name, commitSha, path, line),
     },
     undefined,
     log,

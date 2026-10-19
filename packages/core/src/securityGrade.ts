@@ -2,12 +2,24 @@ import type { GradePart } from "./codeGrade.js";
 import { instant } from "./delivery.js";
 import { BAND_RANK, type Band } from "./dora.js";
 import { isUsable, severityOf, usedSources } from "./securityAlerts.js";
+import {
+  AcceptanceIndex,
+  fingerprintOf,
+  subjectLine,
+  subjectPath,
+  type AcceptedHit,
+  type Subject,
+} from "./securityAcceptance.js";
 import { DAY_MS, HOUR_MS } from "./stats.js";
 import {
+  CURRENT_FINGERPRINT,
   FIX_WITHIN_DAYS,
   SECURITY_PARTS,
+  type AcceptanceRequest,
   type ActionUse,
   type AlertSource,
+  type DockerfileFacts,
+  type FindingAcceptance,
   type KeyFile,
   type RepoPosture,
   type SecurityAlert,
@@ -19,6 +31,7 @@ import {
   type SecurityPartName,
   type Severity,
   type SourceState,
+  type SupplyChainCheckId,
   type SupplyChainRecord,
   type WorkflowFinding,
 } from "./securityTypes.js";
@@ -67,6 +80,8 @@ interface SecurityFactsFields {
   alerts: readonly SecurityAlert[];
   sources: Record<AlertSource, SourceState>;
   posture: RepoPosture | null;
+  /** Findings of the clone a person has accepted (ADR 0040). They leave the grade and the advice. */
+  acceptances?: readonly FindingAcceptance[];
 }
 
 /** Everything the grade reads, gathered by the caller. Nothing here is a clock or a store. */
@@ -144,7 +159,16 @@ export function lowest(bands: readonly (Band | null)[]): Band | null {
 
 const sameOwner = (use: ActionUse, owner: string) => use.action.split("/")[0]!.toLowerCase() === owner.toLowerCase();
 
-/** What the clone's workflow and file facts found, split by the check each finding belongs to. */
+/** The files and tools a presence line asks for, whose absence can be accepted. */
+export type AbsenceCheck = "updateConfig" | "securityPolicy" | "dependencyReview" | "secretScanInCi" | "staticAnalysis";
+
+/** `none` when nothing is missing, or the check does not apply; `open` when it is missing; `accepted` when its absence is accepted. */
+export type Absence = "none" | "open" | "accepted";
+
+/**
+ * What the clone's workflow and file facts found, split by the check each finding belongs to. Every list holds the
+ * findings that are still open: those an acceptance covers are in `accepted` and counted in `acceptedByCheck`.
+ */
 export interface SupplyChainFound {
   prHeadCheckout: WorkflowFinding[];
   scriptInjection: WorkflowFinding[];
@@ -162,41 +186,199 @@ export interface SupplyChainFound {
   thirdPartyUnpinned: ActionUse[];
   /** Actions of the repository's own organisation that are not pinned; advice only. */
   ownUnpinned: ActionUse[];
-  /** Actions of every kind but local, the base for the share of unpinned third party actions. */
+  /** Actions of every kind but local, accepted or not: the base for the share of unpinned third party actions. */
   remoteActions: number;
   strongKeys: KeyFile[];
   weakKeys: KeyFile[];
+  /** The Dockerfiles with each problem, one list per check. */
+  images: {
+    unpinned: DockerfileFacts[];
+    latest: DockerfileFacts[];
+    root: DockerfileFacts[];
+    remoteAdd: DockerfileFacts[];
+    curlPipeShell: DockerfileFacts[];
+  };
+  missingLockfiles: string[];
+  absence: Record<AbsenceCheck, Absence>;
+  /** What the acceptances cover, in the order the facts list it. */
+  accepted: AcceptedHit[];
+  acceptedByCheck: Partial<Record<SupplyChainCheckId, number>>;
+  /** The files that still hold an open finding of each check, so an acceptance there that matches nothing is reopened. */
+  openPaths: Map<SupplyChainCheckId, Set<string>>;
+  /**
+   * The key files and Dockerfiles among `openPaths` that could not be compared with an acceptance, because their own blob
+   * id was not read or the lookup of blob ids failed, so an acceptance there that matches nothing is unchecked rather than
+   * reopened.
+   */
+  uncheckedPaths: Map<SupplyChainCheckId, Set<string>>;
+  /**
+   * True when the repository is known to be public, the only case in which a self-hosted finding or the absence of a
+   * security policy is matched at all.
+   */
+  knownPublic: boolean;
 }
 
-/** `SupplyChainFound.selfHostedPublic` from every self-hosted finding and the repository's visibility, when it was read. */
-function selfHostedPublicOf(selfHosted: WorkflowFinding[], visibility: RepoPosture["visibility"]): WorkflowFinding[] | null {
-  // Only a workflow that pull requests trigger lets someone outside the team run code on the machine.
-  const onPullRequest = selfHosted.filter((f) => f.onPullRequest === true);
+/** `SupplyChainFound.selfHostedPublic` from the open self-hosted findings that pull requests reach and the repository's visibility. */
+function selfHostedPublicOf(onPullRequest: WorkflowFinding[], visibility: RepoPosture["visibility"]): WorkflowFinding[] | null {
   if (onPullRequest.length === 0 || visibility === "public") return onPullRequest;
   return visibility === null ? null : [];
 }
 
-export function supplyChainFound(record: SupplyChainRecord, owner: string, posture: RepoPosture | null): SupplyChainFound {
+/**
+ * Splits the clone's facts by check and takes out what `acceptances` cover (ADR 0040). This is the one place acceptance
+ * is applied, so the grade, the advice and the report agree. `remoteActions` still counts every remote use, so the share
+ * of unpinned actions keeps its base.
+ */
+export function supplyChainFound(
+  record: SupplyChainRecord,
+  owner: string,
+  posture: RepoPosture | null,
+  acceptances: readonly FindingAcceptance[] = [],
+): SupplyChainFound {
   const { facts } = record;
-  const risk = (...risks: WorkflowFinding["risk"][]) => facts.findings.filter((f) => risks.includes(f.risk));
-  const remote = facts.actions.filter((use) => use.kind !== "local");
-  return {
-    prHeadCheckout: risk("prHeadCheckout"),
-    scriptInjection: risk("scriptInjection"),
-    selfHostedPublic: selfHostedPublicOf(risk("selfHosted"), posture?.visibility ?? null),
-    permissions: risk("writeAll", "noPermissions"),
-    unsecureCommands: risk("unsecureCommands"),
-    curlPipeShell: risk("curlPipeShell"),
-    secretsInherit: risk("secretsInherit"),
-    persistCredentials: risk("persistCredentials"),
-    thirdPartyUnpinned: remote.filter(
-      (use) => !use.pinned && (use.kind === "docker" || (use.kind === "other" && !sameOwner(use, owner))),
-    ),
-    ownUnpinned: remote.filter((use) => !use.pinned && use.kind === "other" && sameOwner(use, owner)),
-    remoteActions: remote.length,
-    strongKeys: facts.keyFiles.filter((k) => k.strength === "strong"),
-    weakKeys: facts.keyFiles.filter((k) => k.strength === "weak"),
+  const index = new AcceptanceIndex(acceptances);
+  const accepted: AcceptedHit[] = [];
+  const acceptedByCheck: SupplyChainFound["acceptedByCheck"] = {};
+  const openPaths = new Map<SupplyChainCheckId, Set<string>>();
+  const uncheckedPaths = new Map<SupplyChainCheckId, Set<string>>();
+  const mark = (places: Map<SupplyChainCheckId, Set<string>>, check: SupplyChainCheckId, path: string) => {
+    const paths = places.get(check) ?? new Set<string>();
+    paths.add(path);
+    places.set(check, paths);
   };
+  const take = (check: SupplyChainCheckId, subject: Subject): boolean => {
+    const acceptance = index.find(check, subject);
+    if (acceptance === null) {
+      const path = subjectPath(subject);
+      if (path !== null) {
+        mark(openPaths, check, path);
+        // Only a key file or a Dockerfile is matched on its blob id, and one that was not read has no fingerprint.
+        const blob = subject.kind === "key" || subject.kind === "image";
+        if (blob && (!facts.blobsRead || fingerprintOf(subject) === null)) mark(uncheckedPaths, check, path);
+      }
+      return false;
+    }
+    accepted.push({ acceptance, check, subject });
+    acceptedByCheck[check] = (acceptedByCheck[check] ?? 0) + 1;
+    return true;
+  };
+  /** The items of the list no acceptance covers. */
+  const open = <T>(check: SupplyChainCheckId, list: readonly T[], subject: (item: T) => Subject): T[] =>
+    index.empty ? [...list] : list.filter((item) => !take(check, subject(item)));
+  const finding = (f: WorkflowFinding): Subject => ({ kind: "finding", finding: f });
+  const use = (u: ActionUse): Subject => ({ kind: "use", use: u });
+  const key = (k: KeyFile): Subject => ({ kind: "key", key: k });
+  const image = (d: DockerfileFacts): Subject => ({ kind: "image", dockerfile: d });
+  const risk = (check: SupplyChainCheckId, ...risks: WorkflowFinding["risk"][]) =>
+    open(
+      check,
+      facts.findings.filter((f) => risks.includes(f.risk)),
+      finding,
+    );
+  const absence = (check: AbsenceCheck, missing: boolean): Absence => {
+    if (!missing) return "none";
+    return index.empty || !take(check, { kind: "absence" }) ? "open" : "accepted";
+  };
+  const hasTool = (category: string) => facts.securityTools.some((t) => t.category === category);
+  const remote = facts.actions.filter((u) => u.kind !== "local");
+  // A pull request from a fork reaches only the self-hosted findings that say so. In a private repository there is no
+  // one outside to open one, so nothing there is a finding and nothing is accepted. With the visibility unknown the check
+  // is unmeasured, so it is not split either, and an acceptance cannot be counted as having applied to it.
+  const visibility = posture?.visibility ?? null;
+  const reached = facts.findings.filter((f) => f.risk === "selfHosted" && f.onPullRequest === true);
+  const selfHosted = visibility === "public" ? open("selfHostedPublic", reached, finding) : reached;
+  return {
+    prHeadCheckout: risk("prHeadCheckout", "prHeadCheckout"),
+    scriptInjection: risk("scriptInjection", "scriptInjection"),
+    selfHostedPublic: selfHostedPublicOf(selfHosted, visibility),
+    permissions: risk("workflowPermissions", "writeAll", "noPermissions"),
+    unsecureCommands: risk("unsecureCommands", "unsecureCommands"),
+    curlPipeShell: risk("curlPipeShell", "curlPipeShell"),
+    secretsInherit: risk("secretsInherit", "secretsInherit"),
+    persistCredentials: risk("persistCredentials", "persistCredentials"),
+    thirdPartyUnpinned: open(
+      "unpinnedActions",
+      remote.filter((u) => !u.pinned && (u.kind === "docker" || (u.kind === "other" && !sameOwner(u, owner)))),
+      use,
+    ),
+    ownUnpinned: open(
+      "ownActionsUnpinned",
+      remote.filter((u) => !u.pinned && u.kind === "other" && sameOwner(u, owner)),
+      use,
+    ),
+    remoteActions: remote.length,
+    strongKeys: open(
+      "keyFiles",
+      facts.keyFiles.filter((k) => k.strength === "strong"),
+      key,
+    ),
+    weakKeys: open(
+      "weakKeyFiles",
+      facts.keyFiles.filter((k) => k.strength === "weak"),
+      key,
+    ),
+    images: {
+      unpinned: open(
+        "baseImagesPinned",
+        facts.dockerfiles.filter((d) => d.unpinnedImages > 0),
+        image,
+      ),
+      latest: open(
+        "latestImages",
+        facts.dockerfiles.filter((d) => d.latestImages > 0),
+        image,
+      ),
+      root: open(
+        "nonRootImages",
+        facts.dockerfiles.filter((d) => d.runsAsRoot),
+        image,
+      ),
+      remoteAdd: open(
+        "remoteAdd",
+        facts.dockerfiles.filter((d) => d.addsRemote),
+        image,
+      ),
+      curlPipeShell: open(
+        "curlPipeShell",
+        facts.dockerfiles.filter((d) => d.curlPipeShell),
+        image,
+      ),
+    },
+    missingLockfiles: open("lockfiles", facts.missingLockfiles, (path): Subject => ({ kind: "lockfile", path })),
+    absence: {
+      updateConfig: absence("updateConfig", facts.updateConfig === null),
+      // Only a public repository has outside reporters to tell where to send a vulnerability.
+      securityPolicy: absence("securityPolicy", facts.securityPolicy === null && visibility === "public"),
+      dependencyReview: absence("dependencyReview", !hasTool("dependency_review")),
+      secretScanInCi: absence("secretScanInCi", !hasTool("secret_scan")),
+      staticAnalysis: absence("staticAnalysis", !hasTool("sast")),
+    },
+    accepted,
+    acceptedByCheck,
+    openPaths,
+    uncheckedPaths,
+    knownPublic: visibility === "public",
+  };
+}
+
+/**
+ * Whether the request names something the latest read reports and that can be accepted, and the line it is on. It runs
+ * the same matching the grade does with the request as the only acceptance, so what can be accepted is exactly what the
+ * grade would then leave out. The line comes from the finding and never from the request. A fingerprint of a retired
+ * kind is refused before any matching, so nothing new is ever accepted under it.
+ */
+export function findAcceptable(
+  record: SupplyChainRecord,
+  owner: string,
+  posture: RepoPosture | null,
+  request: AcceptanceRequest,
+): { line: number | null } | null {
+  if (!CURRENT_FINGERPRINT.test(request.fingerprint)) return null;
+  const probe: FindingAcceptance = { ...request, id: 0, line: null, acceptedAt: "" };
+  // A check the report leaves out because visibility is unknown shows nothing to accept.
+  if (request.check === "selfHostedPublic" && supplyChainFound(record, owner, posture).selfHostedPublic === null) return null;
+  const hit = supplyChainFound(record, owner, posture, [probe]).accepted.find((h) => h.acceptance === probe);
+  return hit ? { line: subjectLine(hit.subject) } : null;
 }
 
 // ---- change control -------------------------------------------------------------------------------------------
@@ -238,6 +420,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 interface Found {
   count: number;
+  /** Findings of the check an acceptance covers, which are not in `count`. */
+  accepted?: number;
   total?: number;
   oldestDays?: number;
   detail?: string[];
@@ -260,6 +444,7 @@ function check(
     band: count > 0 ? band : "elite",
     met: count === 0,
     count,
+    ...(found.accepted ? { accepted: found.accepted } : {}),
     ...(found.total === undefined ? {} : { total: found.total }),
     ...(count > 0 && found.oldestDays !== undefined ? { oldestDays: found.oldestDays } : {}),
     ...(count > 0 && found.detail && found.detail.length > 0 ? { detail: found.detail } : {}),
@@ -298,9 +483,20 @@ function vulnerabilityChecks(facts: SecurityFacts, cleared: ReadonlySet<Security
 
 function supplyChainChecks(facts: SecurityFacts, cleared: ReadonlySet<SecurityCheckName>): SecurityCheck[] | null {
   if (facts.supplyChain === null) return null;
-  const found = supplyChainFound(facts.supplyChain, facts.owner, facts.posture);
+  const found = supplyChainFound(facts.supplyChain, facts.owner, facts.posture, facts.acceptances);
   const make = (name: SecurityCheckName, count: number, detail: string[], total?: number) =>
-    check("supplyChain", name, CHECK_BAND[name], { count, detail, ...(total === undefined ? {} : { total }) }, cleared);
+    check(
+      "supplyChain",
+      name,
+      CHECK_BAND[name],
+      {
+        count,
+        detail,
+        accepted: found.acceptedByCheck[name as SupplyChainCheckId] ?? 0,
+        ...(total === undefined ? {} : { total }),
+      },
+      cleared,
+    );
   return [
     make("prHeadCheckout", found.prHeadCheckout.length, files(found.prHeadCheckout)),
     make("scriptInjection", found.scriptInjection.length, files(found.scriptInjection)),

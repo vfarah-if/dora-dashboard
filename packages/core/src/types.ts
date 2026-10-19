@@ -367,8 +367,21 @@ export interface WorkItem {
   level?: WorkItemLevel;
 }
 
-/** A stable code the API adds to an error body when the web is expected to act on the error, not just show it. */
-export type ApiErrorCode = "jira_unauthorised";
+/**
+ * A stable code the API adds to an error body when the web is expected to act on the error, not just show it. Every 409
+ * from accepting a finding carries exactly one of the four `acceptance_` codes, tested in the order they are listed.
+ */
+export type ApiErrorCode =
+  /** The issue tracker connection is missing, expired or refused, so the web offers to connect again. */
+  | "jira_unauthorised"
+  /** The repository's files have not been read yet, so there is no supply chain record to accept a finding from. */
+  | "acceptance_no_record"
+  /** The finding is not in the latest read of the repository, or has changed since the page was loaded. */
+  | "acceptance_finding_changed"
+  /** The repository already holds `ACCEPTANCE_LIMITS.perRepository` acceptances. */
+  | "acceptance_limit"
+  /** The finding is already accepted. */
+  | "acceptance_duplicate";
 
 /** The body of an API error: a message fit to show the person, and a code when there is one to act on. */
 export interface ApiErrorBody {

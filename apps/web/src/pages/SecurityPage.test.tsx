@@ -5,7 +5,18 @@ import userEvent from "@testing-library/user-event";
 import { Link } from "react-router";
 import { SecurityPage } from "./SecurityPage";
 import { mockFetch, renderRoute, type MockResponse } from "../test/render";
-import { errorSource, noAccessSource, noSecurity, offSource, repo, securityAction, securityReport } from "../test/fixtures";
+import {
+  acceptanceView,
+  chainItem,
+  errorSource,
+  noAccessSource,
+  noSecurity,
+  offSource,
+  repo,
+  securityAction,
+  securityReport,
+} from "../test/fixtures";
+import { setAcceptNotice } from "../lib/acceptNotice";
 import { copy } from "../copy";
 
 const show = (
@@ -61,6 +72,7 @@ describe("SecurityPage", () => {
       "Files that help",
       "Security tools in CI",
       "Container images",
+      "Accepted findings",
       "Branch protection and settings",
       "Security issues",
       "OpenSSF Scorecard",
@@ -345,7 +357,8 @@ describe("SecurityPage", () => {
       show(noSecurity());
       expect(await screen.findByText(copy.security.notRead.title)).toBeInTheDocument();
       expect(screen.getByText(copy.security.notRead.body)).toBeInTheDocument();
-      expect(headings()).toEqual(["How each source is read", "What these words mean"]);
+      // The Accepted section stays on the page even with nothing accepted, so focus always has somewhere to land.
+      expect(headings()).toEqual([copy.security.acceptance.section.title, "How each source is read", "What these words mean"]);
       expect(screen.queryByText(copy.security.upgrades.none)).not.toBeInTheDocument();
       expect(screen.queryByRole("table")).not.toBeInTheDocument();
       expect(screen.queryByText(copy.security.page.partlyRead.title)).not.toBeInTheDocument();
@@ -479,6 +492,7 @@ describe("SecurityPage", () => {
         "Files that help",
         "Security tools in CI",
         "Container images",
+        "Accepted findings",
         "Branch protection and settings",
         "How each source is read",
         "What these words mean",
@@ -576,5 +590,213 @@ describe("SecurityPage", () => {
     crawling = false;
     await act(() => client.invalidateQueries({ queryKey: ["repos"] }));
     await waitFor(() => expect(calls).toBe(2));
+  });
+});
+
+describe("SecurityPage accepted findings", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const FINGERPRINT = "w2:0123456789abcdef";
+  const PLACE = ".github/workflows/ci.yml line 12";
+
+  /** A report whose script injection line holds one finding, or has it accepted once `accepted` is true. */
+  const reportWith = (accepted: boolean): SecurityReport => {
+    const base = securityReport();
+    if (base.supplyChain.status !== "ok") throw new Error("fixture");
+    const item = chainItem(".github/workflows/ci.yml", 12, "github.event.issue.title", {
+      risk: "scriptInjection",
+      fingerprint: FINGERPRINT,
+    });
+    const lines = base.supplyChain.lines.map((line) =>
+      line.check === "scriptInjection"
+        ? { ...line, met: accepted, items: accepted ? [] : [item], total: accepted ? 0 : 1, accepted: accepted ? 1 : 0 }
+        : line,
+    );
+    return securityReport({
+      supplyChain: { ...base.supplyChain, lines },
+      acceptances: accepted
+        ? [
+            acceptanceView({
+              acceptance: {
+                id: 3,
+                check: "scriptInjection",
+                path: ".github/workflows/ci.yml",
+                line: 12,
+                fingerprint: FINGERPRINT,
+                reason: "false_positive",
+                note: "The title is checked first.",
+              },
+            }),
+          ]
+        : [],
+      accepted: accepted
+        ? { graded: 1, advice: 0, bandBefore: "low", supplyChainBefore: "low" }
+        : { graded: 0, advice: 0, bandBefore: null, supplyChainBefore: null },
+    });
+  };
+
+  it("says in the header which band the grade was before acceptance, and says nothing when nothing is accepted", async () => {
+    const { unmount } = show(reportWith(true));
+    const line = (await screen.findByText(copy.security.page.gradeLine, { selector: ".grade-line span" })).closest("p")!;
+    expect(line).toHaveTextContent("Medium");
+    expect(line).toHaveTextContent("Low before 1 accepted finding");
+    unmount();
+    show(reportWith(false));
+    const plain = (await screen.findByText(copy.security.page.gradeLine, { selector: ".grade-line span" })).closest("p")!;
+    expect(plain).not.toHaveTextContent("accepted");
+  });
+
+  it("shows the accepted findings after the supply chain cards when alerts have not been read, if files were", async () => {
+    show({ ...noSecurity(), supplyChain: securityReport().supplyChain });
+    expect(await screen.findByRole("heading", { level: 2, name: copy.security.acceptance.section.title })).toBeInTheDocument();
+  });
+
+  it("shows acceptances that cannot be matched yet, even when no workflow files were read", async () => {
+    show({ ...noSecurity(), acceptances: [acceptanceView({ status: "unchecked", covers: 0, items: [] })] });
+    expect(await screen.findByRole("heading", { level: 2, name: copy.security.acceptance.section.title })).toBeInTheDocument();
+    expect(screen.getByText(copy.security.acceptance.section.status.unchecked)).toBeInTheDocument();
+  });
+
+  it("keeps the Accepted section, with its notice and focus, when the last acceptance is removed and no supply chain was read", async () => {
+    setAcceptNotice(1, null);
+    const user = userEvent.setup();
+    const text = copy.security.acceptance;
+    let removed = false;
+    const unread = noSecurity();
+    show(undefined, "/repos/1/security", {
+      "GET /api/repos/1/security": () => ({
+        body: removed ? unread : { ...unread, acceptances: [acceptanceView({ status: "unchecked", covers: 0, items: [] })] },
+      }),
+      "GET /api/security": { body: [] },
+      "DELETE /api/repos/1/security/acceptances/5": () => {
+        removed = true;
+        return { status: 204 };
+      },
+    });
+    const section = (await screen.findByRole("heading", { level: 2, name: text.section.title })).closest("section")!;
+    await user.click(within(section).getByRole("button", { name: /^Undo/ }));
+    await waitFor(() => expect(within(section).getByText(text.section.empty)).toBeInTheDocument());
+    const heading = screen.getByRole("heading", { level: 2, name: text.section.title });
+    expect(heading).toHaveFocus();
+    expect(within(section).getByRole("status")).toHaveTextContent(text.removed);
+  });
+
+  it("accepts a finding with a reason and a note, then shows it as accepted with the band before, and Undo restores it", async () => {
+    setAcceptNotice(1, null);
+    const user = userEvent.setup();
+    let accepted = false;
+    let body: unknown = null;
+    const text = copy.security.acceptance;
+    show(undefined, "/repos/1/security", {
+      "GET /api/repos/1/security": () => ({ body: reportWith(accepted) }),
+      "GET /api/security": { body: [] },
+      "POST /api/repos/1/security/acceptances": (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        accepted = true;
+        return { status: 201, body: { id: 3 } };
+      },
+      "DELETE /api/repos/1/security/acceptances/3": () => {
+        accepted = false;
+        return { status: 204 };
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: `${text.accept} ${PLACE}` }));
+    await user.click(screen.getByRole("radio", { name: text.reasons.false_positive.label }));
+    await user.type(screen.getByLabelText(text.noteLabel), "The title is checked first.");
+    await user.click(screen.getByRole("button", { name: text.submit }));
+
+    const heading = await screen.findByRole("heading", { level: 2, name: text.section.title });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(body).toEqual({
+      check: "scriptInjection",
+      path: ".github/workflows/ci.yml",
+      fingerprint: FINGERPRINT,
+      reason: "false_positive",
+      note: "The title is checked first.",
+    });
+    // The finding has left its list, and the section, the header and the grade say so.
+    const section = document.getElementById("security-accepted")!;
+    await waitFor(() => expect(within(section).getByText("The title is checked first.")).toBeInTheDocument());
+    expect(within(section).getByRole("status")).toHaveTextContent(text.accepted);
+    expect(screen.queryByRole("button", { name: `${text.accept} ${PLACE}` })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Low before 1 accepted finding").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Accepted").length).toBeGreaterThan(0);
+
+    await user.click(within(section).getByRole("button", { name: /^Undo/ }));
+    await waitFor(() => expect(within(section).getByText(text.section.empty)).toBeInTheDocument());
+    expect(within(section).getByRole("status")).toHaveTextContent(text.removed);
+    expect(screen.getByRole("button", { name: `${text.accept} ${PLACE}` })).toBeInTheDocument();
+    expect(screen.queryByText("Low before 1 accepted finding")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Accept control on a line that has both an open and an accepted finding", async () => {
+    const base = reportWith(false);
+    if (base.supplyChain.status !== "ok") throw new Error("fixture");
+    const open = chainItem(".github/workflows/ci.yml", 12, "github.event.issue.title", {
+      risk: "scriptInjection",
+      fingerprint: FINGERPRINT,
+    });
+    const lines = base.supplyChain.lines.map((line) =>
+      line.check === "scriptInjection" ? { ...line, met: false, items: [open], total: 1, accepted: 1 } : line,
+    );
+    const both = { ...reportWith(true), supplyChain: { ...base.supplyChain, lines } };
+    show(both);
+    expect(await screen.findByRole("button", { name: `${copy.security.acceptance.accept} ${PLACE}` })).toBeInTheDocument();
+    const section = document.getElementById("security-accepted")!;
+    expect(within(section).getByText("The title is checked first.")).toBeInTheDocument();
+  });
+
+  it("says why a 409 happened when the report moved on, and moves focus to the surviving heading", async () => {
+    setAcceptNotice(1, null);
+    const user = userEvent.setup();
+    const text = copy.security.acceptance;
+    // Another tab accepts the finding first, so the next read has no row to take the form or the alert with it.
+    let moved = false;
+    show(undefined, "/repos/1/security", {
+      "GET /api/repos/1/security": () => ({ body: reportWith(moved) }),
+      "GET /api/security": { body: [] },
+      "POST /api/repos/1/security/acceptances": () => {
+        moved = true;
+        return { status: 409, body: { error: "That finding is not in the latest read.", code: "acceptance_finding_changed" } };
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: `${text.accept} ${PLACE}` }));
+    await user.click(screen.getByRole("radio", { name: text.reasons.false_positive.label }));
+    await user.type(screen.getByLabelText(text.noteLabel), "Checked.");
+    await user.click(screen.getByRole("button", { name: text.submit }));
+
+    const heading = await screen.findByRole("heading", { level: 2, name: text.section.title });
+    await waitFor(() => expect(screen.queryByRole("button", { name: `${text.accept} ${PLACE}` })).not.toBeInTheDocument());
+    const section = document.getElementById("security-accepted")!;
+    expect(within(section).getByRole("status")).toHaveTextContent(text.conflicts.acceptance_finding_changed);
+    expect(screen.queryByRole("group", { name: text.reasonLegend })).not.toBeInTheDocument();
+    expect(heading).toHaveFocus();
+  });
+
+  it("reads the report again and announces it when an acceptance was already removed, under a 404", async () => {
+    setAcceptNotice(1, null);
+    const user = userEvent.setup();
+    const text = copy.security.acceptance;
+    // Removed in another tab, so the next read no longer lists it.
+    let removed = false;
+    show(reportWith(true), "/repos/1/security", {
+      "GET /api/repos/1/security": () => ({ body: reportWith(!removed) }),
+      "GET /api/security": { body: [] },
+      "DELETE /api/repos/1/security/acceptances/3": () => {
+        removed = true;
+        return { status: 404, body: { error: "There is no such acceptance." } };
+      },
+    });
+    const section = await waitFor(() => {
+      const found = document.getElementById("security-accepted");
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await user.click(await within(section).findByRole("button", { name: /^Undo/ }));
+    await waitFor(() => expect(within(section).getByText(text.section.empty)).toBeInTheDocument());
+    expect(within(section).getByRole("status")).toHaveTextContent(text.alreadyRemoved);
+    expect(screen.getByRole("heading", { level: 2, name: text.section.title })).toHaveFocus();
+    expect(screen.getByRole("button", { name: `${text.accept} ${PLACE}` })).toBeInTheDocument();
   });
 });

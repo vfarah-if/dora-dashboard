@@ -18,9 +18,12 @@ import {
   type SupplyChainCheckId,
 } from "../src/securityTypes.js";
 import type { PullRequest } from "../src/types.js";
+import { fingerprintOfFinding } from "../src/securityAcceptance.js";
+import { shortHash } from "../src/workflowReach.js";
 import { closedIssue, issue, pr } from "./issue.js";
 import {
   NOW,
+  acceptance,
   allOk,
   codeAlert,
   daysAgo,
@@ -39,6 +42,10 @@ import {
   secretAlert,
 } from "./security.js";
 
+/** The hashes every workflow finding carries, which a test sets apart only when it is about them. */
+const HASHES = { lineHash: "00112233aabbccdd", reachHash: "8899aabbccddeeff" };
+/** What an item of anything but a workflow finding says about routes and conditions. */
+const NO_WHY = { routes: [], routesDropped: 0, conditions: [], conditionsDropped: 0 };
 const EMPTY = { count: 0, median: null, p75: null, mean: null };
 const build = (overrides: Parameters<typeof input>[0] = {}, options: { from?: string; to?: string } = {}): SecurityReport =>
   securityReport(input(overrides), { now: NOW, ...options });
@@ -266,6 +273,8 @@ describe("the open alerts", () => {
       createdAt: daysAgo(8),
       ageHours: 192,
       pastFix: true,
+      fixByAt: daysAgo(1),
+      daysLeft: -1,
       likelyExploited: true,
       epss: 0.25,
       cvssScore: 9.8,
@@ -273,7 +282,7 @@ describe("the open alerts", () => {
       where: { kind: "package", ecosystem: "npm", name: "lodash", version: "4.17.0", manifestPath: "package-lock.json" },
     });
     expect(report.openAlerts.find((a) => a.key === "c1")).toMatchObject({
-      where: { kind: "code", path: "src/db.ts", line: 12, ruleId: "js/sql-injection" },
+      where: { kind: "code", path: "src/db.ts", line: 12, ruleId: "js/sql-injection", tool: "CodeQL" },
       epss: null,
       cvssScore: null,
       likelyExploited: false,
@@ -625,14 +634,27 @@ describe("the supply chain lines", () => {
 
   it("lists a finding with its file, line and evidence", () => {
     const found = line("scriptInjection", {
-      findings: [{ file: "a.yml", line: 8, risk: "scriptInjection", evidence: "github.event.issue.title" }],
+      findings: [{ file: "a.yml", line: 8, risk: "scriptInjection", evidence: "github.event.issue.title", ...HASHES }],
     });
     expect(found).toEqual({
       check: "scriptInjection",
       met: false,
       graded: true,
-      items: [{ path: "a.yml", line: 8, detail: "github.event.issue.title" }],
+      items: [
+        {
+          path: "a.yml",
+          line: 8,
+          detail: "github.event.issue.title",
+          url: null,
+          risk: "scriptInjection",
+          // The risk, file, line hash, evidence and reach hash, joined with NUL.
+          fingerprint: `w2:${shortHash("scriptInjection\x00a.yml\x0000112233aabbccdd\x00github.event.issue.title\x008899aabbccddeeff")}`,
+          ...NO_WHY,
+        },
+      ],
       total: 1,
+      accepted: 0,
+      absence: null,
     });
   });
 
@@ -649,8 +671,24 @@ describe("the supply chain lines", () => {
       actions: [use("zed/tool"), use("ACME/shared"), use("docker://alpine", "docker", null), use("actions/checkout", "github")],
     };
     expect(line("unpinnedActions", facts).items).toEqual([
-      { path: "ci.yml", line: 2, detail: "zed/tool@v1" },
-      { path: "ci.yml", line: 2, detail: "docker://alpine" },
+      {
+        path: "ci.yml",
+        line: 2,
+        detail: "zed/tool@v1",
+        url: null,
+        risk: null,
+        fingerprint: `a1:${shortHash("zed/tool@v1")}`,
+        ...NO_WHY,
+      },
+      {
+        path: "ci.yml",
+        line: 2,
+        detail: "docker://alpine",
+        url: null,
+        risk: null,
+        fingerprint: `a1:${shortHash("docker://alpine@")}`,
+        ...NO_WHY,
+      },
     ]);
     expect(line("ownActionsUnpinned", facts)).toMatchObject({
       met: false,
@@ -661,7 +699,7 @@ describe("the supply chain lines", () => {
   });
 
   it("counts a self-hosted runner only in a public repository whose pull requests run on it", () => {
-    const runner = { file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted" };
+    const runner = { file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted", ...HASHES };
     const findings = [{ ...runner, onPullRequest: true }];
     expect(line("selfHostedPublic", { findings }, { posture: held(posture({ visibility: "public" })) }).met).toBe(false);
     expect(line("selfHostedPublic", { findings }, { posture: held(posture({ visibility: "private" })) }).met).toBe(true);
@@ -670,7 +708,9 @@ describe("the supply chain lines", () => {
   });
 
   it("leaves the self-hosted line out when pull requests run on one and the visibility is not known", () => {
-    const findings = [{ file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted", onPullRequest: true }];
+    const findings = [
+      { file: "ci.yml", line: 3, risk: "selfHosted" as const, evidence: "self-hosted", ...HASHES, onPullRequest: true },
+    ];
     expect(lines({ findings }, { posture: null }).map((l) => l.check)).not.toContain("selfHostedPublic");
     expect(lines({ findings }, { posture: held(posture({ visibility: null })) }).map((l) => l.check)).not.toContain(
       "selfHostedPublic",
@@ -680,16 +720,21 @@ describe("the supply chain lines", () => {
   it("separates strong and weak key files and write-all from no permissions", () => {
     const facts = {
       keyFiles: [
-        { path: ".env", strength: "strong" as const },
-        { path: "a.pem", strength: "weak" as const },
+        { path: ".env", blob: null, strength: "strong" as const },
+        { path: "a.pem", blob: null, strength: "weak" as const },
       ],
       findings: [
-        { file: "a.yml", line: null, risk: "writeAll" as const, evidence: "write-all" },
-        { file: "b.yml", line: null, risk: "noPermissions" as const, evidence: "permissions" },
+        { file: "a.yml", line: null, risk: "writeAll" as const, evidence: "write-all", ...HASHES },
+        { file: "b.yml", line: null, risk: "noPermissions" as const, evidence: "permissions", ...HASHES },
       ],
     };
-    expect(line("keyFiles", facts).items).toEqual([{ path: ".env", line: null, detail: null }]);
-    expect(line("weakKeyFiles", facts).items).toEqual([{ path: "a.pem", line: null, detail: null }]);
+    // A blob id that was not read leaves no fingerprint, so the file cannot be accepted.
+    expect(line("keyFiles", facts).items).toEqual([
+      { path: ".env", line: null, detail: null, url: null, risk: null, fingerprint: null, ...NO_WHY },
+    ]);
+    expect(line("weakKeyFiles", facts).items).toEqual([
+      { path: "a.pem", line: null, detail: null, url: null, risk: null, fingerprint: null, ...NO_WHY },
+    ]);
     expect(line("workflowPermissions", facts).total).toBe(2);
   });
 
@@ -727,6 +772,14 @@ describe("the supply chain lines", () => {
     });
   });
 
+  it.each(["unsecureCommands", "secretsInherit", "persistCredentials"] as const)(
+    "lists a %s finding on its own line, with its risk",
+    (risk) => {
+      const findings = [{ file: "ci.yml", line: 6, risk, evidence: "x", ...HASHES }];
+      expect(line(risk, { findings })).toMatchObject({ met: false, total: 1, items: [{ path: "ci.yml", line: 6, risk }] });
+    },
+  );
+
   it("lists manifests without a lockfile", () => {
     expect(line("lockfiles", { missingLockfiles: ["web/package.json"] })).toMatchObject({
       met: false,
@@ -738,6 +791,7 @@ describe("the supply chain lines", () => {
   it("reports container images by file with the share of the images", () => {
     const docker = {
       path: "Dockerfile",
+      blob: null,
       images: 4,
       unpinnedImages: 3,
       latestImages: 2,
@@ -747,13 +801,38 @@ describe("the supply chain lines", () => {
     };
     const facts = {
       dockerfiles: [docker],
-      findings: [{ file: "ci.yml", line: 5, risk: "curlPipeShell" as const, evidence: "curl | sh" }],
+      findings: [{ file: "ci.yml", line: 5, risk: "curlPipeShell" as const, evidence: "curl | sh", ...HASHES }],
     };
-    expect(line("baseImagesPinned", facts).items).toEqual([{ path: "Dockerfile", line: null, detail: "3 of 4" }]);
-    expect(line("latestImages", facts).items).toEqual([{ path: "Dockerfile", line: null, detail: "2 of 4" }]);
+    expect(line("baseImagesPinned", facts).items).toEqual([
+      { path: "Dockerfile", line: null, detail: "3 of 4", url: null, risk: null, fingerprint: null, ...NO_WHY },
+    ]);
+    expect(line("latestImages", facts).items).toEqual([
+      { path: "Dockerfile", line: null, detail: "2 of 4", url: null, risk: null, fingerprint: null, ...NO_WHY },
+    ]);
     expect(line("nonRootImages", facts)).toMatchObject({ met: false, total: 1 });
     expect(line("remoteAdd", facts)).toMatchObject({ met: false, total: 1 });
     expect(line("curlPipeShell", facts).items.map((i) => i.path)).toEqual(["ci.yml", "Dockerfile"]);
+  });
+
+  it("tells a Dockerfile's curlPipeShell item from a workflow's by its risk, line and detail, which only the workflow's has", () => {
+    const docker = {
+      path: "Dockerfile",
+      blob: null,
+      images: 1,
+      unpinnedImages: 0,
+      latestImages: 0,
+      runsAsRoot: false,
+      addsRemote: false,
+      curlPipeShell: true,
+    };
+    const items = line("curlPipeShell", {
+      dockerfiles: [docker],
+      findings: [{ file: "ci.yml", line: 5, risk: "curlPipeShell", evidence: "curl | sh", ...HASHES }],
+    }).items;
+    expect(items.map((i) => [i.path, i.risk, i.line, i.detail])).toEqual([
+      ["ci.yml", "curlPipeShell", 5, "curl | sh"],
+      ["Dockerfile", null, null, null],
+    ]);
   });
 
   it("lists at most 50 items and still counts them all", () => {
@@ -1023,7 +1102,13 @@ describe("raising the grade", () => {
   });
 
   it("counts a workflow action once per workflow", () => {
-    const findings = ["a.yml", "b.yml"].map((file) => ({ file, line: 1, risk: "prHeadCheckout" as const, evidence: "x" }));
+    const findings = ["a.yml", "b.yml"].map((file) => ({
+      file,
+      line: 1,
+      risk: "prHeadCheckout" as const,
+      evidence: "x",
+      ...HASHES,
+    }));
     expect(build({ supplyChain: record({ findings }) }).raiseGrade).toEqual({ to: "elite", actions: 2 });
   });
 });
@@ -1298,5 +1383,264 @@ describe("privacy", () => {
     const prs = [pr({ number: 1, author: "mallory-login", mergedBy: "trent-login", reviews: [] })];
     const report = build({ pullRequests: prs, alerts: [secretAlert()] });
     expect(JSON.stringify(report)).not.toMatch(/mallory-login|trent-login/);
+  });
+});
+
+describe("links to the files of the clone", () => {
+  const sha = "a".repeat(40);
+  const calls: [string, string, number | null][] = [];
+  const fileUrl = (commitSha: string, path: string, line: number | null) => {
+    calls.push([commitSha, path, line]);
+    return `https://host.test/blob/${commitSha}/${path}${line === null ? "" : `#L${line}`}`;
+  };
+  const supplyChain = record({
+    findings: [{ file: "a.yml", line: 8, risk: "scriptInjection", evidence: "github.event.issue.title", ...HASHES }],
+    actions: [{ file: "b.yml", line: 3, action: "zed/tool", ref: "v1", pinned: false, kind: "other" }],
+    keyFiles: [{ path: ".env", blob: null, strength: "strong" }],
+  });
+  const items = (report: SecurityReport, check: SupplyChainCheckId) => {
+    if (report.supplyChain.status !== "ok") throw new Error("expected a record");
+    return report.supplyChain.lines.find((l) => l.check === check)!.items;
+  };
+
+  it("hands the record's commit, the path and the line to the function and carries the answer on the items", () => {
+    calls.length = 0;
+    const report = build({ supplyChain, fileUrl });
+    expect(items(report, "scriptInjection")).toEqual([
+      {
+        path: "a.yml",
+        line: 8,
+        detail: "github.event.issue.title",
+        url: `https://host.test/blob/${sha}/a.yml#L8`,
+        risk: "scriptInjection",
+        fingerprint: `w2:${shortHash("scriptInjection\x00a.yml\x0000112233aabbccdd\x00github.event.issue.title\x008899aabbccddeeff")}`,
+        ...NO_WHY,
+      },
+    ]);
+    expect(items(report, "unpinnedActions")[0]).toMatchObject({ url: `https://host.test/blob/${sha}/b.yml#L3`, risk: null });
+    expect(items(report, "keyFiles")[0]).toMatchObject({ url: `https://host.test/blob/${sha}/.env`, risk: null });
+    expect(calls).toContainEqual([sha, "a.yml", 8]);
+    expect(calls).toContainEqual([sha, ".env", null]);
+  });
+
+  it("carries the same links on the action refs", () => {
+    const report = build({ supplyChain, fileUrl });
+    const refs = (kind: string) => report.actions.find((a) => a.kind === kind)!.refs;
+    expect(refs("fix_script_injection")).toEqual([{ label: "a.yml:8", url: `https://host.test/blob/${sha}/a.yml#L8` }]);
+    expect(refs("pin_actions")[0]!.url).toBe(`https://host.test/blob/${sha}/b.yml#L3`);
+    expect(refs("remove_key_files")[0]!.url).toBe(`https://host.test/blob/${sha}/.env`);
+  });
+
+  it("leaves every url null when no function is given", () => {
+    const report = build({ supplyChain });
+    expect(items(report, "scriptInjection")[0]!.url).toBeNull();
+    expect(items(report, "unpinnedActions")[0]!.url).toBeNull();
+    expect(report.actions.flatMap((a) => a.refs).every((r) => r.url === null)).toBe(true);
+  });
+
+  it("keeps the host's own address on a code alert's ref", () => {
+    const report = build({ alerts: [codeAlert({ key: "q9" })], supplyChain, fileUrl });
+    expect(report.actions.find((a) => a.kind === "fix_code_alert")!.refs[0]!.url).toBe(
+      "https://github.com/acme/widgets/security/code-scanning/q9",
+    );
+  });
+});
+
+describe("when an open alert is due", () => {
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const alertAt = (ageMs: number) => {
+    const [ref] = build({
+      alerts: [depAlert({ key: "t", severity: "critical", createdAt: new Date(Date.parse(NOW) - ageMs).toISOString() })],
+    }).openAlerts;
+    return ref!;
+  };
+
+  it("adds the days its severity allows to the day it was raised", () => {
+    const ref = alertAt(2 * DAY);
+    // Critical is 7 days, so an alert raised 2 days ago is due in 5.
+    expect(ref.fixByAt).toBe(new Date(Date.parse(NOW) + 5 * DAY).toISOString());
+    expect(ref.daysLeft).toBe(5);
+    expect(ref.pastFix).toBe(false);
+  });
+
+  it("reads 3 for 3.5 days left", () => {
+    expect(alertAt(3.5 * DAY)).toMatchObject({ daysLeft: 3, pastFix: false });
+  });
+
+  it("reads 0 exactly at the limit, which is not past it", () => {
+    expect(alertAt(7 * DAY)).toMatchObject({ fixByAt: NOW.replace("Z", ".000Z"), daysLeft: 0, pastFix: false });
+  });
+
+  it("reads 0 for part of a day left", () => {
+    expect(alertAt(7 * DAY - HOUR)).toMatchObject({ daysLeft: 0, pastFix: false });
+  });
+
+  it("reads -1 one hour past the limit, and -1 for a whole day past", () => {
+    expect(alertAt(7 * DAY + HOUR)).toMatchObject({ daysLeft: -1, pastFix: true });
+    expect(alertAt(8 * DAY)).toMatchObject({ daysLeft: -1, pastFix: true });
+    expect(alertAt(8 * DAY + HOUR)).toMatchObject({ daysLeft: -2, pastFix: true });
+  });
+
+  it("holds an unknown severity to medium's 90 days", () => {
+    const [ref] = build({ alerts: [depAlert({ key: "u", severity: "unknown", createdAt: daysAgo(80) })] }).openAlerts;
+    expect(ref).toMatchObject({ daysLeft: 10, pastFix: false });
+  });
+
+  it("names the tool of a code alert", () => {
+    const [ref] = build({ alerts: [codeAlert({ code: { tool: "Semgrep" } })] }).openAlerts;
+    expect(ref!.where).toMatchObject({ kind: "code", tool: "Semgrep" });
+  });
+});
+
+describe("accepting findings", () => {
+  const checkout = {
+    file: ".github/workflows/db.yml",
+    line: 31,
+    risk: "prHeadCheckout" as const,
+    evidence: "head_sha",
+    ...HASHES,
+  };
+  const unpinned = { file: "ci.yml", line: 3, action: "zed/tool", ref: "v1", pinned: false, kind: "other" as const };
+  const supplyChain = record({ findings: [checkout], actions: [unpinned] });
+  const accepted = acceptance({
+    id: 4,
+    check: "prHeadCheckout",
+    path: checkout.file,
+    line: checkout.line,
+    fingerprint: fingerprintOfFinding(checkout),
+  });
+
+  it("reports nothing accepted, and no band before, when nothing is", () => {
+    const report = build({ supplyChain });
+    expect(report.acceptances).toEqual([]);
+    expect(report.accepted).toEqual({ graded: 0, advice: 0, bandBefore: null, supplyChainBefore: null });
+    expect(securitySummary(report, "idle").accepted).toEqual({ graded: 0, bandBefore: null });
+  });
+
+  it("takes an accepted finding out of the grade and says what the band was before", () => {
+    const report = build({ supplyChain, acceptances: [accepted] });
+    // Low before, because of the checkout; high after, because the unpinned action still caps the part.
+    expect(report.grade!.overall.band).toBe("high");
+    expect(report.accepted).toEqual({ graded: 1, advice: 0, bandBefore: "low", supplyChainBefore: "low" });
+    expect(report.checks.find((c) => c.check === "prHeadCheckout")).toMatchObject({ count: 0, accepted: 1 });
+    expect(report.actions.map((a) => a.kind)).not.toContain("fix_pr_head_checkout");
+    expect(securitySummary(report, "idle")).toMatchObject({ band: "high", accepted: { graded: 1, bandBefore: "low" } });
+  });
+
+  it("moves the line to the accepted count and leaves the open ones listed", () => {
+    const report = build({ supplyChain, acceptances: [accepted] });
+    if (report.supplyChain.status !== "ok") throw new Error("expected a record");
+    const line = report.supplyChain.lines.find((l) => l.check === "prHeadCheckout")!;
+    expect(line).toMatchObject({ met: true, items: [], total: 0, accepted: 1 });
+    expect(report.supplyChain.lines.find((l) => l.check === "unpinnedActions")).toMatchObject({ total: 1, accepted: 0 });
+  });
+
+  it("counts advice apart from graded findings, and carries each acceptance with its place", () => {
+    const own = { ...unpinned, action: "acme/shared" };
+    const held = [accepted, acceptance({ id: 5, check: "staticAnalysis" })];
+    const report = build({ supplyChain: record({ findings: [checkout], actions: [own], securityTools: [] }), acceptances: held });
+    expect(report.accepted).toMatchObject({ graded: 1, advice: 1 });
+    expect(report.acceptances.map((v) => [v.acceptance.id, v.status, v.graded, v.covers])).toEqual([
+      [4, "applies", true, 1],
+      [5, "applies", false, 1],
+    ]);
+    expect(report.acceptances[0]!.items).toEqual([
+      expect.objectContaining({
+        path: checkout.file,
+        line: 31,
+        risk: "prHeadCheckout",
+        fingerprint: fingerprintOfFinding(checkout),
+      }),
+    ]);
+  });
+
+  it("links the places of an acceptance at the commit that was read", () => {
+    const report = build({
+      supplyChain,
+      acceptances: [accepted],
+      fileUrl: (sha, path, line) => `https://host.test/${sha}/${path}#L${line}`,
+    });
+    expect(report.acceptances[0]!.items[0]!.url).toBe(`https://host.test/${"a".repeat(40)}/.github/workflows/db.yml#L31`);
+  });
+
+  it("marks an absence on its line while it is open and counts it once it is accepted", () => {
+    const missing = record({ securityTools: [] });
+    const line = (r: SecurityReport) =>
+      r.supplyChain.status === "ok" ? r.supplyChain.lines.find((l) => l.check === "dependencyReview")! : null;
+    expect(line(build({ supplyChain: missing }))).toMatchObject({ met: false, accepted: 0, absence: { fingerprint: "n1:" } });
+    expect(line(build({ supplyChain: missing, acceptances: [acceptance()] }))).toMatchObject({
+      met: false,
+      accepted: 1,
+      absence: null,
+    });
+    expect(line(build({ supplyChain: record() }))).toMatchObject({ met: true, accepted: 0, absence: null });
+  });
+
+  it("leaves every acceptance unchecked, and the report as it was, when there is no supply chain record", () => {
+    const report = build({ supplyChain: null, supplyChainMissing: "not_read", acceptances: [accepted] });
+    expect(report.acceptances).toEqual([{ acceptance: accepted, status: "unchecked", graded: true, covers: 0, items: [] }]);
+    expect(report.accepted).toEqual({ graded: 0, advice: 0, bandBefore: null, supplyChainBefore: null });
+  });
+
+  it("reopens an acceptance whose line changed, so the finding counts again", () => {
+    const edited = { ...checkout, lineHash: "ffffffffffffffff" };
+    const report = build({ supplyChain: record({ findings: [edited] }), acceptances: [accepted] });
+    expect(report.acceptances[0]!.status).toBe("reopened");
+    expect(report.grade!.overall).toMatchObject({ band: "low", check: "prHeadCheckout" });
+    expect(report.accepted).toMatchObject({ graded: 0, bandBefore: null });
+  });
+
+  it("reopens an acceptance when only the reach changed, such as a swapped caller or a deleted guard", () => {
+    const rerouted = { ...checkout, reachHash: "0000000000000000" };
+    const report = build({ supplyChain: record({ findings: [rerouted] }), acceptances: [accepted] });
+    expect(report.acceptances[0]!.status).toBe("reopened");
+    expect(report.checks.find((c) => c.check === "prHeadCheckout")).toMatchObject({ count: 1 });
+  });
+
+  it("shows a key file acceptance as unchecked, and counts the file again, when the blob ids could not be read", () => {
+    const held = acceptance({ id: 7, check: "keyFiles", path: ".env", fingerprint: `b:${"a".repeat(40)}` });
+    const report = build({
+      supplyChain: record({ keyFiles: [{ path: ".env", blob: null, strength: "strong" }], blobsRead: false }),
+      acceptances: [held],
+    });
+    expect(report.acceptances).toEqual([{ acceptance: held, status: "unchecked", graded: true, covers: 0, items: [] }]);
+    const check = report.checks.find((c) => c.check === "keyFiles")!;
+    expect(check).toMatchObject({ count: 1, met: false });
+    expect("accepted" in check).toBe(false);
+  });
+
+  it("agrees on an accepted absence across the line, the grade, the advice, the counts and the view", () => {
+    const missing = record({ securityTools: [] });
+    const absent = acceptance({ id: 6, check: "dependencyReview" });
+    const before = build({ supplyChain: missing });
+    const after = build({ supplyChain: missing, acceptances: [absent] });
+    if (after.supplyChain.status !== "ok") throw new Error("expected a record");
+    // The review is still missing, so the line is not met, but nothing open is left on it and its absence is accepted.
+    expect(after.supplyChain.lines.find((l) => l.check === "dependencyReview")).toEqual({
+      check: "dependencyReview",
+      met: false,
+      graded: false,
+      items: [],
+      total: 0,
+      accepted: 1,
+      absence: null,
+    });
+    // Advice never moves the grade, so the grade and its checks are as they were.
+    expect(after.grade).toEqual(before.grade);
+    expect(after.checks).toEqual(before.checks);
+    expect(before.actions.map((a) => a.kind)).toContain("add_dependency_review");
+    expect(after.actions.map((a) => a.kind)).not.toContain("add_dependency_review");
+    // Something matched, so the bands before are worked out, and are the same elite.
+    expect(after.accepted).toEqual({ graded: 0, advice: 1, bandBefore: "elite", supplyChainBefore: "elite" });
+    expect(after.acceptances).toEqual([{ acceptance: absent, status: "applies", graded: false, covers: 1, items: [] }]);
+  });
+
+  it("says how many stored acceptances could not be read, and none by default", () => {
+    expect(build({ supplyChain }).acceptancesUnreadable).toBe(0);
+    const report = build({ supplyChain, acceptances: [accepted], unreadableAcceptances: 2 });
+    expect(report.acceptancesUnreadable).toBe(2);
+    expect(report.acceptances).toHaveLength(1);
+    expect(build({ supplyChain: null, supplyChainMissing: "not_read", unreadableAcceptances: 3 }).acceptancesUnreadable).toBe(3);
   });
 });

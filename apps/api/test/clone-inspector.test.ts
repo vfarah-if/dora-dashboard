@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { UpstreamError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Logger } from "../src/interfaces/logger.js";
-import type { CloneInspector, CloneView } from "../src/services/clone-inspector.js";
+import type { CloneInspector, CloneView, InspectOutcome } from "../src/services/clone-inspector.js";
 import {
   ANALYSER_MISSING,
   CLONE_FAILURE,
   CodeHealthService,
   INSPECTION_FAILURE,
   LISTING_FAILURE,
+  MAX_INSPECTION_ATTEMPTS,
 } from "../src/services/code-health-service.js";
 import { CrawlService } from "../src/services/crawl-service.js";
 import { FakeCodeAnalyser, FakeProvider, FakeSourceCheckout, FakeWorkspaceReader, pr, run } from "./fakes.js";
@@ -36,10 +37,14 @@ class FakeInspector implements CloneInspector {
     this.failures.push({ repoId, message });
   }
 
-  async inspect(view: CloneView): Promise<void> {
+  /** What `inspect` answers, as when it saved facts but could not read everything. */
+  outcome: InspectOutcome = "complete";
+
+  async inspect(view: CloneView): Promise<InspectOutcome> {
     this.views.push(view);
     if (this.readFile) this.readResults.push(await view.read(this.readFile.path, this.readFile.maxBytes));
     if (this.failWith) throw this.failWith;
+    return this.outcome;
   }
 }
 
@@ -120,7 +125,10 @@ describe("the clone inspector during code health", () => {
 
   it("inspects before it analyses", async () => {
     const order: string[] = [];
-    inspector.inspect = async () => void order.push("inspect");
+    inspector.inspect = async () => {
+      order.push("inspect");
+      return "complete";
+    };
     analyser.analyse = async () => {
       order.push("analyse");
       return { functions: [], partlyMeasured: [], unmeasuredFiles: 0 };
@@ -348,6 +356,24 @@ describe("the clone inspector during code health", () => {
 
       expect(inspector.failures).toEqual([{ repoId, message: INSPECTION_FAILURE }]);
       expect(JSON.stringify(inspector.failures)).not.toMatch(/ghp_secret|clone-x|exploded/);
+    });
+
+    it("records no failure for a partial inspection, and logs nothing as an error", async () => {
+      inspector.outcome = "partial";
+
+      await service.analyse("t", repoId);
+
+      expect(inspector.failures).toEqual([]);
+      expect(logged.errors).toEqual([]);
+    });
+
+    it("counts a partial inspection against the limit of attempts for the head", async () => {
+      inspector.outcome = "partial";
+      inspector.stale = true;
+
+      for (let crawl = 0; crawl < 4; crawl++) await service.analyse("t", repoId);
+
+      expect(inspector.views).toHaveLength(MAX_INSPECTION_ATTEMPTS);
     });
 
     it("records a failure to clone an unchanged head for the inspection alone", async () => {

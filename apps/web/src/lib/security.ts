@@ -20,11 +20,14 @@ import type {
   SourceStatus,
   SecurityThresholds,
   SupplyChainCheckId,
+  SupplyChainItem,
   SupplyChainLine,
 } from "@dora-dashboard/core";
+import { isDockerfile } from "@dora-dashboard/core";
 import { copy, type ActionFacts } from "../copy";
 import { formatDate, formatDateTime, formatPercent, formatWeek } from "./format";
 import { shortSha } from "./codeHealth";
+import { acceptanceNote, fullyAccepted } from "./securityAcceptance";
 import type { PartWeek } from "./weekly";
 
 /*
@@ -178,6 +181,8 @@ export const checkSentence: Record<SecurityCheckName, (ctx: CheckContext) => str
 
 export interface CheckLine {
   check: SecurityCheckName;
+  /** The files or places behind the check, up to ten, when core sent them. */
+  files: string[];
   part: SecurityPartName;
   good: boolean;
   /** The highest band the check alone allows. Lower is worse. */
@@ -190,6 +195,8 @@ export interface CheckLine {
    * overall band, which holds back its own part only. Otherwise null.
    */
   sets: "grade" | "part" | null;
+  /** Findings of this check that a person accepted, which are not in its count. */
+  accepted: number;
   text: string;
 }
 
@@ -203,6 +210,8 @@ export function checkLines(report: SecurityReport): CheckLine[] {
     .map((c) => {
       const good = c.band === "elite" || c.met === true;
       const setsGrade = c.limits && !good && overall !== undefined && c.band === overall.band;
+      const fix = report.thresholds.fixWithinDays;
+      const accepted = c.accepted ?? 0;
       return {
         check: c.check,
         part: c.part,
@@ -210,9 +219,24 @@ export function checkLines(report: SecurityReport): CheckLine[] {
         band: c.band,
         limits: c.limits,
         sets: setsGrade ? "grade" : c.limits ? "part" : null,
-        text: checkSentence[c.check]({ check: c, good, fix: report.thresholds.fixWithinDays }),
+        accepted,
+        files: c.detail ?? [],
+        text: checkText(c, good, accepted, fix),
       };
     });
+}
+
+/**
+ * The sentence for a check. Accepted findings are not in its count, so the sentence that says none are found would
+ * otherwise deny them: the accepted ones are described in the words of the problem and said to be accepted.
+ */
+function checkText(check: SecurityCheck, good: boolean, accepted: number, fix: SecurityThresholds["fixWithinDays"]): string {
+  const a = copy.security.acceptance;
+  if (accepted === 0) return checkSentence[check.check]({ check, good, fix });
+  const ofAccepted = checkSentence[check.check]({ check: { ...check, count: accepted }, good: false, fix });
+  return good
+    ? a.checkAccepted(ofAccepted, accepted)
+    : `${checkSentence[check.check]({ check, good, fix })} ${a.alsoAccepted(accepted)}`;
 }
 
 export interface GoodAndImprove {
@@ -260,7 +284,13 @@ export interface PartRow {
   /** Null when the part could not be measured. */
   band: Band | null;
   detail: string;
+  /** What acceptance changed for this part, or null when nothing did or the part is not one that acceptance reaches. */
+  note: string | null;
 }
+
+/** What acceptance changed for the overall grade, in words, or null. */
+export const gradeNote = (report: Pick<SecurityReport, "grade" | "accepted">): string | null =>
+  acceptanceNote(report.grade?.overall.band ?? null, report.accepted.bandBefore, report.accepted.graded);
 
 export function partRows(report: SecurityReport): PartRow[] {
   return PARTS.map((part) => {
@@ -277,6 +307,10 @@ export function partRows(report: SecurityReport): PartRow[] {
           : limit
             ? copy.security.grade.limitedBy(lowerFirst(limit))
             : copy.security.grade.nothingLimits,
+      note:
+        part === "supplyChain"
+          ? acceptanceNote(graded?.band ?? null, report.accepted.supplyChainBefore, report.accepted.graded)
+          : null,
     };
   });
 }
@@ -422,6 +456,8 @@ export interface StartHere {
   top: TopActions;
   /** Pieces of advice that never move the grade. */
   adviceCount: number;
+  /** Findings that a person accepted, which neither the grade nor the advice counts. */
+  acceptedCount: number;
   nothingToFix: boolean;
 }
 
@@ -432,6 +468,7 @@ export function startHere(report: SecurityReport): StartHere {
     raise: band && report.raiseGrade ? { count: report.raiseGrade.actions, from: band, to: report.raiseGrade.to } : null,
     top: topActions(report.actions),
     adviceCount: report.actions.filter((action) => action.band === null).length,
+    acceptedCount: report.accepted.graded + report.accepted.advice,
     nothingToFix: report.actions.length === 0,
   };
 }
@@ -870,6 +907,55 @@ const CHECK_IDS = keysOf<SupplyChainCheckId>({
   remoteAdd: true,
 });
 
+/** How each supply chain check was found, so a guess from a file name never reads like a reading of a workflow. */
+export const foundBy: Record<SupplyChainCheckId, string> = {
+  prHeadCheckout: copy.security.chain.foundBy.workflow,
+  scriptInjection: copy.security.chain.foundBy.workflow,
+  selfHostedPublic: copy.security.chain.foundBy.workflow,
+  workflowPermissions: copy.security.chain.foundBy.workflowText,
+  unsecureCommands: copy.security.chain.foundBy.workflowText,
+  curlPipeShell: copy.security.chain.foundBy.workflowText,
+  secretsInherit: copy.security.chain.foundBy.workflowText,
+  persistCredentials: copy.security.chain.foundBy.workflow,
+  unpinnedActions: copy.security.chain.foundBy.uses,
+  ownActionsUnpinned: copy.security.chain.foundBy.uses,
+  keyFiles: copy.security.chain.foundBy.fileName,
+  weakKeyFiles: copy.security.chain.foundBy.fileName,
+  baseImagesPinned: copy.security.chain.foundBy.dockerfile,
+  latestImages: copy.security.chain.foundBy.dockerfile,
+  nonRootImages: copy.security.chain.foundBy.dockerfile,
+  remoteAdd: copy.security.chain.foundBy.dockerfile,
+  updateConfig: copy.security.chain.foundBy.presence,
+  lockfiles: copy.security.chain.foundBy.presence,
+  securityPolicy: copy.security.chain.foundBy.presence,
+  dependencyReview: copy.security.chain.foundBy.presence,
+  secretScanInCi: copy.security.chain.foundBy.presence,
+  staticAnalysis: copy.security.chain.foundBy.presence,
+};
+
+/**
+ * How one item was found. Most checks have one way, but curl piped to a shell is read from a workflow or from a
+ * Dockerfile, so the path says which, by the same rule core uses to decide what a Dockerfile is.
+ */
+export function foundByItem(check: SupplyChainCheckId, item: Pick<SupplyChainItem, "path">): string {
+  if (check === "curlPipeShell" && isDockerfile(item.path)) {
+    return copy.security.chain.foundBy.dockerfile;
+  }
+  return foundBy[check];
+}
+
+/** Whether a grade check has a row of the same name in the supply chain card to link to. */
+export function chainAnchor(check: string): string | null {
+  return (CHECK_IDS as readonly string[]).includes(check) ? `chain-${check}` : null;
+}
+
+/** The text for when an alert's fix-by date falls: days left, today or days past. daysLeft is -1 or lower exactly when past. */
+export function fixByText(daysLeft: number): string {
+  const a = copy.security.alerts;
+  if (daysLeft < 0) return a.daysPast(-daysLeft);
+  return daysLeft === 0 ? a.dueToday : a.daysLeft(daysLeft);
+}
+
 /** The name of each supply chain check. Indexing the copy by every id makes a missing one a compile error. */
 export const supplyChainTitle: Record<SupplyChainCheckId, string> = Object.fromEntries(
   CHECK_IDS.map((id) => [id, copy.security.supplyChain[id].title]),
@@ -878,11 +964,21 @@ export const supplyChainTitle: Record<SupplyChainCheckId, string> = Object.fromE
 /** Every check id core can send, for the tests that prove each has a place. */
 export const SUPPLY_CHAIN_CHECK_IDS = CHECK_IDS;
 
-/** The sentence for one line, saying what was found or that it is in order. */
+/**
+ * The sentence for one line, saying what was found, that it is in order, or that what was found is accepted. A line with
+ * both open and accepted findings says how many are accepted, since they are not in the count before it.
+ */
 export function supplyChainSentence(line: SupplyChainLine): string {
   const text = copy.security.supplyChain[line.check];
-  return line.met ? text.ok : text.found(line.total);
+  const a = copy.security.acceptance;
+  if (fullyAccepted(line)) return a.lineAccepted(text.found(line.accepted), line.accepted);
+  if (line.met) return text.ok;
+  return line.accepted > 0 ? `${text.found(line.total)} ${a.alsoAccepted(line.accepted)}` : text.found(line.total);
 }
+
+/** The state a line shows as an icon and a word: accepted when nothing open is left but something was accepted. */
+export const lineState = (line: SupplyChainLine): "met" | "unmet" | "accepted" =>
+  fullyAccepted(line) ? "accepted" : line.met ? "met" : "unmet";
 
 /** The lines of one section, in the section's order, leaving out any that the report did not carry. */
 export function groupLines(report: SecurityReport, group: SupplyChainGroup): SupplyChainLine[] {

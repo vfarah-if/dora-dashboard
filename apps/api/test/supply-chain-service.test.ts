@@ -1,10 +1,19 @@
 import { SUPPLY_CHAIN_VERSION } from "@dora-dashboard/core";
 import { beforeEach, describe, expect, it } from "vitest";
+import { UpstreamError } from "../src/core/errors.js";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { CloneView } from "../src/services/clone-inspector.js";
-import { CodeHealthService } from "../src/services/code-health-service.js";
+import { CodeHealthService, MAX_INSPECTION_ATTEMPTS } from "../src/services/code-health-service.js";
+import { SecurityReportService } from "../src/services/security-report-service.js";
 import { SupplyChainService } from "../src/services/supply-chain-service.js";
-import { FakeCodeAnalyser, FakeSourceCheckout, FakeWorkspaceReader, supplyChainFacts, supplyChainRecord } from "./fakes.js";
+import {
+  FakeCodeAnalyser,
+  FakeSourceCheckout,
+  FakeWorkspaceReader,
+  rawDb,
+  supplyChainFacts,
+  supplyChainRecord,
+} from "./fakes.js";
 
 const NOW = new Date("2026-09-29T10:00:00Z");
 const MIB = 1024 * 1024;
@@ -20,8 +29,9 @@ const LOCKFILE = JSON.stringify({
 });
 
 /** A clone's view over a map of files, recording every read with the cap it was asked for. */
-function view(files: Record<string, string>, extra: Partial<CloneView> = {}) {
+function view(files: Record<string, string>, extra: Partial<CloneView> = {}, blobs: Record<string, string> = {}) {
   const reads: { path: string; maxBytes: number }[] = [];
+  const blobAsks: string[][] = [];
   const clone: CloneView = {
     repoId: 1,
     commitSha: "abc1234",
@@ -32,9 +42,13 @@ function view(files: Record<string, string>, extra: Partial<CloneView> = {}) {
       const content = files[path];
       return content === undefined || Buffer.byteLength(content) > maxBytes ? null : content;
     },
+    async blobIds(paths) {
+      blobAsks.push([...paths]);
+      return new Map(paths.flatMap((path) => (path in blobs ? [[path, blobs[path]!] as const] : [])));
+    },
     ...extra,
   };
-  return { clone, reads };
+  return { clone, reads, blobAsks };
 }
 
 describe("the supply chain inspector", () => {
@@ -65,8 +79,21 @@ describe("the supply chain inspector", () => {
 
     it("is stale, and does not throw, when the stored facts cannot be read", () => {
       store.saveSupplyChain(repoId, supplyChainRecord({ commitSha: "abc1234" }), []);
-      (store as unknown as { db: { exec(sql: string): void } }).db.exec("UPDATE supply_chain SET facts = 'nope'");
+      rawDb(store).exec("UPDATE supply_chain SET facts = 'nope'");
 
+      expect(service.isStale(repoId, "abc1234")).toBe(true);
+    });
+
+    it("is stale when the facts are of this version but a key file has no blob, as the interim build stored them", () => {
+      store.saveSupplyChain(repoId, supplyChainRecord({ commitSha: "abc1234" }), []);
+      expect(service.isStale(repoId, "abc1234")).toBe(false);
+      const row = rawDb(store).prepare("SELECT facts FROM supply_chain").get() as unknown as { facts: string };
+      const stored = JSON.parse(row.facts);
+      stored.keyFiles = [{ path: ".env", strength: "strong" }];
+      rawDb(store).prepare("UPDATE supply_chain SET facts = ?").run(JSON.stringify(stored));
+
+      // The store refuses the record as unreadable and answers none, so the next crawl reads the clone again.
+      expect(store.supplyChain(repoId)).toBeNull();
       expect(service.isStale(repoId, "abc1234")).toBe(true);
     });
 
@@ -313,6 +340,137 @@ describe("the supply chain inspector", () => {
       expect(service.isStale(repoId, "abc1234")).toBe(true);
     });
 
+    describe("blob ids", () => {
+      const BLOB = "0123456789abcdef0123456789abcdef01234567";
+      const files = {
+        ".env.production": "TOKEN=abc",
+        "tls/ca.pem": "-----BEGIN-----",
+        Dockerfile: "FROM node:20\nUSER app\n",
+        "src/index.ts": "export {};",
+        ".github/workflows/ci.yml": WORKFLOW,
+      };
+
+      it("asks only for the key files and the Dockerfiles, in one request, and attaches what the tree holds", async () => {
+        const { clone, blobAsks } = view(files, {}, { ".env.production": BLOB, Dockerfile: BLOB });
+
+        await service.inspect({ ...clone, repoId });
+
+        expect(blobAsks).toEqual([[".env.production", "tls/ca.pem", "Dockerfile"]]);
+        const facts = store.supplyChain(repoId)!.facts;
+        expect(facts.keyFiles).toEqual([
+          { path: ".env.production", blob: BLOB, strength: "strong" },
+          { path: "tls/ca.pem", blob: null, strength: "weak" },
+        ]);
+        expect(facts.dockerfiles.map((d) => [d.path, d.blob])).toEqual([["Dockerfile", BLOB]]);
+      });
+
+      it("still never opens a key file to learn its blob id", async () => {
+        const { clone, reads } = view(files, {}, { ".env.production": BLOB });
+
+        await service.inspect({ ...clone, repoId });
+
+        expect(reads.map((r) => r.path)).not.toContain(".env.production");
+        expect(reads.map((r) => r.path)).not.toContain("tls/ca.pem");
+      });
+
+      it("asks nothing when there is no key file or Dockerfile", async () => {
+        const { clone, blobAsks } = view({ ".github/workflows/ci.yml": WORKFLOW });
+        await service.inspect({ ...clone, repoId });
+        expect(blobAsks).toEqual([]);
+      });
+
+      it("saves the facts with null blobs, and logs why, when the tree cannot be read", async () => {
+        const warned: Record<string, unknown>[] = [];
+        const logged = new SupplyChainService(store, () => NOW, {
+          info: () => undefined,
+          error: () => undefined,
+          warn: (context: object) => void warned.push(context as never),
+        });
+        const { clone } = view(files, {
+          blobIds: async () => {
+            throw new UpstreamError("git failed: not a tree object", 502);
+          },
+        });
+
+        const outcome = await logged.inspect({ ...clone, repoId });
+
+        expect(outcome).toBe("partial");
+        const facts = store.supplyChain(repoId)!.facts;
+        expect(facts.keyFiles.map((k) => k.blob)).toEqual([null, null]);
+        expect(facts.dockerfiles.map((d) => d.blob)).toEqual([null]);
+        expect(facts.workflowsRead).toBe(1);
+        expect(warned).toHaveLength(1);
+        // Three paths were asked about: two key files and a Dockerfile.
+        expect(warned[0]).toMatchObject({ repoId, paths: 3 });
+        expect(facts.blobsRead).toBe(false);
+      });
+
+      it("answers complete when the lookup worked, and when nothing needed one", async () => {
+        expect(await service.inspect({ ...view(files, {}, { Dockerfile: BLOB }).clone, repoId })).toBe("complete");
+        expect(await service.inspect({ ...view({}).clone, repoId })).toBe("complete");
+      });
+
+      it("raises an error that is not an AppError, and saves no facts, so code health logs it as unexpected", async () => {
+        const { clone } = view(files, {
+          blobIds: async () => {
+            throw new TypeError("blobs is not iterable");
+          },
+        });
+
+        await expect(service.inspect({ ...clone, repoId })).rejects.toThrow("blobs is not iterable");
+
+        expect(store.supplyChain(repoId)).toBeNull();
+      });
+
+      it("is stale at the same head after a failed lookup, so the next crawl reads the blob ids again", async () => {
+        const failing = view(files, {
+          blobIds: async () => {
+            throw new UpstreamError("git failed: not a tree object", 502);
+          },
+        });
+        await service.inspect({ ...failing.clone, repoId });
+        expect(service.isStale(repoId, "abc1234")).toBe(true);
+
+        const working = view(files, {}, { ".env.production": BLOB, Dockerfile: BLOB });
+        await service.inspect({ ...working.clone, repoId });
+
+        expect(store.supplyChain(repoId)!.facts.blobsRead).toBe(true);
+        expect(service.isStale(repoId, "abc1234")).toBe(false);
+      });
+
+      it("is not stale for a key file with no blob of its own, such as a symlink, once the lookup worked", async () => {
+        const { clone } = view(files, {}, { ".env.production": BLOB, Dockerfile: BLOB });
+        await service.inspect({ ...clone, repoId });
+
+        const facts = store.supplyChain(repoId)!.facts;
+        expect(facts.keyFiles.map((k) => k.blob)).toEqual([BLOB, null]);
+        expect(facts.blobsRead).toBe(true);
+        expect(service.isStale(repoId, "abc1234")).toBe(false);
+      });
+
+      it("counts the lookup as read when nothing needed one", async () => {
+        const { clone } = view({ ".github/workflows/ci.yml": WORKFLOW });
+        await service.inspect({ ...clone, repoId });
+        expect(store.supplyChain(repoId)!.facts.blobsRead).toBe(true);
+        expect(service.isStale(repoId, "abc1234")).toBe(false);
+      });
+
+      it("reads the blob ids from the one clone the analysis makes", async () => {
+        const checkout = new FakeSourceCheckout();
+        checkout.blobs.set(".env.production", BLOB);
+        const reader = new FakeWorkspaceReader();
+        reader.files.set(".github/workflows/ci.yml", WORKFLOW);
+        reader.files.set(".env.production", "TOKEN=abc");
+        const code = new CodeHealthService(store, checkout, new FakeCodeAnalyser(), () => NOW, undefined, reader, service);
+
+        await code.analyse("t", repoId);
+
+        expect(checkout.blobRequests).toEqual([[".env.production"]]);
+        expect(store.supplyChain(repoId)!.facts.keyFiles).toEqual([{ path: ".env.production", blob: BLOB, strength: "strong" }]);
+        expect(reader.reads).not.toContain(".env.production");
+      });
+    });
+
     it("works with the default clock", async () => {
       const { clone } = view({});
       await new SupplyChainService(store).inspect({ ...clone, repoId });
@@ -361,6 +519,41 @@ describe("the supply chain inspector", () => {
       expect(analyser.analysed).toHaveLength(1);
       expect(checkout.disposed).toHaveLength(2);
       expect(store.supplyChain(repoId)!.facts).toMatchObject({ version: SUPPLY_CHAIN_VERSION, workflowsRead: 1 });
+    });
+
+    it("stops cloning at the limit of attempts when the blob lookup keeps failing, and stores no failure", async () => {
+      reader.files.set(".env.production", "TOKEN=abc");
+      checkout.blobFailWith = new UpstreamError("git failed: not a tree object", 502);
+
+      for (let crawl = 0; crawl < 4; crawl++) await code.analyse("t", repoId);
+
+      expect(checkout.requests.length).toBeLessThanOrEqual(MAX_INSPECTION_ATTEMPTS);
+      expect(checkout.requests).toHaveLength(MAX_INSPECTION_ATTEMPTS);
+      expect(store.supplyChain(repoId)!.facts).toMatchObject({ blobsRead: false, workflowsRead: 1 });
+      expect(store.supplyChainFailure(repoId)).toBeNull();
+    });
+
+    it("leaves the overview's failed flag and the report's failure unset after a partial read", async () => {
+      reader.files.set(".env.production", "TOKEN=abc");
+      checkout.blobFailWith = new UpstreamError("git failed: not a tree object", 502);
+      store.setSourceState(repoId, "dependabot", {
+        status: "ok",
+        readAt: NOW.toISOString(),
+        attemptedAt: NOW.toISOString(),
+        truncated: false,
+        skipped: 0,
+      });
+
+      for (let crawl = 0; crawl < 3; crawl++) await code.analyse("t", repoId);
+
+      const reports = new SecurityReportService(
+        store,
+        store,
+        { codeAnalysis: true, scorecardLookup: false, settingsUrl: () => "", fileUrl: () => null },
+        () => NOW,
+      );
+      expect(reports.report(repoId).supplyChainFailure).toBeNull();
+      expect(reports.summaries([repoId])[0]!.failed).toBe(false);
     });
   });
 });

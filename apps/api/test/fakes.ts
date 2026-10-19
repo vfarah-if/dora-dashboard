@@ -14,6 +14,7 @@ import type {
   SupplyChainFacts,
   SupplyChainRecord,
   Vulnerability,
+  FindingAcceptance,
   CoverageArtefact,
   CoverageReport,
   CoverageRead,
@@ -29,6 +30,8 @@ import type {
   TrackerStatus,
   WorkItem,
 } from "@dora-dashboard/core";
+import type { DatabaseSync } from "node:sqlite";
+import type { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import type { Config } from "../src/core/config.js";
 import { NotFoundError } from "../src/core/errors.js";
 import type { ArtefactContents, ArtefactSearch, CoverageSource } from "../src/interfaces/coverage-source.js";
@@ -581,6 +584,12 @@ export class FakeSourceCheckout implements SourceCheckout {
   failWith: Error | null = null;
   headFailWith: Error | null = null;
   disposeFailWith: Error | null = null;
+  /** Set to make `blobIds` reject, as when the tree cannot be read. */
+  blobFailWith: Error | null = null;
+  /** The blob id the tree holds for each path; a path left out is not a regular file at the commit. */
+  readonly blobs = new Map<string, string>();
+  /** Every list of paths `blobIds` was asked about. */
+  readonly blobRequests: string[][] = [];
   head = "abc1234";
   headChecks = 0;
   readonly requests: { token: string; owner: string; name: string; branch: string }[] = [];
@@ -603,6 +612,11 @@ export class FakeSourceCheckout implements SourceCheckout {
       dispose: async () => {
         if (this.disposeFailWith) throw this.disposeFailWith;
         this.disposed.push(dir);
+      },
+      blobIds: async (paths) => {
+        this.blobRequests.push([...paths]);
+        if (this.blobFailWith) throw this.blobFailWith;
+        return new Map(paths.flatMap((path) => (this.blobs.has(path) ? [[path, this.blobs.get(path)!] as const] : [])));
       },
     };
   }
@@ -666,6 +680,9 @@ export class FakeWorkspaceReader implements WorkspaceReader {
     return content === undefined || Buffer.byteLength(content) > maxBytes ? null : content;
   }
 }
+
+/** The store's database, for a test that must damage a row or add a trigger the public surface cannot. */
+export const rawDb = (store: SqliteRepoStore) => (store as unknown as { db: DatabaseSync }).db;
 
 // --- Security ---------------------------------------------------------------------------------------------------
 
@@ -835,6 +852,7 @@ export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): Sup
   return {
     version: SUPPLY_CHAIN_VERSION,
     listingComplete: true,
+    blobsRead: true,
     workflowsRead: 0,
     workflowsUnread: [],
     dockerfilesUnread: [],
@@ -858,6 +876,21 @@ export function supplyChainFacts(overrides: Partial<SupplyChainFacts> = {}): Sup
 
 export function supplyChainRecord(overrides: Partial<SupplyChainRecord> = {}): SupplyChainRecord {
   return { commitSha: "abc1234", readAt: "2026-09-29T10:00:00.000Z", facts: supplyChainFacts(), ...overrides };
+}
+
+/** An accepted finding, by default the absence of a dependency review, which needs no file to exist. */
+export function acceptance(overrides: Partial<FindingAcceptance> = {}): FindingAcceptance {
+  return {
+    id: 1,
+    check: "dependencyReview",
+    path: null,
+    line: null,
+    fingerprint: "n1:",
+    reason: "risk_accepted",
+    note: "Reviewed with the team.",
+    acceptedAt: "2026-09-29T10:00:00.000Z",
+    ...overrides,
+  };
 }
 
 export function lockedPackage(overrides: Partial<LockedPackage> = {}): LockedPackage {
@@ -953,6 +986,10 @@ export class FakeSecurityAlertSource implements SecurityAlertSource {
 
   settingsUrl(owner: string, name: string): string {
     return `https://example.test/${owner}/${name}/settings/security_analysis`;
+  }
+
+  fileUrl(owner: string, name: string, commitSha: string, path: string, line: number | null): string | null {
+    return `https://example.test/${owner}/${name}/blob/${commitSha}/${path}${line === null ? "" : `#L${line}`}`;
   }
 }
 

@@ -1,6 +1,7 @@
 import type { SecurityReport } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { goodAndImprove, partRows, unmeasuredSentences, verdictSentence } from "../lib/security";
+import { chainAnchor, goodAndImprove, gradeNote, partRows, unmeasuredSentences, verdictSentence } from "../lib/security";
+import { PathText } from "./PathText";
 import { GradeTile } from "./GradeTile";
 import { SecurityBlock } from "./SecurityParts";
 import { StatTile } from "./StatTile";
@@ -40,6 +41,20 @@ function Lists({ report }: { report: SecurityReport }) {
                 {line.sets && (
                   <span className="check-limit">{line.sets === "grade" ? c.tags.setsGrade : c.tags.setsPartGrade}</span>
                 )}
+                {line.files.length > 0 && (
+                  <span className="check-files mono">
+                    {line.files.map((file) => (
+                      <span key={file} className="block">
+                        <PathText text={file} />
+                      </span>
+                    ))}
+                  </span>
+                )}
+                {chainAnchor(line.check) && (
+                  <a className="check-see-places screen-only" href={`#${chainAnchor(line.check)}`}>
+                    {c.chain.seeEachPlace}
+                  </a>
+                )}
               </li>
             ))}
           </ol>
@@ -63,12 +78,25 @@ export function SecurityGrade({ report }: { report: SecurityReport }) {
   }
   return (
     <SecurityBlock id="security-grade" title={c.grade.title} lede={c.grade.definition}>
-      <GradeTile large title={c.grade.title} band={grade.overall.band} detail={verdictSentence(report) ?? ""} />
+      <GradeTile
+        large
+        title={c.grade.title}
+        band={grade.overall.band}
+        detail={verdictSentence(report) ?? ""}
+        note={gradeNote(report)}
+      />
       <h3 className="chart-title">{c.grade.partsTitle}</h3>
       <div className="grade-grid">
         {partRows(report).map((part) =>
           part.band ? (
-            <GradeTile key={part.part} title={part.name} band={part.band} detail={part.detail} definition={part.definition} />
+            <GradeTile
+              key={part.part}
+              title={part.name}
+              band={part.band}
+              detail={part.detail}
+              definition={part.definition}
+              note={part.note}
+            />
           ) : (
             <StatTile key={part.part} label={part.name} value={c.notMeasured} hint={part.definition} />
           ),

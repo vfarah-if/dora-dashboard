@@ -11,7 +11,7 @@ description: >
 
 - Pages in `src/pages`, components in `src/components`, data hooks in `src/api/hooks.ts`, pure transforms in `src/lib`.
 - Anything that reshapes report data for a chart (aligning, clipping, normalising, cumulating) is a pure function in `src/lib` with a unit test. Components render; they do not compute.
-- Types come from `@dora-dashboard/core` with `import type`. Never redefine a payload shape in the web app.
+- Types come from `@dora-dashboard/core` with `import type`, and pure helpers and constants as values, never anything that does I/O. Never redefine a payload shape or a rule that core already holds in the web app.
 
 ## Copy
 

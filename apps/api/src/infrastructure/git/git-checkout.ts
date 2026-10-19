@@ -20,6 +20,10 @@ const defaultExec: Exec = (file, args, options) =>
 const CLONE_TIMEOUT_MS = 5 * 60_000;
 const LS_REMOTE_TIMEOUT_MS = 60_000;
 const PREFIX = "dora-checkout-";
+/** Paths per `ls-tree`, so the command line stays far below the operating system's limit however many files are asked for. */
+const BLOB_BATCH = 100;
+/** A regular file's entry from `ls-tree -z`: mode, type, a SHA-1 or SHA-256 object id, a tab and the path. */
+const TREE_ENTRY = /^(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([\s\S]+)$/;
 
 /** Refuses local transports and redirects, so a crafted URL or response cannot reach anything but the host. */
 const SAFE_CONFIG = ["-c", "protocol.file.allow=never", "-c", "http.followRedirects=false"];
@@ -76,11 +80,38 @@ export class GitCheckout implements SourceCheckout {
         { env: this.baseEnv(), timeout: LS_REMOTE_TIMEOUT_MS },
         secrets,
       );
-      return { dir, commitSha: stdout.trim(), dispose };
+      return { dir, commitSha: stdout.trim(), dispose, blobIds: (paths) => this.blobIds(dir, paths) };
     } catch (error) {
       await dispose();
       throw error;
     }
+  }
+
+  /**
+   * `git ls-tree` reads tree objects only, so neither this code nor git opens a file's content, and the trees of HEAD are
+   * present in a depth 1 clone. `--literal-pathspecs` stops a path being read as a pattern. No token is passed. Only
+   * regular files are kept, so a link or a submodule that shares a name is not taken for one.
+   */
+  private async blobIds(dir: string, paths: readonly string[]): Promise<Map<string, string>> {
+    const found = new Map<string, string>();
+    for (let from = 0; from < paths.length; from += BLOB_BATCH) {
+      const batch = paths.slice(from, from + BLOB_BATCH);
+      const asked = new Set(batch);
+      // `run` reads "not found" in stderr as a missing branch or repository, which this command never means, so a
+      // failure here is always an upstream one.
+      const { stdout } = await this.run(
+        ["--literal-pathspecs", "-C", dir, "ls-tree", "-r", "-z", "HEAD", "--", ...batch],
+        { env: this.baseEnv(), timeout: LS_REMOTE_TIMEOUT_MS },
+        [],
+        "The blob ids of the key files could not be read from the clone",
+      );
+      for (const entry of stdout.split("\0")) {
+        const match = TREE_ENTRY.exec(entry);
+        // A path that names a directory would list what is under it, which was not asked for.
+        if (match && asked.has(match[3]!)) found.set(match[3]!, match[2]!);
+      }
+    }
+    return found;
   }
 
   /** Removes checkouts a crash left behind. Call once at start-up, before any checkout is made. */
@@ -111,17 +142,18 @@ export class GitCheckout implements SourceCheckout {
   }
 
   /** Errors from `execFile` quote the whole command line, so build our own message with secrets removed. */
-  private async run(args: string[], options: ExecOptions, secrets: string[]) {
+  private async run(args: string[], options: ExecOptions, secrets: string[], failure?: string) {
     try {
       return await this.exec("git", args, options);
     } catch (error) {
-      const failure = error as { stderr?: unknown; killed?: boolean };
-      if (failure.killed) {
+      const failed = error as { stderr?: unknown; killed?: boolean };
+      if (failed.killed) {
         throw new UpstreamError(`git was stopped after ${Math.round(options.timeout / 60_000)} minute(s) without finishing`, 504);
       }
-      const raw = failure.stderr;
+      const raw = failed.stderr;
       let detail = (typeof raw === "string" && raw.trim() ? raw.trim() : "git could not be run").slice(0, 500);
       for (const secret of secrets) if (secret) detail = detail.split(secret).join("***");
+      if (failure !== undefined) throw new UpstreamError(`${failure}: ${detail}`, 502);
       if (/not found|could not find remote branch|repository .* does not exist/i.test(detail)) {
         throw new NotFoundError(`The branch or repository could not be cloned: ${detail}`);
       }
