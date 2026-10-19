@@ -410,7 +410,8 @@ describe("ReviewQueuePage", () => {
     expect(within(section).getAllByRole("link")[0]).toHaveTextContent(/Rework billing \(opens in a new tab\)$/);
     const board = screen.getByRole("region", { name: text.lanes.boardLabel });
     for (const link of within(board).getAllByRole("link")) {
-      expect(link).toHaveTextContent(new RegExp(`${copy.common.opensInNewTab.replace(/[()]/g, "\\$&")}$`));
+      const name = (link.textContent ?? "").trim();
+      expect(name.endsWith(copy.common.opensInNewTab), name).toBe(true);
     }
   });
 
