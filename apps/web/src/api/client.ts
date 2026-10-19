@@ -18,7 +18,13 @@ export class ApiError extends Error {
 }
 
 /** Every code the API can send. A record rather than a list, so a code added in core must be added here too. */
-const API_ERROR_CODES: Record<ApiErrorCode, true> = { jira_unauthorised: true };
+const API_ERROR_CODES: Record<ApiErrorCode, true> = {
+  jira_unauthorised: true,
+  acceptance_no_record: true,
+  acceptance_finding_changed: true,
+  acceptance_duplicate: true,
+  acceptance_limit: true,
+};
 
 const isApiErrorCode = (value: unknown): value is ApiErrorCode =>
   typeof value === "string" && Object.hasOwn(API_ERROR_CODES, value);

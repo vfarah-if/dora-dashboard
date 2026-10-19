@@ -19,6 +19,7 @@ import {
   type ActionUse,
   type DependencyActionKind,
   type DependencyFacts,
+  type DockerfileFacts,
   type DependencyGroup,
   type SecurityAction,
   type SecurityAlert,
@@ -44,7 +45,14 @@ export interface AdviceInput {
   overall: Band | null;
   /** Dependency update pull requests that have been open for more than `STALE_UPDATE_DAYS`. */
   staleUpdates: number;
+  /** Builds the link to a file in the clone's commit, or null when the host builds none. Defaults to none. */
+  link?: FileLink;
 }
+
+/** A link to a file, and a line of it, at the commit the clone was read from. */
+export type FileLink = (path: string, line: number | null) => string | null;
+
+const noLink: FileLink = () => null;
 
 /** A dependency group with the open alerts behind it, so advice can list them. */
 export interface DependencyGroupDetail extends DependencyGroup {
@@ -147,8 +155,15 @@ const refOfAlert = ({ alert }: UsedAlert): Ref => {
 
 const alertRefs = (members: readonly UsedAlert[]): Ref[] => [...members].sort(compareAlerts).slice(0, MAX_REFS).map(refOfAlert);
 
-const findingRef = (f: WorkflowFinding): Ref => ({ label: f.line === null ? f.file : `${f.file}:${f.line}`, url: null });
-const useRef = (u: ActionUse): Ref => ({ label: `${u.action}${u.ref === null ? "" : `@${u.ref}`}`, url: null });
+const findingRef = (f: WorkflowFinding, link: FileLink): Ref => ({
+  label: f.line === null ? f.file : `${f.file}:${f.line}`,
+  url: link(f.file, f.line),
+});
+const useRef = (u: ActionUse, link: FileLink): Ref => ({
+  label: `${u.action}${u.ref === null ? "" : `@${u.ref}`}`,
+  url: link(u.file, u.line),
+});
+const pathRef = (path: string, link: FileLink): Ref => ({ label: path, url: link(path, null) });
 
 /** Groups by workflow file, in path order. */
 function byFile<T extends { file: string }>(list: readonly T[]): [string, T[]][] {
@@ -208,7 +223,7 @@ export function securityActions(input: AdviceInput): SecurityAction[] {
  * which can be more than the alerts that feed the limiting checks, since upgrading a package fixes all of its alerts
  * that have a fix.
  */
-export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
+export function securityPlan({ facts, overall, staleUpdates, link = noLink }: AdviceInput): {
   actions: SecurityAction[];
   onPathAlerts: SecurityAlert[];
 } {
@@ -317,18 +332,28 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
   if (supplyChain === null) {
     if (facts.supplyChainMissing === "analysis_off") add("turn_on_code_analysis", { count: 1 });
   } else {
-    const found = supplyChainFound(supplyChain, facts.owner, posture);
+    const found = supplyChainFound(supplyChain, facts.owner, posture, facts.acceptances);
     const { facts: clone } = supplyChain;
     const perWorkflow = (kind: SecurityActionKind, band: Band | null, list: readonly WorkflowFinding[]) => {
       for (const [file, findings] of byFile(list)) {
-        add(kind, { band, count: findings.length, target: file, refs: findings.slice(0, MAX_REFS).map(findingRef) });
+        add(kind, {
+          band,
+          count: findings.length,
+          target: file,
+          refs: findings.slice(0, MAX_REFS).map((f) => findingRef(f, link)),
+        });
       }
     };
     perWorkflow("fix_pr_head_checkout", "low", found.prHeadCheckout);
     perWorkflow("fix_script_injection", "low", found.scriptInjection);
     perWorkflow("stop_self_hosted_public", "low", found.selfHostedPublic ?? []);
     for (const [file, uses] of byFile(found.thirdPartyUnpinned)) {
-      add("pin_actions", { band: "high", count: uses.length, target: file, refs: uses.slice(0, MAX_REFS).map(useRef) });
+      add("pin_actions", {
+        band: "high",
+        count: uses.length,
+        target: file,
+        refs: uses.slice(0, MAX_REFS).map((u) => useRef(u, link)),
+      });
     }
     perWorkflow("restrict_permissions", "high", found.permissions);
     perWorkflow("remove_unsecure_commands", "high", found.unsecureCommands);
@@ -336,49 +361,58 @@ export function securityPlan({ facts, overall, staleUpdates }: AdviceInput): {
       add("remove_key_files", {
         band: "high",
         count: found.strongKeys.length,
-        refs: found.strongKeys.slice(0, MAX_REFS).map((k) => ({ label: k.path, url: null })),
+        refs: found.strongKeys.slice(0, MAX_REFS).map((k) => pathRef(k.path, link)),
       });
     }
 
     const advise = (kind: SecurityActionKind, count: number, refs: Ref[] = [], target: string | null = null) => {
       if (count > 0) add(kind, { count, refs: refs.slice(0, MAX_REFS), target });
     };
-    advise("pin_own_actions", found.ownUnpinned.length, found.ownUnpinned.map(useRef));
-    if (clone.updateConfig === null && (manifests > 0 || clone.ecosystems.length > 0)) advise("add_update_config", 1);
+    advise(
+      "pin_own_actions",
+      found.ownUnpinned.length,
+      found.ownUnpinned.map((u) => useRef(u, link)),
+    );
+    if (found.absence.updateConfig === "open" && (manifests > 0 || clone.ecosystems.length > 0)) advise("add_update_config", 1);
     advise(
       "add_lockfile",
-      clone.missingLockfiles.length,
-      clone.missingLockfiles.map((path) => ({ label: path, url: null })),
+      found.missingLockfiles.length,
+      found.missingLockfiles.map((path) => pathRef(path, link)),
     );
-    if (clone.securityPolicy === null && posture?.visibility === "public") advise("add_security_policy", 1);
+    if (found.absence.securityPolicy === "open") advise("add_security_policy", 1);
     advise(
       "review_weak_key_files",
       found.weakKeys.length,
-      found.weakKeys.map((k) => ({ label: k.path, url: null })),
+      found.weakKeys.map((k) => pathRef(k.path, link)),
     );
-    const hasTool = (category: string) => clone.securityTools.some((t) => t.category === category);
-    if (!hasTool("dependency_review")) advise("add_dependency_review", 1);
-    if (!hasTool("secret_scan") && !isUsable(sources.secret_scanning)) advise("add_secret_scanner_ci", 1);
-    if (!hasTool("sast") && !isUsable(sources.code_scanning)) advise("add_static_analysis", 1);
-    const shellDockerfiles = clone.dockerfiles.filter((d) => d.curlPipeShell);
-    advise("avoid_curl_pipe_shell", found.curlPipeShell.length + shellDockerfiles.length, [
-      ...found.curlPipeShell.map(findingRef),
-      ...shellDockerfiles.map((d) => ({ label: d.path, url: null })),
+    if (found.absence.dependencyReview === "open") advise("add_dependency_review", 1);
+    if (found.absence.secretScanInCi === "open" && !isUsable(sources.secret_scanning)) advise("add_secret_scanner_ci", 1);
+    if (found.absence.staticAnalysis === "open" && !isUsable(sources.code_scanning)) advise("add_static_analysis", 1);
+    advise("avoid_curl_pipe_shell", found.curlPipeShell.length + found.images.curlPipeShell.length, [
+      ...found.curlPipeShell.map((f) => findingRef(f, link)),
+      ...found.images.curlPipeShell.map((d) => pathRef(d.path, link)),
     ]);
-    advise("avoid_secrets_inherit", found.secretsInherit.length, found.secretsInherit.map(findingRef));
-    advise("disable_persist_credentials", found.persistCredentials.length, found.persistCredentials.map(findingRef));
-    const images = (kind: SecurityActionKind, pick: (d: (typeof clone.dockerfiles)[number]) => number) => {
-      const list = clone.dockerfiles.filter((d) => pick(d) > 0);
+    advise(
+      "avoid_secrets_inherit",
+      found.secretsInherit.length,
+      found.secretsInherit.map((f) => findingRef(f, link)),
+    );
+    advise(
+      "disable_persist_credentials",
+      found.persistCredentials.length,
+      found.persistCredentials.map((f) => findingRef(f, link)),
+    );
+    const images = (kind: SecurityActionKind, list: readonly DockerfileFacts[], pick: (d: DockerfileFacts) => number) => {
       advise(
         kind,
         list.reduce((total, d) => total + pick(d), 0),
-        list.map((d) => ({ label: d.path, url: null })),
+        list.map((d) => pathRef(d.path, link)),
       );
     };
-    images("pin_base_images", (d) => d.unpinnedImages);
-    images("avoid_latest_images", (d) => d.latestImages);
-    images("run_as_non_root", (d) => Number(d.runsAsRoot));
-    images("avoid_remote_add", (d) => Number(d.addsRemote));
+    images("pin_base_images", found.images.unpinned, (d) => d.unpinnedImages);
+    images("avoid_latest_images", found.images.latest, (d) => d.latestImages);
+    images("run_as_non_root", found.images.root, (d) => Number(d.runsAsRoot));
+    images("avoid_remote_add", found.images.remoteAdd, (d) => Number(d.addsRemote));
   }
 
   // Change control and settings.

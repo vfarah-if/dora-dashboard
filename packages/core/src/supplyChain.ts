@@ -13,9 +13,12 @@
  * however deeply its keys nest, a step is looked at within 200 rows, and nothing pushes a large array through a spread
  * argument, which would overflow the call stack. A joined line is cut at 8,000 characters.
  *
- * A composite action and a reusable workflow run with the event of the workflow that calls them, so each takes on the
- * triggers of every workflow in the repository that calls it by local path, directly or through another such file.
- * One called only from other repositories is read with its own triggers alone, which are none for a composite action.
+ * A composite action and a reusable workflow run with the event of the workflow that calls them, so each is reached
+ * along routes: the triggers of every workflow in the repository that calls it by local path, directly or through
+ * another such file, through the jobs whose `if:` conditions leave an outsider's event open. A step that a condition
+ * provably keeps from an outsider's event is not reported, and a finding records the routes and conditions that did not
+ * rule it out (ADR 0039). One called only from other repositories is read with its own triggers alone, which are none
+ * for a composite action.
  */
 import { baseName, commandsByFile, isActionPath, isTestPath, isWorkflowPath, type CandidateFile } from "./codeTooling.js";
 import { isLockfile, isReadableLockfile } from "./lockfiles.js";
@@ -31,10 +34,27 @@ import {
   type WorkflowFinding,
   type WorkflowRisk,
 } from "./securityTypes.js";
+import { BLOCK_SCALAR_VALUE, MAX_JOINED, MAX_LINE, MAX_LINES, rowsOf, structureOf, unquote, type Row } from "./workflowRows.js";
+import {
+  BASE_RUN_WORLD,
+  HEAD_WORLDS,
+  NO_REACH_HASH,
+  PRIVILEGED_WORLDS,
+  PULL_REQUEST_WORLDS,
+  guardsOf,
+  blankStrings,
+  lineHashOf,
+  reachOf,
+  reasoner,
+  type Guards,
+  type ReachEntry,
+  type Reason,
+  type WorldSet,
+} from "./workflowReach.js";
 import { byPath, compareText, shallowestFirst } from "./stats.js";
 
-const MAX_LINE = 2_000;
-const MAX_LINES = 20_000;
+export type { WorldTrigger } from "./workflowReach.js";
+
 const MAX_WORKFLOWS = 500;
 const MAX_DOCKERFILES = 50;
 const MAX_SUPPORT_FILES = 100;
@@ -42,16 +62,15 @@ const MAX_ACTIONS = 10_000;
 const MAX_FINDINGS = 2_000;
 const MAX_LISTED = 200;
 const MAX_EVIDENCE = 200;
-const MAX_JOINED = 8_000;
 const MAX_STEP_ROWS = 200;
-const MAX_FLOW_ROWS = 200;
 
 // ---- candidates -----------------------------------------------------------------------------------------------------
 
 const DOCKERFILE = /^(?:dockerfile(?:\..+)?|.+\.dockerfile|containerfile)$/i;
 /** `Dockerfile.md` and `Dockerfile.dockerignore` sit beside a Dockerfile but are not one. */
 const NOT_A_DOCKERFILE = /\.(?:md|dockerignore|txt|json|ya?ml|sh)$/i;
-const isDockerfile = (path: string) => {
+/** Whether a path names a Dockerfile, as the clone is read; the web uses it to say how a finding was found. */
+export const isDockerfile = (path: string): boolean => {
   const name = baseName(path);
   return DOCKERFILE.test(name) && !NOT_A_DOCKERFILE.test(name) && !isTestPath(path);
 };
@@ -70,6 +89,8 @@ export function supplyChainCandidates(paths: readonly string[]): {
   lockfiles: string[];
   dockerfiles: string[];
   tooling: string[];
+  /** The key files that will be listed, whose blob ids a caller may read from the commit's tree. Never to be opened. */
+  keyFiles: string[];
 } {
   const sorted = (found: string[]) => found.sort(shallowestFirst);
   return {
@@ -77,168 +98,31 @@ export function supplyChainCandidates(paths: readonly string[]): {
     lockfiles: sorted(paths.filter(isReadableLockfile)),
     dockerfiles: sorted(paths.filter(isDockerfile)).slice(0, MAX_DOCKERFILES),
     tooling: sorted(paths.filter((path) => isSupportFile(path) && !isTestPath(path))).slice(0, MAX_SUPPORT_FILES),
+    keyFiles: keyFiles(paths, null).map((file) => file.path),
   };
 }
 
 // ---- reading a workflow ---------------------------------------------------------------------------------------------
 
-/** One meaningful line of a workflow, with its place in the indentation. */
-interface Row {
-  no: number;
-  indent: number;
-  /** Where the key starts, after any `- ` markers. */
-  keyIndent: number;
-  dash: boolean;
-  /** The line after `- ` markers, comment kept. */
-  body: string;
-  /** `body` without a trailing comment. */
-  text: string;
-  /** Inside a block scalar such as `run: |`. */
-  scalar: boolean;
-}
-
-const BLOCK_SCALAR_KEY = /^["']?[\w.-]+["']?\s*:\s*[|>][-+0-9]*$/;
-const BLOCK_SCALAR_VALUE = /^[|>][-+0-9]*$/;
-
-const unquote = (value: string): string => {
-  const quote = value[0];
-  return (quote === '"' || quote === "'") && value.length >= 2 && value.endsWith(quote) ? value.slice(1, -1) : value;
-};
-
-/**
- * Splits a workflow into rows. Blank and comment lines are dropped, except inside a block scalar, where a `#` line is
- * script text. The lines of a block scalar are kept and marked, so `uses:` written in a script is not read as a step.
- */
-function rowsOf(content: string): Row[] {
-  const rows: Row[] = [];
-  let scalarKeyIndent = -1;
-  content.split("\n", MAX_LINES).forEach((raw, i) => {
-    const line = raw.slice(0, MAX_LINE).trimEnd();
-    const trimmed = line.trimStart();
-    if (!trimmed) return;
-    const indent = line.length - trimmed.length;
-    if (scalarKeyIndent >= 0) {
-      if (indent > scalarKeyIndent) {
-        rows.push({ no: i + 1, indent, keyIndent: indent, dash: false, body: trimmed, text: trimmed, scalar: true });
-        return;
-      }
-      scalarKeyIndent = -1;
-    }
-    if (trimmed.startsWith("#")) return;
-    const dashes = /^(?:-(?:\s+|$))+/.exec(trimmed)?.[0].length ?? 0;
-    const body = trimmed.slice(dashes);
-    // Most rows hold no `#`, and skipping the pattern for them saves a scan of every position on a long line.
-    const text = body.includes("#") ? body.replace(/(^|\s)#.*$/, "").trimEnd() : body;
-    const keyIndent = indent + dashes;
-    if (BLOCK_SCALAR_KEY.test(text)) scalarKeyIndent = keyIndent;
-    rows.push({ no: i + 1, indent, keyIndent, dash: dashes > 0, body, text, scalar: false });
-  });
-  return rows;
-}
-
-const PRIVILEGED = new Set([
-  "pull_request_target",
-  "workflow_run",
-  "issue_comment",
-  "issues",
-  "discussion",
-  "discussion_comment",
-]);
-const ON_KEY = /^(?:on|"on"|'on'|true)\s*:\s*(.*)$/;
-
-/**
- * The names at the top level of a flow list or map such as `[push, pull_request]` or `{ push: { branches: [issues] } }`,
- * where only `push` is an event. Null when the brackets never close, so the names cannot be known.
- */
-function flowNames(text: string): string[] | null {
-  let depth = 0;
-  let entry = "";
-  let inKey = true;
-  const names: string[] = [];
-  const end = () => {
-    const name = unquote(entry.trim());
-    if (name) names.push(name);
-    entry = "";
-    inKey = true;
-  };
-  for (const char of text) {
-    if (char === "[" || char === "{") {
-      depth++;
-      continue;
-    }
-    if (char === "]" || char === "}") {
-      depth--;
-      if (depth === 0) {
-        end();
-        return names;
-      }
-      continue;
-    }
-    if (depth !== 1) continue;
-    if (char === ",") end();
-    else if (char === ":") inKey = false;
-    else if (inKey) entry += char;
-  }
-  return null;
-}
-
-/**
- * The events a workflow runs on, from `on: x`, a flow list or map (on one line or several), a block list or a block
- * map. Null when they cannot be known, which is a flow value whose brackets never close. A caller treats null as
- * possibly privileged, because a parser that cannot read the trigger must not hide a finding behind it. That costs
- * nothing in practice: GitHub rejects a workflow with an unclosed bracket, so a false finding can only land on a
- * file that never runs, and a legal spelling this reader failed to follow is still checked rather than skipped.
- */
-function triggersOf(rows: readonly Row[]): Set<string> | null {
-  const found = new Set<string>();
-  for (let k = 0; k < rows.length; k++) {
-    const row = rows[k]!;
-    const key = row.indent === 0 && !row.scalar && !row.dash ? ON_KEY.exec(row.text) : null;
-    if (!key) continue;
-    const value = key[1]!.trim();
-    if (value) {
-      if (!/^[[{]/.test(value)) {
-        found.add(unquote(value));
-        return found;
-      }
-      let text = value;
-      for (let j = k + 1; j < rows.length && j <= k + MAX_FLOW_ROWS && flowNames(text) === null; j++) {
-        text = `${text} ${rows[j]!.text}`.slice(0, MAX_JOINED);
-      }
-      const names = flowNames(text);
-      if (names === null) return null;
-      for (const name of names) found.add(name);
-      return found;
-    }
-    let base = -1;
-    for (let j = k + 1; j < rows.length && (rows[j]!.indent > 0 || rows[j]!.dash); j++) {
-      const child = rows[j]!;
-      if (child.scalar) continue;
-      if (base < 0) base = child.indent;
-      if (child.indent === base) found.add(unquote((child.dash ? child.text : child.text.split(":")[0]!).trim()));
-    }
-    return found;
-  }
-  return found;
-}
-
-/** Whether a top-level `permissions:` exists, and how many jobs are without their own. */
-function permissionsOf(rows: readonly Row[]): { top: boolean; jobs: number; withoutOwn: number } {
+/** Whether a top-level `permissions:` exists, how many jobs are without their own, and the ids of those jobs. */
+function permissionsOf(rows: readonly Row[]): { top: boolean; jobs: number; withoutOwn: number; ids: string[] } {
   const top = rows.some((row) => row.indent === 0 && !row.scalar && /^permissions\s*:/.test(row.text));
   const start = rows.findIndex((row) => row.indent === 0 && !row.scalar && /^jobs\s*:$/.test(row.text));
-  if (start < 0) return { top, jobs: 0, withoutOwn: 0 };
+  if (start < 0) return { top, jobs: 0, withoutOwn: 0, ids: [] };
   let end = start + 1;
   while (end < rows.length && rows[end]!.indent > 0) end++;
   const children = rows.slice(start + 1, end);
   const base = children[0]?.indent ?? 0;
   const jobStarts = children.flatMap((row, i) => (row.indent === base && !row.dash && !row.scalar ? [i] : []));
-  let withoutOwn = 0;
+  const ids: string[] = [];
   jobStarts.forEach((from, n) => {
     const body = children.slice(from + 1, jobStarts[n + 1] ?? children.length);
     const inner = body[0]?.indent ?? -1;
-    if (!body.some((row) => row.indent === inner && !row.scalar && /^permissions\s*:/.test(row.text))) withoutOwn++;
+    if (!body.some((row) => row.indent === inner && !row.scalar && /^permissions\s*:/.test(row.text))) {
+      ids.push(unquote(children[from]!.text.split(":")[0]!.trim()));
+    }
   });
-  return { top, jobs: jobStarts.length, withoutOwn };
+  return { top, jobs: jobStarts.length, withoutOwn: ids.length, ids };
 }
 
 const SHA = /^[0-9a-f]{40}$/i;
@@ -291,6 +175,16 @@ const UNTRUSTED = new RegExp(
   "i",
 );
 
+const UNTRUSTED_EVERYWHERE = new RegExp(UNTRUSTED.source, "gi");
+
+/**
+ * The worlds an untrusted reference reaches. When the upstream run was not headed by a fork, such as one that a
+ * `pull_request_target` or a comment started, the run's branch and head commit are the base repository's, so that world
+ * is left out for them, while the run's title still comes from the outsider (ADR 0039).
+ */
+const untrustedWorlds = (reference: string): WorldSet =>
+  /workflow_run\.(?:head_branch|head_commit)/i.test(reference) ? PRIVILEGED_WORLDS & ~BASE_RUN_WORLD : PRIVILEGED_WORLDS;
+
 /**
  * What a checkout of a pull request's own code looks like: its head commit or branch, its merge commit, a workflow
  * run's head, or a `pull/N/head` or `pull/N/merge` ref, with or without `refs/`. A URL such as `.../pull/12/head` does
@@ -309,6 +203,21 @@ const HEAD_REFERENCE = new RegExp(
 /** A `repository:` value that names the pull request's fork, which a checkout then reads from. */
 const HEAD_REPOSITORY =
   /github\.event\.(?:pull_request\.head\.repo|workflow_run\.head_repository)\.(?:full_name|name|clone_url)/i;
+/**
+ * The worlds a head reference reaches. A workflow run's `head_sha` and `head_branch` are the base repository's when the
+ * upstream run was not headed by a fork, so that world is left out for them; its `pull_requests`, its head repository and
+ * every other reference reach every head world.
+ */
+const headWorldsOf = (reference: string): WorldSet =>
+  /workflow_run\.head_(?:sha|branch)$/i.test(reference) ? HEAD_WORLDS & ~BASE_RUN_WORLD : HEAD_WORLDS;
+const HEAD_REFERENCE_EVERYWHERE = new RegExp(HEAD_REFERENCE.source, "gi");
+
+/** The worlds that every head reference in the text reaches together, or 0 when it holds none. */
+function headWorldsIn(text: string, pattern: RegExp): WorldSet {
+  let set = 0;
+  for (const match of text.matchAll(pattern)) set |= headWorldsOf(match[0]);
+  return set;
+}
 const CHECKOUT_COMMAND = /\b(?:git\s+(?:checkout|fetch)|gh\s+pr\s+checkout)\b/;
 
 /** Whether an expression can only produce true or false, so none of the event's text reaches the script. */
@@ -465,83 +374,6 @@ interface WorkflowReading {
 }
 
 /**
- * The events a file runs with, as the checks need them. `privileged` is a trigger that runs with secrets on text an
- * outsider wrote, `headTrigger` one that can check out a pull request's code with them, and `onPullRequest` one that
- * pull requests start. Triggers that cannot be read set all three, so nothing is hidden; see `triggersOf`.
- */
-interface RunContext {
-  privileged: boolean;
-  headTrigger: boolean;
-  onPullRequest: boolean;
-}
-
-const NO_CONTEXT: RunContext = { privileged: false, headTrigger: false, onPullRequest: false };
-
-function contextOf(triggers: ReadonlySet<string> | null): RunContext {
-  if (triggers === null) return { privileged: true, headTrigger: true, onPullRequest: true };
-  return {
-    privileged: [...triggers].some((trigger) => PRIVILEGED.has(trigger)),
-    headTrigger: triggers.has("pull_request_target") || triggers.has("workflow_run"),
-    onPullRequest: triggers.has("pull_request") || triggers.has("pull_request_target"),
-  };
-}
-
-/**
- * The files a workflow or composite action calls by local path, which are `./.github/workflows/x.yml` for a reusable
- * workflow and `./dir` for the composite action in `dir/action.yml` or `dir/action.yaml`. Only paths in `known` count.
- */
-function localCalls(rows: readonly Row[], known: ReadonlySet<string>): string[] {
-  const called = new Set<string>();
-  for (const row of rows) {
-    if (row.scalar) continue;
-    const value = /^uses\s*:\s*(.+)$/.exec(row.text)?.[1];
-    if (value === undefined) continue;
-    const target = unquote(value.trim());
-    if (!target.startsWith("./")) continue;
-    const path = target.slice(2).replace(/\/+$/, "");
-    for (const candidate of [path, `${path}/action.yml`, `${path}/action.yaml`]) if (known.has(candidate)) called.add(candidate);
-  }
-  return [...called];
-}
-
-/**
- * Each file's context, its own triggers joined with the context of every file that calls it by local path. A flag only
- * ever turns on, so each file is passed on at most three times and the work stays in proportion to the calls. Each
- * file's rows are dropped once its triggers and calls are known, so no more than one file's rows are held at a time.
- */
-function runContexts(files: readonly CandidateFile[]): Map<string, RunContext> {
-  const known = new Set(files.map((file) => file.path));
-  const contexts = new Map<string, RunContext>();
-  const calls = new Map<string, string[]>();
-  for (const { path, content } of files) {
-    const rows = rowsOf(content);
-    contexts.set(path, isActionPath(path) ? NO_CONTEXT : contextOf(triggersOf(rows)));
-    calls.set(path, localCalls(rows, known));
-  }
-  const queue = files.map((file) => file.path);
-  for (let next = 0; next < queue.length; next++) {
-    const caller = contexts.get(queue[next]!)!;
-    for (const path of calls.get(queue[next]!)!) {
-      const callee = contexts.get(path)!;
-      const joined: RunContext = {
-        privileged: callee.privileged || caller.privileged,
-        headTrigger: callee.headTrigger || caller.headTrigger,
-        onPullRequest: callee.onPullRequest || caller.onPullRequest,
-      };
-      if (
-        joined.privileged === callee.privileged &&
-        joined.headTrigger === callee.headTrigger &&
-        joined.onPullRequest === callee.onPullRequest
-      )
-        continue;
-      contexts.set(path, joined);
-      queue.push(path);
-    }
-  }
-  return contexts;
-}
-
-/**
  * The lines a `run:` key holds: its own value and every deeper line after it, which covers `|` and `>` blocks, with
  * continuation lines joined and full-line comments in a block left out. `next` is the index of the first row after the
  * block, so the caller can skip any `run:` key nested inside it instead of scanning the same rows again.
@@ -604,20 +436,60 @@ function runsOnValue(rows: readonly Row[], k: number, inline: string): string[] 
   return parts;
 }
 
+/**
+ * What a finding records about how an event reaches it. `routesDropped` and `conditionsDropped` are written only when
+ * above zero, so a stored finding stays small.
+ */
+const reasonFields = (reason: Reason): Partial<WorkflowFinding> => ({
+  routes: reason.routes,
+  ...(reason.routesDropped > 0 && { routesDropped: reason.routesDropped }),
+  conditions: reason.conditions,
+  ...(reason.conditionsDropped > 0 && { conditionsDropped: reason.conditionsDropped }),
+  reachHash: reason.reachHash,
+});
+
 function readWorkflow(
   file: CandidateFile,
   rows: readonly Row[],
-  context: RunContext,
+  entries: readonly ReachEntry[],
   commands: readonly string[],
 ): WorkflowReading {
   const isAction = isActionPath(file.path);
-  const { privileged, headTrigger, onPullRequest } = context;
+  // The cheap gate: whether any route brings a world of the kind a check asks about. Which of them a line's own
+  // conditions leave open is asked only for a line that matches, through `reasonAt`. See ADR 0039.
+  const reached = entries.reduce((set, entry) => set | entry.worlds, 0);
+  const privileged = (reached & PRIVILEGED_WORLDS) !== 0;
+  const headTrigger = (reached & HEAD_WORLDS) !== 0;
+  const onPullRequest = (reached & PULL_REQUEST_WORLDS) !== 0;
+  let guards: Guards | undefined;
+  const reasonFor = reasoner(entries);
+  /** Null when the step and job holding row `k` rule every world of `mask` out, which is when nothing is reported. */
+  const reasonAt = (k: number, mask: WorldSet): Reason | null =>
+    reasonFor((guards ??= guardsOf(file.path, rows, structureOf(rows))).at(k), mask);
 
   const actions = capped(MAX_ACTIONS, actionGroup);
   const findings = capped(MAX_FINDINGS, findingGroup);
   const tools: SecurityTool[] = [];
-  const found = (risk: WorkflowRisk, line: number | null, evidence: string, extra: Partial<WorkflowFinding> = {}) => {
-    findings.add({ file: file.path, line, risk, evidence: clip(evidence), ...extra });
+  /**
+   * `source` is the text of the flagged line, hashed whole, whitespace collapsed. A finding with no reason, which reads no
+   * route and no condition, gets the reach hash of no reach.
+   */
+  const found = (
+    risk: WorkflowRisk,
+    line: number | null,
+    evidence: string,
+    source: string,
+    extra: Partial<WorkflowFinding> = {},
+  ) => {
+    findings.add({
+      file: file.path,
+      line,
+      risk,
+      evidence: clip(evidence),
+      reachHash: NO_REACH_HASH,
+      ...extra,
+      lineHash: lineHashOf(source),
+    });
   };
   const addTool = (tool: string, category: SecurityToolCategory) => {
     if (!tools.some((t) => t.tool === tool)) tools.push({ tool, category, file: file.path });
@@ -629,7 +501,7 @@ function readWorkflow(
   let saysFalse: boolean[] | undefined;
   rows.forEach((row, k) => {
     if (/ACTIONS_ALLOW_UNSECURE_COMMANDS\s*[:=]\s*["']?true\b/i.test(row.text)) {
-      found("unsecureCommands", row.no, "ACTIONS_ALLOW_UNSECURE_COMMANDS");
+      found("unsecureCommands", row.no, "ACTIONS_ALLOW_UNSECURE_COMMANDS", row.text);
     }
     if (row.scalar) return;
 
@@ -644,7 +516,16 @@ function readWorkflow(
         parsed.action.toLowerCase() === "actions/checkout" &&
         persistsCredentials(rows, k, (saysFalse ??= rows.map((r) => PERSIST_FALSE.test(r.text))))
       ) {
-        found("persistCredentials", row.no, `${parsed.action}${parsed.ref ? `@${parsed.ref}` : ""}`);
+        const reason = reasonAt(k, PRIVILEGED_WORLDS);
+        if (reason) {
+          found(
+            "persistCredentials",
+            row.no,
+            `${parsed.action}${parsed.ref ? `@${parsed.ref}` : ""}`,
+            row.text,
+            reasonFields(reason),
+          );
+        }
       }
       return;
     }
@@ -658,16 +539,25 @@ function readWorkflow(
           for (const expression of text.matchAll(/\$\{\{(.{0,500}?)\}\}/g)) {
             // Strings are blanked so a name inside quotes is not read as a reference to the event, and so a literal,
             // which may be a hardcoded token, is never stored as evidence.
-            const bare = expression[1]!.trim().replace(/'[^']*'|"[^"]*"/g, "''");
-            if (UNTRUSTED.test(bare) && !isBoolean(bare)) found("scriptInjection", no, bare);
+            const bare = blankStrings(expression[1]!);
+            let worlds = 0;
+            if (!isBoolean(bare)) for (const match of bare.matchAll(UNTRUSTED_EVERYWHERE)) worlds |= untrustedWorlds(match[0]);
+            if (worlds) {
+              const reason = reasonAt(k, worlds);
+              if (reason) found("scriptInjection", no, bare, text, reasonFields(reason));
+            }
           }
         }
         if (headTrigger && CHECKOUT_COMMAND.test(text)) {
-          const reference = HEAD_REFERENCE.exec(text)?.[0] ?? (/\bgh\s+pr\s+checkout\b/.test(text) ? "gh pr checkout" : null);
-          if (reference) found("prHeadCheckout", no, reference);
+          const worlds = headWorldsIn(text, HEAD_REFERENCE_EVERYWHERE) | (/\bgh\s+pr\s+checkout\b/.test(text) ? HEAD_WORLDS : 0);
+          const first = HEAD_REFERENCE.exec(text)?.[0];
+          // A `pull/${{ }}/head` reference holds an expression, whose literals are never stored.
+          const reference = first === undefined ? (worlds ? "gh pr checkout" : null) : blankStrings(first);
+          const reason = reference ? reasonAt(k, worlds) : null;
+          if (reference && reason) found("prHeadCheckout", no, reference, text, reasonFields(reason));
         }
         const piped = curlPipeShell(text);
-        if (piped) found("curlPipeShell", no, piped);
+        if (piped) found("curlPipeShell", no, piped, text);
       }
       return;
     }
@@ -675,20 +565,29 @@ function readWorkflow(
     if (headTrigger) {
       const ref = /^(ref|repository)\s*:\s*(.+)$/.exec(row.text);
       const reference = ref ? (ref[1] === "ref" ? HEAD_REFERENCE : HEAD_REPOSITORY).exec(ref[2]!)?.[0] : undefined;
-      if (reference) found("prHeadCheckout", row.no, reference);
+      const reason = reference
+        ? reasonAt(k, ref![1] === "ref" ? headWorldsIn(ref![2]!, HEAD_REFERENCE_EVERYWHERE) : HEAD_WORLDS)
+        : null;
+      if (reference && reason) found("prHeadCheckout", row.no, blankStrings(reference), row.text, reasonFields(reason));
     }
-    if (/^secrets\s*:\s*["']?inherit["']?$/.test(row.text)) found("secretsInherit", row.no, "secrets: inherit");
+    if (/^secrets\s*:\s*["']?inherit["']?$/.test(row.text)) found("secretsInherit", row.no, "secrets: inherit", row.text);
     if (!isAction && /^permissions\s*:\s*["']?write-all["']?$/.test(row.text))
-      found("writeAll", row.no, "permissions: write-all");
+      found("writeAll", row.no, "permissions: write-all", row.text);
     const runsOn = /^runs-on\s*:\s*(.*)$/.exec(row.text);
     if (runsOn && !isAction && runsOnValue(rows, k, runsOn[1]!).some((part) => SELF_HOSTED_LABEL.test(part))) {
-      found("selfHosted", row.no, "self-hosted", { onPullRequest });
+      // Reported whatever the triggers, but a pull request counts only when a world of one reaches the job.
+      const reason = onPullRequest ? reasonAt(k, PULL_REQUEST_WORLDS) : null;
+      found("selfHosted", row.no, "self-hosted", row.text, {
+        onPullRequest: reason !== null,
+        ...(reason && reasonFields(reason)),
+      });
     }
   });
 
   if (!isAction) {
-    const { top, jobs, withoutOwn } = permissionsOf(rows);
-    if (!top && jobs > 0 && withoutOwn > 0) found("noPermissions", null, "permissions");
+    const { top, jobs, withoutOwn, ids } = permissionsOf(rows);
+    // With no line to hash, the finding is identified by the jobs that set no permissions.
+    if (!top && jobs > 0 && withoutOwn > 0) found("noPermissions", null, "permissions", ids.sort(compareText).join(","));
   }
 
   for (const command of commands) {
@@ -716,7 +615,7 @@ function defaultsToNonRoot(image: string): boolean {
   return /(?:^|[-_.])nonroot(?:$|[-_.])/.test(tag);
 }
 
-function readDockerfile(file: CandidateFile): DockerfileFacts {
+function readDockerfile(file: CandidateFile, blobs: ReadonlyMap<string, string> | null): DockerfileFacts {
   const stages = new Map<string, { user: string | null; nonRootBase: boolean }>();
   let stage = { user: null as string | null, nonRootBase: false };
   let images = 0;
@@ -766,7 +665,16 @@ function readDockerfile(file: CandidateFile): DockerfileFacts {
   }
   const { user } = stage;
   const runsAsRoot = sawFrom && (user === null ? !stage.nonRootBase : ["root", "0"].includes(user.split(":")[0]!.toLowerCase()));
-  return { path: file.path, images, unpinnedImages, latestImages, runsAsRoot, addsRemote, curlPipeShell: piped };
+  return {
+    path: file.path,
+    blob: blobs?.get(file.path) ?? null,
+    images,
+    unpinnedImages,
+    latestImages,
+    runsAsRoot,
+    addsRemote,
+    curlPipeShell: piped,
+  };
 }
 
 // ---- repository files -----------------------------------------------------------------------------------------------
@@ -808,7 +716,7 @@ const COMMITTED_ON_PURPOSE = new Set([".env.test", ".env.development", ".env.dev
 const FIXTURE_DIRECTORIES = new Set(["testdata", "fixtures", "__fixtures__"]);
 
 /** Strong names first, then weak, each in path order and each cut at 200, so many weak files cannot push a strong one out. */
-function keyFiles(paths: readonly string[]): KeyFile[] {
+function keyFiles(paths: readonly string[], blobs: ReadonlyMap<string, string> | null): KeyFile[] {
   const strong: KeyFile[] = [];
   const weak: KeyFile[] = [];
   for (const path of paths) {
@@ -821,8 +729,9 @@ function keyFiles(paths: readonly string[]): KeyFile[] {
     else if (STRONG_KEY_NAMES.has(name) || STRONG_KEY_EXTENSIONS.some((extension) => name.endsWith(extension)))
       strength = "strong";
     else if (WEAK_KEY_EXTENSIONS.some((extension) => name.endsWith(extension))) strength = "weak";
-    if (strength === "strong") strong.push({ path, strength });
-    else if (strength === "weak") weak.push({ path, strength });
+    const blob = blobs?.get(path) ?? null;
+    if (strength === "strong") strong.push({ path, blob, strength });
+    else if (strength === "weak") weak.push({ path, blob, strength });
   }
   return [...strong.sort(byPath).slice(0, MAX_LISTED), ...weak.sort(byPath).slice(0, MAX_LISTED)];
 }
@@ -915,6 +824,13 @@ export interface SupplyChainInput {
   unread: readonly string[];
   dockerfiles?: readonly CandidateFile[];
   tooling?: readonly CandidateFile[];
+  /**
+   * Git blob ids by path, read from the commit's tree for the key files and Dockerfiles, which tell an acceptance whether
+   * a file has changed (ADR 0040). A path without one gets a null blob and cannot be accepted. Null when the lookup
+   * failed, which gives every path a null blob and the facts a false `blobsRead`. A caller with nothing to look up
+   * passes an empty map.
+   */
+  blobs: ReadonlyMap<string, string> | null;
 }
 
 /** Every field of `SupplyChainFacts`, worked out from paths and the contents the caller read. Never reads a key file. */
@@ -924,7 +840,7 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
   const readable = input.workflows.filter((file) => isWorkflowPath(file.path) || isActionPath(file.path)).sort(byPath);
   const files = readable.slice(0, MAX_WORKFLOWS);
   const commands = commandsByFile(files, input.tooling ?? []);
-  const contexts = runContexts(files);
+  const reach = reachOf(files);
   const actions = capped(MAX_ACTIONS, actionGroup);
   const findings = capped(MAX_FINDINGS, findingGroup);
   const securityTools: SecurityTool[] = [];
@@ -932,7 +848,7 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
   let actionsDropped = 0;
   // Each list is added to one item at a time: a spread argument of a large array overflows the call stack.
   for (const file of files) {
-    const reading = readWorkflow(file, rowsOf(file.content), contexts.get(file.path)!, commands.get(file.path) ?? []);
+    const reading = readWorkflow(file, rowsOf(file.content), reach.get(file.path) ?? [], commands.get(file.path) ?? []);
     for (const use of reading.actions) actions.add(use);
     for (const finding of reading.findings) findings.add(finding);
     for (const tool of reading.tools) securityTools.push(tool);
@@ -944,7 +860,7 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     .filter((file) => isDockerfile(file.path))
     .sort(byPath)
     .slice(0, MAX_DOCKERFILES);
-  const dockerfiles = dockerfileFiles.map(readDockerfile);
+  const dockerfiles = dockerfileFiles.map((file) => readDockerfile(file, input.blobs));
 
   // Whatever the listing holds that was not given is reported, so a count cap or a size cap never hides a file. A path
   // the caller passed as unread joins them, and goes with the Dockerfiles when that is what it is.
@@ -1015,9 +931,10 @@ export function supplyChainFacts(input: SupplyChainInput): SupplyChainFacts {
     manifestsByEcosystem: Object.fromEntries([...counts].sort(([a], [b]) => compareText(a, b))),
     missingLockfiles: missing.sort().slice(0, MAX_LISTED),
     lockfiles: [...summaries.values()].sort(byPath),
-    keyFiles: keyFiles(paths),
+    keyFiles: keyFiles(paths, input.blobs),
     dockerfiles,
     ecosystems: ECOSYSTEM_ORDER.filter((ecosystem) => needed.has(ecosystem)),
     listingComplete: input.listingComplete,
+    blobsRead: input.blobs !== null,
   };
 }

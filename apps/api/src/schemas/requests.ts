@@ -1,9 +1,13 @@
 import {
+  ACCEPTANCE_FINGERPRINT,
+  ACCEPTANCE_LIMITS,
+  ACCEPTANCE_REASONS,
   DORA_PROFILE_IDS,
   ISSUE_LABEL_KINDS,
   ISSUE_LABEL_LIMITS,
   ISSUE_PRIORITIES,
   REVIEW_EXEMPTION_LIMITS,
+  SUPPLY_CHAIN_CHECK_IDS,
 } from "@dora-dashboard/core";
 
 /** JSON schemas Fastify validates request bodies and query strings against before a handler runs. */
@@ -223,5 +227,33 @@ export const reviewExemptionsBody = {
         },
       ],
     },
+  },
+} as const;
+
+export const acceptanceParams = {
+  type: "object",
+  required: ["id", "acceptanceId"],
+  properties: { id: { type: "integer", minimum: 1 }, acceptanceId: { type: "integer", minimum: 1 } },
+} as const;
+
+/**
+ * Accepting a finding of the clone (ADR 0040). Every field is required and unknown fields are refused. The path is null
+ * only for the absence of a file or tool, and is only ever compared with stored paths, never joined to a directory. The
+ * note has only cheap bounds here, twice the limit because a code point may take two units; core's `noteProblem` is the
+ * rule, applied by the service, so the schema and the rule cannot drift apart. `anyOf` is used for the reason
+ * `issueLabelsBody` gives.
+ */
+export const acceptanceBody = {
+  type: "object",
+  required: ["check", "path", "fingerprint", "reason", "note"],
+  additionalProperties: false,
+  properties: {
+    check: { type: "string", enum: [...SUPPLY_CHAIN_CHECK_IDS] },
+    path: {
+      anyOf: [{ const: null }, { type: "string", minLength: 1, maxLength: 1000, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }],
+    },
+    fingerprint: { type: "string", maxLength: 80, pattern: ACCEPTANCE_FINGERPRINT.source },
+    reason: { type: "string", enum: [...ACCEPTANCE_REASONS] },
+    note: { type: "string", minLength: 1, maxLength: ACCEPTANCE_LIMITS.note * 2 },
   },
 } as const;

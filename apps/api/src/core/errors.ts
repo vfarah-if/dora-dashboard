@@ -13,8 +13,15 @@ export class NotFoundError extends AppError {
   override readonly name = "NotFoundError";
 }
 
+/** The request clashes with what is held. `code`, when given, tells the web which clash, so it need not read the message. */
 export class ConflictError extends AppError {
   override readonly name = "ConflictError";
+  constructor(
+    message: string,
+    override readonly code: ApiErrorCode | null = null,
+  ) {
+    super(message);
+  }
 }
 
 export class ValidationError extends AppError {

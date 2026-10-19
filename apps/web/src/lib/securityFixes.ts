@@ -1,4 +1,11 @@
-import type { DependencyGroup, SecurityAction, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
+import type {
+  DependencyGroup,
+  SecurityAction,
+  SecurityActionKind,
+  SecurityThresholds,
+  SupplyChainCheckId,
+  SupplyChainItem,
+} from "@dora-dashboard/core";
 import { copy, type UnknownWays } from "../copy";
 
 /*
@@ -552,12 +559,18 @@ export const analysisOnSnippet = (): string => "CODE_ANALYSIS=on";
 
 // --- The snippets for each kind of action ---------------------------------------------------------------------
 
+/** The action named by one `owner/repo[/path]@ref` label, kept to values that are safe to put in a command, or null. */
+export function actionRefOf(label: string): ActionRef | null {
+  const match = /^([^@\s/]+\/[^@\s/]+)(?:\/[^@\s]*)?@(\S+)$/.exec(label);
+  if (!match || !OWNER_REPO.test(match[1]!) || match[1]!.includes("..")) return null;
+  return { repo: match[1]!, ref: safeRef(match[2]!) };
+}
+
 /** The first action named in a list of references, such as `owner/repo@v4`, or null when none has that shape. */
 export function firstActionRepo(action: SecurityAction): ActionRef | null {
   for (const ref of action.refs) {
-    const match = /^([^@\s/]+\/[^@\s/]+)(?:\/[^@\s]*)?@(\S+)$/.exec(ref.label);
-    if (!match || !OWNER_REPO.test(match[1]!) || match[1]!.includes("..")) continue;
-    return { repo: match[1]!, ref: safeRef(match[2]!) };
+    const found = actionRefOf(ref.label);
+    if (found) return found;
   }
   return null;
 }
@@ -788,4 +801,91 @@ export function settingsLinkFor(kind: SecurityActionKind, settingsUrl: string): 
     return url ? { url, branch: true } : null;
   }
   return null;
+}
+
+// --- What would clear one finding -------------------------------------------------------------------------------
+
+/** The step that clears one finding, as sentences and, where one fits, a block to copy. */
+export interface ClearingStep {
+  steps: string[];
+  snippet: Snippet | null;
+}
+
+/** The kind of action whose generic steps apply to each check, so a finding with nothing more specific still has steps. */
+const GENERIC_KIND: Record<SupplyChainCheckId, SecurityActionKind> = {
+  prHeadCheckout: "fix_pr_head_checkout",
+  scriptInjection: "fix_script_injection",
+  selfHostedPublic: "stop_self_hosted_public",
+  unpinnedActions: "pin_actions",
+  ownActionsUnpinned: "pin_own_actions",
+  workflowPermissions: "restrict_permissions",
+  unsecureCommands: "remove_unsecure_commands",
+  keyFiles: "remove_key_files",
+  weakKeyFiles: "review_weak_key_files",
+  curlPipeShell: "avoid_curl_pipe_shell",
+  secretsInherit: "avoid_secrets_inherit",
+  persistCredentials: "disable_persist_credentials",
+  updateConfig: "add_update_config",
+  lockfiles: "add_lockfile",
+  securityPolicy: "add_security_policy",
+  dependencyReview: "add_dependency_review",
+  secretScanInCi: "add_secret_scanner_ci",
+  staticAnalysis: "add_static_analysis",
+  baseImagesPinned: "pin_base_images",
+  latestImages: "avoid_latest_images",
+  nonRootImages: "run_as_non_root",
+  remoteAdd: "avoid_remote_add",
+};
+
+/** The blocks that need nothing from the report, for the checks whose generic steps have one. */
+const GENERIC_SNIPPET: Partial<Record<SupplyChainCheckId, () => Snippet>> = {
+  workflowPermissions: () => snippet("permissions", permissionsSnippet()),
+  persistCredentials: () => snippet("persistCredentials", persistCredentialsSnippet()),
+  curlPipeShell: () => snippet("curlPipe", curlPipeSnippet()),
+  secretsInherit: () => snippet("secretsInherit", secretsInheritSnippet()),
+  baseImagesPinned: () => snippet("digest", digestSnippet()),
+  latestImages: () => snippet("digest", digestSnippet()),
+  nonRootImages: () => snippet("nonRoot", nonRootSnippet()),
+  remoteAdd: () => snippet("remoteAdd", remoteAddSnippet()),
+  selfHostedPublic: () => snippet("selfHosted", selfHostedSnippet()),
+};
+
+/** A job id as GitHub allows it, which can go into a sentence about code without being read as anything else. */
+const SAFE_JOB = /^[A-Za-z0-9_-]+$/;
+
+export const workflowRunGuard = (): string => "if: github.event.workflow_run.event == 'push'";
+export const forkGuard = (): string => "if: github.event.pull_request.head.repo.full_name == github.repository";
+
+/**
+ * What would clear one finding. A finding that a pull request reaches through `workflow_run` or `pull_request_target`
+ * gets the condition that keeps it out, named for the job that starts it where the route says so. A job name or path
+ * goes into the sentence only after it passes a check, and otherwise the wording stays general. Anything without a more
+ * specific step gets the generic steps for its check.
+ */
+export function clearingStep(check: SupplyChainCheckId, item: SupplyChainItem): ClearingStep {
+  const text = copy.security.findingDetail.clear;
+  if (check === "prHeadCheckout") {
+    const run = item.routes.find((route) => route.trigger === "workflow_run");
+    if (run) {
+      const hop = run.via?.[0];
+      const named =
+        hop && hop.job !== null && SAFE_JOB.test(hop.job) && isSafePath(hop.file) ? { job: hop.job, file: hop.file } : null;
+      return {
+        steps: [named ? text.workflowRun(named.job, named.file) : text.workflowRunHere],
+        snippet: snippet("workflowRunPush", workflowRunGuard()),
+      };
+    }
+    if (item.routes.some((route) => route.trigger === "pull_request_target")) {
+      return { steps: [text.fork], snippet: snippet("forkGuard", forkGuard()) };
+    }
+  }
+  if (check === "scriptInjection") {
+    return {
+      steps: [text.injection],
+      snippet: snippet("scriptInjection", scriptInjectionSnippet(), { instead: scriptInjectionRisky() }),
+    };
+  }
+  const ref = check === "unpinnedActions" || check === "ownActionsUnpinned" ? actionRefOf(item.detail ?? "") : null;
+  const made = ref ? snippet("pinnedUses", pinnedUsesSnippet(ref)) : (GENERIC_SNIPPET[check]?.() ?? null);
+  return { steps: copy.security.fix[GENERIC_KIND[check]].steps, snippet: made };
 }

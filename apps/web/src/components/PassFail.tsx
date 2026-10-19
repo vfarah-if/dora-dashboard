@@ -1,15 +1,21 @@
 import type { ReactNode } from "react";
 import { copy } from "../copy";
 
-export type PassFailState = "met" | "unmet" | "unseen";
+export type PassFailState = "met" | "unmet" | "unseen" | "accepted";
 
 const ICONS: Record<PassFailState, ReactNode> = {
   met: <path d="m8 12.5 2.5 2.5L16 9.5" />,
   unmet: <path d="m9 9 6 6m0-6-6 6" />,
   unseen: null,
+  accepted: <path d="M8 12h8" />,
 };
 
-const CLASSES: Record<PassFailState, string> = { met: "checks-passing", unmet: "checks-failing", unseen: "checks-none" };
+const CLASSES: Record<PassFailState, string> = {
+  met: "checks-passing",
+  unmet: "checks-failing",
+  unseen: "checks-none",
+  accepted: "checks-accepted",
+};
 
 /**
  * A result as an icon and a word, so that it never depends on colour. It reuses the check status icons and classes of

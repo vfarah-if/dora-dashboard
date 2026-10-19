@@ -2,7 +2,22 @@
  * Every user-facing string in the application. Components read from here and never write copy inline,
  * so wording can be reviewed in one place. Functions are used where a sentence carries a value.
  */
-import type { CloseReason, NotUsedReason, SecurityActionKind, SecurityThresholds } from "@dora-dashboard/core";
+import type {
+  AcceptanceReason,
+  ApiErrorCode,
+  CloseReason,
+  FingerprintKind,
+  NotUsedReason,
+  SecurityActionKind,
+  SecurityThresholds,
+  SupplyChainCheckId,
+} from "@dora-dashboard/core";
+
+/** The codes a 409 from accepting a finding can carry, each with its own sentence. */
+export type AcceptConflictCode = Extract<
+  ApiErrorCode,
+  "acceptance_no_record" | "acceptance_finding_changed" | "acceptance_duplicate" | "acceptance_limit"
+>;
 
 /** The figures an action's sentence is written from. */
 export interface ActionFacts {
@@ -2643,6 +2658,190 @@ export const copy = {
       },
     },
 
+    findingDetail: {
+      summary: "Why it is a risk, how it was found and what would clear it",
+      whyTitle: "Why it is a risk here",
+      foundTitle: "How it was found",
+      clearTitle: "What would clear it",
+      why: {
+        prHeadCheckout:
+          "The job checks out the pull request's own code while it holds secrets and a token that can write, so anyone who can open a pull request can run commands with those credentials.",
+        scriptInjection:
+          "The command contains text that an outsider chooses, such as a title or a branch name, and the shell reads it as code.",
+        selfHostedPublic:
+          "The job runs on a machine you look after, and a pull request from a stranger can start it on a public repository.",
+        unpinnedActions:
+          "A tag or a branch can be moved to different code after you have reviewed it, and the workflow would run the new code with your secrets.",
+        ownActionsUnpinned:
+          "A tag or a branch of your own organisation's action can be moved, so a mistake or a stolen account there reaches this workflow.",
+        workflowPermissions:
+          "With no limit set, the automatic token may carry more access than the job needs, which makes any flaw in a step more costly.",
+        unsecureCommands:
+          "The deprecated commands let a line of output set environment variables or change the path, which a malicious dependency can use to run its own code.",
+        keyFiles:
+          "A private key or an environment file in the repository is readable by everyone who can read the repository, and stays in the history after it is deleted.",
+        weakKeyFiles:
+          "The name looks like a key or a certificate, which may hold something private, although many such files are public certificates.",
+        curlPipeShell:
+          "A download that is run as it arrives is not checked, so whoever controls that address controls what runs.",
+        secretsInherit:
+          "Every secret of the calling workflow is passed on, including the ones the called workflow does not need.",
+        persistCredentials:
+          "The token stays on disk after the checkout, where any later step, including a compromised one, can read it.",
+        updateConfig:
+          "Without scheduled updates, a fix for a flaw in a dependency reaches the repository only when somebody remembers to look.",
+        lockfiles:
+          "Without a lockfile each install may pick a different version, including one that was published after the last review.",
+        securityPolicy: "Without a security policy a person who finds a flaw has no clear and private place to report it.",
+        dependencyReview:
+          "Without a dependency review, a pull request can add a package with a known flaw and nothing says so before it is merged.",
+        secretScanInCi:
+          "Without a scanner in the pipeline, a secret can be committed and only noticed after it has been published.",
+        staticAnalysis: "Without a code scanner in the pipeline, common flaws are only found by chance during review.",
+        baseImagesPinned:
+          "A base image that is not pinned to a digest can change underneath you, so the same Dockerfile may build different software tomorrow.",
+        latestImages:
+          "The latest tag moves whenever the publisher chooses, so a build cannot be repeated and an update can arrive unreviewed.",
+        nonRootImages:
+          "A process that runs as root has the most power inside the container, so a flaw in the application is more costly.",
+        remoteAdd:
+          "ADD with a web address fetches a file that is not checked, and what it fetches can change without any change to the Dockerfile.",
+      } satisfies Record<SupplyChainCheckId, string>,
+      route: {
+        own: (trigger: string) => `It runs under ${trigger}, started by this file's own trigger.`,
+        via: (trigger: string, hops: string) => `It runs under ${trigger}, through ${hops}.`,
+        unreadTrigger:
+          "The triggers of the workflow that starts it could not be read, so it is treated as one that any outsider's event can start.",
+        unreadTriggerVia: (hops: string) =>
+          `The triggers of the workflow that starts it could not be read, so it is treated as one that any outsider's event can start, through ${hops}.`,
+        overflow:
+          "More calls lead to this file than the dashboard follows, so the callers it did not follow are treated as having no condition. Conditions in this file still count.",
+        hop: (file: string, job: string | null) => (job === null ? file : `${file} job ${job}`),
+        hopJoin: " and then ",
+        dropped: (count: number) =>
+          `${count} more ${count === 1 ? "route leads" : "routes lead"} to this line and ${count === 1 ? "is" : "are"} not listed.`,
+      },
+      condition: {
+        holds: (file: string, line: number, text: string, subject: string) =>
+          `The condition at ${file} line ${line}${text ? ` (${text})` : ""} does not stop a run that ${subject} started.`,
+        unknown: (file: string, line: number, text: string) =>
+          `The condition at ${file} line ${line}${text ? ` (${text})` : ""} names something the dashboard cannot know, such as a label or an input, so it is not counted as a guard.`,
+        unreadable: (file: string, line: number, text: string) =>
+          `The condition at ${file} line ${line}${text ? ` (${text})` : ""} could not be read, so it was treated as open.`,
+        dropped: (count: number) => `${count} more ${count === 1 ? "condition was" : "conditions were"} left out of this list.`,
+      },
+      subject: {
+        pullRequest: "a pull request",
+        commentOrIssue: "a comment or an issue from an outsider",
+        other: "an outsider's event",
+      },
+      clear: {
+        workflowRun: (job: string, file: string) =>
+          `Add this condition to job ${job} in ${file}, or to the job in this file, so that a run started by a pull request is skipped.`,
+        workflowRunHere:
+          "Add this condition to the job in this file, or to the job that calls it, so that a run started by a pull request is skipped.",
+        fork: "Add this condition to the job, so that a pull request from a fork is skipped.",
+        injection:
+          "Pass the value to the step through an environment variable and read it in the script as a shell variable, as shown below.",
+      },
+    },
+
+    acceptance: {
+      accept: "Accept",
+      cancel: "Cancel",
+      submit: "Accept this finding",
+      reasonLegend: "Reason",
+      reasons: {
+        false_positive: {
+          label: "False positive",
+          hint: "The dashboard has read this wrongly and nothing is at risk.",
+        },
+        guarded_elsewhere: {
+          label: "Guarded elsewhere",
+          hint: "Something the dashboard cannot read already stops it, such as a rule in the repository settings.",
+        },
+        public_by_design: {
+          label: "Public by design",
+          hint: "It is meant to be in the repository, such as an example environment file with no real values.",
+        },
+        risk_accepted: {
+          label: "Risk accepted",
+          hint: "It is a real risk and the team has decided to live with it for now.",
+        },
+      } satisfies Record<AcceptanceReason, { label: string; hint: string }>,
+      noteLabel: "Note",
+      noteHint: (max: number) =>
+        `Say why, in ${max} characters or fewer. The note is kept in the dashboard and printed with the report, so it must hold no name and no secret value.`,
+      problems: {
+        noReason: "Choose a reason.",
+        empty: "Write a note that says why.",
+        tooLong: (max: number) => `The note must hold at most ${max} characters.`,
+        control: "The note must be written on one line, with no control characters.",
+      },
+      noteCount: (used: number, max: number) => `${used} of ${max} characters used.`,
+      accepted: "Accepted. It is listed under accepted findings and the report no longer counts it.",
+      conflicts: {
+        acceptance_no_record:
+          "The dashboard has no supply chain record for this repository yet, so nothing was accepted. Accept the finding again after the next crawl.",
+        acceptance_finding_changed:
+          "That finding changed since the page was read, so it was not accepted and the report was read again. Check what is listed now.",
+        acceptance_duplicate:
+          "That finding had already been accepted, so nothing was added and the report was read again. The list shows what is there now.",
+        acceptance_limit:
+          "This repository already holds as many acceptances as the dashboard allows, so nothing was added. Remove one that is no longer needed and try again.",
+      } satisfies Record<AcceptConflictCode, string>,
+      changed:
+        "That request conflicted with what the dashboard holds, so nothing was accepted and the report was read again. Check what is listed now.",
+      unreadable: (count: number) =>
+        `${count} stored ${count === 1 ? "acceptance" : "acceptances"} could not be read, so ${count === 1 ? "its finding counts" : "their findings count"} again. Accepting such a finding again replaces ${count === 1 ? "it" : "them"}.`,
+      alreadyRemoved:
+        "That acceptance had already been removed, so the report was read again and the list shows what is there now.",
+      cannotAcceptYet: "This can be accepted once a later read identifies the file.",
+      removed: "Removed. The finding counts again wherever it is still present.",
+      note: {
+        changed: (before: string, count: number) => `${before} before ${count} accepted ${count === 1 ? "finding" : "findings"}`,
+        unchanged: (count: number) =>
+          `The band is the same with or without ${count} accepted ${count === 1 ? "finding" : "findings"}`,
+      },
+      checkAccepted: (sentence: string, count: number) =>
+        `${sentence} ${count === 1 ? "It is" : "They are"} accepted, so ${count === 1 ? "it does" : "they do"} not count.`,
+      alsoAccepted: (count: number) => `${count} more ${count === 1 ? "is" : "are"} accepted and not counted.`,
+      lineAccepted: (found: string, count: number) =>
+        count === 1
+          ? `${found} This is accepted, so it does not count.`
+          : `${found} All ${count} are accepted, so they do not count.`,
+      section: {
+        title: "Accepted findings",
+        lede: "Findings that a person has accepted with a reason, which the report no longer counts. Alerts from GitHub are dismissed on GitHub, so they cannot be accepted here, and only open alerts count.",
+        what: "accepted findings",
+        empty: "Nothing has been accepted.",
+        reason: "Reason",
+        note: "Note",
+        acceptedOn: (date: string) => `Accepted on ${date}.`,
+        covers: (count: number) => `It covers ${count} places, because identical lines share one acceptance.`,
+        absent: "Accepted as missing",
+        undo: "Undo",
+        remove: "Remove",
+        removing: "Removing",
+        forEntry: (title: string, place: string) => `the acceptance of ${title}, ${place}`,
+        status: {
+          applies: "It applies now.",
+          reopened:
+            "Something of this check in this file is open again, so the acceptance no longer applies and it counts again. Remove it, then accept the finding again if the decision still holds.",
+          gone: "It no longer matches anything the latest read reports. Remove it to tidy the list if the finding has been dealt with.",
+          unchecked: "The latest read could not check it, so it is kept as it is. It is checked again at the next crawl.",
+        },
+        reopen: {
+          w2: "It reopens when the line, a caller that reaches it or a condition on the way changes.",
+          a1: "It reopens when the reference of the action changes, and moving the line does not reopen it.",
+          b: "It reopens when the file changes.",
+          p1: "It stops applying once a lockfile appears.",
+          n1: "It stops applying once the file or the tool appears.",
+        } satisfies Record<FingerprintKind, string>,
+        reopenOther: "It reopens when the finding changes.",
+      },
+    },
+
     start: {
       title: "Start here",
       lede: "The quickest way to a safer repository.",
@@ -2664,6 +2863,11 @@ export const copy = {
         count === 1
           ? "There is also one piece of advice that does not change the grade."
           : `There are also ${count} pieces of advice that do not change the grade.`,
+      accepted: (count: number) =>
+        count === 1
+          ? "One finding has been accepted with a reason, so the report no longer counts it."
+          : `${count} findings have been accepted with a reason, so the report no longer counts them.`,
+      seeAccepted: "See the accepted findings",
     },
 
     grade: {
@@ -2719,19 +2923,19 @@ export const copy = {
           `${count} medium or unrated ${count === 1 ? "alert has" : "alerts have"} waited longer than the ${days} day fix-by date${oldest === null ? "" : `, the oldest for ${oldest} days`}.`,
       },
       prHeadCheckout: {
-        good: "No workflow runs a pull request's own code while holding secrets.",
+        good: "No privileged workflow checks out a pull request's own code while holding secrets.",
         bad: (count: number) =>
-          `${count} ${count === 1 ? "workflow runs" : "workflows run"} a pull request's own code while holding secrets.`,
+          `${count} ${count === 1 ? "place in a privileged workflow checks" : "places in privileged workflows check"} out a pull request's own code while holding secrets.`,
       },
       scriptInjection: {
         good: "No workflow pastes text written by outsiders into a shell command.",
         bad: (count: number) =>
-          `${count} ${count === 1 ? "workflow pastes" : "workflows paste"} text written by outsiders into a shell command.`,
+          `${count} ${count === 1 ? "place pastes" : "places paste"} text written by outsiders into a shell command.`,
       },
       selfHostedPublic: {
         good: "No public repository runs pull requests on a self hosted machine.",
         bad: (count: number) =>
-          `${count} ${count === 1 ? "workflow runs" : "workflows run"} pull requests from a public repository on a self hosted machine.`,
+          `${count} ${count === 1 ? "place runs" : "places run"} pull requests from a public repository on a self hosted machine.`,
       },
       unpinnedActions: {
         good: "Every action from another organisation is pinned to a commit.",
@@ -2740,13 +2944,12 @@ export const copy = {
       },
       workflowPermissions: {
         good: "Every workflow limits what its automatic token can do.",
-        bad: (count: number) =>
-          `${count} ${count === 1 ? "workflow does" : "workflows do"} not limit what ${count === 1 ? "its" : "their"} automatic token can do.`,
+        bad: (count: number) => `${count} ${count === 1 ? "place does" : "places do"} not limit what the automatic token can do.`,
       },
       unsecureCommands: {
         good: "No workflow switches back on the deprecated unsecure commands.",
         bad: (count: number) =>
-          `${count} ${count === 1 ? "workflow switches" : "workflows switch"} back on the deprecated unsecure commands.`,
+          `${count} ${count === 1 ? "place switches" : "places switch"} back on the deprecated unsecure commands.`,
       },
       keyFiles: {
         good: "No private key or environment file is stored in the repository.",
@@ -2856,6 +3059,8 @@ export const copy = {
       scriptInjection: "Pass the value through a variable",
       pullRequestTrigger: "Run on pull_request, which is safe for code from forks",
       pullRequestTarget: "If you really need pull_request_target, never run the pull request's code in it",
+      workflowRunPush: "Only run when the upstream workflow was started by a push",
+      forkGuard: "Skip pull requests that come from a fork",
       dependabot: "Dependabot configuration for this repository",
       securityPolicy: "A starting SECURITY.md",
       gitignore: "Lines for .gitignore",
@@ -3309,7 +3514,7 @@ export const copy = {
       title: "The worst open alerts",
       what: "worst open alerts",
       subtitle:
-        "The open alerts, worst first, up to the number the report carries, with where each is and how long it has been open.",
+        "The open alerts, worst first, up to the number the report carries, with where each is and how long it has been open. Alerts from GitHub are triaged on GitHub, so a false positive is dismissed there, and only open alerts count here.",
       filterLabel: "Show alerts from",
       filterAll: "Every source",
       filterOption: (name: string, count: number) => `${name} (${count})`,
@@ -3326,6 +3531,11 @@ export const copy = {
       source: "Source",
       age: "Open for",
       fixBy: "Fix-by date",
+      rule: (id: string) => `Rule ${id}`,
+      reportedBy: (tool: string) => `Reported by ${tool}`,
+      daysLeft: (days: number) => `${days} ${days === 1 ? "day" : "days"} left`,
+      dueToday: "Due today",
+      daysPast: (days: number) => `${days} ${days === 1 ? "day" : "days"} past`,
       weakness: "Kind of problem",
       whereText: {
         package: (name: string | null, version: string | null, manifest: string | null) =>
@@ -3389,6 +3599,16 @@ export const copy = {
     },
 
     chain: {
+      foundBy: {
+        workflow: "Read from the workflow text, with its conditions.",
+        workflowText: "Read from the workflow text. Conditions do not change this check.",
+        uses: "Read from each uses: line.",
+        fileName: "Matched by file name only. The file is never opened.",
+        dockerfile: "Read from the Dockerfile.",
+        presence: "Looked for in the workflows and files of the deploy branch.",
+      },
+      foundByLabel: "How it was found",
+      seeEachPlace: "See each place",
       workflowsUnreadWhat: "workflow files that were not read",
       dockerfilesUnreadWhat: "Dockerfiles that were not read",
       workflows: {
@@ -3465,7 +3685,7 @@ export const copy = {
       unsecureCommands: {
         title: "Deprecated unsecure commands",
         ok: "No workflow switches them on.",
-        found: (n: number) => `${n} ${n === 1 ? "workflow switches" : "workflows switch"} them on.`,
+        found: (n: number) => `${n} ${n === 1 ? "place switches" : "places switch"} them on.`,
       },
       keyFiles: {
         title: "Private keys and environment files",
@@ -3554,7 +3774,7 @@ export const copy = {
       link: "See how each source is read",
     },
 
-    passFail: { met: "Met", unmet: "Not met", unseen: "Not visible" },
+    passFail: { met: "Met", unmet: "Not met", unseen: "Not visible", accepted: "Accepted" },
 
     branch: {
       title: "Branch protection and settings",

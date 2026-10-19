@@ -50,6 +50,8 @@ export type AlertRead<S extends AlertSource = AlertSource> =
  *   credential and a rate limit raise, as above, and so does any other refusal, and a missing repository or deploy
  *   branch, so the crawl keeps the earlier posture and never saves one made of nulls.
  * - `settingsUrl` is a page on the host a person can open to switch features on. It makes no request.
+ * - `fileUrl` is the page on the host that shows a file at a commit, at a line when one is given. It makes no request
+ *   and reads nothing, and it is null for a commit that is not hex or a path that is empty.
  */
 export interface SecurityAlertSource {
   readonly kind: string;
@@ -58,4 +60,5 @@ export interface SecurityAlertSource {
   secretAlerts(token: string, owner: string, name: string): Promise<AlertRead<"secret_scanning">>;
   posture(token: string, owner: string, name: string, branch: string): Promise<RepoPosture>;
   settingsUrl(owner: string, name: string): string;
+  fileUrl(owner: string, name: string, commitSha: string, path: string, line: number | null): string | null;
 }

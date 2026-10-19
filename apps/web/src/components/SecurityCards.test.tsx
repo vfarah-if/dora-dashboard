@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render as renderWith, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement, ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import type { SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
-import { errorSource, noAccessSource, noSecurity, offSource, securityReport } from "../test/fixtures";
+import { chainItem, errorSource, noAccessSource, noSecurity, offSource, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
 import { BranchProtectionCard } from "./BranchProtectionCard";
 import { DependencyUpdatesCard } from "./DependencyUpdatesCard";
@@ -11,6 +13,13 @@ import { ScorecardCard } from "./ScorecardCard";
 import { SecurityIssuesCard } from "./SecurityIssuesCard";
 import { SourcesPanel } from "./SourcesPanel";
 import { SupplyChainCard } from "./SupplyChainCard";
+
+// Each row of a supply chain check can open a form to accept it, which needs the query client.
+const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+const Providers = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={client}>{children}</QueryClientProvider>
+);
+const render = (ui: ReactElement) => renderWith(ui, { wrapper: Providers });
 
 const tile = (label: string) => screen.getByRole("heading", { level: 3, name: label }).closest("article")!;
 
@@ -38,7 +47,7 @@ describe("SupplyChainCard", () => {
 
   it("lists what was found with its file and line, and says where the workflow files were read from", () => {
     render(<SupplyChainCard report={securityReport()} group="workflows" />);
-    expect(screen.getByText(".github/workflows/ci.yml line 12")).toBeInTheDocument();
+    expect(screen.getByText(".github/workflows/ci.yml line 12", { selector: ".finding-place" })).toBeInTheDocument();
     expect(screen.getByText("acme-tools/setup@v2")).toBeInTheDocument();
     expect(screen.getByText("Read from commit abcdef1 on 1 Mar 2026, 10:05, covering 3 workflow files.")).toBeInTheDocument();
   });
@@ -130,17 +139,25 @@ describe("SupplyChainCard", () => {
     const user = userEvent.setup();
     const chain = securityReport().supplyChain;
     if (chain.status !== "ok") throw new Error("fixture");
-    const items = Array.from({ length: 7 }, (_, i) => ({ path: `.github/workflows/w${i}.yml`, line: i + 1, detail: null }));
-    const line: SupplyChainLine = { check: "unpinnedActions", met: false, graded: true, items, total: 60 };
+    const items = Array.from({ length: 7 }, (_, i) => chainItem(`.github/workflows/w${i}.yml`, i + 1));
+    const line: SupplyChainLine = {
+      check: "unpinnedActions",
+      met: false,
+      graded: true,
+      items,
+      total: 60,
+      accepted: 0,
+      absence: null,
+    };
     render(<SupplyChainCard report={securityReport({ supplyChain: { ...chain, lines: [line] } })} group="workflows" />);
-    expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/)).toHaveLength(5);
+    expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/, { selector: ".finding-place" })).toHaveLength(5);
     expect(screen.getByText("Showing 7 of 60.")).toBeInTheDocument();
     await user.click(
       screen.getByRole("button", {
         name: copy.space.showAllOf(7, copy.space.forCheck(copy.security.supplyChain.unpinnedActions.title)),
       }),
     );
-    expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/)).toHaveLength(7);
+    expect(screen.getAllByText(/^\.github\/workflows\/w\d\.yml line \d$/, { selector: ".finding-place" })).toHaveLength(7);
   });
 
   it("explains why nothing was read when code analysis is off or the files have not been read yet", () => {
@@ -746,5 +763,142 @@ describe("SourcesPanel", () => {
     expect(card("Workflow and dependency files")).toHaveTextContent("CODE_ANALYSIS=on");
     expect(card("Branch rules and settings")).toHaveTextContent("They have not been read yet.");
     expect(card("Branch rules and settings")).toHaveTextContent("Most repository settings need a repository administrator.");
+  });
+});
+
+describe("SupplyChainCard links and provenance", () => {
+  const withItems = (items: SupplyChainLine["items"]) => {
+    const chain = securityReport().supplyChain;
+    if (chain.status !== "ok") throw new Error("fixture");
+    const line: SupplyChainLine = {
+      check: "scriptInjection",
+      met: false,
+      graded: true,
+      items,
+      total: items.length,
+      accepted: 0,
+      absence: null,
+    };
+    render(<SupplyChainCard report={securityReport({ supplyChain: { ...chain, lines: [line] } })} group="workflows" />);
+  };
+
+  it("links the path and line to the scanned line when the host built a link", () => {
+    const url = "https://github.com/acme/widgets/blob/0123abc/.github/workflows/ci.yml#L12";
+    withItems([chainItem(".github/workflows/ci.yml", 12, null, { url })]);
+    expect(screen.getByRole("link", { name: /\.github\/workflows\/ci\.yml line 12/ })).toHaveAttribute("href", url);
+  });
+
+  it("shows plain text when there is no link", () => {
+    withItems([chainItem(".github/workflows/ci.yml", 12)]);
+    expect(screen.getByText(/ci\.yml line 12/, { selector: ".finding-place" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /ci\.yml/ })).not.toBeInTheDocument();
+  });
+
+  it("never links a javascript: address", () => {
+    withItems([chainItem(".github/workflows/ci.yml", 12, null, { url: "javascript:alert(1)" })]);
+    expect(screen.getByText(/ci\.yml line 12/, { selector: ".finding-place" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /ci\.yml/ })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+
+  it("gives each check row an anchor and says how it was found", () => {
+    render(<SupplyChainCard report={securityReport()} group="workflows" />);
+    const row = document.getElementById("chain-prHeadCheckout")!;
+    expect(row).toHaveTextContent("Read from the workflow text, with its conditions.");
+    expect(document.getElementById("chain-unpinnedActions")).toHaveTextContent("Read from each uses: line.");
+    expect(document.getElementById("chain-keyFiles")).toHaveTextContent("Matched by file name only. The file is never opened.");
+  });
+});
+
+describe("SupplyChainCard accepted findings", () => {
+  const withLines = (...lines: SupplyChainLine[]) => {
+    const chain = securityReport().supplyChain;
+    if (chain.status !== "ok") throw new Error("fixture");
+    return securityReport({ supplyChain: { ...chain, lines } });
+  };
+  const base = (check: SupplyChainLine["check"], extra: Partial<SupplyChainLine> = {}): SupplyChainLine => ({
+    check,
+    met: false,
+    graded: true,
+    items: [],
+    total: 0,
+    accepted: 0,
+    absence: null,
+    ...extra,
+  });
+  const rowOf = (check: string) => document.getElementById(`chain-${check}`)!;
+
+  it("shows a fully accepted check as Accepted, in words, and not as Met or as a claim that none is found", () => {
+    render(<SupplyChainCard report={withLines(base("prHeadCheckout", { met: true, accepted: 2 }))} group="workflows" />);
+    const row = rowOf("prHeadCheckout");
+    expect(within(row).getByText("Accepted")).toBeInTheDocument();
+    expect(within(row).queryByText("Met")).not.toBeInTheDocument();
+    expect(within(row).queryByText("Not met")).not.toBeInTheDocument();
+    expect(within(row).getByText("2 places do this. All 2 are accepted, so they do not count.")).toBeInTheDocument();
+    expect(within(row).queryByText("No workflow does this.")).not.toBeInTheDocument();
+  });
+
+  it("shows a check with open and accepted findings as Not met, and says how many more are accepted", () => {
+    const item = chainItem(".github/workflows/ci.yml", 12, "acme-tools/setup@v2", { fingerprint: "a1:0123456789abcdef" });
+    render(
+      <SupplyChainCard report={withLines(base("unpinnedActions", { items: [item], total: 1, accepted: 3 }))} group="workflows" />,
+    );
+    const row = rowOf("unpinnedActions");
+    expect(within(row).getByText("Not met")).toBeInTheDocument();
+    expect(
+      within(row).getByText("1 use of an action is not pinned to a commit. 3 more are accepted and not counted."),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Accept beside an item that has a fingerprint and not beside one that has none", () => {
+    const items = [
+      chainItem(".github/workflows/ci.yml", 12, null, { fingerprint: "w2:0123456789abcdef" }),
+      chainItem(".github/workflows/ci.yml", 30, null, { fingerprint: null }),
+    ];
+    render(<SupplyChainCard report={withLines(base("scriptInjection", { items, total: 2 }))} group="workflows" />);
+    const buttons = within(rowOf("scriptInjection")).getAllByRole("button", { name: /^Accept/ });
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAccessibleName("Accept .github/workflows/ci.yml line 12");
+  });
+
+  it("keeps a note typed beside one finding when another finding before it is accepted elsewhere", async () => {
+    const user = userEvent.setup();
+    const first = chainItem(".github/workflows/ci.yml", 12, null, { fingerprint: "w2:0000000000000001" });
+    const second = chainItem(".github/workflows/ci.yml", 30, null, { fingerprint: "w2:0000000000000002" });
+    const view = (items: ReturnType<typeof chainItem>[]) => (
+      <SupplyChainCard report={withLines(base("scriptInjection", { items, total: items.length }))} group="workflows" />
+    );
+    const { rerender } = render(view([first, second]));
+    await user.click(screen.getByRole("button", { name: "Accept .github/workflows/ci.yml line 30" }));
+    await user.type(screen.getByLabelText(copy.security.acceptance.noteLabel), "Half written");
+    rerender(view([second]));
+    expect(screen.getByLabelText(copy.security.acceptance.noteLabel)).toHaveValue("Half written");
+  });
+
+  it("offers Accept for a missing thing when its absence is open, named for the check", () => {
+    render(
+      <SupplyChainCard
+        report={withLines(base("securityPolicy", { graded: false, absence: { fingerprint: "n1:" } }))}
+        group="files"
+      />,
+    );
+    expect(
+      within(rowOf("securityPolicy")).getByRole("button", { name: `Accept ${copy.security.supplyChain.securityPolicy.title}` }),
+    ).toBeInTheDocument();
+    expect(within(rowOf("securityPolicy")).getByText("Not met")).toBeInTheDocument();
+  });
+
+  it("offers no Accept once the absence is accepted, and shows it as Accepted", () => {
+    render(<SupplyChainCard report={withLines(base("securityPolicy", { graded: false, accepted: 1 }))} group="files" />);
+    const row = rowOf("securityPolicy");
+    expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(row).getByText("Accepted")).toBeInTheDocument();
+    expect(within(row).getByText("No security policy was found. This is accepted, so it does not count.")).toBeInTheDocument();
+  });
+
+  it("offers no Accept for a thing that is there", () => {
+    render(<SupplyChainCard report={withLines(base("securityPolicy", { graded: false, met: true }))} group="files" />);
+    expect(within(rowOf("securityPolicy")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(rowOf("securityPolicy")).getByText("Met")).toBeInTheDocument();
   });
 });

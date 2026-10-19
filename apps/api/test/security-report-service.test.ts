@@ -51,6 +51,8 @@ describe("the security report service", () => {
       codeAnalysis: true,
       scorecardLookup: false,
       settingsUrl: (owner, name) => `https://host.example.test/${owner}/${name}/settings`,
+      fileUrl: (owner, name, sha, path, line) =>
+        `https://host.example.test/${owner}/${name}/blob/${sha}/${path}${line === null ? "" : `#L${line}`}`,
     };
   });
 
@@ -67,6 +69,18 @@ describe("the security report service", () => {
     ])("refuses the range %j", (range, message) => {
       const id = repoWith("widgets");
       expect(() => service().report(id, range)).toThrow(new ValidationError(message));
+    });
+
+    it("tells the report how many stored acceptances could not be read, and none when all can", () => {
+      const id = repoWith("widgets");
+      expect(service().report(id).acceptancesUnreadable).toBe(0);
+      const insert = raw(store).prepare(
+        "INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at) VALUES (?, 'lockfiles', ?, NULL, 'p1:', 'not_a_reason', 'x', 't')",
+      );
+      insert.run(id, "a.json");
+      insert.run(id, "b.json");
+
+      expect(service().report(id).acceptancesUnreadable).toBe(2);
     });
 
     it("describes now from the stored alerts and the range from the dates asked for", () => {

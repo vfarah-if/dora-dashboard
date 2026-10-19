@@ -4,6 +4,7 @@ import type { SecurityReport } from "@dora-dashboard/core";
 import { ApiError } from "../api/client";
 import { isRecordId, useRepos, useSecurityReport } from "../api/hooks";
 import { copy } from "../copy";
+import { AcceptedFindings } from "../components/AcceptedFindings";
 import { AlertsTable } from "../components/AlertsTable";
 import { BandLabel } from "../components/BandLabel";
 import { BranchProtectionCard } from "../components/BranchProtectionCard";
@@ -29,7 +30,7 @@ import { SupplyChainCard } from "../components/SupplyChainCard";
 import { WeaknessesChart } from "../components/WeaknessesChart";
 import { searchForCodePage } from "../lib/codeDetail";
 import { formatDate, formatDateTime, isoDaysAgo } from "../lib/format";
-import { alertsReadAt, joinWords, notReadKind, notReadYet, securityPartWeekNote, unreadParts } from "../lib/security";
+import { alertsReadAt, gradeNote, joinWords, notReadKind, notReadYet, securityPartWeekNote, unreadParts } from "../lib/security";
 import { repoName } from "../lib/series";
 import { useRangeParams } from "../lib/urlState";
 import { partWeek } from "../lib/weekly";
@@ -52,6 +53,7 @@ function PartlyRead({ report }: { report: SecurityReport }) {
 
 function Header({ report, listingName }: { report: SecurityReport | undefined; listingName: string | null }) {
   const read = report ? alertsReadAt(report) : null;
+  const note = report ? gradeNote(report) : null;
   const name = report ? repoName(report.repo) : listingName;
   return (
     <header className="page-header page-header-row">
@@ -72,6 +74,7 @@ function Header({ report, listingName }: { report: SecurityReport | undefined; l
             <p className="grade-line">
               <span>{report.grade ? c.gradeLine : c.gradeNone}</span>{" "}
               {report.grade && <BandLabel band={report.grade.overall.band} />}
+              {note && <span className="grade-note">{note}</span>}
             </p>
           </>
         )}
@@ -103,6 +106,7 @@ function Body({ report }: { report: SecurityReport }) {
             <SupplyChainCard report={report} group="images" />
           </>
         )}
+        <AcceptedFindings report={report} />
         {report.posture && <BranchProtectionCard report={report} />}
         <SourcesPanel report={report} />
         <Glossary />
@@ -134,6 +138,7 @@ function Body({ report }: { report: SecurityReport }) {
       <SupplyChainCard report={report} group="files" />
       <SupplyChainCard report={report} group="tools" />
       <SupplyChainCard report={report} group="images" />
+      <AcceptedFindings report={report} />
       <BranchProtectionCard report={report} />
       <SecurityIssuesCard report={report} />
       <ScorecardCard report={report} />

@@ -37,6 +37,9 @@ ANCHOR="com.apple/dora-dashboard"
 HOSTS_TAG="# dora-dashboard"
 HOSTS_BACKUP="/etc/hosts.before-dora-dashboard"
 HOST_PATTERN='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+# The scratch folder of a host step. It is not a local, because the EXIT trap that removes it runs after the function
+# has returned, when a local would be unset and `set -u` would fail the script after the step had succeeded.
+WORK=""
 
 die() {
   printf '%s\n' "$*" >&2
@@ -224,32 +227,30 @@ ROOT_STEPS_UNINSTALL='
 '
 
 host_install() {
-  local work
   [[ -n "$HOST" ]] || die "Set SERVICE_HOST in .env first, for example SERVICE_HOST=deliverymetrics.local."
   check_host
-  work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
+  WORK=$(mktemp -d)
+  trap 'rm -rf "$WORK"' EXIT
   {
     grep -v "$HOSTS_TAG\$" /etc/hosts
     printf '127.0.0.1\t%s\t%s\n::1\t%s\t%s\n' "$HOST" "$HOSTS_TAG" "$HOST" "$HOSTS_TAG"
-  } > "$work/hosts"
+  } > "$WORK/hosts"
   redirect_rules | pfctl -n -a "$ANCHOR" -f - 2> /dev/null || die "pfctl rejected the redirect rules."
-  redirect_plist > "$work/redirect.plist"
-  plutil -lint -s "$work/redirect.plist"
+  redirect_plist > "$WORK/redirect.plist"
+  plutil -lint -s "$WORK/redirect.plist"
   echo "sudo will ask for your Mac password once, to add $HOST to /etc/hosts and redirect port 80 on this machine to :$WEB_PORT."
-  sudo /bin/sh -c "$ROOT_STEPS_INSTALL" sh "$HOSTS_BACKUP" "$work/hosts" "$REDIRECT" "$work/redirect.plist" "$REDIRECT_PLIST"
+  sudo /bin/sh -c "$ROOT_STEPS_INSTALL" sh "$HOSTS_BACKUP" "$WORK/hosts" "$REDIRECT" "$WORK/redirect.plist" "$REDIRECT_PLIST"
   install
   answers || die "$(address) does not answer yet. See make service-status and make service-logs."
   echo "$(address) answers."
 }
 
 host_uninstall() {
-  local work
-  work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
-  grep -v "$HOSTS_TAG\$" /etc/hosts > "$work/hosts"
+  WORK=$(mktemp -d)
+  trap 'rm -rf "$WORK"' EXIT
+  grep -v "$HOSTS_TAG\$" /etc/hosts > "$WORK/hosts"
   echo "sudo will ask for your Mac password once, to remove the hosts entries and the port 80 redirect."
-  sudo /bin/sh -c "$ROOT_STEPS_UNINSTALL" sh "$work/hosts" "$REDIRECT" "$REDIRECT_PLIST" "$ANCHOR"
+  sudo /bin/sh -c "$ROOT_STEPS_UNINSTALL" sh "$WORK/hosts" "$REDIRECT" "$REDIRECT_PLIST" "$ANCHOR"
   echo "Removed. Delete SERVICE_HOST from .env, then run make service-install to answer on http://localhost:$WEB_PORT again."
 }
 

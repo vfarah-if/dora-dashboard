@@ -3,6 +3,12 @@ export interface Checkout {
   dir: string;
   commitSha: string;
   dispose(): Promise<void>;
+  /**
+   * The git blob id of each path at the checked-out commit, read from the commit's tree and never from the file, so a
+   * file that must not be opened is still identified (ADR 0032). A path that is not a regular file at that commit, such
+   * as a link or a submodule, or is missing, is left out. It raises when the tree cannot be read.
+   */
+  blobIds(paths: readonly string[]): Promise<Map<string, string>>;
 }
 
 /**

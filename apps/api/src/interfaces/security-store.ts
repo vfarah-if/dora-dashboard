@@ -1,6 +1,7 @@
 import type {
   AlertOf,
   AlertSource,
+  FindingAcceptance,
   HeldPosture,
   LockedPackage,
   ReadFailure,
@@ -21,6 +22,11 @@ export interface SecurityKeys {
   scorecard: string | null;
   /** The last failed clone inspection's time, or null when there is none. */
   supplyChainFailure: string | null;
+  /**
+   * How many acceptances are held and the highest id among the rows held. AUTOINCREMENT makes an accept raise that id and
+   * a removal lowers the count, so the key changes on every accept and every removal.
+   */
+  acceptances: string;
 }
 
 /**
@@ -42,6 +48,12 @@ export interface AlertScan {
   unreadable: Record<AlertSource, number>;
 }
 
+/** The readable acceptances of a repository, and how many stored rows were left out as unreadable. */
+export interface AcceptanceScan {
+  acceptances: FindingAcceptance[];
+  unreadable: number;
+}
+
 /**
  * How `saveSecurityAlerts` treats the source's alerts the read did not list. `merge` leaves them, for a read that
  * stopped short. `replace` removes them, for a read that saw everything the source holds.
@@ -59,6 +71,9 @@ export type SaveMode = "merge" | "replace";
  *   answers as not held.
  * - A source never read, or whose stored row is not in the current shape, answers `not_read`.
  * - `supplyChain` never loads the package list, which can be large; `lockedPackages` does.
+ * - Acceptances are keyed by repository, check, path and fingerprint. A row that cannot be read is left out and logged
+ *   once, which is the safe direction: the finding counts again. `acceptanceScan` also counts those rows, so the report
+ *   can say that some were left out.
  * - Everything is removed with its repository.
  */
 export interface SecurityStore {
@@ -107,4 +122,13 @@ export interface SecurityStore {
   scorecard(repoId: number): StoredScorecard | null;
 
   securityKeys(repoId: number): SecurityKeys;
+
+  /** The repository's readable acceptances, oldest first. A path that is none is read back as null. */
+  acceptances(repoId: number): FindingAcceptance[];
+  /** The same acceptances, with how many stored rows were left out because they could not be read. */
+  acceptanceScan(repoId: number): AcceptanceScan;
+  /** Saves an acceptance and returns it with its id, or null when the same finding is already accepted. */
+  saveAcceptance(repoId: number, acceptance: Omit<FindingAcceptance, "id">): FindingAcceptance | null;
+  /** Removes one acceptance of this repository; false when it holds none with that id. */
+  deleteAcceptance(repoId: number, id: number): boolean;
 }

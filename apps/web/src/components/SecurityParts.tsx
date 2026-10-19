@@ -5,11 +5,24 @@ import { effortLabel, severityLabel, type Effort } from "../lib/security";
 import { ShowAllList } from "./ShowAllList";
 
 /** A titled section of the security report, with a lede saying what it shows. */
-export function SecurityBlock({ id, title, lede, children }: { id: string; title: string; lede?: string; children: ReactNode }) {
+export function SecurityBlock({
+  id,
+  title,
+  lede,
+  children,
+  focusable,
+}: {
+  id: string;
+  title: string;
+  lede?: string;
+  children: ReactNode;
+  /** True for a section that script moves focus to, such as after a finding is accepted into it. */
+  focusable?: boolean;
+}) {
   const titleId = `${id}-title`;
   return (
     <section id={id} aria-labelledby={titleId} className="section">
-      <h2 id={titleId} className="section-title">
+      <h2 id={titleId} className="section-title" tabIndex={focusable ? -1 : undefined}>
         {title}
       </h2>
       {lede && <p className="section-lede">{lede}</p>}

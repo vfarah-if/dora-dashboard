@@ -6,6 +6,12 @@ import { PROPORTIONAL, growth } from "./growth.js";
 import { WORKFLOW_PATH, chainFacts, file, withPermissions, workflowFacts } from "./security.js";
 
 const SHA = "a".repeat(40);
+/** Every finding carries a 16 character hash of its line (ADR 0039). */
+const HASH = expect.stringMatching(/^[0-9a-f]{16}$/);
+/** The reach hash of a finding that reads no route, which is FNV-1a's offset basis: the hash of no text at all. */
+const NO_REACH = "cbf29ce484222325";
+/** The reach hash of a finding that some route reaches, which is never the hash of no reach. */
+const REACHED = expect.stringMatching(/^(?!cbf29ce484222325$)[0-9a-f]{16}$/);
 const risks = (yaml: string, risk: WorkflowRisk, path = WORKFLOW_PATH): WorkflowFinding[] =>
   workflowFacts(yaml, path).findings.filter((finding) => finding.risk === risk);
 
@@ -172,7 +178,7 @@ describe("workflow permissions", () => {
   it("flags write-all wherever it appears, with its line", () => {
     const yaml = `on: push\njobs:\n  build:\n    permissions: write-all\n    runs-on: ubuntu-latest\n`;
     expect(risks(yaml, "writeAll")).toEqual([
-      { file: WORKFLOW_PATH, line: 4, risk: "writeAll", evidence: "permissions: write-all" },
+      { file: WORKFLOW_PATH, line: 4, risk: "writeAll", evidence: "permissions: write-all", lineHash: HASH, reachHash: NO_REACH },
     ]);
   });
 
@@ -187,7 +193,7 @@ describe("workflow permissions", () => {
 
   it("flags a workflow with no permissions anywhere", () => {
     expect(risks(`on: push\njobs:\n${job()}`, "noPermissions")).toEqual([
-      { file: WORKFLOW_PATH, line: null, risk: "noPermissions", evidence: "permissions" },
+      { file: WORKFLOW_PATH, line: null, risk: "noPermissions", evidence: "permissions", lineHash: HASH, reachHash: NO_REACH },
     ]);
   });
 
@@ -257,7 +263,16 @@ describe("script injection", () => {
   it("flags an untrusted expression in a single line run, with its line and the expression as evidence", () => {
     const yaml = withPermissions(privileged, '      - run: echo "${{ github.event.comment.body }}"');
     expect(risks(yaml, "scriptInjection")).toEqual([
-      { file: WORKFLOW_PATH, line: 7, risk: "scriptInjection", evidence: "github.event.comment.body" },
+      {
+        file: WORKFLOW_PATH,
+        line: 7,
+        risk: "scriptInjection",
+        evidence: "github.event.comment.body",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "issue_comment", via: [] }],
+        conditions: [],
+      },
     ]);
   });
 
@@ -397,7 +412,16 @@ describe("pull request head checkout", () => {
 
   it("names the reference and the line, never the whole line", () => {
     expect(under("on: pull_request_target", ref("${{ github.event.pull_request.head.sha }}"))).toEqual([
-      { file: WORKFLOW_PATH, line: 9, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.sha" },
+      {
+        file: WORKFLOW_PATH,
+        line: 9,
+        risk: "prHeadCheckout",
+        evidence: "github.event.pull_request.head.sha",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "pull_request_target", via: [] }],
+        conditions: [],
+      },
     ]);
   });
 
@@ -479,7 +503,7 @@ describe("other workflow risks", () => {
     const yaml =
       "on: push\npermissions: {}\njobs:\n  call:\n    uses: acme/shared/.github/workflows/b.yml@v1\n    secrets: inherit\n";
     expect(risks(yaml, "secretsInherit")).toEqual([
-      { file: WORKFLOW_PATH, line: 6, risk: "secretsInherit", evidence: "secrets: inherit" },
+      { file: WORKFLOW_PATH, line: 6, risk: "secretsInherit", evidence: "secrets: inherit", lineHash: HASH, reachHash: NO_REACH },
     ]);
   });
 
@@ -494,7 +518,16 @@ describe("other workflow risks", () => {
 
     it("flags a checkout without persist-credentials: false under a privileged trigger", () => {
       expect(risks(withPermissions("on: issues", checkout("")), "persistCredentials")).toEqual([
-        { file: WORKFLOW_PATH, line: 7, risk: "persistCredentials", evidence: "actions/checkout@v4" },
+        {
+          file: WORKFLOW_PATH,
+          line: 7,
+          risk: "persistCredentials",
+          evidence: "actions/checkout@v4",
+          lineHash: HASH,
+          reachHash: REACHED,
+          routes: [{ trigger: "issues", via: [] }],
+          conditions: [],
+        },
       ]);
     });
 
@@ -679,6 +712,7 @@ describe("Dockerfiles", () => {
     expect(docker(content)).toEqual([
       {
         path: "Dockerfile",
+        blob: null,
         images: 6,
         unpinnedImages: 5,
         latestImages: 3,
@@ -812,7 +846,7 @@ describe("key files", () => {
     ".env.prod",
     ".env.development.local",
   ])("reads %s as strong", (path) => {
-    expect(keys([path])).toEqual([{ path, strength: "strong" }]);
+    expect(keys([path])).toEqual([{ path, blob: null, strength: "strong" }]);
   });
 
   it.each([
@@ -826,7 +860,7 @@ describe("key files", () => {
     "tls/private.key",
     "CA.PEM",
   ])("reads %s as weak", (path) => {
-    expect(keys([path])).toEqual([{ path, strength: "weak" }]);
+    expect(keys([path])).toEqual([{ path, blob: null, strength: "weak" }]);
   });
 
   it.each([
@@ -1004,9 +1038,9 @@ describe("lockfile summaries", () => {
 });
 
 describe("supplyChainFacts counts and bounds", () => {
-  it("is version 3 and empty for an empty repository", () => {
+  it("is version 5 and empty for an empty repository", () => {
     expect(chainFacts()).toEqual({
-      version: 3,
+      version: 5,
       workflowsRead: 0,
       workflowsUnread: [],
       dockerfilesUnread: [],
@@ -1025,7 +1059,14 @@ describe("supplyChainFacts counts and bounds", () => {
       dockerfiles: [],
       ecosystems: [],
       listingComplete: true,
+      blobsRead: true,
     });
+  });
+
+  it("carries whether the blob ids were read, which is false only when the caller's lookup failed and gave null", () => {
+    expect(chainFacts({ blobs: new Map() }).blobsRead).toBe(true);
+    expect(chainFacts({ blobs: new Map([["Dockerfile", "0".repeat(40)]]) }).blobsRead).toBe(true);
+    expect(chainFacts({ blobs: null }).blobsRead).toBe(false);
   });
 
   it("carries whether the listing of the clone was complete", () => {
@@ -1192,8 +1233,9 @@ describe("supplyChainFacts on a whole workflow", () => {
 describe("supplyChainFacts never reads key files", () => {
   it("takes key files from paths alone", () => {
     expect(
-      supplyChainFacts({ paths: [".env"], listingComplete: true, workflows: [], lockfiles: [], unread: [] }).keyFiles,
-    ).toEqual([{ path: ".env", strength: "strong" }]);
+      supplyChainFacts({ paths: [".env"], listingComplete: true, workflows: [], lockfiles: [], unread: [], blobs: new Map() })
+        .keyFiles,
+    ).toEqual([{ path: ".env", blob: null, strength: "strong" }]);
   });
 });
 
@@ -1252,7 +1294,16 @@ describe("hostile volume", () => {
     );
     // One expression on one line. Reading the block again for each nested run key would report it three times.
     expect(risks(yaml, "scriptInjection")).toEqual([
-      { file: WORKFLOW_PATH, line: 9, risk: "scriptInjection", evidence: "github.event.issue.title" },
+      {
+        file: WORKFLOW_PATH,
+        line: 9,
+        risk: "scriptInjection",
+        evidence: "github.event.issue.title",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "issue_comment", via: [] }],
+        conditions: [],
+      },
     ]);
   });
 
@@ -1378,7 +1429,16 @@ describe("pull request head references", () => {
 
   it("flags a repository of the pull request's fork, with the expression as evidence", () => {
     expect(under(target, withKey("repository", "${{ github.event.pull_request.head.repo.full_name }}"))).toEqual([
-      { file: WORKFLOW_PATH, line: 9, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.repo.full_name" },
+      {
+        file: WORKFLOW_PATH,
+        line: 9,
+        risk: "prHeadCheckout",
+        evidence: "github.event.pull_request.head.repo.full_name",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "pull_request_target", via: [] }],
+        conditions: [],
+      },
     ]);
   });
 
@@ -1477,7 +1537,9 @@ describe("shell commands over several lines", () => {
 
   it("joins a backslash continuation in a run block and names the first line", () => {
     const step = "      - run: |\n          curl -fsSL https://example.com/i.sh \\\n            | bash";
-    expect(pipes(step)).toEqual([{ file: WORKFLOW_PATH, line: 8, risk: "curlPipeShell", evidence: "curl | bash" }]);
+    expect(pipes(step)).toEqual([
+      { file: WORKFLOW_PATH, line: 8, risk: "curlPipeShell", evidence: "curl | bash", lineHash: HASH, reachHash: NO_REACH },
+    ]);
   });
 
   it("joins a line that ends in a pipe in a run block", () => {
@@ -1622,9 +1684,9 @@ describe("key files by strength and cap", () => {
     const found = keys([...weak, "zz/id_rsa", "zz/.env.production", "zz/.env"]);
     // Strong files come first, each in path order, then 200 of the 211 weak ones.
     expect(found.slice(0, 3)).toEqual([
-      { path: "zz/.env", strength: "strong" },
-      { path: "zz/.env.production", strength: "strong" },
-      { path: "zz/id_rsa", strength: "strong" },
+      { path: "zz/.env", blob: null, strength: "strong" },
+      { path: "zz/.env.production", blob: null, strength: "strong" },
+      { path: "zz/id_rsa", blob: null, strength: "strong" },
     ]);
     expect(found.filter((k) => k.strength === "weak")).toHaveLength(200);
     expect(found).toHaveLength(203);
@@ -1634,16 +1696,16 @@ describe("key files by strength and cap", () => {
     const strong = Array.from({ length: 250 }, (_, i) => `s${String(i).padStart(3, "0")}/.env`);
     const found = keys([...strong, "a/server.pem"]);
     expect(found.filter((k) => k.strength === "strong")).toHaveLength(200);
-    expect(found.filter((k) => k.strength === "weak")).toEqual([{ path: "a/server.pem", strength: "weak" }]);
+    expect(found.filter((k) => k.strength === "weak")).toEqual([{ path: "a/server.pem", blob: null, strength: "weak" }]);
   });
 
   it("puts the files committed on purpose with the weak ones, so they never lower the grade", () => {
     expect(keys([".env.test", ".env.dev", "x/.env.dev-acme", ".env.ci", "debug.keystore"])).toEqual([
-      { path: "x/.env.dev-acme", strength: "strong" },
-      { path: ".env.ci", strength: "weak" },
-      { path: ".env.dev", strength: "weak" },
-      { path: ".env.test", strength: "weak" },
-      { path: "debug.keystore", strength: "weak" },
+      { path: "x/.env.dev-acme", blob: null, strength: "strong" },
+      { path: ".env.ci", blob: null, strength: "weak" },
+      { path: ".env.dev", blob: null, strength: "weak" },
+      { path: ".env.test", blob: null, strength: "weak" },
+      { path: "debug.keystore", blob: null, strength: "weak" },
     ]);
   });
 });
@@ -1667,7 +1729,16 @@ describe("rows after a block scalar", () => {
     ].join("\n");
     // The block ends at the dash on line 10, so the ref on line 13 is a key of the checkout step, not script text.
     expect(workflowFacts(yaml).findings).toEqual([
-      { file: WORKFLOW_PATH, line: 13, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.sha" },
+      {
+        file: WORKFLOW_PATH,
+        line: 13,
+        risk: "prHeadCheckout",
+        evidence: "github.event.pull_request.head.sha",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "pull_request_target", via: [] }],
+        conditions: [],
+      },
     ]);
   });
 });
@@ -1764,7 +1835,18 @@ describe("composite actions and reusable workflows run with their caller's event
       [".github/workflows/caller.yml", callingWorkflow("on: pull_request_target")],
       [REUSABLE, checkout],
     ]).findings;
-    expect(found).toEqual([{ file: REUSABLE, line: 10, risk: "prHeadCheckout", evidence: "github.event.pull_request.head.sha" }]);
+    expect(found).toEqual([
+      {
+        file: REUSABLE,
+        line: 10,
+        risk: "prHeadCheckout",
+        evidence: "github.event.pull_request.head.sha",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "pull_request_target", via: [{ file: ".github/workflows/caller.yml", job: "call" }] }],
+        conditions: [],
+      },
+    ]);
   });
 
   it("notes the pull request trigger of the caller on a reusable workflow's self-hosted runner", () => {
@@ -1773,7 +1855,19 @@ describe("composite actions and reusable workflows run with their caller's event
       [".github/workflows/caller.yml", callingWorkflow("on: pull_request")],
       [REUSABLE, selfHosted],
     ]).findings.filter((f) => f.risk === "selfHosted");
-    expect(found).toEqual([{ file: REUSABLE, line: 5, risk: "selfHosted", evidence: "self-hosted", onPullRequest: true }]);
+    expect(found).toEqual([
+      {
+        file: REUSABLE,
+        line: 5,
+        risk: "selfHosted",
+        evidence: "self-hosted",
+        onPullRequest: true,
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "pull_request", via: [{ file: ".github/workflows/caller.yml", job: "call" }] }],
+        conditions: [],
+      },
+    ]);
   });
 
   it("does not check one that only unprivileged workflows call, or that nothing in the repository calls", () => {
@@ -1846,7 +1940,16 @@ describe("caps that keep each risk and each kind of action apart", () => {
     const found = chainFacts({ paths: [...advice, triage].map((f) => f.path), workflows: [...advice, triage] });
     expect(found.findings.filter((f) => f.risk === "selfHosted")).toHaveLength(2000);
     expect(found.findings.filter((f) => f.risk === "scriptInjection")).toEqual([
-      { file: triage.path, line: 7, risk: "scriptInjection", evidence: "github.event.issue.title" },
+      {
+        file: triage.path,
+        line: 7,
+        risk: "scriptInjection",
+        evidence: "github.event.issue.title",
+        lineHash: HASH,
+        reachHash: REACHED,
+        routes: [{ trigger: "issue_comment", via: [] }],
+        conditions: [],
+      },
     ]);
     expect(found.findingsDropped).toBe(100);
   });
@@ -1892,5 +1995,805 @@ describe("caps that keep each risk and each kind of action apart", () => {
       { file: ".github/workflows/c.yml", action: "acme/tool" },
     ]);
     expect(found.actionsDropped).toBe(2_000);
+  });
+});
+
+describe("conditions that keep an outsider's event out", () => {
+  const CALLER = ".github/workflows/deploy.yml";
+  const CALLEE = ".github/workflows/migrate.yml";
+  const lineOf = (yaml: string, needle: string) => yaml.split("\n").findIndex((line) => line.includes(needle)) + 1;
+  const run = (files: [string, string][]) =>
+    chainFacts({ paths: files.map(([path]) => path), workflows: files.map(([path, content]) => file(path, content)) });
+  const heads = (files: [string, string][]) => run(files).findings.filter((f) => f.risk === "prHeadCheckout");
+  const only = (yaml: string, risk: WorkflowRisk, path = WORKFLOW_PATH) =>
+    run([[path, yaml]]).findings.filter((f) => f.risk === risk);
+
+  /** A reusable workflow that checks out the head commit of the run that started its caller. */
+  const callee = (stepLines: string[] = [], jobLines: string[] = []) =>
+    [
+      "on:",
+      "  workflow_call:",
+      "  workflow_dispatch:",
+      "permissions: {}",
+      "jobs:",
+      "  migrate:",
+      ...jobLines,
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      `      - uses: actions/checkout@${SHA}`,
+      ...stepLines,
+      "        with:",
+      "          persist-credentials: false",
+      "          ref: ${{ github.event.workflow_run.head_sha }}",
+      "",
+    ].join("\n");
+  const REF = "ref: ${{ github.event.workflow_run.head_sha }}";
+
+  /** A workflow_run caller with two jobs that only a push can start, and a calling job that needs both. */
+  const caller = (callLines: string[], needs = "    needs: [gate, changes]") =>
+    [
+      "name: Deploy",
+      "on:",
+      "  workflow_run:",
+      "    workflows: [CI]",
+      "    types: [completed]",
+      "permissions: {}",
+      "jobs:",
+      "  changes:",
+      "    runs-on: ubuntu-latest",
+      "    if: github.event.workflow_run.event == 'push'",
+      "    steps:",
+      "      - run: echo changes",
+      "  gate:",
+      "    runs-on: ubuntu-latest",
+      "    if: github.event.workflow_run.event == 'push'",
+      "    steps:",
+      "      - run: echo gate",
+      "  migrate:",
+      needs,
+      ...callLines,
+      "    uses: ./.github/workflows/migrate.yml",
+      "",
+    ].join("\n");
+  const viaCaller = [{ trigger: "workflow_run", via: [{ file: CALLER, job: "migrate" }] }];
+
+  describe("A. the reported case", () => {
+    it("reports nothing when the calling job has no condition, because its needs are skipped", () => {
+      expect(
+        heads([
+          [CALLER, caller([])],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([]);
+    });
+
+    it("reports one finding naming its route and the condition that lets it through when the call says always()", () => {
+      const yaml = caller(["    if: always()"]);
+      expect(
+        heads([
+          [CALLER, yaml],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([
+        {
+          file: CALLEE,
+          line: lineOf(callee(), REF),
+          risk: "prHeadCheckout",
+          evidence: "github.event.workflow_run.head_sha",
+          routes: viaCaller,
+          conditions: [{ file: CALLER, line: lineOf(yaml, "if: always()"), text: "always()", verdict: "holds" }],
+          lineHash: HASH,
+          reachHash: REACHED,
+        },
+      ]);
+    });
+
+    it.each([
+      ["a result test on a skipped need", ["    if: always() && needs.gate.result == 'success'"]],
+      ["a wrapped condition", ["    if: ${{ !cancelled() && needs.changes.result == 'success' }}"]],
+      ["a folded block", ["    if: >-", "      always()", "      && needs.gate.result == 'success'"]],
+      [
+        "a literal block with a leading !",
+        ["    if: |", "      !failure() && !cancelled()", "      && needs.changes.result == 'success'"],
+      ],
+      ["a plain continuation", ["    if: always()", "      && needs.gate.result == 'success'"]],
+      ["an output of a skipped need", ["    if: always() && needs.changes.outputs.db-affected == 'true'"]],
+    ])("reports nothing for %s", (_, lines) => {
+      expect(
+        heads([
+          [CALLER, caller(lines)],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([]);
+    });
+
+    it.each([
+      ["a scalar", "    needs: gate"],
+      ["a flow list", "    needs: [gate, changes]"],
+      ["a block list", "    needs:\n      - gate\n      - changes"],
+      ["a quoted id", "    needs: ['gate']"],
+    ])("reads needs written as %s", (_, needs) => {
+      expect(
+        heads([
+          [CALLER, caller([], needs)],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([]);
+    });
+
+    it("reports the exact shape of the original false positive as no finding", () => {
+      const yaml = [
+        "name: Deploy",
+        "on:",
+        "  workflow_run:",
+        "    workflows: [CI]",
+        "    types: [completed]",
+        "permissions: {}",
+        "jobs:",
+        "  gate:",
+        "    runs-on: ubuntu-latest",
+        "    if: |",
+        "      github.event_name == 'workflow_dispatch'",
+        "      || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')",
+        "    steps:",
+        "      - run: echo gate",
+        "  changes:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: echo changes",
+        "  migrate:",
+        "    needs: [gate, changes]",
+        "    if: |",
+        "      !failure() && !cancelled()",
+        "      && needs.gate.result == 'success'",
+        "      && needs.changes.result == 'success'",
+        "      && needs.changes.outputs.db-affected != 'false'",
+        "    uses: ./.github/workflows/migrate.yml",
+        "",
+      ].join("\n");
+      const found = run([
+        [CALLER, yaml],
+        [CALLEE, callee([], ["    if: steps.gate.outputs.enabled == 'true'"])],
+      ]).findings;
+      expect(found.filter((f) => f.risk === "prHeadCheckout" || f.risk === "persistCredentials")).toEqual([]);
+    });
+
+    it("reports a condition that depends on something unknown, and says so", () => {
+      const yaml = caller(["    if: always() && github.event.workflow_run.conclusion == 'success'"]);
+      const found = heads([
+        [CALLER, yaml],
+        [CALLEE, callee()],
+      ]);
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions).toEqual([
+        {
+          file: CALLER,
+          line: lineOf(yaml, "conclusion"),
+          text: "always() && github.event.workflow_run.conclusion == ''",
+          verdict: "unknown",
+        },
+      ]);
+    });
+
+    it("lists the condition of a needed job that may run", () => {
+      const yaml = caller([], "    needs: [gate, changes]").replace(
+        "    if: github.event.workflow_run.event == 'push'\n    steps:\n      - run: echo gate",
+        "    if: github.event.workflow_run.conclusion == 'success'\n    steps:\n      - run: echo gate",
+      );
+      const found = heads([
+        [CALLER, yaml],
+        [CALLEE, callee()],
+      ]);
+      // changes is skipped in both worlds, so the implicit success() of the call is false and nothing reaches the callee.
+      expect(found).toEqual([]);
+      const single = yaml.replace("needs: [gate, changes]", "needs: [gate]");
+      const reported = heads([
+        [CALLER, single],
+        [CALLEE, callee()],
+      ]);
+      expect(reported).toHaveLength(1);
+      expect(reported[0]!.conditions).toEqual([
+        {
+          file: CALLER,
+          line: lineOf(single, "conclusion"),
+          text: "github.event.workflow_run.conclusion == ''",
+          verdict: "unknown",
+        },
+      ]);
+    });
+
+    /** `check` runs only for a push, then `relay`, then `migrate`, which calls the callee. */
+    const chain = (migrateIf: string[], relayIf: string[] = ["    if: always()"]) =>
+      [
+        "on:",
+        "  workflow_run:",
+        "    workflows: [CI]",
+        "permissions: {}",
+        "jobs:",
+        "  check:",
+        "    runs-on: ubuntu-latest",
+        "    if: github.event.workflow_run.event == 'push'",
+        "    steps:",
+        "      - run: echo check",
+        "  relay:",
+        "    needs: check",
+        "    runs-on: ubuntu-latest",
+        ...relayIf,
+        "    steps:",
+        "      - run: echo relay",
+        "  migrate:",
+        "    needs: relay",
+        ...migrateIf,
+        "    uses: ./.github/workflows/migrate.yml",
+        "",
+      ].join("\n");
+
+    it("reports a job with no condition that needs a job running through always(), past a skipped need", () => {
+      // GitHub: `relay` runs because of always(), so its success() is true and `migrate`, which needs only `relay`, runs.
+      expect(
+        heads([
+          [CALLER, chain([])],
+          [CALLEE, callee()],
+        ]),
+      ).toHaveLength(1);
+    });
+
+    it("reports nothing when a skipped need is followed by two jobs with no condition", () => {
+      // `relay` is skipped by its own implicit success(), and `migrate` needs `relay`, so a skip reaches both.
+      expect(
+        heads([
+          [CALLER, chain([], [])],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([]);
+    });
+
+    it("reports a result test on a job that runs, because its result is not known", () => {
+      expect(
+        heads([
+          [CALLER, chain(["    if: always() && needs.relay.result == 'success'"])],
+          [CALLEE, callee()],
+        ]),
+      ).toHaveLength(1);
+    });
+
+    it("reads a need as skipped only when that need does not run", () => {
+      // `relay` runs through always(), so its result is unknown and the test stays open. Without the always() it is skipped.
+      const test = ["    if: always() && needs.relay.result == 'skipped'"];
+      expect(
+        heads([
+          [CALLER, chain(test)],
+          [CALLEE, callee()],
+        ]),
+      ).toHaveLength(1);
+      expect(
+        heads([
+          [CALLER, chain(test, [])],
+          [CALLEE, callee()],
+        ]),
+      ).toHaveLength(1);
+      const success = ["    if: always() && needs.relay.result == 'success'"];
+      expect(
+        heads([
+          [CALLER, chain(success, [])],
+          [CALLEE, callee()],
+        ]),
+      ).toEqual([]);
+    });
+  });
+
+  describe("B. conditions in the called workflow", () => {
+    const open = caller(["    if: always()"]);
+    it.each([
+      ["a step that tests the upstream event", ["        if: github.event.workflow_run.event == 'push'"], []],
+      [
+        "a job that tests the event name or the upstream event",
+        [],
+        ["    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'push'"],
+      ],
+      [
+        "a step that tests the head repository against this one",
+        ["        if: github.event.workflow_run.head_repository.full_name == github.repository"],
+        [],
+      ],
+      [
+        "a step that tests the head repository's owner",
+        ["        if: github.event.workflow_run.head_repository.owner.login == github.repository_owner"],
+        [],
+      ],
+      ["a step that tests the fork flag", ["        if: ${{ !github.event.workflow_run.head_repository.fork }}"], []],
+    ])("reports nothing for %s", (_, stepLines, jobLines) => {
+      expect(
+        heads([
+          [CALLER, open],
+          [CALLEE, callee(stepLines, jobLines)],
+        ]),
+      ).toEqual([]);
+    });
+
+    it("reports a test that excludes only one upstream event, with the verdict holds", () => {
+      const step = ["        if: github.event.workflow_run.event != 'pull_request_target'"];
+      const found = heads([
+        [CALLER, open],
+        [CALLEE, callee(step)],
+      ]);
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions).toContainEqual({
+        file: CALLEE,
+        line: lineOf(callee(step), "!= 'pull_request_target'"),
+        text: "github.event.workflow_run.event != ''",
+        verdict: "holds",
+      });
+    });
+
+    it.each([
+      ["rules out pull_request alone, since a review's run is headed by the fork too", "!= 'pull_request'"],
+      ["asks for a review, whose run the fork heads as it does a pull request's", "== 'pull_request_review'"],
+      ["asks for a review comment", "== 'PULL_REQUEST_REVIEW_COMMENT'"],
+    ])("reports a head_sha behind a test that %s", (_, test) => {
+      const step = [`        if: github.event.workflow_run.event ${test}`];
+      const found = heads([
+        [CALLER, open],
+        [CALLEE, callee(step)],
+      ]);
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions).toContainEqual({
+        file: CALLEE,
+        line: lineOf(callee(step), test),
+        text: `github.event.workflow_run.event ${test.slice(0, 2)} ''`,
+        verdict: "unknown",
+      });
+    });
+
+    it.each([
+      ["a push", "== 'push'"],
+      ["a pull_request_target, whose run the base repository heads", "== 'pull_request_target'"],
+      ["a comment", "== 'issue_comment'"],
+    ])("reports nothing for a head_sha behind a test for %s, which no fork heads", (_, test) => {
+      const step = [`        if: github.event.workflow_run.event ${test}`];
+      expect(
+        heads([
+          [CALLER, open],
+          [CALLEE, callee(step)],
+        ]),
+      ).toEqual([]);
+    });
+
+    it("tracks the worlds along each route: the caller rules out one kind of head and the callee the other", () => {
+      // A checkout of the pull request's own head, which reaches a run that either kind of head started.
+      const both = (step: string[]) => callee(step).replace("workflow_run.head_sha", "workflow_run.pull_requests[0].head.sha");
+      const half = caller(["    if: always() && github.event.workflow_run.head_repository.fork == false"]);
+      const step = ["        if: github.event.workflow_run.head_repository.fork"];
+      expect(
+        heads([
+          [CALLER, half],
+          [CALLEE, both(step)],
+        ]),
+      ).toEqual([]);
+      expect(
+        heads([
+          [CALLER, half],
+          [CALLEE, both([])],
+        ]),
+      ).toHaveLength(1);
+      expect(
+        heads([
+          [CALLER, open],
+          [CALLEE, both(step)],
+        ]),
+      ).toHaveLength(1);
+    });
+  });
+
+  describe("C. pull_request_target", () => {
+    const prt = (condition: string) =>
+      withPermissions(
+        "on: pull_request_target",
+        [
+          `      - if: ${condition}`,
+          `        uses: actions/checkout@${SHA}`,
+          "        with:",
+          "          persist-credentials: false",
+          "          ref: ${{ github.event.pull_request.head.sha }}",
+        ].join("\n"),
+      );
+
+    it.each([
+      ["a fork test against this repository", "github.event.pull_request.head.repo.full_name == github.repository"],
+      ["a negated fork flag", "${{ !github.event.pull_request.head.repo.fork }}"],
+      ["a head owner test", "github.event.pull_request.head.repo.owner.login == github.repository_owner"],
+      ["a head repository id test", "github.event.pull_request.head.repo.id == github.event.repository.id"],
+    ])("reports nothing for %s", (_, condition) => {
+      expect(only(prt(condition), "prHeadCheckout")).toEqual([]);
+    });
+
+    it("keeps a label gate, because a label can be applied and the author can push again", () => {
+      const yaml = prt("contains(github.event.pull_request.labels.*.name, 'safe')");
+      const found = only(yaml, "prHeadCheckout");
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions).toEqual([
+        {
+          file: WORKFLOW_PATH,
+          line: lineOf(yaml, "- if:"),
+          text: "contains(github.event.pull_request.labels.*.name, '')",
+          verdict: "unknown",
+        },
+      ]);
+      expect(found[0]!.routes).toEqual([{ trigger: "pull_request_target", via: [] }]);
+    });
+
+    it("keeps a test of the repository's name, which says nothing about the pull request", () => {
+      const found = only(prt("github.repository == 'acme/widgets'"), "prHeadCheckout");
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions![0]).toMatchObject({ text: "github.repository == ''", verdict: "unknown" });
+    });
+  });
+
+  describe("D. what is not a guard", () => {
+    const direct = (condition: string[], on = "on:\n  workflow_run:\n    workflows: [CI]\n    branches: [main]") =>
+      `${on}\npermissions: {}\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - ${condition.join("\n        ")}\n        uses: actions/checkout@${SHA}\n        with:\n          persist-credentials: false\n          ref: \${{ github.event.workflow_run.head_sha }}\n`;
+
+    it("keeps a branch filter and a head_branch test", () => {
+      const found = only(direct(["if: github.event.workflow_run.head_branch == 'main'"]), "prHeadCheckout");
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions![0]!.verdict).toBe("unknown");
+    });
+
+    it("keeps a condition with double quotes, as unreadable and with its text blanked", () => {
+      const found = only(direct(['if: github.event.workflow_run.event == "push"']), "prHeadCheckout");
+      expect(found[0]!.conditions).toEqual([
+        {
+          file: WORKFLOW_PATH,
+          line: 10,
+          text: "github.event.workflow_run.event == ''",
+          verdict: "unreadable",
+        },
+      ]);
+    });
+
+    it("keeps two wrapped expressions joined with &&", () => {
+      const found = only(direct(["if: ${{ a }} && ${{ b }}"]), "prHeadCheckout");
+      expect(found[0]!.conditions![0]!.verdict).toBe("unreadable");
+    });
+
+    it("keeps a plain condition that starts with !, which YAML reads as a tag", () => {
+      const found = only(direct(["if: !github.event.workflow_run.head_repository.fork"]), "prHeadCheckout");
+      expect(found[0]!.conditions![0]).toMatchObject({ verdict: "unreadable" });
+    });
+
+    it.each([
+      ["a single-quoted value", "if: 'github.event.workflow_run.event == ''push'''", 0],
+      ["a double-quoted value", "if: \"github.event.workflow_run.event == 'push'\"", 0],
+      ["a double-quoted value with an escape", 'if: "github.event.workflow_run.event == \\u0027push\\u0027"', 1],
+      ["a value that is only a quote", "if: '", 1],
+      ["an empty value", "if:", 1],
+      ["a quoted value with a lone quote inside", "if: 'a'b'", 1],
+      ["a quoted wrapper with a space before it", "if: \" ${{ github.event.workflow_run.event == 'push' }}\"", 1],
+      ["a quoted wrapper with a space after it", "if: '${{ github.event.workflow_run.event == ''push'' }} '", 1],
+      ["a quoted wrapper with nothing around it", "if: '${{ github.event.workflow_run.event == ''push'' }}'", 0],
+      ["a wrapper around one empty string, which GitHub reads as success()", "if: ${{ '' }}", 1],
+    ])("reads %s", (_, line, expected) => {
+      expect(only(direct([line]), "prHeadCheckout")).toHaveLength(expected);
+    });
+
+    it.each([["|"], [">"], ["|+"]])(
+      "keeps a wrapped push test in a %s block, whose final line break GitHub reads as text, making it always true",
+      (indicator) => {
+        const found = only(direct([`if: ${indicator}`, "  ${{ github.event.workflow_run.event == 'push' }}"]), "prHeadCheckout");
+        expect(found).toHaveLength(1);
+        expect(found[0]!.conditions![0]).toMatchObject({
+          text: "${{ github.event.workflow_run.event == '' }}",
+          verdict: "unreadable",
+        });
+      },
+    );
+
+    it.each([["|-"], [">-"]])("clears a wrapped push test in a %s block, which keeps no line break", (indicator) => {
+      const yaml = direct([`if: ${indicator}`, "  ${{ github.event.workflow_run.event == 'push' }}"]);
+      expect(only(yaml, "prHeadCheckout")).toEqual([]);
+    });
+
+    it("keeps an index into github that holds a dot, which GitHub reads as one key and finds nothing", () => {
+      const found = only(direct(["if: ${{ !github['event.workflow_run.head_repository.fork'] }}"]), "prHeadCheckout");
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions![0]!.verdict).toBe("unknown");
+    });
+
+    it("reads a block scalar that holds a comment character as expression text", () => {
+      const found = only(direct(["if: |", "  github.event.workflow_run.event == 'push' # not a comment"]), "prHeadCheckout");
+      expect(found[0]!.conditions![0]!.verdict).toBe("unreadable");
+    });
+  });
+
+  describe("E. several callers", () => {
+    const other = ".github/workflows/hotfix.yml";
+    const hotfix = [
+      "on:",
+      "  workflow_run:",
+      "    workflows: [CI]",
+      "permissions: {}",
+      "jobs:",
+      "  run-migrations:",
+      "    uses: ./.github/workflows/migrate.yml",
+      "",
+    ].join("\n");
+
+    it("names only the unguarded caller", () => {
+      const found = heads([
+        [CALLER, caller([])],
+        [other, hotfix],
+        [CALLEE, callee()],
+      ]);
+      expect(found).toHaveLength(1);
+      expect(found[0]!.routes).toEqual([{ trigger: "workflow_run", via: [{ file: other, job: "run-migrations" }] }]);
+    });
+
+    it("names only the unguarded job of one caller", () => {
+      const yaml = caller([]).replace("  migrate:", "  other:\n    uses: ./.github/workflows/migrate.yml\n  migrate:");
+      const found = heads([
+        [CALLER, yaml],
+        [CALLEE, callee()],
+      ]);
+      expect(found[0]!.routes).toEqual([{ trigger: "workflow_run", via: [{ file: CALLER, job: "other" }] }]);
+    });
+
+    it("lists the direct route first when the callee has its own trigger too", () => {
+      const both = callee().replace("on:\n  workflow_call:", "on:\n  workflow_run:\n    workflows: [CI]\n  workflow_call:");
+      const found = heads([
+        [CALLER, caller(["    if: always()"])],
+        [CALLEE, both],
+      ]);
+      expect(found[0]!.routes).toEqual([{ trigger: "workflow_run", via: [] }, ...viaCaller]);
+    });
+
+    it.each([
+      ["second", "github.event.workflow_run.head_repository.fork == false", "github.event.workflow_run.head_repository.fork"],
+      ["first", "github.event.workflow_run.head_repository.fork", "github.event.workflow_run.head_repository.fork == false"],
+    ])(
+      "merges two call sites of one job and keeps the open worlds of both, with the fork's open at the %s",
+      (_, first, second) => {
+        // Only the fork-headed world gives an outsider the head branch, and only one of the two sites leaves it open.
+        const yaml = [
+          "on:",
+          "  workflow_run:",
+          "    workflows: [CI]",
+          "permissions: {}",
+          "jobs:",
+          "  build:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          `      - if: ${first}`,
+          "        uses: ./.github/actions/notify",
+          `      - if: ${second}`,
+          "        uses: ./.github/actions/notify",
+          "",
+        ].join("\n");
+        const action = ".github/actions/notify/action.yml";
+        const body =
+          'runs:\n  using: composite\n  steps:\n    - run: echo "${{ github.event.workflow_run.head_branch }}"\n      shell: bash\n';
+        const found = run([
+          [WORKFLOW_PATH, yaml],
+          [action, body],
+        ]).findings.filter((f) => f.risk === "scriptInjection");
+        expect(found).toHaveLength(1);
+        expect(found[0]!.routes).toEqual([{ trigger: "workflow_run", via: [{ file: WORKFLOW_PATH, job: "build" }] }]);
+      },
+    );
+  });
+
+  describe("F. the other checks", () => {
+    const wr = (stepLines: string[]) => withPermissions("on: workflow_run", stepLines.join("\n"));
+    const inject = '      - run: echo "${{ github.event.workflow_run.head_branch }}"';
+
+    it("reports script injection with its route, and nothing once a step guard rules the event out", () => {
+      expect(only(wr([inject]), "scriptInjection")[0]).toMatchObject({
+        routes: [{ trigger: "workflow_run", via: [] }],
+        conditions: [],
+      });
+      expect(
+        only(
+          wr(["      - if: github.event.workflow_run.event == 'push'", inject.replace("      - ", "        ")]),
+          "scriptInjection",
+        ),
+      ).toEqual([]);
+    });
+
+    it("reports display_title behind a test for a comment, which could have started the run and named it", () => {
+      const step = (expression: string) =>
+        wr(["      - if: github.event.workflow_run.event == 'issue_comment'", `        run: echo "\${{ ${expression} }}"`]);
+      const found = only(step("github.event.workflow_run.display_title"), "scriptInjection");
+      expect(found).toHaveLength(1);
+      expect(found[0]!.conditions).toEqual([
+        { file: WORKFLOW_PATH, line: 7, text: "github.event.workflow_run.event == ''", verdict: "unknown" },
+      ]);
+      // A comment's run is headed by the base repository's default branch, so its head branch is not the outsider's.
+      expect(only(step("github.event.workflow_run.head_branch"), "scriptInjection")).toEqual([]);
+    });
+
+    it("honours a job condition on the event name for every privileged trigger", () => {
+      const yaml = [
+        "on: [push, issue_comment]",
+        "permissions: {}",
+        "jobs:",
+        "  build:",
+        "    if: github.event_name == 'push'",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        '      - run: echo "${{ github.event.issue.title }}"',
+        "",
+      ].join("\n");
+      expect(only(yaml, "scriptInjection")).toEqual([]);
+      expect(only(yaml.replace("== 'push'", "== 'issue_comment'"), "scriptInjection")).toHaveLength(1);
+    });
+
+    it("honours a condition on a checkout that persists credentials", () => {
+      const step = (condition: string) =>
+        withPermissions("on: issues", `      - if: ${condition}\n        uses: actions/checkout@${SHA}`);
+      expect(only(step("github.event_name != 'issues'"), "persistCredentials")).toEqual([]);
+      expect(only(step("github.event_name == 'issues'"), "persistCredentials")).toHaveLength(1);
+    });
+
+    it("counts a self-hosted job as open to pull requests unless a fork guard rules them out", () => {
+      const job = (condition: string[]) =>
+        [
+          "on: pull_request",
+          "permissions: {}",
+          "jobs:",
+          "  build:",
+          ...condition,
+          "    runs-on: self-hosted",
+          "    steps:",
+          "      - run: echo hi",
+          "",
+        ].join("\n");
+      expect(only(job([]), "selfHosted")).toEqual([
+        {
+          file: WORKFLOW_PATH,
+          line: 5,
+          risk: "selfHosted",
+          evidence: "self-hosted",
+          onPullRequest: true,
+          routes: [{ trigger: "pull_request", via: [] }],
+          conditions: [],
+          lineHash: HASH,
+          reachHash: REACHED,
+        },
+      ]);
+      const guarded = job(["    if: github.event.pull_request.head.repo.full_name == github.repository"]);
+      expect(only(guarded, "selfHosted")).toEqual([
+        {
+          file: WORKFLOW_PATH,
+          line: 6,
+          risk: "selfHosted",
+          evidence: "self-hosted",
+          onPullRequest: false,
+          lineHash: HASH,
+          reachHash: NO_REACH,
+        },
+      ]);
+    });
+
+    it("keeps a self-hosted job on a trigger that is not a pull request, with onPullRequest false", () => {
+      const yaml = [
+        "on: push",
+        "permissions: {}",
+        "jobs:",
+        "  build:",
+        "    runs-on: self-hosted",
+        "    steps:",
+        "      - run: echo hi",
+        "",
+      ].join("\n");
+      expect(only(yaml, "selfHosted")[0]).toMatchObject({ onPullRequest: false });
+    });
+
+    it("reads a guard at the call site of a composite action and inside it, separately", () => {
+      const action = ".github/actions/notify/action.yml";
+      const guard = "github.event.workflow_run.event == 'push'";
+      const body = (condition: string[]) =>
+        [
+          "runs:",
+          "  using: composite",
+          "  steps:",
+          ...condition,
+          '    - run: echo "${{ github.event.workflow_run.head_branch }}"',
+          "      shell: bash",
+          "",
+        ].join("\n");
+      const calling = (condition: string[]) =>
+        withPermissions("on: workflow_run", [...condition, "      - uses: ./.github/actions/notify"].join("\n"));
+      const injections = (workflow: string, inside: string) =>
+        run([
+          [WORKFLOW_PATH, workflow],
+          [action, inside],
+        ]).findings.filter((f) => f.risk === "scriptInjection");
+      const open = injections(calling([]), body([]));
+      expect(open).toHaveLength(1);
+      expect(open[0]!.routes).toEqual([{ trigger: "workflow_run", via: [{ file: WORKFLOW_PATH, job: "build" }] }]);
+      // A condition written as a key of the step that calls, and one on the step inside the action.
+      const guardedCall = withPermissions("on: workflow_run", `      - if: ${guard}\n        uses: ./.github/actions/notify`);
+      expect(injections(guardedCall, body([]))).toEqual([]);
+      const guardedInside = [
+        "runs:",
+        "  using: composite",
+        "  steps:",
+        `    - if: ${guard}`,
+        '      run: echo "${{ github.event.workflow_run.head_branch }}"',
+        "      shell: bash",
+        "",
+      ].join("\n");
+      expect(injections(calling([]), guardedInside)).toEqual([]);
+    });
+
+    it("reports an unreadable trigger list as an unknown trigger, with no guard", () => {
+      const yaml = [
+        "on: [push",
+        "permissions: {}",
+        "jobs:",
+        "  build:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        '      - run: echo "${{ github.event.issue.title }}"',
+        "",
+      ].join("\n");
+      expect(only(yaml, "scriptInjection")[0]!.routes).toEqual([{ trigger: null, via: [] }]);
+    });
+  });
+});
+
+describe("blob ids of the files an acceptance can name", () => {
+  const BLOB = "0123456789abcdef0123456789abcdef01234567";
+  const paths = ["Dockerfile", "api/Dockerfile", ".env.production", "tls/ca.pem", "src/index.ts", "src/__fixtures__/.env"];
+
+  it("lists the key files and the Dockerfiles to ask the tree about, and no other path", () => {
+    const candidates = supplyChainCandidates(paths);
+    expect(candidates.keyFiles).toEqual([".env.production", "tls/ca.pem"]);
+    expect(candidates.dockerfiles).toEqual(["Dockerfile", "api/Dockerfile"]);
+  });
+
+  it("lists the key files the facts will list, with the same cut at 200 of each strength", () => {
+    const strong = Array.from({ length: 250 }, (_, i) => `s${String(i).padStart(3, "0")}/.env`);
+    expect(supplyChainCandidates(strong).keyFiles).toEqual(strong.slice(0, 200));
+  });
+
+  it("attaches the blob id to a key file and a Dockerfile, and null to one without", () => {
+    const facts = supplyChainFacts({
+      paths,
+      listingComplete: true,
+      workflows: [],
+      lockfiles: [],
+      unread: [],
+      dockerfiles: [
+        { path: "Dockerfile", content: "FROM node:20\nUSER app" },
+        { path: "api/Dockerfile", content: "FROM node:20\nUSER app" },
+      ],
+      blobs: new Map([
+        [".env.production", BLOB],
+        ["Dockerfile", BLOB],
+      ]),
+    });
+    expect(facts.keyFiles).toEqual([
+      { path: ".env.production", blob: BLOB, strength: "strong" },
+      { path: "tls/ca.pem", blob: null, strength: "weak" },
+    ]);
+    expect(facts.dockerfiles.map((d) => [d.path, d.blob])).toEqual([
+      ["Dockerfile", BLOB],
+      ["api/Dockerfile", null],
+    ]);
+  });
+
+  it("gives every blob as null, and says the blobs were not read, when the lookup failed", () => {
+    const facts = supplyChainFacts({
+      paths,
+      listingComplete: true,
+      workflows: [],
+      lockfiles: [],
+      unread: [],
+      dockerfiles: [{ path: "Dockerfile", content: "FROM node:20\nUSER app" }],
+      blobs: null,
+    });
+    expect(facts.keyFiles.map((k) => k.blob)).toEqual([null, null]);
+    expect(facts.dockerfiles.map((d) => d.blob)).toEqual([null]);
+    expect(facts.blobsRead).toBe(false);
   });
 });

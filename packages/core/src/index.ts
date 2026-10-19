@@ -28,6 +28,7 @@ export * from "./versions.js";
 export * from "./lockfiles.js";
 export * from "./supplyChain.js";
 export * from "./osvAlerts.js";
+export * from "./securityAcceptance.js";
 export * from "./securityGrade.js";
 export * from "./securityAdvice.js";
 export * from "./securityReport.js";

@@ -22,6 +22,7 @@ import {
   repoPosture,
   scorecardResult,
   secretScanningAlert,
+  supplyChainFacts,
   supplyChainRecord,
   vulnerability,
 } from "./fakes.js";
@@ -455,6 +456,70 @@ describe("security routes and wiring", () => {
     it("names no settings page when no alert source is wired", async () => {
       const { app, id } = await wired({ securityAlerts: undefined });
       expect((await app.inject(`/api/repos/${id}/security`)).json()).toMatchObject({ settingsUrl: "" });
+    });
+
+    it("links each finding to its file at the commit the clone was read from, through the alert source", async () => {
+      const { app, id, store } = await wired();
+      store.saveSupplyChain(
+        id,
+        supplyChainRecord({
+          commitSha: "abc1234",
+          facts: supplyChainFacts({
+            findings: [
+              {
+                file: ".github/workflows/ci.yml",
+                line: 8,
+                risk: "scriptInjection",
+                evidence: "github.event.issue.title",
+                lineHash: "00112233aabbccdd",
+                reachHash: "0123456789abcdef",
+              },
+            ],
+          }),
+        }),
+        [],
+      );
+      const report = (await app.inject(`/api/repos/${id}/security`)).json();
+      const injection = report.supplyChain.lines.find((l: { check: string }) => l.check === "scriptInjection");
+      expect(injection.items).toEqual([
+        {
+          path: ".github/workflows/ci.yml",
+          line: 8,
+          detail: "github.event.issue.title",
+          url: "https://example.test/acme/widgets/blob/abc1234/.github/workflows/ci.yml#L8",
+          risk: "scriptInjection",
+          fingerprint: expect.stringMatching(/^w2:[0-9a-f]{16}$/),
+          routes: [],
+          routesDropped: 0,
+          conditions: [],
+          conditionsDropped: 0,
+        },
+      ]);
+    });
+
+    it("builds no file link when no alert source is wired", async () => {
+      const { app, id, store } = await wired({ securityAlerts: undefined });
+      store.saveSupplyChain(
+        id,
+        supplyChainRecord({
+          facts: supplyChainFacts({
+            findings: [
+              {
+                file: "ci.yml",
+                line: 8,
+                risk: "scriptInjection",
+                evidence: "x",
+                lineHash: "00112233aabbccdd",
+                reachHash: "0123456789abcdef",
+              },
+            ],
+          }),
+        }),
+        [],
+      );
+      const report = (await app.inject(`/api/repos/${id}/security`)).json();
+      const injection = report.supplyChain.lines.find((l: { check: string }) => l.check === "scriptInjection");
+      expect(injection.items[0].url).toBeNull();
     });
 
     it("uses the alert source's settings page in the report", async () => {

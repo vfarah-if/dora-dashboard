@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { copy } from "../copy";
-import { noSecurity, offSource, securityAction, securityReport } from "../test/fixtures";
+import { chainItem, noSecurity, offSource, securityAction, securityReport } from "../test/fixtures";
 import { renderRoute } from "../test/render";
 import type { SecurityReport } from "@dora-dashboard/core";
 import { CopySnippet } from "./CopySnippet";
@@ -117,6 +117,7 @@ describe("PassFail", () => {
     ["met", "Met"],
     ["unmet", "Not met"],
     ["unseen", "Not visible"],
+    ["accepted", "Accepted"],
   ] as const)("shows %s as an icon and the word %s", (state, word) => {
     const { container } = render(<PassFail state={state} />);
     expect(screen.getByText(word)).toBeInTheDocument();
@@ -235,7 +236,7 @@ describe("SecurityGrade", () => {
         .map((li) => li.textContent),
     ).toEqual([
       "No critical alert has waited longer than its 7 day fix-by date.",
-      "No workflow runs a pull request's own code while holding secrets.",
+      "No privileged workflow checks out a pull request's own code while holding secrets.",
     ]);
     const improve = screen.getByRole("heading", { name: copy.security.grade.improveTitle }).closest("section")!;
     const items = within(improve).getAllByRole("listitem");
@@ -338,9 +339,7 @@ describe("ActionItem", () => {
       supplyChain: {
         ...base.supplyChain,
         lines: base.supplyChain.lines.map((l) =>
-          l.check === "updateConfig"
-            ? { ...l, met: true, total: 1, items: [{ path: ".github/dependabot.yml", line: null, detail: null }] }
-            : l,
+          l.check === "updateConfig" ? { ...l, met: true, total: 1, items: [chainItem(".github/dependabot.yml")] } : l,
         ),
       },
     });
@@ -759,5 +758,131 @@ describe("Glossary", () => {
     const { container } = render(<Glossary />);
     startPrint();
     expect(container.querySelector("details")).not.toHaveAttribute("open");
+  });
+});
+
+describe("SecurityGrade improve list files and links", () => {
+  const withFiles = (files: string[] | undefined) => {
+    const base = securityReport();
+    return securityReport({
+      checks: base.checks.map((c) => (c.check === "unpinnedActions" ? { ...c, detail: files } : c)),
+    });
+  };
+  const improve = () => screen.getByRole("heading", { name: copy.security.grade.improveTitle }).closest("section")!;
+
+  it("shows the files under the sentence and links to the place on the card", () => {
+    render(<SecurityGrade report={withFiles([".github/workflows/ci.yml", ".github/workflows/release.yml"])} />);
+    const item = within(improve())
+      .getByText(/not pinned to a commit/)
+      .closest("li")!;
+    expect(item).toHaveTextContent(".github/workflows/ci.yml");
+    expect(item).toHaveTextContent(".github/workflows/release.yml");
+    expect(within(item).getByRole("link", { name: copy.security.chain.seeEachPlace })).toHaveAttribute(
+      "href",
+      "#chain-unpinnedActions",
+    );
+  });
+
+  it("shows no file list when core named none, and no link for a check that is not on the supply chain card", () => {
+    render(<SecurityGrade report={withFiles(undefined)} />);
+    const item = within(improve())
+      .getByText(/not pinned to a commit/)
+      .closest("li")!;
+    expect(item.querySelector(".check-files")).toBeNull();
+    const critical = within(improve())
+      .getByText(/1 critical alert is open/)
+      .closest("li")!;
+    expect(within(critical).queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+describe("SecurityActions where to look links", () => {
+  const refs = (url: string | null) =>
+    securityReport({ actions: [securityAction({ refs: [{ label: ".github/workflows/ci.yml line 12", url }] })] });
+
+  it("links a clone finding to its line", () => {
+    const url = "https://github.com/acme/widgets/blob/0123abc/.github/workflows/ci.yml#L12";
+    renderRoute(<SecurityActions report={refs(url)} />);
+    expect(screen.getByRole("link", { name: /ci\.yml line 12/ })).toHaveAttribute("href", url);
+  });
+
+  it("shows plain text when the link is missing, and never links a javascript: address", () => {
+    const { unmount } = renderRoute(<SecurityActions report={refs(null)} />);
+    expect(screen.getByText(/ci\.yml line 12/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /ci\.yml/ })).not.toBeInTheDocument();
+    unmount();
+    renderRoute(<SecurityActions report={refs("javascript:alert(1)")} />);
+    expect(screen.getByText(/ci\.yml line 12/)).toBeInTheDocument();
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+});
+
+describe("accepted findings on the grade and in Start here", () => {
+  const accepted = (graded: number, bandBefore: "low" | "medium" | "high" | "elite" | null, supplyChainBefore = bandBefore) => ({
+    graded,
+    advice: 0,
+    bandBefore,
+    supplyChainBefore,
+  });
+
+  it("says on the grade tile which band it was before acceptance, and on the supply chain tile too", () => {
+    render(<SecurityGrade report={securityReport({ accepted: accepted(1, "low", "medium") })} />);
+    const overall = screen.getAllByRole("heading", { level: 3, name: copy.security.grade.title })[0]!.closest("article")!;
+    expect(within(overall).getByText("Medium")).toBeInTheDocument();
+    expect(within(overall).getByText("Low before 1 accepted finding")).toBeInTheDocument();
+    const chain = screen.getByRole("heading", { level: 3, name: "Workflows and supply chain" }).closest("article")!;
+    expect(within(chain).getByText("Medium before 1 accepted finding")).toBeInTheDocument();
+    const vulnerabilities = screen
+      .getByRole("heading", { level: 3, name: "Known vulnerabilities and secrets" })
+      .closest("article")!;
+    expect(vulnerabilities).not.toHaveTextContent("accepted finding");
+  });
+
+  it("says the band is the same when findings are accepted and it did not move", () => {
+    render(<SecurityGrade report={securityReport({ accepted: accepted(2, "medium", "high") })} />);
+    expect(screen.getAllByText("The band is the same with or without 2 accepted findings")).toHaveLength(2);
+  });
+
+  it("says nothing about acceptance when nothing is accepted", () => {
+    render(<SecurityGrade report={securityReport()} />);
+    expect(screen.queryByText(/accepted finding/)).not.toBeInTheDocument();
+  });
+
+  it("lists a check whose findings are all accepted under what is going well, saying so", () => {
+    const base = securityReport();
+    render(
+      <SecurityGrade
+        report={securityReport({
+          checks: base.checks.map((c) => (c.check === "prHeadCheckout" ? { ...c, count: 0, accepted: 1 } : c)),
+        })}
+      />,
+    );
+    const good = screen.getByRole("heading", { name: copy.security.grade.goodTitle }).closest("section")!;
+    expect(within(good).getByText(/It is accepted, so it does not count\.$/)).toBeInTheDocument();
+    expect(
+      within(good).queryByText("No privileged workflow checks out a pull request's own code while holding secrets."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("counts accepted findings in Start here and links to them, leaving the link out of print", () => {
+    render(
+      <StartHere report={securityReport({ accepted: { graded: 1, advice: 1, bandBefore: "low", supplyChainBefore: "low" } })} />,
+    );
+    expect(
+      screen.getByText("2 findings have been accepted with a reason, so the report no longer counts them.", { exact: false }),
+    ).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: copy.security.start.seeAccepted });
+    expect(link).toHaveAttribute("href", "#security-accepted");
+    expect(link).toHaveClass("screen-only");
+  });
+
+  it("says one accepted finding in the singular, and says nothing when none is accepted", () => {
+    const { unmount } = render(
+      <StartHere report={securityReport({ accepted: { graded: 1, advice: 0, bandBefore: "low", supplyChainBefore: "low" } })} />,
+    );
+    expect(screen.getByText(/^One finding has been accepted with a reason/)).toBeInTheDocument();
+    unmount();
+    render(<StartHere report={securityReport()} />);
+    expect(screen.queryByText(/accepted with a reason/)).not.toBeInTheDocument();
   });
 });

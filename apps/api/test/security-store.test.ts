@@ -7,18 +7,18 @@ import { NOT_USED_REASONS } from "@dora-dashboard/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteRepoStore } from "../src/infrastructure/sqlite/sqlite-repo-store.js";
 import {
+  acceptance,
   codeScanningAlert,
   dependabotAlert,
   lockedPackage,
   osvAlert,
+  rawDb,
   repoPosture,
   scorecardResult,
   secretScanningAlert,
   supplyChainFacts,
   supplyChainRecord,
 } from "./fakes.js";
-
-const rawDb = (store: SqliteRepoStore) => (store as unknown as { db: DatabaseSync }).db;
 
 const okState = (overrides: Partial<SourceOk> = {}): SourceState => ({
   status: "ok",
@@ -402,6 +402,31 @@ describe("supply chain facts, posture and scorecard in the store", () => {
       ["facts of another version", JSON.stringify({ ...supplyChainFacts(), version: 0 })],
       ["facts with a list missing", JSON.stringify({ ...supplyChainFacts(), lockfiles: undefined })],
       ["facts with a table that is a list", JSON.stringify({ ...supplyChainFacts(), manifestsByEcosystem: [] })],
+      [
+        "a key file without its blob key, as the interim build wrote it",
+        JSON.stringify({ ...supplyChainFacts(), keyFiles: [{ path: ".env", strength: "strong" }] }),
+      ],
+      [
+        "a Dockerfile without its blob key",
+        JSON.stringify({
+          ...supplyChainFacts(),
+          dockerfiles: [
+            {
+              path: "Dockerfile",
+              images: 1,
+              unpinnedImages: 0,
+              latestImages: 0,
+              runsAsRoot: false,
+              addsRemote: false,
+              curlPipeShell: false,
+            },
+          ],
+        }),
+      ],
+      [
+        "a key file whose blob is a number",
+        JSON.stringify({ ...supplyChainFacts(), keyFiles: [{ path: ".env", blob: 7, strength: "strong" }] }),
+      ],
     ])("answers no supply chain record for %s, so the next crawl reads it again", (_label, facts) => {
       logged.saveSupplyChain(id, supplyChainRecord(), []);
       rawDb(logged).prepare("UPDATE supply_chain SET facts = ?").run(facts);
@@ -621,6 +646,8 @@ describe("supply chain facts, posture and scorecard in the store", () => {
   it.each([
     ["no listing flag", { listingComplete: undefined }],
     ["a listing flag that is not a boolean", { listingComplete: "yes" }],
+    ["no flag for the blob lookup", { blobsRead: undefined }],
+    ["a blob lookup flag that is not a boolean", { blobsRead: "yes" }],
     ["no count of dropped findings", { findingsDropped: undefined }],
     ["a count of dropped actions that is not a number", { actionsDropped: "3" }],
   ])("answers no record for facts with %s", (_, change) => {
@@ -688,6 +715,7 @@ describe("supply chain facts, posture and scorecard in the store", () => {
       posture: null,
       scorecard: null,
       supplyChainFailure: null,
+      acceptances: "0:0",
     });
 
     store.setSourceState(repoId, "dependabot", okState());
@@ -706,6 +734,7 @@ describe("supply chain facts, posture and scorecard in the store", () => {
       posture: "2026-09-29T11:00:00.000Z",
       scorecard: "2026-09-29T12:00:00.000Z",
       supplyChainFailure: null,
+      acceptances: "0:0",
     });
     store.setSourceState(repoId, "dependabot", okState({ attemptedAt: "2026-09-30T10:00:00.000Z" }));
     expect(keys()).not.toBe(afterScorecard);
@@ -723,11 +752,19 @@ describe("deleting a repository removes its security data", () => {
       store.saveSupplyChain(id, supplyChainRecord(), [lockedPackage()]);
       store.savePosture(id, repoPosture(), "t");
       store.saveScorecard(id, "t", scorecardResult());
+      store.saveAcceptance(id, acceptanceOf());
     }
 
     store.deleteRepo(gone);
 
-    for (const table of ["security_alerts", "security_sources", "supply_chain", "security_posture", "security_scorecard"]) {
+    for (const table of [
+      "security_alerts",
+      "security_sources",
+      "supply_chain",
+      "security_posture",
+      "security_scorecard",
+      "security_acceptances",
+    ]) {
       const rows = rawDb(store).prepare(`SELECT repo_id FROM ${table}`).all() as unknown as { repo_id: number }[];
       expect(
         rows.map((r) => r.repo_id),
@@ -1088,3 +1125,182 @@ describe("migrating a database made by an earlier build of the security feature"
     db.close();
   });
 });
+
+describe("accepted findings in the store", () => {
+  const warnings: { context: Record<string, unknown>; message: string }[] = [];
+  let store: SqliteRepoStore;
+  let repoId: number;
+
+  beforeEach(() => {
+    warnings.length = 0;
+    const log = {
+      info: () => undefined,
+      error: () => undefined,
+      warn: (context: object, message: string) => void warnings.push({ context: context as never, message }),
+    };
+    store = new SqliteRepoStore(":memory:", () => new Date(), log);
+    repoId = store.addRepo("acme", "widgets", [], "main").id;
+  });
+
+  it("saves an acceptance with a new id and reads it back as it was given, oldest first", () => {
+    const first = store.saveAcceptance(repoId, acceptanceOf({ note: "First." }));
+    const second = store.saveAcceptance(
+      repoId,
+      acceptanceOf({ check: "lockfiles", path: "web/package.json", fingerprint: "p1:", note: "Second.", line: null }),
+    );
+
+    expect(first).toEqual({ ...acceptanceOf({ note: "First." }), id: 1 });
+    expect(second!.id).toBe(2);
+    expect(store.acceptances(repoId)).toEqual([first, second]);
+  });
+
+  it("keeps the line it was given, and reads an absence's empty path back as null", () => {
+    store.saveAcceptance(
+      repoId,
+      acceptanceOf({ check: "prHeadCheckout", path: "a.yml", line: 31, fingerprint: `w1:${"a".repeat(16)}` }),
+    );
+    store.saveAcceptance(repoId, acceptanceOf());
+
+    const [withLine, absence] = store.acceptances(repoId);
+    expect(withLine).toMatchObject({ path: "a.yml", line: 31 });
+    expect(absence).toMatchObject({ path: null, line: null });
+    // Stored as '' so that UNIQUE sees the absence, which a NULL would let through twice.
+    expect(rawDb(store).prepare("SELECT path FROM security_acceptances WHERE id = 2").get()).toEqual({ path: "" });
+  });
+
+  it("answers null for the same finding twice, and keeps the first", () => {
+    const first = store.saveAcceptance(repoId, acceptanceOf({ note: "First." }));
+    expect(store.saveAcceptance(repoId, acceptanceOf({ note: "Again.", reason: "false_positive" }))).toBeNull();
+    expect(store.acceptances(repoId)).toEqual([first]);
+  });
+
+  it("treats another check, path or fingerprint, or another repository, as another finding", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    const base = { check: "keyFiles" as const, path: ".env", fingerprint: `b:${"a".repeat(40)}` };
+    expect(store.saveAcceptance(repoId, acceptanceOf(base))).not.toBeNull();
+    expect(store.saveAcceptance(repoId, acceptanceOf({ ...base, check: "weakKeyFiles" }))).not.toBeNull();
+    expect(store.saveAcceptance(repoId, acceptanceOf({ ...base, path: ".env.production" }))).not.toBeNull();
+    expect(store.saveAcceptance(repoId, acceptanceOf({ ...base, fingerprint: `b:${"b".repeat(40)}` }))).not.toBeNull();
+    expect(store.saveAcceptance(other, acceptanceOf(base))).not.toBeNull();
+    expect(store.acceptances(repoId)).toHaveLength(4);
+    expect(store.acceptances(other)).toHaveLength(1);
+  });
+
+  it("deletes only the repository's own acceptance, and says whether it was there", () => {
+    const other = store.addRepo("acme", "gadgets", [], "main").id;
+    const mine = store.saveAcceptance(repoId, acceptanceOf())!;
+    const theirs = store.saveAcceptance(other, acceptanceOf())!;
+
+    expect(store.deleteAcceptance(repoId, theirs.id)).toBe(false);
+    expect(store.deleteAcceptance(repoId, mine.id)).toBe(true);
+    expect(store.deleteAcceptance(repoId, mine.id)).toBe(false);
+    expect(store.acceptances(repoId)).toEqual([]);
+    expect(store.acceptances(other)).toEqual([theirs]);
+  });
+
+  it("never reuses an id, so the key changes after an undo followed by another accept", () => {
+    const first = store.saveAcceptance(repoId, acceptanceOf())!;
+    const afterFirst = store.securityKeys(repoId).acceptances;
+    store.deleteAcceptance(repoId, first.id);
+    const afterUndo = store.securityKeys(repoId).acceptances;
+    const again = store.saveAcceptance(repoId, acceptanceOf())!;
+    const afterAgain = store.securityKeys(repoId).acceptances;
+
+    expect(again.id).toBe(2);
+    // The count and the newest id together say the same set only once: ids only ever grow and rows are only removed.
+    expect([afterFirst, afterUndo, afterAgain]).toEqual(["1:1", "0:0", "1:2"]);
+  });
+
+  it("leaves out a row that is not what the service saves, logs it once and keeps the others", () => {
+    store.saveAcceptance(repoId, acceptanceOf({ note: "Good." }));
+    const insert = rawDb(store).prepare(
+      "INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const bad: unknown[][] = [
+      [repoId, "notACheck", "", null, "n1:", "risk_accepted", "x", "t"],
+      [repoId, "lockfiles", "p.json", null, "n1:", "not_a_reason", "x", "t"],
+      [repoId, "lockfiles", "p.json", null, "w9:abc", "risk_accepted", "x", "t"],
+      [repoId, "lockfiles", "q.json", null, "p1:", "risk_accepted", "   ", "t"],
+      [repoId, "lockfiles", "r.json", null, "p1:", "risk_accepted", "x".repeat(281), "t"],
+      [repoId, "lockfiles", "s.json", 1.5, "p1:", "risk_accepted", "x", "t"],
+      [repoId, "lockfiles", "t.json", null, "p1:", "risk_accepted", "one\ntwo", "t"],
+    ];
+    for (const row of bad) insert.run(...(row as never[]));
+
+    expect(store.acceptances(repoId).map((a) => a.note)).toEqual(["Good."]);
+    store.acceptances(repoId);
+    expect(warnings).toHaveLength(bad.length);
+    expect(warnings[0]!.context).toEqual({ repoId, acceptanceId: 2 });
+  });
+
+  it("counts the rows it left out beside the readable ones", () => {
+    store.saveAcceptance(repoId, acceptanceOf({ note: "Good." }));
+    expect(store.acceptanceScan(repoId)).toEqual({ acceptances: store.acceptances(repoId), unreadable: 0 });
+    const insert = rawDb(store).prepare(
+      "INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at) VALUES (?, 'lockfiles', ?, NULL, 'p1:', 'not_a_reason', 'x', 't')",
+    );
+    insert.run(repoId, "a.json");
+    insert.run(repoId, "b.json");
+
+    const scan = store.acceptanceScan(repoId);
+
+    expect(scan.unreadable).toBe(2);
+    expect(scan.acceptances.map((a) => a.note)).toEqual(["Good."]);
+  });
+
+  it("lets a constraint failure other than the unique key surface, instead of reading it as a duplicate", () => {
+    expect(() => store.saveAcceptance(repoId, acceptanceOf({ note: null as unknown as string }))).toThrow(/NOT NULL/);
+    expect(store.acceptances(repoId)).toEqual([]);
+  });
+
+  it("replaces a stored row that is not readable when the same finding is accepted again", () => {
+    rawDb(store)
+      .prepare(
+        "INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at) VALUES (?, 'lockfiles', 'p.json', NULL, 'p1:', 'not_a_reason', 'x', 't')",
+      )
+      .run(repoId);
+    expect(store.acceptances(repoId)).toEqual([]);
+    const before = store.securityKeys(repoId).acceptances;
+
+    const saved = store.saveAcceptance(
+      repoId,
+      acceptanceOf({ check: "lockfiles", path: "p.json", fingerprint: "p1:", line: null, note: "Mended." }),
+    );
+
+    expect(saved).toMatchObject({ note: "Mended." });
+    // A new id, never the unreadable row's.
+    expect(saved!.id).toBeGreaterThan(1);
+    expect(store.acceptances(repoId)).toEqual([saved]);
+    expect(rawDb(store).prepare("SELECT count(*) AS n FROM security_acceptances").get()).toEqual({ n: 1 });
+    expect(store.securityKeys(repoId).acceptances).not.toBe(before);
+  });
+
+  it("keeps a readable row and answers null when the same finding is accepted again", () => {
+    const first = store.saveAcceptance(repoId, acceptanceOf({ note: "First." }))!;
+    expect(store.saveAcceptance(repoId, acceptanceOf({ note: "Second." }))).toBeNull();
+    expect(store.acceptances(repoId)).toEqual([first]);
+    expect(rawDb(store).prepare("SELECT count(*) AS n FROM security_acceptances").get()).toEqual({ n: 1 });
+  });
+
+  it("counts a note by characters, so 280 emoji are allowed and 281 are not", () => {
+    const insert = rawDb(store).prepare(
+      "INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at) VALUES (?, 'lockfiles', ?, NULL, 'p1:', 'risk_accepted', ?, 't')",
+    );
+    insert.run(repoId, "a.json", "\u{1F600}".repeat(280));
+    insert.run(repoId, "b.json", "\u{1F600}".repeat(281));
+    expect(store.acceptances(repoId).map((a) => a.path)).toEqual(["a.json"]);
+  });
+
+  it("has no column that could hold a person", () => {
+    const columns = (rawDb(store).prepare("PRAGMA table_info(security_acceptances)").all() as unknown as { name: string }[]).map(
+      (c) => c.name,
+    );
+    expect(columns).toEqual(["id", "repo_id", "check_id", "path", "line", "fingerprint", "reason", "note", "accepted_at"]);
+  });
+});
+
+/** An acceptance without its id, the absence of a dependency review unless changed. */
+function acceptanceOf(overrides: Parameters<typeof acceptance>[0] = {}) {
+  const { id: _id, ...rest } = acceptance(overrides);
+  return rest;
+}

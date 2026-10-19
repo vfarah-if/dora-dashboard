@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  AcceptanceRequest,
   CodeDetailResponse,
   CodeHealthResponse,
+  FindingAcceptance,
   IssueLabelDefaults,
   IssueLabelRules,
   IssueReport,
@@ -21,7 +23,7 @@ import type {
   SpaceReport,
   TrackerSpaceSummary,
 } from "@dora-dashboard/core";
-import { apiRequest } from "./client";
+import { ApiError, apiRequest } from "./client";
 
 export interface AuthUser {
   login: string;
@@ -625,5 +627,40 @@ export function useSecurityReport(id: number, range: SpaceRange) {
     retry: false,
     // A range change keeps the old figures on screen, but another repository's report is never shown under this one's address.
     placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === id ? previous : undefined),
+  });
+}
+
+/** Reads one repository's security report and the list of summaries again, so an acceptance shows in both. */
+function refreshSecurity(client: ReturnType<typeof useQueryClient>, id: number) {
+  return Promise.all([
+    client.invalidateQueries({ queryKey: ["security", id] }),
+    client.invalidateQueries({ queryKey: queryKeys.securityList }),
+  ]);
+}
+
+/**
+ * Accepts a finding with a reason and a note. Both the report and the list are read again. A 409 carries one code for
+ * its cause (no record, the finding changed, already accepted or the limit reached), and the report is read again to
+ * show what is there now.
+ */
+export function useAcceptFinding(id: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (request: AcceptanceRequest) =>
+      apiRequest<FindingAcceptance>(`/api/repos/${id}/security/acceptances`, { method: "POST", body: request }),
+    onSuccess: () => refreshSecurity(client, id),
+    onError: (error) => (error instanceof ApiError && error.status === 409 ? refreshSecurity(client, id) : undefined),
+  });
+}
+
+/** Takes an acceptance away, so the finding it covered counts again, or an entry that no longer applies is tidied. */
+export function useRemoveAcceptance(id: number) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (acceptanceId: number) =>
+      apiRequest<undefined>(`/api/repos/${id}/security/acceptances/${acceptanceId}`, { method: "DELETE" }),
+    onSuccess: () => refreshSecurity(client, id),
+    // Already gone, for example removed in another tab, so the stale entry is read away.
+    onError: (error) => (error instanceof ApiError && error.status === 404 ? refreshSecurity(client, id) : undefined),
   });
 }

@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, Skeleton } from "../components/States";
 import { StatTile } from "../components/StatTile";
 import { StickyPanel } from "../components/StickyPanel";
 import { formatNumber } from "../lib/format";
+import { acceptanceNote } from "../lib/securityAcceptance";
 import {
   actionSentence,
   joinWords,
@@ -27,6 +28,7 @@ function Row({ summary }: { summary: SecuritySummary }) {
   const name = repoName(summary.repo);
   const score = summary.scorecard;
   const unread = !summary.read;
+  const note = acceptanceNote(summary.band, summary.accepted.bandBefore, summary.accepted.graded);
   const figure = (text: string) => (unread ? (neverCrawled(summary.sources) ? c.notReadRow : c.notUsedRow) : text);
   return (
     <li className="card repo-row">
@@ -39,7 +41,10 @@ function Row({ summary }: { summary: SecuritySummary }) {
         <dl className="repo-facts">
           <div>
             <dt>{c.facts.grade}</dt>
-            <dd>{summary.band ? <BandLabel band={summary.band} /> : c.facts.notGraded}</dd>
+            <dd>
+              {summary.band ? <BandLabel band={summary.band} /> : c.facts.notGraded}
+              {note && <span className="grade-note">{note}</span>}
+            </dd>
           </div>
           <div>
             <dt>{c.facts.open}</dt>

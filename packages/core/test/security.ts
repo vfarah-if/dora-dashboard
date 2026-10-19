@@ -6,6 +6,7 @@ import type {
   BranchRules,
   CodeAlert,
   DependabotAlert,
+  FindingAcceptance,
   HeldPosture,
   LockedPackage,
   NoAccessReason,
@@ -232,6 +233,7 @@ export function emptyFacts(overrides: Partial<SupplyChainFacts> = {}): SupplyCha
     dockerfiles: [],
     ecosystems: ["npm"],
     listingComplete: true,
+    blobsRead: true,
     ...overrides,
   };
 }
@@ -375,9 +377,13 @@ export const vulnerability = (overrides: Partial<Vulnerability> = {}): Vulnerabi
 
 export const WORKFLOW_PATH = ".github/workflows/ci.yml";
 
-/** The supply chain facts of a repository holding only the given paths and files; everything else is empty. */
+/**
+ * The supply chain facts of a repository holding only the given paths and files; everything else is empty, and the
+ * lookup of blob ids worked and found none unless `blobs` is given.
+ */
 export function chainFacts(input: Partial<SupplyChainInput> = {}): SupplyChainFacts {
-  return supplyChainFacts({ paths: [], listingComplete: true, workflows: [], lockfiles: [], unread: [], ...input });
+  const { blobs = new Map<string, string>(), ...rest } = input;
+  return supplyChainFacts({ paths: [], listingComplete: true, workflows: [], lockfiles: [], unread: [], ...rest, blobs });
 }
 
 /** The facts of one workflow file with the given contents. */
@@ -387,3 +393,16 @@ export const workflowFacts = (yaml: string, path = WORKFLOW_PATH): SupplyChainFa
 /** A workflow whose only jobs set permissions, so `noPermissions` stays out of the way of other rules. */
 export const withPermissions = (on: string, steps: string): string =>
   `${on}\npermissions: {}\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n${steps}\n`;
+
+/** An acceptance of the absence of a dependency review, which any test overrides to accept something else. */
+export const acceptance = (overrides: Partial<FindingAcceptance> = {}): FindingAcceptance => ({
+  id: 1,
+  check: "dependencyReview",
+  path: null,
+  line: null,
+  fingerprint: "n1:",
+  reason: "risk_accepted",
+  note: "Reviewed with the team.",
+  acceptedAt: "2026-10-06T09:00:00Z",
+  ...overrides,
+});

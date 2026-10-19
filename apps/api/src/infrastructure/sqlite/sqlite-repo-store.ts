@@ -11,6 +11,7 @@ import type {
   CoverageSnapshot,
   CrawlStatus,
   DeployRun,
+  FindingAcceptance,
   HeldPosture,
   IssueLabelRules,
   IssueLabelState,
@@ -34,7 +35,14 @@ import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
 import { ISSUE_LABEL_KINDS, ISSUE_PRIORITIES } from "@dora-dashboard/core";
 import type { IssueState, RepoCounts, RepoStore, SnapshotKeys } from "../../interfaces/repo-store.js";
-import type { AlertScan, SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import type {
+  AcceptanceScan,
+  AlertScan,
+  SaveMode,
+  SecurityKeys,
+  SecurityStore,
+  StoredScorecard,
+} from "../../interfaces/security-store.js";
 import { SECURITY_SCHEMA, SecurityTables, migrateSecurityTables } from "./security-tables.js";
 
 /** The `failed` column of a snapshot: 1 when it records a failed attempt, which is when it carries an error. */
@@ -902,5 +910,21 @@ export class SqliteRepoStore implements RepoStore, SecurityStore {
 
   securityKeys(repoId: number): SecurityKeys {
     return this.security.securityKeys(repoId);
+  }
+
+  acceptances(repoId: number): FindingAcceptance[] {
+    return this.security.acceptances(repoId);
+  }
+
+  acceptanceScan(repoId: number): AcceptanceScan {
+    return this.security.acceptanceScan(repoId);
+  }
+
+  saveAcceptance(repoId: number, acceptance: Omit<FindingAcceptance, "id">): FindingAcceptance | null {
+    return this.security.saveAcceptance(repoId, acceptance);
+  }
+
+  deleteAcceptance(repoId: number, id: number): boolean {
+    return this.security.deleteAcceptance(repoId, id);
   }
 }

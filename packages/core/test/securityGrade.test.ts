@@ -12,10 +12,27 @@ import {
   raisedBand,
   supplyChainFound,
   usedAlerts,
+  type SupplyChainFound,
 } from "../src/securityGrade.js";
-import type { ActionUse, BranchRules, SecurityAlert, SecurityCheckName, WorkflowFinding } from "../src/securityTypes.js";
+import { fingerprintOfFinding, fingerprintOfUse } from "../src/securityAcceptance.js";
+import { growth, PROPORTIONAL } from "./growth.js";
+import {
+  GRADED_SUPPLY_CHAIN_CHECKS,
+  SECURITY_CHECKS,
+  SUPPLY_CHAIN_CHECK_IDS,
+  type ActionUse,
+  type BranchRules,
+  type DockerfileFacts,
+  type FindingAcceptance,
+  type KeyFile,
+  type SecurityAlert,
+  type SecurityCheckName,
+  type SupplyChainCheckId,
+  type WorkflowFinding,
+} from "../src/securityTypes.js";
 import {
   NOW,
+  acceptance,
   allOk,
   codeAlert,
   daysAgo,
@@ -43,6 +60,8 @@ const finding = (risk: WorkflowFinding["risk"], file = ".github/workflows/ci.yml
   line: 4,
   risk,
   evidence: "x",
+  lineHash: "00112233aabbccdd",
+  reachHash: "8899aabbccddeeff",
 });
 const action = (overrides: Partial<ActionUse>): ActionUse => ({
   file: ".github/workflows/ci.yml",
@@ -329,7 +348,12 @@ describe("the supply chain part", () => {
       "unpinnedActions",
       "high",
     ],
-    ["a strong key file", { supplyChain: record({ keyFiles: [{ path: ".env", strength: "strong" }] }) }, "keyFiles", "high"],
+    [
+      "a strong key file",
+      { supplyChain: record({ keyFiles: [{ path: ".env", blob: null, strength: "strong" }] }) },
+      "keyFiles",
+      "high",
+    ],
   ] as [string, Parameters<typeof facts>[0], SecurityCheckName, string][])(
     "%s allows %s at %s",
     (_name, overrides, check, band) => {
@@ -338,7 +362,7 @@ describe("the supply chain part", () => {
   );
 
   it.each([
-    ["a weak key file", record({ keyFiles: [{ path: "server.pem", strength: "weak" }] })],
+    ["a weak key file", record({ keyFiles: [{ path: "server.pem", blob: null, strength: "weak" }] })],
     ["a pinned third party action", record({ actions: [action({ pinned: true, ref: "a".repeat(40) })] })],
     ["an unpinned action of GitHub's own", record({ actions: [action({ kind: "github", action: "actions/checkout" })] })],
     ["an unpinned local action", record({ actions: [action({ kind: "local", action: "./local" })] })],
@@ -420,6 +444,22 @@ describe("the supply chain part", () => {
     );
     expect(found.ownUnpinned.map((u) => u.action)).toEqual(["Acme/tools"]);
     expect(found.thirdPartyUnpinned.map((u) => u.action)).toEqual(["zed/tools", "docker://x"]);
+  });
+
+  it("grades exactly the seven graded checks, named the same way in every list, in the order a tie is named", () => {
+    const graded = [
+      "prHeadCheckout",
+      "scriptInjection",
+      "selfHostedPublic",
+      "unpinnedActions",
+      "workflowPermissions",
+      "unsecureCommands",
+      "keyFiles",
+    ];
+    expect(GRADED_SUPPLY_CHAIN_CHECKS).toEqual(graded);
+    expect(SECURITY_CHECKS.supplyChain).toEqual([...graded, "all"]);
+    const checks = grade({ posture: posture({ visibility: "public" }) }).checks.filter((c) => c.part === "supplyChain");
+    expect(checks.map((c) => c.check)).toEqual(graded);
   });
 
   it("is unmeasured without a record", () => {
@@ -742,7 +782,11 @@ describe("the reason for each check", () => {
       sc({ findings: [finding("unsecureCommands")] }),
       "A workflow switches on the deprecated unsecure commands",
     ],
-    ["keyFiles", sc({ keyFiles: [{ path: ".env", strength: "strong" }] }), "1 file that looks like keys or secrets is committed"],
+    [
+      "keyFiles",
+      sc({ keyFiles: [{ path: ".env", blob: null, strength: "strong" }] }),
+      "1 file that looks like keys or secrets is committed",
+    ],
     [
       "branchUnprotected",
       {
@@ -854,5 +898,315 @@ describe("a branch read only through rulesets", () => {
   it("is unprotected only when classic protection said false and no rule is in force", () => {
     const classicOff = posture({ branch: { protected: false, detail: "rulesets_only", rules: noRules } });
     expect(branchState(classicOff)).toMatchObject({ read: true, unprotected: true });
+  });
+});
+
+describe("accepting findings of the clone (ADR 0040)", () => {
+  const checkout = finding("prHeadCheckout", ".github/workflows/db.yml");
+  const unpinned = action({ action: "zed/tool" });
+  const acceptCheckout = acceptance({
+    id: 1,
+    check: "prHeadCheckout",
+    path: checkout.file,
+    line: checkout.line,
+    fingerprint: fingerprintOfFinding(checkout),
+  });
+  const supplyChain = record({ findings: [checkout], actions: [unpinned] });
+
+  it("lifts the band from low to high when the one low finding is accepted, and says what was accepted", () => {
+    const before = grade({ supplyChain });
+    expect(before.grade!.overall).toMatchObject({ band: "low", check: "prHeadCheckout" });
+
+    const after = grade({ supplyChain, acceptances: [acceptCheckout] });
+    // The unpinned third party action still caps the part at high.
+    expect(after.grade!.overall).toMatchObject({ band: "high", check: "unpinnedActions" });
+    const check = after.checks.find((c) => c.check === "prHeadCheckout")!;
+    expect(check).toMatchObject({ count: 0, met: true, band: "elite", accepted: 1 });
+    expect("accepted" in after.checks.find((c) => c.check === "scriptInjection")!).toBe(false);
+  });
+
+  it("keeps counting every remote use in the base of the unpinned share, accepted or not", () => {
+    const acceptUse = acceptance({
+      id: 2,
+      check: "unpinnedActions",
+      path: unpinned.file,
+      line: unpinned.line,
+      fingerprint: fingerprintOfUse(unpinned),
+    });
+    const found = supplyChainFound(supplyChain, "acme", null, [acceptUse]);
+    expect(found.thirdPartyUnpinned).toEqual([]);
+    expect(found.remoteActions).toBe(1);
+    const check = grade({ supplyChain, acceptances: [acceptUse] }).checks.find((c) => c.check === "unpinnedActions")!;
+    expect(check).toMatchObject({ count: 0, total: 1, accepted: 1 });
+  });
+
+  it("still names the path to the next band after acceptance, from what is left open", () => {
+    const f = facts({ supplyChain, acceptances: [acceptCheckout] });
+    // Only the unpinned action is left at high; clearing it reaches elite.
+    expect(raisedBand(f)).toBe("elite");
+    // Without the acceptance the low finding is what stands in the way, and clearing it alone leaves high.
+    expect(raisedBand(facts({ supplyChain }))).toBe("high");
+  });
+
+  it("leaves a self-hosted check unmeasured when the visibility is unknown, and counts no acceptance as having applied", () => {
+    const runner = { ...finding("selfHosted"), onPullRequest: true };
+    const sc = record({ findings: [runner] });
+    const unknown = posture({ visibility: null });
+    const open = grade({ supplyChain: sc, posture: unknown });
+    expect(open.checks.find((c) => c.check === "selfHostedPublic")).toMatchObject({ value: null });
+    expect(open.checks.find((c) => c.check === "selfHostedPublic")!.band).toBeUndefined();
+
+    const accepted = acceptance({
+      id: 3,
+      check: "selfHostedPublic",
+      path: runner.file,
+      line: runner.line,
+      fingerprint: fingerprintOfFinding(runner),
+    });
+    const found = supplyChainFound(sc, "acme", posture({ visibility: null }), [accepted]);
+    expect(found.selfHostedPublic).toBeNull();
+    expect(found.accepted).toEqual([]);
+    expect(found.acceptedByCheck).toEqual({});
+    const still = grade({ supplyChain: sc, posture: unknown, acceptances: [accepted] });
+    expect(still.checks.find((c) => c.check === "selfHostedPublic")).toMatchObject({ value: null });
+    expect(still.checks.find((c) => c.check === "selfHostedPublic")!.accepted).toBeUndefined();
+    // With no posture at all the visibility is unknown as well.
+    expect(supplyChainFound(sc, "acme", null, [accepted]).accepted).toEqual([]);
+  });
+
+  it("splits a self-hosted finding into open and accepted only in a public repository", () => {
+    const runner = { ...finding("selfHosted"), onPullRequest: true };
+    const accepted = acceptance({
+      id: 3,
+      check: "selfHostedPublic",
+      path: runner.file,
+      line: runner.line,
+      fingerprint: fingerprintOfFinding(runner),
+    });
+    const found = supplyChainFound(record({ findings: [runner] }), "acme", posture({ visibility: "public" }), [accepted]);
+    expect(found.selfHostedPublic).toEqual([]);
+    expect(found.acceptedByCheck).toEqual({ selfHostedPublic: 1 });
+    const closed = grade({
+      supplyChain: record({ findings: [runner] }),
+      posture: posture({ visibility: "public" }),
+      acceptances: [accepted],
+    });
+    expect(closed.checks.find((c) => c.check === "selfHostedPublic")).toMatchObject({ value: 0, met: true, accepted: 1 });
+  });
+
+  it("does not count an accepted self-hosted finding in a private repository, where it is no finding", () => {
+    const runner = { ...finding("selfHosted"), onPullRequest: true };
+    const accepted = acceptance({
+      id: 3,
+      check: "selfHostedPublic",
+      path: runner.file,
+      line: runner.line,
+      fingerprint: fingerprintOfFinding(runner),
+    });
+    const found = supplyChainFound(record({ findings: [runner] }), "acme", posture({ visibility: "private" }), [accepted]);
+    expect(found.accepted).toEqual([]);
+    expect(found.selfHostedPublic).toEqual([]);
+  });
+
+  it("takes a missing lockfile, a Dockerfile and an absence out of their lists", () => {
+    const sc = record({
+      missingLockfiles: ["web/package.json"],
+      securityTools: [],
+      dockerfiles: [
+        {
+          path: "Dockerfile",
+          blob: "a".repeat(40),
+          images: 1,
+          unpinnedImages: 1,
+          latestImages: 1,
+          runsAsRoot: false,
+          addsRemote: false,
+          curlPipeShell: false,
+        },
+      ],
+    });
+    const accepted = [
+      acceptance({ id: 1, check: "lockfiles", path: "web/package.json", fingerprint: "p1:" }),
+      acceptance({ id: 2, check: "baseImagesPinned", path: "Dockerfile", fingerprint: `b:${"a".repeat(40)}` }),
+      acceptance({ id: 3, check: "staticAnalysis" }),
+    ];
+    const found = supplyChainFound(sc, "acme", null, accepted);
+    expect(found.missingLockfiles).toEqual([]);
+    expect(found.images.unpinned).toEqual([]);
+    expect(found.images.latest).toHaveLength(1);
+    expect(found.absence).toEqual({
+      updateConfig: "none",
+      securityPolicy: "none",
+      dependencyReview: "open",
+      secretScanInCi: "open",
+      staticAnalysis: "accepted",
+    });
+    expect(found.acceptedByCheck).toEqual({ lockfiles: 1, baseImagesPinned: 1, staticAnalysis: 1 });
+    expect([...found.openPaths.get("latestImages")!]).toEqual(["Dockerfile"]);
+  });
+
+  it("takes a Dockerfile accepted under baseImagesPinned out of that list alone, and leaves its other problems open", () => {
+    const blob = "b".repeat(40);
+    const docker: DockerfileFacts = {
+      path: "Dockerfile",
+      blob,
+      images: 1,
+      unpinnedImages: 1,
+      latestImages: 0,
+      runsAsRoot: false,
+      addsRemote: true,
+      curlPipeShell: true,
+    };
+    const held = acceptance({ check: "baseImagesPinned", path: "Dockerfile", fingerprint: `b:${blob}` });
+    const found = supplyChainFound(record({ dockerfiles: [docker] }), "acme", null, [held]);
+    expect(found.images.unpinned).toEqual([]);
+    expect(found.images.remoteAdd).toEqual([docker]);
+    expect(found.images.curlPipeShell).toEqual([docker]);
+    expect(found.acceptedByCheck).toEqual({ baseImagesPinned: 1 });
+  });
+
+  describe("which check an acceptance leaves", () => {
+    const blob = "c".repeat(40);
+    const CI = ".github/workflows/ci.yml";
+    // Every workflow finding is in one file with the same line, evidence and hashes, so only its risk tells them apart.
+    const workflow = {
+      prHeadCheckout: finding("prHeadCheckout"),
+      scriptInjection: finding("scriptInjection"),
+      selfHostedPublic: { ...finding("selfHosted"), onPullRequest: true },
+      workflowPermissions: finding("writeAll"),
+      unsecureCommands: finding("unsecureCommands"),
+      curlPipeShell: finding("curlPipeShell"),
+      secretsInherit: finding("secretsInherit"),
+      persistCredentials: finding("persistCredentials"),
+    };
+    const thirdParty = action({ action: "zed/tool" });
+    const own = action({ action: "acme/shared" });
+    const strong: KeyFile = { path: ".env", blob, strength: "strong" };
+    const weak: KeyFile = { path: "server.pem", blob, strength: "weak" };
+    // One Dockerfile with every problem, so each of its five checks is matched on the same path and blob id.
+    const docker: DockerfileFacts = {
+      path: "Dockerfile",
+      blob,
+      images: 2,
+      unpinnedImages: 1,
+      latestImages: 1,
+      runsAsRoot: true,
+      addsRemote: true,
+      curlPipeShell: true,
+    };
+    const sc = record({
+      findings: Object.values(workflow),
+      actions: [thirdParty, own],
+      keyFiles: [strong, weak],
+      dockerfiles: [docker],
+      missingLockfiles: ["web/package.json"],
+      updateConfig: null,
+      securityPolicy: null,
+      securityTools: [],
+    });
+    const PUBLIC = posture({ visibility: "public" });
+    const on = (path: string | null, fingerprint: string) => ({ path, fingerprint });
+    const absent = on(null, "n1:");
+    const image = on("Dockerfile", `b:${blob}`);
+    const TARGET: Record<SupplyChainCheckId, Pick<FindingAcceptance, "path" | "fingerprint">> = {
+      prHeadCheckout: on(CI, fingerprintOfFinding(workflow.prHeadCheckout)),
+      scriptInjection: on(CI, fingerprintOfFinding(workflow.scriptInjection)),
+      selfHostedPublic: on(CI, fingerprintOfFinding(workflow.selfHostedPublic)),
+      unpinnedActions: on(CI, fingerprintOfUse(thirdParty)),
+      ownActionsUnpinned: on(CI, fingerprintOfUse(own)),
+      workflowPermissions: on(CI, fingerprintOfFinding(workflow.workflowPermissions)),
+      unsecureCommands: on(CI, fingerprintOfFinding(workflow.unsecureCommands)),
+      keyFiles: on(".env", `b:${blob}`),
+      weakKeyFiles: on("server.pem", `b:${blob}`),
+      curlPipeShell: on(CI, fingerprintOfFinding(workflow.curlPipeShell)),
+      secretsInherit: on(CI, fingerprintOfFinding(workflow.secretsInherit)),
+      persistCredentials: on(CI, fingerprintOfFinding(workflow.persistCredentials)),
+      updateConfig: absent,
+      lockfiles: on("web/package.json", "p1:"),
+      securityPolicy: absent,
+      dependencyReview: absent,
+      secretScanInCi: absent,
+      staticAnalysis: absent,
+      baseImagesPinned: image,
+      latestImages: image,
+      nonRootImages: image,
+      remoteAdd: image,
+    };
+    const open = (found: SupplyChainFound): Record<SupplyChainCheckId, number> => {
+      const absence = (check: keyof SupplyChainFound["absence"]) => Number(found.absence[check] === "open");
+      return {
+        prHeadCheckout: found.prHeadCheckout.length,
+        scriptInjection: found.scriptInjection.length,
+        selfHostedPublic: found.selfHostedPublic!.length,
+        unpinnedActions: found.thirdPartyUnpinned.length,
+        ownActionsUnpinned: found.ownUnpinned.length,
+        workflowPermissions: found.permissions.length,
+        unsecureCommands: found.unsecureCommands.length,
+        keyFiles: found.strongKeys.length,
+        weakKeyFiles: found.weakKeys.length,
+        curlPipeShell: found.curlPipeShell.length + found.images.curlPipeShell.length,
+        secretsInherit: found.secretsInherit.length,
+        persistCredentials: found.persistCredentials.length,
+        updateConfig: absence("updateConfig"),
+        lockfiles: found.missingLockfiles.length,
+        securityPolicy: absence("securityPolicy"),
+        dependencyReview: absence("dependencyReview"),
+        secretScanInCi: absence("secretScanInCi"),
+        staticAnalysis: absence("staticAnalysis"),
+        baseImagesPinned: found.images.unpinned.length,
+        latestImages: found.images.latest.length,
+        nonRootImages: found.images.root.length,
+        remoteAdd: found.images.remoteAdd.length,
+      };
+    };
+    // One open finding of every check, and two of curlPipeShell: the workflow's and the Dockerfile's.
+    const BEFORE = {
+      ...(Object.fromEntries(SUPPLY_CHAIN_CHECK_IDS.map((check) => [check, 1])) as Record<SupplyChainCheckId, number>),
+      curlPipeShell: 2,
+    };
+    const accepting = (check: SupplyChainCheckId, target = TARGET[check]) =>
+      supplyChainFound(sc, "acme", PUBLIC, [acceptance({ id: 1, check, ...target })]);
+
+    it("holds one open finding of every check before anything is accepted", () => {
+      expect(open(supplyChainFound(sc, "acme", PUBLIC))).toEqual(BEFORE);
+    });
+
+    it.each(SUPPLY_CHAIN_CHECK_IDS.map((check) => [check]))("takes an acceptance under %s out of that check alone", (check) => {
+      const found = accepting(check);
+      expect(found.acceptedByCheck).toEqual({ [check]: 1 });
+      expect(open(found)).toEqual({ ...BEFORE, [check]: BEFORE[check] - 1 });
+    });
+
+    it("takes the Dockerfile's curlPipeShell out and leaves the workflow's open", () => {
+      const found = accepting("curlPipeShell", image);
+      expect(found.acceptedByCheck).toEqual({ curlPipeShell: 1 });
+      expect(found.images.curlPipeShell).toEqual([]);
+      expect(found.curlPipeShell).toEqual([workflow.curlPipeShell]);
+      expect(open(found)).toEqual({ ...BEFORE, curlPipeShell: 1 });
+    });
+  });
+
+  it("ignores an acceptance for a finding that is not there and leaves the grade as it was", () => {
+    const stray = acceptance({ id: 4, check: "prHeadCheckout", path: "other.yml", fingerprint: `w2:${"0".repeat(16)}` });
+    expect(grade({ supplyChain, acceptances: [stray] }).grade).toEqual(grade({ supplyChain }).grade);
+  });
+
+  it("grows in proportion to the findings and the acceptances over them", () => {
+    const build = (n: number) => {
+      const uses = Array.from({ length: n }, (_, i) =>
+        action({ file: `wf/${i}.yml`, line: 3, action: `zed/tool${i}`, ref: "v1" }),
+      );
+      const accepted = uses
+        .filter((_, i) => i % 4 === 0)
+        .map((u, i) =>
+          acceptance({ id: i + 1, check: "unpinnedActions", path: u.file, line: u.line, fingerprint: fingerprintOfUse(u) }),
+        );
+      return { sc: record({ actions: uses }), accepted };
+    };
+    const small = build(5_000);
+    const large = build(20_000);
+    const run = (input: ReturnType<typeof build>) => supplyChainFound(input.sc, "acme", null, input.accepted);
+    expect(run(large).accepted).toHaveLength(5_000);
+    expect(growth(run, small, large)).toBeLessThan(PROPORTIONAL);
   });
 });

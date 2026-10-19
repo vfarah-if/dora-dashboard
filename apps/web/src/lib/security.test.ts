@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { NOT_USED_REASONS } from "@dora-dashboard/core";
-import type { SecurityActionKind, SecurityCheck, SecurityCheckName, SourceState } from "@dora-dashboard/core";
+import type { SecurityActionKind, SecurityCheck, SecurityCheckName, SourceState, SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import {
+  chainItem,
   errorSource,
   noAccessSource,
   noSecurity,
@@ -22,6 +23,10 @@ import {
   SEVERITIES,
   SEVERITY_COLOUR,
   SUPPLY_CHAIN_CHECK_IDS,
+  chainAnchor,
+  fixByText,
+  foundBy,
+  foundByItem,
   SUPPLY_CHAIN_GROUPS,
   actionSentence,
   dependabotAlertsOn,
@@ -41,7 +46,9 @@ import {
   goodAndImprove,
   gradedActionCount,
   groupLines,
+  gradeNote,
   limitingSentence,
+  lineState,
   lastRead,
   lineItemText,
   listTotals,
@@ -493,9 +500,11 @@ describe("alerts", () => {
     expect(alertWhere({ kind: "package", ecosystem: "npm", name: "left-pad", version: null, manifestPath: "package.json" })).toBe(
       "left-pad in package.json",
     );
-    expect(alertWhere({ kind: "code", path: "src/a.ts", line: 12, ruleId: "r" })).toBe("src/a.ts line 12");
-    expect(alertWhere({ kind: "code", path: "src/a.ts", line: null, ruleId: "r" })).toBe("src/a.ts");
-    expect(alertWhere({ kind: "code", path: null, line: null, ruleId: "r" })).toBe("A location GitHub did not report");
+    expect(alertWhere({ kind: "code", path: "src/a.ts", line: 12, ruleId: "r", tool: "CodeQL" })).toBe("src/a.ts line 12");
+    expect(alertWhere({ kind: "code", path: "src/a.ts", line: null, ruleId: "r", tool: "CodeQL" })).toBe("src/a.ts");
+    expect(alertWhere({ kind: "code", path: null, line: null, ruleId: "r", tool: "CodeQL" })).toBe(
+      "A location GitHub did not report",
+    );
     expect(alertWhere({ kind: "secret", type: "Stripe API key" })).toBe("A secret of the kind Stripe API key");
   });
 });
@@ -981,28 +990,58 @@ describe("supply chain lines", () => {
   it.each(SUPPLY_CHAIN_CHECK_IDS)("names %s and writes a sentence for a met and an unmet line", (id) => {
     expect(supplyChainTitle[id].length).toBeGreaterThan(10);
     for (const met of [true, false]) {
-      const sentence = supplyChainSentence({ check: id, met, graded: true, items: [], total: 2 });
+      const sentence = supplyChainSentence({ check: id, met, graded: true, items: [], total: 2, accepted: 0, absence: null });
       expect(sentence.length).toBeGreaterThan(8);
       expect(sentence).not.toMatch(NO_DASH);
       expect(sentence).not.toMatch(/undefined|NaN/);
     }
   });
 
+  it("reads an accepted absence as accepted, with a sentence that says what was missing and that it does not count", () => {
+    const line: SupplyChainLine = {
+      check: "securityPolicy",
+      met: false,
+      graded: false,
+      items: [],
+      total: 0,
+      accepted: 1,
+      absence: null,
+    };
+    expect(supplyChainSentence(line)).toBe("No security policy was found. This is accepted, so it does not count.");
+    expect(lineState(line)).toBe("accepted");
+  });
+
   it("states the number found for an unmet line", () => {
-    expect(supplyChainSentence({ check: "unpinnedActions", met: false, graded: true, items: [], total: 2 })).toBe(
-      "2 uses of actions are not pinned to a commit.",
-    );
-    expect(supplyChainSentence({ check: "unpinnedActions", met: false, graded: true, items: [], total: 1 })).toBe(
-      "1 use of an action is not pinned to a commit.",
-    );
-    expect(supplyChainSentence({ check: "unpinnedActions", met: true, graded: true, items: [], total: 0 })).toBe(
-      "Every one is pinned.",
-    );
+    expect(
+      supplyChainSentence({
+        check: "unpinnedActions",
+        met: false,
+        graded: true,
+        items: [],
+        total: 2,
+        accepted: 0,
+        absence: null,
+      }),
+    ).toBe("2 uses of actions are not pinned to a commit.");
+    expect(
+      supplyChainSentence({
+        check: "unpinnedActions",
+        met: false,
+        graded: true,
+        items: [],
+        total: 1,
+        accepted: 0,
+        absence: null,
+      }),
+    ).toBe("1 use of an action is not pinned to a commit.");
+    expect(
+      supplyChainSentence({ check: "unpinnedActions", met: true, graded: true, items: [], total: 0, accepted: 0, absence: null }),
+    ).toBe("Every one is pinned.");
   });
 
   it("says Dockerfiles for the image checks, because each counts Dockerfiles and not images", () => {
     const line = (check: "baseImagesPinned" | "latestImages" | "nonRootImages" | "remoteAdd", total: number) =>
-      supplyChainSentence({ check, met: false, graded: false, items: [], total });
+      supplyChainSentence({ check, met: false, graded: false, items: [], total, accepted: 0, absence: null });
     expect(line("baseImagesPinned", 4)).toBe("4 Dockerfiles use images that are not pinned to a digest.");
     expect(line("baseImagesPinned", 1)).toBe("1 Dockerfile uses an image that is not pinned to a digest.");
     expect(line("latestImages", 2)).toBe("2 Dockerfiles use the latest tag or none.");
@@ -1027,8 +1066,8 @@ describe("supply chain lines", () => {
   });
 
   it("writes an item as its path and line", () => {
-    expect(lineItemText({ path: ".github/workflows/ci.yml", line: 12, detail: null })).toBe(".github/workflows/ci.yml line 12");
-    expect(lineItemText({ path: "Dockerfile", line: null, detail: null })).toBe("Dockerfile");
+    expect(lineItemText(chainItem(".github/workflows/ci.yml", 12))).toBe(".github/workflows/ci.yml line 12");
+    expect(lineItemText(chainItem("Dockerfile"))).toBe("Dockerfile");
   });
 });
 
@@ -1152,9 +1191,7 @@ describe("Dependabot version updates and security updates", () => {
       supplyChain: {
         ...base.supplyChain,
         lines: base.supplyChain.lines.map((l) =>
-          l.check === "updateConfig"
-            ? { ...l, met, total: met ? 1 : 0, items: met ? [{ path: "renovate.json", line: null, detail: null }] : [] }
-            : l,
+          l.check === "updateConfig" ? { ...l, met, total: met ? 1 : 0, items: met ? [chainItem("renovate.json")] : [] } : l,
         ),
       },
     });
@@ -1297,5 +1334,244 @@ describe("advice that presupposes review recorded on GitHub", () => {
     expect(copy.security.partDefinitions.changeControl).toBe(
       "Whether the deploy branch is protected from direct pushes, history rewrites and deletion.",
     );
+  });
+});
+
+describe("how a finding was found", () => {
+  const c = copy.security.chain.foundBy;
+
+  it.each([
+    ["prHeadCheckout", "Read from the workflow text, with its conditions."],
+    ["scriptInjection", "Read from the workflow text, with its conditions."],
+    ["selfHostedPublic", "Read from the workflow text, with its conditions."],
+    ["workflowPermissions", "Read from the workflow text. Conditions do not change this check."],
+    ["unsecureCommands", "Read from the workflow text. Conditions do not change this check."],
+    ["curlPipeShell", "Read from the workflow text. Conditions do not change this check."],
+    ["secretsInherit", "Read from the workflow text. Conditions do not change this check."],
+    ["persistCredentials", "Read from the workflow text, with its conditions."],
+    ["unpinnedActions", "Read from each uses: line."],
+    ["ownActionsUnpinned", "Read from each uses: line."],
+    ["keyFiles", "Matched by file name only. The file is never opened."],
+    ["weakKeyFiles", "Matched by file name only. The file is never opened."],
+    ["baseImagesPinned", "Read from the Dockerfile."],
+    ["latestImages", "Read from the Dockerfile."],
+    ["nonRootImages", "Read from the Dockerfile."],
+    ["remoteAdd", "Read from the Dockerfile."],
+    ["updateConfig", "Looked for in the workflows and files of the deploy branch."],
+    ["lockfiles", "Looked for in the workflows and files of the deploy branch."],
+    ["securityPolicy", "Looked for in the workflows and files of the deploy branch."],
+    ["dependencyReview", "Looked for in the workflows and files of the deploy branch."],
+    ["secretScanInCi", "Looked for in the workflows and files of the deploy branch."],
+    ["staticAnalysis", "Looked for in the workflows and files of the deploy branch."],
+  ] as const)("says %s was found by: %s", (id, text) => {
+    expect(foundBy[id]).toBe(text);
+  });
+
+  it.each([
+    ["Dockerfile", "dockerfile"],
+    ["services/api/Dockerfile.prod", "dockerfile"],
+    ["build/api.dockerfile", "dockerfile"],
+    ["Containerfile", "dockerfile"],
+    [".github/workflows/ci.yml", "workflowText"],
+    ["Dockerfile.md", "workflowText"],
+  ] as const)("reads a curlPipeShell item at %s as %s", (path, kind) => {
+    expect(foundByItem("curlPipeShell", { path })).toBe(c[kind]);
+  });
+
+  it("leaves every other check's text to the check, whatever the path", () => {
+    expect(foundByItem("scriptInjection", { path: "Dockerfile" })).toBe(foundBy.scriptInjection);
+  });
+
+  it("has a text for every check core can send, and no other", () => {
+    expect(Object.keys(foundBy).sort()).toEqual([...SUPPLY_CHAIN_CHECK_IDS].sort());
+    expect(Object.values(foundBy).every((text) => (Object.values(c) as string[]).includes(text))).toBe(true);
+  });
+
+  it("links an improve item only to a check that has a row in the supply chain card", () => {
+    expect(chainAnchor("prHeadCheckout")).toBe("chain-prHeadCheckout");
+    expect(chainAnchor("criticalOpen")).toBeNull();
+    expect(chainAnchor("toString")).toBeNull();
+  });
+
+  it("carries the files core named on a check line, and none when it named none", () => {
+    const base = securityReport();
+    const report = securityReport({
+      checks: base.checks.map((check) =>
+        check.check === "unpinnedActions"
+          ? { ...check, detail: [".github/workflows/ci.yml", ".github/workflows/release.yml"] }
+          : check,
+      ),
+    });
+    const lines = checkLines(report);
+    expect(lines.find((l) => l.check === "unpinnedActions")?.files).toEqual([
+      ".github/workflows/ci.yml",
+      ".github/workflows/release.yml",
+    ]);
+    expect(lines.find((l) => l.check === "criticalOpen")?.files).toEqual([]);
+  });
+});
+
+describe("fixByText", () => {
+  it.each([
+    [12, "12 days left"],
+    [1, "1 day left"],
+    [0, "Due today"],
+    [-1, "1 day past"],
+    [-3, "3 days past"],
+  ])("writes %i days left as %s", (days, text) => {
+    expect(fixByText(days)).toBe(text);
+  });
+});
+
+describe("accepted findings in the checks", () => {
+  const acceptedReport = (check: SecurityCheck) => {
+    const base = securityReport();
+    return securityReport({ checks: [...base.checks.filter((c) => c.check !== check.check), check] });
+  };
+  const line = (report: ReturnType<typeof securityReport>, name: string) => checkLines(report).find((l) => l.check === name)!;
+
+  it("says a fully accepted check has findings that are accepted, and not that none are found", () => {
+    const report = acceptedReport({
+      part: "supplyChain",
+      check: "prHeadCheckout",
+      value: 0,
+      band: "elite",
+      met: true,
+      count: 0,
+      accepted: 2,
+      limits: false,
+    });
+    const found = line(report, "prHeadCheckout");
+    expect(found.good).toBe(true);
+    expect(found.accepted).toBe(2);
+    expect(found.text).toBe(
+      "2 places in privileged workflows check out a pull request's own code while holding secrets. They are accepted, so they do not count.",
+    );
+    expect(found.text).not.toMatch(/^No privileged workflow/);
+  });
+
+  it("says one accepted finding in the singular", () => {
+    const report = acceptedReport({
+      part: "supplyChain",
+      check: "keyFiles",
+      value: 0,
+      band: "elite",
+      met: true,
+      count: 0,
+      accepted: 1,
+      limits: false,
+    });
+    expect(line(report, "keyFiles").text).toBe(
+      "1 file that looks like a private key or an environment file is stored in the repository. It is accepted, so it does not count.",
+    );
+  });
+
+  it("keeps the open sentence and says how many more are accepted when some are still open", () => {
+    const report = acceptedReport({
+      part: "supplyChain",
+      check: "unpinnedActions",
+      value: 3,
+      band: "high",
+      met: false,
+      count: 3,
+      accepted: 2,
+      limits: true,
+    });
+    const found = line(report, "unpinnedActions");
+    expect(found.good).toBe(false);
+    expect(found.text).toBe(
+      "3 actions from other organisations are not pinned to a commit. 2 more are accepted and not counted.",
+    );
+  });
+
+  it("leaves a check with nothing accepted exactly as it was", () => {
+    expect(line(securityReport(), "prHeadCheckout")).toMatchObject({ accepted: 0, good: true });
+    expect(line(securityReport(), "prHeadCheckout").text).toBe(
+      "No privileged workflow checks out a pull request's own code while holding secrets.",
+    );
+  });
+});
+
+describe("supply chain lines with accepted findings", () => {
+  const base: SupplyChainLine = {
+    check: "prHeadCheckout",
+    met: false,
+    graded: true,
+    items: [],
+    total: 0,
+    accepted: 0,
+    absence: null,
+  };
+
+  it("says every finding is accepted, in the words of the finding, when nothing open is left", () => {
+    expect(supplyChainSentence({ ...base, met: true, accepted: 1 })).toBe(
+      "1 place does this. This is accepted, so it does not count.",
+    );
+    expect(supplyChainSentence({ ...base, met: true, accepted: 3 })).toBe(
+      "3 places do this. All 3 are accepted, so they do not count.",
+    );
+  });
+
+  it("says an accepted absence is accepted, and not that the thing was found", () => {
+    const line: SupplyChainLine = { ...base, check: "securityPolicy", accepted: 1 };
+    expect(supplyChainSentence(line)).toBe("No security policy was found. This is accepted, so it does not count.");
+    expect(lineState(line)).toBe("accepted");
+  });
+
+  it("keeps the open count and adds how many more are accepted", () => {
+    expect(supplyChainSentence({ ...base, total: 2, accepted: 1 })).toBe("2 places do this. 1 more is accepted and not counted.");
+  });
+
+  it("does not call a missing thing accepted while its absence is open", () => {
+    const line: SupplyChainLine = { ...base, check: "securityPolicy", absence: { fingerprint: "n1:" } };
+    expect(supplyChainSentence(line)).toBe("No security policy was found.");
+    expect(lineState(line)).toBe("unmet");
+  });
+
+  it.each([
+    ["met", { ...base, met: true }, "met"],
+    ["unmet", { ...base, total: 2 }, "unmet"],
+    ["partly accepted", { ...base, total: 2, accepted: 1 }, "unmet"],
+    ["fully accepted", { ...base, met: true, accepted: 1 }, "accepted"],
+  ] as [string, SupplyChainLine, string][])("shows a line that is %s as %s", (_name, line, state) => {
+    expect(lineState(line)).toBe(state);
+  });
+});
+
+describe("the note on the grade", () => {
+  const accepted = (graded: number, bandBefore: "low" | "medium" | "high" | "elite" | null, supplyChainBefore = bandBefore) =>
+    ({ graded, advice: 0, bandBefore, supplyChainBefore }) as const;
+
+  it("names the band before on the overall grade and on the supply chain part", () => {
+    const report = securityReport({ accepted: accepted(1, "low", "medium") });
+    expect(gradeNote(report)).toBe("Low before 1 accepted finding");
+    const chain = partRows(report).find((p) => p.part === "supplyChain")!;
+    // The part is high in the fixture, and was medium before.
+    expect(chain.note).toBe("Medium before 1 accepted finding");
+  });
+
+  it("puts the note on the supply chain part only", () => {
+    const rows = partRows(securityReport({ accepted: accepted(1, "low") }));
+    expect(rows.filter((p) => p.note !== null).map((p) => p.part)).toEqual(["supplyChain"]);
+  });
+
+  it("says the band is unchanged when it is, and says nothing when nothing was accepted", () => {
+    expect(gradeNote(securityReport({ accepted: accepted(2, "medium") }))).toBe(
+      "The band is the same with or without 2 accepted findings",
+    );
+    expect(gradeNote(securityReport())).toBeNull();
+    expect(partRows(securityReport()).every((p) => p.note === null)).toBe(true);
+  });
+
+  it("says nothing when there is no grade", () => {
+    expect(gradeNote(securityReport({ grade: null, gradeMissing: "nothing_measured", accepted: accepted(1, "low") }))).toBeNull();
+  });
+});
+
+describe("start here counts accepted findings", () => {
+  it("adds the graded and the advice findings that were accepted", () => {
+    const report = securityReport({ accepted: { graded: 2, advice: 1, bandBefore: "low", supplyChainBefore: "low" } });
+    expect(startHere(report).acceptedCount).toBe(3);
+    expect(startHere(securityReport()).acceptedCount).toBe(0);
   });
 });

@@ -403,3 +403,30 @@ describe("SecurityListPage", () => {
     });
   });
 });
+
+describe("SecurityListPage accepted findings", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says beside a repository's grade which band it was before acceptance", async () => {
+    show([securitySummary({ band: "high", accepted: { graded: 2, bandBefore: "low" } })]);
+    const row = (await screen.findByRole("heading", { level: 3, name: /acme\/widgets/ })).closest("li")!;
+    expect(definitionOf(row, copy.security.list.facts.grade)).toHaveTextContent("High");
+    expect(definitionOf(row, copy.security.list.facts.grade)).toHaveTextContent("Low before 2 accepted findings");
+  });
+
+  it("says the band is the same when acceptance did not move it, and says nothing when nothing is accepted", async () => {
+    show([
+      securitySummary({ band: "medium", accepted: { graded: 1, bandBefore: "medium" } }),
+      { ...second, accepted: { graded: 0, bandBefore: null } },
+    ]);
+    const rows = await screen.findAllByRole("listitem");
+    expect(within(rows[0]!).getByText("The band is the same with or without 1 accepted finding")).toBeInTheDocument();
+    expect(within(rows[1]!).queryByText(/accepted finding/)).not.toBeInTheDocument();
+  });
+
+  it("says nothing for a repository with no grade", async () => {
+    show([ungraded]);
+    await screen.findByRole("heading", { level: 3, name: /acme\/gizmos/ });
+    expect(screen.queryByText(/accepted finding/)).not.toBeInTheDocument();
+  });
+});

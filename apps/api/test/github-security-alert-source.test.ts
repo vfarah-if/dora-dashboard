@@ -699,6 +699,58 @@ describe("GitHubSecurityAlertSource addresses", () => {
     expect(source.settingsUrl("acme", "wid gets")).toBe("https://github.example.test/acme/wid%20gets/settings/security_analysis");
   });
 
+  describe("fileUrl", () => {
+    it.each([["a/./b.yml"], ["../outside.yml"], ["a/../b.yml"], ["."], ["a/.."]])(
+      "answers null for the path %s, as a dot segment would leave the commit's tree",
+      (path) => {
+        expect(new GitHubSecurityAlertSource().fileUrl("acme", "widgets", "abc1234", path, 1)).toBeNull();
+      },
+    );
+
+    it("still links a name that only starts or ends with dots", () => {
+      expect(new GitHubSecurityAlertSource().fileUrl("acme", "widgets", "abc1234", ".github/..a/b..", null)).toContain(
+        "/blob/abc1234/.github/..a/b..",
+      );
+    });
+
+    const source = new GitHubSecurityAlertSource(host({}), API, "https://github.example.test");
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+
+    it("builds the page for a file at a commit, with a line fragment only when there is a line", () => {
+      expect(source.fileUrl("acme", "widgets", sha, ".github/workflows/ci.yml", 12)).toBe(
+        `https://github.example.test/acme/widgets/blob/${sha}/.github/workflows/ci.yml#L12`,
+      );
+      expect(source.fileUrl("acme", "widgets", sha, "Dockerfile", null)).toBe(
+        `https://github.example.test/acme/widgets/blob/${sha}/Dockerfile`,
+      );
+    });
+
+    it("escapes the owner, the name and each path segment but keeps the slashes", () => {
+      expect(source.fileUrl("ac me", "wid#gets", sha, "my dir/a?b/c d.yml", 3)).toBe(
+        `https://github.example.test/ac%20me/wid%23gets/blob/${sha}/my%20dir/a%3Fb/c%20d.yml#L3`,
+      );
+    });
+
+    it("accepts a short or an upper case hex commit and a 64 character one", () => {
+      expect(source.fileUrl("acme", "widgets", "ABCDEF1", "a", null)).toContain("/blob/ABCDEF1/a");
+      expect(source.fileUrl("acme", "widgets", "a".repeat(64), "a", null)).toContain(`/blob/${"a".repeat(64)}/a`);
+    });
+
+    it.each(["", "abc12", "g".repeat(40), `${sha}/../x`, "a".repeat(65), "main"])("returns null for the commit %j", (bad) => {
+      expect(source.fileUrl("acme", "widgets", bad, "a", null)).toBeNull();
+    });
+
+    it("returns null for an empty path", () => {
+      expect(source.fileUrl("acme", "widgets", sha, "", 1)).toBeNull();
+    });
+
+    it("makes no request", () => {
+      const http = vi.fn(host({}));
+      new GitHubSecurityAlertSource(http).fileUrl("acme", "widgets", sha, "a", 1);
+      expect(http).not.toHaveBeenCalled();
+    });
+  });
+
   it("reads from a base address it is given, as an enterprise host would be", async () => {
     const base = "https://ghe.example.test/api/v3";
     const http = host({

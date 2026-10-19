@@ -1,5 +1,7 @@
 import type {
+  AcceptanceView,
   ActionPackage,
+  FindingAcceptance,
   Band,
   BranchRules,
   CodeDetailReport,
@@ -30,6 +32,7 @@ import type {
   SourceRead,
   SourceState,
   SpaceReport,
+  SupplyChainItem,
   SupplyChainLine,
   WeekRow,
 } from "@dora-dashboard/core";
@@ -965,7 +968,65 @@ export function securityAlert(overrides: Partial<SecurityAlertRef> = {}): Securi
     cvssScore: 9.8,
     cwes: ["CWE-1321"],
     where: { kind: "package", ecosystem: "npm", name: "left-pad", version: "1.3.0", manifestPath: "package-lock.json" },
+    fixByAt: "2026-02-27T10:00:00Z",
+    daysLeft: -3,
     ...overrides,
+  };
+}
+
+/** One supply chain item as core sends it, with no link and no risk unless given. */
+export function chainItem(
+  path: string,
+  line: number | null = null,
+  detail: string | null = null,
+  extra: Partial<SupplyChainItem> = {},
+): SupplyChainItem {
+  return {
+    path,
+    line,
+    detail,
+    url: null,
+    risk: null,
+    fingerprint: null,
+    routes: [],
+    routesDropped: 0,
+    conditions: [],
+    conditionsDropped: 0,
+    ...extra,
+  };
+}
+
+/** One acceptance as the report carries it, applying to the line the reported case came from unless given otherwise. */
+export function acceptanceView(
+  overrides: Partial<Omit<AcceptanceView, "acceptance">> & { acceptance?: Partial<FindingAcceptance> } = {},
+): AcceptanceView {
+  const { acceptance, ...rest } = overrides;
+  const base: FindingAcceptance = {
+    id: 5,
+    check: "prHeadCheckout",
+    path: ".github/workflows/db-migrate.yml",
+    line: 231,
+    fingerprint: "w2:0123456789abcdef",
+    reason: "guarded_elsewhere",
+    note: "Only reached for pushes.",
+    acceptedAt: "2026-03-01T09:00:00Z",
+    ...acceptance,
+  };
+  return {
+    acceptance: base,
+    status: "applies",
+    graded: true,
+    covers: 1,
+    items:
+      base.path === null
+        ? []
+        : [
+            chainItem(base.path, base.line, null, {
+              url: `https://github.com/acme/widgets/blob/abcdef1234567890/${base.path}#L${base.line}`,
+              fingerprint: base.fingerprint,
+            }),
+          ],
+    ...rest,
   };
 }
 
@@ -975,7 +1036,8 @@ const line = (
   graded = true,
   items: SupplyChainLine["items"] = [],
   total = items.length,
-): SupplyChainLine => ({ check, met, graded, items, total });
+  extra: Partial<Pick<SupplyChainLine, "accepted" | "absence">> = {},
+): SupplyChainLine => ({ check, met, graded, items, total, accepted: 0, absence: null, ...extra });
 
 type ReportFields = Omit<SecurityReport, "grade" | "gradeMissing">;
 
@@ -1034,14 +1096,14 @@ export function securityReport(overrides: ReportOverrides = {}): SecurityReport 
       lines: [
         line("prHeadCheckout", true),
         line("scriptInjection", true),
-        line("unpinnedActions", false, true, [{ path: ".github/workflows/ci.yml", line: 12, detail: "acme-tools/setup@v2" }]),
-        line("workflowPermissions", false, true, [{ path: ".github/workflows/ci.yml", line: null, detail: null }]),
+        line("unpinnedActions", false, true, [chainItem(".github/workflows/ci.yml", 12, "acme-tools/setup@v2")]),
+        line("workflowPermissions", false, true, [chainItem(".github/workflows/ci.yml")]),
         line("keyFiles", true),
         line("updateConfig", false, false),
         line("lockfiles", true, false),
         line("securityPolicy", false, false),
         line("staticAnalysis", false, false),
-        line("baseImagesPinned", false, false, [{ path: "Dockerfile", line: null, detail: null }]),
+        line("baseImagesPinned", false, false, [chainItem("Dockerfile")]),
       ],
     },
     ecosystems: ["npm", "github-actions"],
@@ -1175,7 +1237,9 @@ export function securityReport(overrides: ReportOverrides = {}): SecurityReport 
         epss: null,
         cvssScore: null,
         cwes: ["CWE-89"],
-        where: { kind: "code", path: "src/db/query.ts", line: 42, ruleId: "js/sql-injection" },
+        where: { kind: "code", path: "src/db/query.ts", line: 42, ruleId: "js/sql-injection", tool: "CodeQL" },
+        fixByAt: "2026-03-20T10:00:00Z",
+        daysLeft: 12,
       }),
     ],
     openAlertTotal: 6,
@@ -1257,6 +1321,9 @@ export function securityReport(overrides: ReportOverrides = {}): SecurityReport 
         refs: [],
       }),
     ],
+    acceptances: [],
+    acceptancesUnreadable: 0,
+    accepted: { graded: 0, advice: 0, bandBefore: null, supplyChainBefore: null },
     ...overrides,
   };
   const { grade, gradeMissing, ...rest } = merged;
@@ -1324,6 +1391,7 @@ export function securitySummary(overrides: SummaryOverrides = {}): SecuritySumma
     likelyExploited: 1,
     actions: 2,
     raiseGrade: { to: "high", actions: 2 },
+    accepted: { graded: 0, bandBefore: null },
     read: true,
     dependabotVersionUpdates: null,
     unmeasured: [],

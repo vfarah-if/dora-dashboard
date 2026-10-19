@@ -1,12 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
+  ACCEPTANCE_FINGERPRINT,
+  ACCEPTANCE_REASONS,
   ALERT_SOURCES,
   CLOSE_REASONS,
   NOT_USED_REASONS,
   NO_ACCESS_REASONS,
+  noteProblem,
   OFF_REASONS,
   type AlertOf,
   type AlertSource,
+  type FindingAcceptance,
   type HeldPosture,
   type LockedPackage,
   type ReadFailure,
@@ -15,12 +19,21 @@ import {
   SUPPLY_CHAIN_VERSION,
   type SecurityAlert,
   type SourceState,
+  SUPPLY_CHAIN_CHECK_IDS,
+  type SupplyChainCheckId,
   type SupplyChainFacts,
   type SupplyChainRecord,
 } from "@dora-dashboard/core";
 import type { Logger } from "../../interfaces/logger.js";
 import { noopLogger } from "../../interfaces/logger.js";
-import type { AlertScan, SaveMode, SecurityKeys, SecurityStore, StoredScorecard } from "../../interfaces/security-store.js";
+import type {
+  AcceptanceScan,
+  AlertScan,
+  SaveMode,
+  SecurityKeys,
+  SecurityStore,
+  StoredScorecard,
+} from "../../interfaces/security-store.js";
 
 /**
  * The scorecard table. `read_at` is null until a read succeeds, so a failed first read can be stored; a failure carries
@@ -82,6 +95,21 @@ CREATE TABLE IF NOT EXISTS supply_chain_failure (
   repo_id INTEGER PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
   message TEXT NOT NULL,
   attempted_at TEXT NOT NULL
+);
+-- Findings of the clone a person has accepted (ADR 0040). AUTOINCREMENT, so an id is never reused and the summary's key
+-- always changes; path is '' for the absence of a file or tool, because UNIQUE treats NULLs as distinct; the column is
+-- check_id because check is a reserved word. No column holds a person.
+CREATE TABLE IF NOT EXISTS security_acceptances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  check_id TEXT NOT NULL,
+  path TEXT NOT NULL DEFAULT '',
+  line INTEGER,
+  fingerprint TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  note TEXT NOT NULL,
+  accepted_at TEXT NOT NULL,
+  UNIQUE (repo_id, check_id, path, fingerprint)
 );
 ${postureTable("IF NOT EXISTS security_posture")};
 ${scorecardTable("IF NOT EXISTS security_scorecard")};
@@ -247,7 +275,14 @@ function isAlert(value: unknown, source: string, key: string): value is Security
   );
 }
 
-/** Supply chain facts of this version, whose lists and tables the report reads without checking. */
+/** A blob id is a string, or null when it was not read. A record without the key was made before blob ids and is read again. */
+const hasBlob = (value: unknown): boolean => isObject(value) && "blob" in value && (value.blob === null || isString(value.blob));
+
+/**
+ * Supply chain facts of this version, whose lists and tables the report reads without checking. Every key file and
+ * Dockerfile must carry its `blob`, so a record written before blob ids existed fails here and is read again at the next
+ * crawl, with no further version bump.
+ */
 function isFacts(value: unknown): value is SupplyChainFacts {
   if (!isObject(value) || value.version !== SUPPLY_CHAIN_VERSION) return false;
   const lists = ["workflowsUnread", "dockerfilesUnread", "actions", "findings", "securityTools", "missingLockfiles"];
@@ -255,10 +290,48 @@ function isFacts(value: unknown): value is SupplyChainFacts {
   const counts = ["findingsDropped", "actionsDropped"];
   return (
     typeof value.listingComplete === "boolean" &&
+    typeof value.blobsRead === "boolean" &&
     counts.every((name) => typeof value[name] === "number") &&
     [...lists, ...more].every((name) => Array.isArray(value[name])) &&
+    (value.keyFiles as unknown[]).every(hasBlob) &&
+    (value.dockerfiles as unknown[]).every(hasBlob) &&
     isObject(value.manifestsByEcosystem)
   );
+}
+
+interface AcceptanceRow {
+  id: number;
+  check_id: string;
+  path: string;
+  line: number | null;
+  fingerprint: string;
+  reason: string;
+  note: string;
+  accepted_at: string;
+}
+
+/** The acceptance a stored row stands for, or null when any part is not what the service would have saved. */
+function acceptanceOf(row: AcceptanceRow): FindingAcceptance | null {
+  const valid =
+    (SUPPLY_CHAIN_CHECK_IDS as readonly string[]).includes(row.check_id) &&
+    (ACCEPTANCE_REASONS as readonly string[]).includes(row.reason) &&
+    ACCEPTANCE_FINGERPRINT.test(row.fingerprint) &&
+    isString(row.path) &&
+    isString(row.note) &&
+    noteProblem(row.note) === null &&
+    isString(row.accepted_at) &&
+    (row.line === null || Number.isInteger(row.line));
+  if (!valid) return null;
+  return {
+    id: row.id,
+    check: row.check_id as SupplyChainCheckId,
+    path: row.path === "" ? null : row.path,
+    line: row.line,
+    fingerprint: row.fingerprint,
+    reason: row.reason as FindingAcceptance["reason"],
+    note: row.note,
+    acceptedAt: row.accepted_at,
+  };
 }
 
 function isPosture(value: unknown): value is RepoPosture {
@@ -550,6 +623,82 @@ export class SecurityTables implements SecurityStore {
     };
   }
 
+  acceptances(repoId: number): FindingAcceptance[] {
+    return this.acceptanceScan(repoId).acceptances;
+  }
+
+  acceptanceScan(repoId: number): AcceptanceScan {
+    const rows = this.db
+      .prepare(
+        "SELECT id, check_id, path, line, fingerprint, reason, note, accepted_at FROM security_acceptances WHERE repo_id = ? ORDER BY id",
+      )
+      .all(repoId) as unknown as AcceptanceRow[];
+    // A row that is not in the shape the service saves leaves the finding open, which is the safe direction. The count
+    // goes with the rows, so the report can say that some were left out.
+    let unreadable = 0;
+    const acceptances = rows.flatMap((row) => {
+      const acceptance = acceptanceOf(row);
+      if (acceptance === null) {
+        unreadable++;
+        this.warnOnce(
+          `${repoId}:acceptance:${row.id}`,
+          { repoId, acceptanceId: row.id },
+          "a stored acceptance is not readable; the finding counts again",
+        );
+        return [];
+      }
+      return [acceptance];
+    });
+    return { acceptances, unreadable };
+  }
+
+  /**
+   * Saves an acceptance, or answers null for a finding that already has one. A stored row that is not readable would
+   * otherwise block the finding for good, since `acceptances` skips it and the person could never accept again, so a
+   * conflict with an unreadable row replaces it, with a new id so the summary's key changes.
+   */
+  saveAcceptance(repoId: number, acceptance: Omit<FindingAcceptance, "id">): FindingAcceptance | null {
+    const held: { saved: FindingAcceptance | null } = { saved: null };
+    this.transaction(() => {
+      held.saved = this.insertAcceptance(repoId, acceptance);
+      if (held.saved !== null) return;
+      const existing = this.db
+        .prepare(
+          `SELECT id, check_id, path, line, fingerprint, reason, note, accepted_at FROM security_acceptances
+           WHERE repo_id = ? AND check_id = ? AND path = ? AND fingerprint = ?`,
+        )
+        .get(repoId, acceptance.check, acceptance.path ?? "", acceptance.fingerprint) as unknown as AcceptanceRow | undefined;
+      if (existing === undefined || acceptanceOf(existing) !== null) return;
+      this.db.prepare("DELETE FROM security_acceptances WHERE id = ?").run(existing.id);
+      held.saved = this.insertAcceptance(repoId, acceptance);
+    });
+    return held.saved;
+  }
+
+  private insertAcceptance(repoId: number, acceptance: Omit<FindingAcceptance, "id">): FindingAcceptance | null {
+    const result = this.db
+      .prepare(
+        `INSERT INTO security_acceptances (repo_id, check_id, path, line, fingerprint, reason, note, accepted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (repo_id, check_id, path, fingerprint) DO NOTHING`,
+      )
+      .run(
+        repoId,
+        acceptance.check,
+        acceptance.path ?? "",
+        acceptance.line,
+        acceptance.fingerprint,
+        acceptance.reason,
+        acceptance.note,
+        acceptance.acceptedAt,
+      );
+    return result.changes === 0 ? null : { ...acceptance, id: Number(result.lastInsertRowid) };
+  }
+
+  deleteAcceptance(repoId: number, id: number): boolean {
+    return this.db.prepare("DELETE FROM security_acceptances WHERE repo_id = ? AND id = ?").run(repoId, id).changes > 0;
+  }
+
   securityKeys(repoId: number): SecurityKeys {
     const rows = this.db
       .prepare("SELECT source, attempted_at, read_at FROM security_sources WHERE repo_id = ? ORDER BY source")
@@ -565,6 +714,9 @@ export class SecurityTables implements SecurityStore {
     const scorecard = this.db
       .prepare("SELECT read_at, error FROM security_scorecard WHERE repo_id = ?")
       .get(repoId) as unknown as { read_at: string | null; error: string | null } | undefined;
+    const held = this.db
+      .prepare("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS newest FROM security_acceptances WHERE repo_id = ?")
+      .get(repoId) as unknown as { n: number; newest: number };
     return {
       sources: rows.map((row) => `${row.source}:${row.attempted_at ?? ""}:${row.read_at ?? ""}`).join("|"),
       supplyChain: readAt("supply_chain"),
@@ -575,6 +727,8 @@ export class SecurityTables implements SecurityStore {
       // A failure changes the key too, so a report built before it is not served after.
       scorecard: scorecard ? `${scorecard.read_at ?? ""}${scorecard.error === null ? "" : "!"}` : null,
       supplyChainFailure: this.supplyChainFailure(repoId)?.attemptedAt ?? null,
+      // AUTOINCREMENT makes the newest id change on every accept, so an undo followed by another accept still changes it.
+      acceptances: `${held.n}:${held.newest}`,
     };
   }
 }

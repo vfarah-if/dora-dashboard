@@ -2,7 +2,9 @@ import type { SecurityReport, SupplyChainLine } from "@dora-dashboard/core";
 import { copy } from "../copy";
 import { formatDateTime } from "../lib/format";
 import { shortSha } from "../lib/codeHealth";
-import { groupLines, lineItemText, supplyChainSentence, supplyChainTitle, type SupplyChainGroup } from "../lib/security";
+import { foundBy, groupLines, lineState, supplyChainSentence, supplyChainTitle, type SupplyChainGroup } from "../lib/security";
+import { AcceptFinding } from "./AcceptFinding";
+import { FindingRow } from "./FindingRow";
 import { PassFail } from "./PassFail";
 import { PathText } from "./PathText";
 import { SecurityBlock, SecurityList, Tag } from "./SecurityParts";
@@ -10,19 +12,25 @@ import { SecurityBlock, SecurityList, Tag } from "./SecurityParts";
 const c = copy.security.chain;
 const ITEM_LIMIT = 5;
 
-function Items({ line }: { line: SupplyChainLine }) {
+function Items({ repoId, line }: { repoId: number; line: SupplyChainLine }) {
   const what = copy.space.forCheck(supplyChainTitle[line.check]);
   if (line.items.length === 0) return null;
   return (
     <>
       <SecurityList total={line.items.length} limit={ITEM_LIMIT} what={what}>
         {(limit) => (
-          <ul className="check-items mono">
-            {line.items.slice(0, limit).map((item, i) => (
-              <li key={`${item.path}-${item.line ?? ""}-${i}`}>
-                <PathText text={lineItemText(item)} />
-                {item.detail && <span className="cell-note">{item.detail}</span>}
-              </li>
+          <ul className="check-items finding-rows">
+            {line.items.slice(0, limit).map((item, index) => (
+              <FindingRow
+                key={
+                  item.fingerprint === null
+                    ? `none|${index}|${item.path}:${item.line ?? ""}`
+                    : `${item.fingerprint}|${item.path}:${item.line ?? ""}`
+                }
+                repoId={repoId}
+                line={line}
+                item={item}
+              />
             ))}
           </ul>
         )}
@@ -80,14 +88,25 @@ export function SupplyChainLines({ report, group }: { report: SecurityReport; gr
   return (
     <ul className="check-rows">
       {lines.map((line) => (
-        <li key={line.check} className="check-row">
+        <li key={line.check} id={`chain-${line.check}`} className="check-row">
           <div className="check-row-head">
-            <PassFail state={line.met ? "met" : "unmet"} />
+            <PassFail state={lineState(line)} />
             <span className="check-row-title">{supplyChainTitle[line.check]}</span>
             <Tag>{line.graded ? copy.security.tags.countsTowardsGrade : copy.security.tags.advice}</Tag>
           </div>
           <p className="check-row-text">{supplyChainSentence(line)}</p>
-          <Items line={line} />
+          <p className="chart-subtitle check-found-by">
+            <span className="visually-hidden">{c.foundByLabel}. </span>
+            {foundBy[line.check]}
+          </p>
+          <Items repoId={report.repo.id} line={line} />
+          {line.absence && (
+            <AcceptFinding
+              repoId={report.repo.id}
+              target={{ check: line.check, path: null, fingerprint: line.absence.fingerprint }}
+              place={supplyChainTitle[line.check]}
+            />
+          )}
         </li>
       ))}
     </ul>

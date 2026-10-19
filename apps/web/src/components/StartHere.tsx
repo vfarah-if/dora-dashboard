@@ -62,6 +62,14 @@ export function StartHere({ report }: { report: SecurityReport }) {
               {start.adviceCount > 0 && <p className="chart-subtitle">{c.advice(start.adviceCount)}</p>}
             </>
           )}
+          {start.acceptedCount > 0 && (
+            <p className="chart-subtitle">
+              {c.accepted(start.acceptedCount)}{" "}
+              <a href="#security-accepted" className="screen-only">
+                {c.seeAccepted}
+              </a>
+            </p>
+          )}
         </>
       )}
     </section>

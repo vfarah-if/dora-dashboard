@@ -416,6 +416,7 @@ describe("the security crawl step", () => {
         codeAnalysis: true,
         scorecardLookup: false,
         settingsUrl: () => "",
+        fileUrl: () => null,
       }).report(repo.id);
     };
 
