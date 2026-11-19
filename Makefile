@@ -169,8 +169,8 @@ crawl-all: ## Crawl every repository listed in repos.local.json
 # --- Dependencies -------------------------------------------------------------
 
 # npm-check-updates at an exact version, so the tool that rewrites every manifest cannot change between runs.
-# Run through npx rather than installed, because it needs a newer Node 22 than engines allows. Its rules
-# live in .ncurc.mjs and mirror .github/dependabot.yml (ADR 0024).
+# Run through npx rather than installed (ADR 0024). Its rules live in .ncurc.mjs and mirror
+# .github/dependabot.yml.
 NCU         := npx --yes npm-check-updates@23.1.0
 MANIFESTS   := package.json $(wildcard apps/*/package.json packages/*/package.json)
 

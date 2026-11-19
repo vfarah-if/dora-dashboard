@@ -23,8 +23,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The lowest version package.json allows, and the current LTS.
-        node: ["22.13", "24"]
+        # The lowest version package.json allows (ADR 0041), and the current LTS.
+        node: ["22.22.2", "24"]
     steps:
       - uses: actions/checkout@v7
         with:

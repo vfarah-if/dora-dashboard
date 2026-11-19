@@ -46,3 +46,4 @@ Alternatives were weighed briefly. Keeping lizard with the heuristic costs nothi
 ## Revision History
 
 - 2026-10-10: the analyser now sets each function's `endLine` from the end of its node, and the lizard adapter keeps the end line that lizard reports. The field is stored from snapshot version 6 (ADR 0029) and is what lets a function's own lines be matched to a coverage report (ADR 0030). No count, name or boundary changes, so the figures are the same as at version 5.
+- 2026-11-19: The API has since moved to `@babel/parser` and `@babel/types` 8.1, which need Node ^22.18.0 or 24.11.0 and above, while `engines` still said 22.13. ADR 0041 raises the floor above both, so the note above about staying on 7.29 until the floor rises, and the last negative, no longer apply.
