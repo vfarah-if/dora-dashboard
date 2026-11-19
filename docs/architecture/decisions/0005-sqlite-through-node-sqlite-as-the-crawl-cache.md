@@ -26,3 +26,7 @@ Crawled data is cached in SQLite through Node's built-in `node:sqlite` module, a
 - Requires Node 22.13 or later.
 - Reports load every row for a repository into memory. Thousands of pull requests are fine; hundreds of thousands would need filtering pushed into SQL.
 - JSON documents cannot be indexed on a field, so any query other than "all rows for this repository" needs a schema change.
+
+## Revision History
+
+- 2026-11-19: `node:sqlite` still needs Node 22.13, but the repository as a whole now needs Node 22.22.2, or 24.15.0 on Node 24, because other dependencies do (ADR 0041).

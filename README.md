@@ -31,7 +31,7 @@ The dashboard rests on a small number of principles, which the home page of the 
 
 ## Quick start
 
-Requires Node 22.13 or later and, for the default sign-in, the [GitHub CLI](https://cli.github.com) signed in with `gh auth login`.
+Requires Node 22.22.2 or later (24.15.0 or later on Node 24) and, for the default sign-in, the [GitHub CLI](https://cli.github.com) signed in with `gh auth login`.
 
 ```bash
 make all                                  # install, create .env, build, run every gate

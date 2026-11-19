@@ -6,7 +6,7 @@ This guide takes you from a fresh clone to a running dashboard, explains the thr
 
 | You need                                                           | Why                                                                                                                                                                    |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Node 22.13 or later                                                | Runs the API and builds the web app                                                                                                                                    |
+| Node 22.22.2 or later (24.15.0 or later on Node 24)                | Runs the API and builds the web app                                                                                                                                    |
 | `make` and `bash`                                                  | Every command goes through the Makefile; on Windows use WSL or Git Bash                                                                                                |
 | The [GitHub CLI](https://cli.github.com), signed in                | The default sign-in, and the only one the terminal crawl (`make crawl`) uses                                                                                           |
 | `git`, and [lizard](https://github.com/terryyin/lizard) (optional) | `git` for code health in every language, since it makes the clone; lizard only for languages other than JavaScript and TypeScript, with install commands in the README |

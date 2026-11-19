@@ -38,3 +38,4 @@ Dependabot proposes updates once a week under three rules (ADR 0018). A release 
 ## Revision History
 
 - 2026-10-06: Dependabot no longer proposes `vitest` or `@vitest/*` (ADR 0018), so `make upgrade` is now the only route for a Vitest update rather than a way to take one between Dependabot runs. The Vitest group in `.ncurc.mjs`, the cooldown passed to `npm install` and the `npm ls` peer check are unchanged.
+- 2026-11-19: The Node floor is now 22.22.2 (ADR 0041), which npm-check-updates 23.1.0 accepts, so the reason given above for running it through `npx` no longer holds. It still runs through `npx`, and installing it as a devDependency would be a separate change.
